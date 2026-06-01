@@ -1,7 +1,7 @@
 {
   "functions": {
-    "src/app/api/vbn-check/route.ts": { "maxDuration": 300 },
-    "src/app/api/vbn-fix/route.ts": { "maxDuration": 300 },
-    "src/app/api/photo-upload/route.ts": { "maxDuration": 300 }
+    "app/api/vbn-check/route.ts": { "maxDuration": 300 },
+    "app/api/vbn-fix/route.ts": { "maxDuration": 300 },
+    "app/api/photo-upload/route.ts": { "maxDuration": 300 }
   }
 }
