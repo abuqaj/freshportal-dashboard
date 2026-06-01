@@ -1,0 +1,19 @@
+# Next.js
+.next/
+out/
+node_modules/
+npm-debug.log*
+
+# Env files — NEVER commit real secrets
+.env.local
+.env
+python/.env
+python/.vbn_cache.json
+python/.floricode_token.json
+
+# Temp uploads
+tmp/
+
+# OS
+.DS_Store
+Thumbs.db
