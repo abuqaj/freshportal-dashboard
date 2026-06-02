@@ -1,26 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { spawn } from "child_process";
-import path from "path";
-import { writeFile, mkdir } from "fs/promises";
 import { logOperation } from "@/lib/db";
 
-function runPython(scriptPath: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("python3", [scriptPath, ...args], {
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d) => (stdout += d.toString()));
-    proc.stderr.on("data", (d) => (stderr += d.toString()));
-    proc.on("close", (code) => {
-      if (code !== 0 && !stdout) reject(new Error(stderr || `Exit ${code}`));
-      else resolve(stdout);
-    });
-  });
-}
+const RAILWAY_URL = process.env.RAILWAY_API_URL;
 
 export async function POST(req: NextRequest) {
+  if (!RAILWAY_URL) {
+    return NextResponse.json({ error: "RAILWAY_API_URL not configured" }, { status: 500 });
+  }
+
   const formData = await req.formData();
   const xlsxFile = formData.get("xlsx") as File | null;
 
@@ -28,26 +15,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No xlsx file provided" }, { status: 400 });
   }
 
-  // Save uploaded xlsx temporarily
-  const tmpDir = path.join(process.cwd(), "tmp");
-  await mkdir(tmpDir, { recursive: true });
-  const tmpPath = path.join(tmpDir, `upload_${Date.now()}.xlsx`);
-  const bytes = await xlsxFile.arrayBuffer();
-  await writeFile(tmpPath, Buffer.from(bytes));
-
-  const scriptPath = path.join(process.cwd(), "python", "photo_uploader.py");
-
   try {
-    const output = await runPython(scriptPath, ["--xlsx", tmpPath]);
+    // Forward the file directly to Railway
+    const fd = new FormData();
+    fd.append("xlsx", xlsxFile);
 
-    let data: Record<string, unknown>;
-    try {
-      data = JSON.parse(output);
-    } catch {
-      data = { message: output.trim() };
+    const res = await fetch(`${RAILWAY_URL}/photo-upload`, {
+      method: "POST",
+      body: fd,
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      return NextResponse.json({ error: data.detail ?? "Railway API error" }, { status: res.status });
     }
 
     await logOperation("photo_upload", null, {}, { file: xlsxFile.name });
+
     return NextResponse.json({ success: true, ...data });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

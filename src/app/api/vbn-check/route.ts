@@ -1,44 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { spawn } from "child_process";
-import path from "path";
 import { logOperation } from "@/lib/db";
 
-function runPython(scriptPath: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("python3", [scriptPath, ...args], {
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: "utf-8",
-      },
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d) => (stdout += d.toString()));
-    proc.stderr.on("data", (d) => (stderr += d.toString()));
-    proc.on("close", (code) => {
-      if (code !== 0 && !stdout) {
-        reject(new Error(stderr || `Process exited with code ${code}`));
-      } else {
-        resolve(stdout);
-      }
-    });
-  });
-}
+const RAILWAY_URL = process.env.RAILWAY_API_URL;
 
 export async function POST(req: NextRequest) {
+  if (!RAILWAY_URL) {
+    return NextResponse.json({ error: "RAILWAY_API_URL not configured" }, { status: 500 });
+  }
+
   const { vbn } = await req.json();
   if (!vbn || typeof vbn !== "string") {
     return NextResponse.json({ error: "Missing vbn parameter" }, { status: 400 });
   }
 
-  const scriptPath = path.join(process.cwd(), "python", "vbn_runner.py");
-
   try {
-    const output = await runPython(scriptPath, ["--vbn", vbn]);
-    const data = JSON.parse(output);
+    const res = await fetch(`${RAILWAY_URL}/vbn-check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vbn }),
+    });
 
-    if (data.error) {
-      return NextResponse.json({ error: data.error }, { status: 500 });
+    const data = await res.json();
+
+    if (!res.ok) {
+      return NextResponse.json({ error: data.detail ?? "Railway API error" }, { status: res.status });
     }
 
     await logOperation("vbn_check", vbn, data.stats ?? {}, { result_count: data.results?.length ?? 0 });
