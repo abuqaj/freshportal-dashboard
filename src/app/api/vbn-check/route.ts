@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logOperation } from "@/lib/db";
 
+export const maxDuration = 300;
+
 const RAILWAY_URL = process.env.RAILWAY_API_URL;
 
 export async function POST(req: NextRequest) {
