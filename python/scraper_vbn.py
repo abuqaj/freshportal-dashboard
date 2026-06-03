@@ -268,6 +268,24 @@ def get_colour_vbn_table(client_id: str, client_secret: str) -> dict[str, list[d
     return _colour_vbn_table
 
 
+# Words to strip before botanical matching — treatment terms and common
+# codes that appear in FreshPortal names but never in VBN species names.
+_NOISE_WORDS = frozenset({
+    "painted", "absorbed", "tinted", "colour", "treated", "color",
+    "kleurbehandeld", "coloured", "colored", "bleached", "dried",
+    "preserved", "ec", "hk", "sp", "cv",
+    # common color words that don't appear in VBN species names
+    "red", "blue", "yellow", "white", "pink", "purple", "orange",
+    "green", "black", "mixed", "bicolor",
+    # Dutch equivalents
+    "rood", "blauw", "geel", "wit", "roze", "paars", "oranje",
+})
+
+# Generic "other/remaining" words in VBN names — preferred when no
+# specific species match is found in the product name.
+_GENERIC_WORDS = frozenset({"overig", "other", "overige", "sonstiges"})
+
+
 def find_best_colour_vbn(
     product_name: str,
     is_spray: bool,
@@ -276,41 +294,59 @@ def find_best_colour_vbn(
 ) -> str:
     """Find the most specific colour-treated VBN for *product_name*.
 
-    Looks up the pre-built genus table, filters by spray/non-spray, then
-    scores candidates by word-overlap with the product name.
-    Returns VBN id string or '' if nothing suitable found.
+    Scoring logic:
+    - Strip treatment/color noise words from both sides.
+    - If product name contains a species word present in a specific VBN
+      (e.g. "sinuatum"), prefer that VBN (overlap > 1).
+    - If no species word matches, prefer the "overig/other" VBN — it is
+      the correct generic code for unspecified species.
     """
     table = get_colour_vbn_table(client_id, client_secret)
     if not table:
         return ""
 
-    product_words = set(product_name.lower().split())
     words = product_name.lower().split()
     genus = words[0] if words else ""
 
-    # Gather candidates: genus-specific first, then all
+    # Botanical keywords only — exclude treatment/color noise
+    product_botanical = {w for w in words if w not in _NOISE_WORDS and len(w) > 2}
+
+    # Gather candidates for this genus
     candidates = list(table.get(genus, []))
     if not candidates:
-        # Try prefix match (e.g. "chrysanth" matching "chrysanthemum")
         for key, entries in table.items():
-            if key.startswith(genus[:4]) or genus.startswith(key[:4]):
+            if key[:4] == genus[:4]:
                 candidates.extend(entries)
 
     if not candidates:
         return ""
 
-    # Prefer spray/non-spray match
+    # Prefer spray/non-spray alignment
     spray_matched = [c for c in candidates if c["is_spray"] == is_spray]
     pool = spray_matched if spray_matched else candidates
 
-    def _score(c: dict) -> int:
-        return len(product_words & set(c["name"].lower().split()))
+    def _score(c: dict) -> tuple[int, int]:
+        vbn_botanical = {
+            w for w in c["name"].lower().split()
+            if w not in _NOISE_WORDS and len(w) > 2
+        }
+        overlap = len(product_botanical & vbn_botanical)
+        is_generic = int(bool(_GENERIC_WORDS & vbn_botanical))
+
+        if overlap > 1:
+            # Specific species match found → prefer specific over generic
+            return (overlap, 1 - is_generic)
+        else:
+            # No species match → prefer generic "overig/other" code
+            return (overlap, is_generic)
 
     best = max(pool, key=_score)
-    if _score(best) > 0:
+    score = _score(best)
+
+    if score[0] > 0:
         logger.info(
-            "Best colour VBN for '%s' -> %s (%s)",
-            product_name, best["id"], best["name"],
+            "Best colour VBN for '%s' -> %s (%s) [score=%s]",
+            product_name, best["id"], best["name"], score,
         )
         return best["id"]
 
