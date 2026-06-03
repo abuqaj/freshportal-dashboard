@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -60,6 +61,35 @@ class VbnFixRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _parse_vbn_codes(vbn_str: str) -> list[str]:
+    """Split '580, 595 580' → ['580', '595', '580'] and deduplicate."""
+    codes = re.split(r"[,\s;]+", vbn_str.strip())
+    seen: set[str] = set()
+    result = []
+    for c in codes:
+        c = c.strip()
+        if c and c not in seen:
+            seen.add(c)
+            result.append(c)
+    return result
+
+
+def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None) -> list:
+    """Fetch products for all VBN codes, deduplicated by product_id."""
+    all_products = []
+    seen_ids: set[str] = set()
+    total = len(vbn_codes)
+    for i, code in enumerate(vbn_codes, 1):
+        if on_status and total > 1:
+            on_status(f"Pobieranie VBN {code} ({i}/{total})…")
+        products = fetch_products(code, cfg, on_status=on_status if total == 1 else None)
+        for p in products:
+            if p.product_id not in seen_ids:
+                seen_ids.add(p.product_id)
+                all_products.append(p)
+    return all_products
+
 
 def _build_result(products, cfg: Config, queue: Queue | None = None) -> dict:
     """Run VBN lookup + verification and return result dict."""
@@ -168,12 +198,14 @@ async def vbn_check_stream(req: VbnCheckRequest):
 
     queue: Queue = Queue()
 
+    vbn_codes = _parse_vbn_codes(req.vbn)
+
     def run() -> None:
         try:
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
-            products = fetch_products(req.vbn, cfg, on_status=on_status)
+            products = _fetch_all_products(vbn_codes, cfg, on_status=on_status)
             data = _build_result(products, cfg, queue)
             queue.put({"type": "result", "data": data})
         except Exception as e:

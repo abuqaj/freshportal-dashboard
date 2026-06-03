@@ -47,6 +47,7 @@ export default function Dashboard() {
   const [checkError, setCheckError] = useState<string | null>(null);
   const [fixing, setFixing] = useState(false);
   const [fixMessage, setFixMessage] = useState<string | null>(null);
+  const [fixSuccess, setFixSuccess] = useState<string | null>(null);
   // VBN code → official name cache (populated on load + live lookup)
   const [vbnNameCache, setVbnNameCache] = useState<Record<string, string>>({});
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -245,7 +246,14 @@ export default function Dashboard() {
             flushSync(() => setFixMessage(event.message as string));
           } else if (event.type === "result") {
             const data = event.data as { fixed: number; failed: number };
-            setFixMessage(`✓ Poprawiono ${data.fixed} produktów.${data.failed > 0 ? ` ${data.failed} nieudanych.` : ""}`);
+            const msg = `✓ Poprawiono ${data.fixed} produktów.${data.failed > 0 ? ` ${data.failed} nieudanych.` : ""}`;
+            // Reset search, show banner
+            setResults(null);
+            setStats(null);
+            setVbnInput("");
+            setVbnNameCache({});
+            setFixSuccess(msg);
+            setTimeout(() => setFixSuccess(null), 6000);
             fetch("/api/log", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -342,10 +350,18 @@ export default function Dashboard() {
               </p>
             </div>
 
+            {/* Fix success banner */}
+            {fixSuccess && (
+              <div className="mb-5 flex items-center gap-3 text-sm text-green-700 bg-green-50 border border-green-200 rounded-xl px-5 py-3">
+                <span className="text-base">✓</span>
+                <span>{fixSuccess}</span>
+              </div>
+            )}
+
             {/* Search bar */}
             <div className="bg-white border border-neutral-200 rounded-xl p-5 mb-5">
               <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">
-                Kod VBN do sprawdzenia
+                Kody VBN do sprawdzenia
               </label>
               <div className="flex gap-3">
                 <input
@@ -353,8 +369,8 @@ export default function Dashboard() {
                   value={vbnInput}
                   onChange={(e) => setVbnInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleCheck()}
-                  placeholder="np. 580"
-                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                  placeholder="np. 580, 595, 580"
+                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-64 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                 />
                 <button
                   onClick={handleCheck}
