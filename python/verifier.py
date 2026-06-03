@@ -201,21 +201,36 @@ def verify_products(
             colour_vbn_names = ("kleurbehandeld", "colour treated", "coloured", "colored", "color")
             if not any(kw in official.lower() for kw in colour_vbn_names):
                 status = "ERROR"
-                genus = name.split()[0].lower()
+                words = name.split()
+                genus = words[0].lower()
                 is_spray_product = _is_spray(name)
+                specific = ""
 
-                # 1. Try Floricode API for exact genus match
-                specific = find_specific_vbn(
-                    genus, "kleurbehandeld", cfg.floricode_username, cfg.floricode_password
-                )
+                if cfg.floricode_username:
+                    # 1. Try genus + species (first two words) — most specific
+                    if len(words) >= 2:
+                        genus_species = f"{genus} {words[1].lower()}"
+                        specific = find_specific_vbn(
+                            genus_species, "kleurbehandeld",
+                            cfg.floricode_username, cfg.floricode_password,
+                            product_name_hint=name,
+                        )
 
-                # 2. If Floricode returned nothing, use genus-specific fallback table
+                    # 2. Fall back to genus only, use product name to pick best match
+                    if not specific:
+                        specific = find_specific_vbn(
+                            genus, "kleurbehandeld",
+                            cfg.floricode_username, cfg.floricode_password,
+                            product_name_hint=name,
+                        )
+
+                # 3. Genus-specific fallback table (no API needed)
                 if not specific:
                     genus_vbns = COLOUR_TREATED_BY_GENUS.get(genus)
                     if genus_vbns:
                         specific = genus_vbns[1] if is_spray_product else genus_vbns[0]
 
-                # 3. Last resort: generic
+                # 4. Last resort: generic
                 proposed = specific or COLOUR_TREATED_GENERIC
                 reason = (
                     f"Product is colour treated but VBN {p.vbn_number} ({official}) "

@@ -95,15 +95,25 @@ def _lookup_via_api(code: str, token: str) -> VBNInfo:
 _specific_vbn_cache: dict[str, str] = {}
 
 
-def find_specific_vbn(genus: str, treatment: str, client_id: str, client_secret: str) -> str:
-    """
-    Search for the most specific VBN matching '{genus} {treatment}'.
-    treatment: 'kleurbehandeld' | 'droog' | 'dried'
-    Returns a VBN id string, or '' if no unique match found.
+def find_specific_vbn(
+    genus: str,
+    treatment: str,
+    client_id: str,
+    client_secret: str,
+    product_name_hint: str = "",
+) -> str:
+    """Search Floricode for the most specific VBN matching '{genus} {treatment}'.
+
+    When multiple candidates are returned, pick the one whose name best
+    overlaps with *product_name_hint* (the full FreshPortal product name).
+    Returns VBN id string, or '' if nothing useful found.
     """
     key = f"{genus.lower()}|{treatment.lower()}"
     if key in _specific_vbn_cache:
         return _specific_vbn_cache[key]
+
+    if not client_id or not client_secret:
+        return ""
 
     token = _get_token(client_id, client_secret)
     try:
@@ -126,15 +136,36 @@ def find_specific_vbn(genus: str, treatment: str, client_id: str, client_secret:
         _specific_vbn_cache[key] = ""
         return ""
 
+    if not items:
+        _specific_vbn_cache[key] = ""
+        return ""
+
     if len(items) == 1:
         result = str(items[0]["id"])
         logger.info("Specific VBN for %s %s -> %s (%s)", genus, treatment, result, items[0]["name"])
     else:
-        result = ""
-        if items:
-            logger.debug("Multiple VBNs for %s %s: %s", genus, treatment, [i["id"] for i in items])
+        # Multiple candidates — pick the one with most word overlap with the product name
+        hint_words = set(product_name_hint.lower().split()) if product_name_hint else set()
+        def _score(item: dict) -> int:
+            vbn_words = set(item.get("name", "").lower().split())
+            return len(hint_words & vbn_words)
 
-    _specific_vbn_cache[key] = result
+        logger.debug("Multiple VBNs for %s %s: %s", genus, treatment, [(i["id"], i["name"]) for i in items])
+
+        if hint_words:
+            best = max(items, key=_score)
+            result = str(best["id"])
+            logger.info(
+                "Best VBN for '%s' among %d candidates -> %s (%s)",
+                product_name_hint, len(items), result, best["name"],
+            )
+        else:
+            result = ""
+
+    # Only cache definitive results — empty string means "not found yet"
+    # so re-trying with a hint later would still work
+    if result:
+        _specific_vbn_cache[key] = result
     return result
 
 
