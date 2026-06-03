@@ -58,6 +58,10 @@ export default function Dashboard() {
 
   async function handleCheck() {
     if (!vbnInput.trim()) return;
+    if (!RAILWAY) {
+      setCheckError("NEXT_PUBLIC_RAILWAY_API_URL not configured — redeploy Vercel after adding the env var.");
+      return;
+    }
     setLoading(true);
     setCheckError(null);
     setResults(null);
