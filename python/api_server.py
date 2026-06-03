@@ -303,6 +303,26 @@ async def photo_upload(xlsx: UploadFile = File(...)):
     return {"success": True, "message": "Photo upload completed."}
 
 
+@app.get("/vbn-name/{code}")
+def get_vbn_name(code: str):
+    """Return the official Floricode name for a single VBN code."""
+    cfg = Config()
+    # Check hardcoded table first (instant, no API call)
+    if code in KNOWN_VBN:
+        return {"code": code, "name": KNOWN_VBN[code], "found": True}
+    # Query Floricode
+    result = lookup_vbn_codes(
+        [code],
+        request_timeout=cfg.request_timeout,
+        floricode_username=cfg.floricode_username,
+        floricode_password=cfg.floricode_password,
+    )
+    info = result.get(code)
+    if info and info.found and info.official_name:
+        return {"code": code, "name": info.official_name, "found": True}
+    return {"code": code, "name": None, "found": False}
+
+
 @app.get("/debug/colour-table")
 def debug_colour_table():
     """Show the colour VBN table (genera and their kleurbehandeld codes)."""

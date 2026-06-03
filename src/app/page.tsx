@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { flushSync } from "react-dom";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
@@ -47,6 +47,9 @@ export default function Dashboard() {
   const [checkError, setCheckError] = useState<string | null>(null);
   const [fixing, setFixing] = useState(false);
   const [fixMessage, setFixMessage] = useState<string | null>(null);
+  // VBN code → official name cache (populated on load + live lookup)
+  const [vbnNameCache, setVbnNameCache] = useState<Record<string, string>>({});
+  const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -122,6 +125,15 @@ export default function Dashboard() {
             }));
             setResults(withEdits);
             setStats(data.stats);
+            // Seed cache with proposed VBN names that came from the API
+            const seedCache: Record<string, string> = {};
+            data.results.forEach((r) => {
+              if (r.proposed_vbn && r.proposed_vbn_name)
+                seedCache[r.proposed_vbn] = r.proposed_vbn_name;
+              if (r.current_vbn && r.official_name)
+                seedCache[r.current_vbn] = r.official_name;
+            });
+            setVbnNameCache(seedCache);
             // Log to Vercel DB (fire-and-forget)
             fetch("/api/log", {
               method: "POST",
@@ -150,6 +162,32 @@ export default function Dashboard() {
     setResults((prev) =>
       prev ? prev.map((r) => (r.product_id === product_id ? { ...r, edited_vbn: val } : r)) : prev
     );
+
+    const code = val.trim();
+    if (!code || !/^\d+$/.test(code) || !RAILWAY) return;
+
+    // Already have a real name — skip
+    if (debounceTimers.current[code]) clearTimeout(debounceTimers.current[code]);
+
+    setVbnNameCache((prev) => ({ ...prev, [code]: prev[code] && prev[code] !== "…" ? prev[code] : "…" }));
+
+    debounceTimers.current[code] = setTimeout(async () => {
+      // If already resolved, skip the fetch
+      setVbnNameCache((prev) => {
+        if (prev[code] && prev[code] !== "…") return prev;
+        return prev; // fetch will update it
+      });
+      try {
+        const res = await fetch(`${RAILWAY}/vbn-name/${code}`);
+        const data = await res.json();
+        setVbnNameCache((prev) => ({
+          ...prev,
+          [code]: data.found ? (data.name ?? "") : "⚠ Nieznany kod VBN",
+        }));
+      } catch {
+        setVbnNameCache((prev) => ({ ...prev, [code]: "" }));
+      }
+    }, 600);
   }
 
   function toggleExclude(product_id: string) {
@@ -413,7 +451,7 @@ export default function Dashboard() {
                           <td className="px-3 py-3 max-w-xs">
                             <p className="text-xs text-neutral-500 leading-snug">{r.reason || "—"}</p>
                           </td>
-                          <td className="px-3 py-3">
+                          <td className="px-3 py-3 min-w-40">
                             <input
                               type="text"
                               value={r.edited_vbn ?? ""}
@@ -422,9 +460,15 @@ export default function Dashboard() {
                               placeholder="wpisz VBN"
                               className="border border-neutral-200 rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-violet-300 disabled:bg-neutral-50"
                             />
-                            {r.proposed_vbn_name && r.edited_vbn === r.proposed_vbn && (
-                              <p className="text-xs text-neutral-400 mt-0.5 max-w-32 truncate" title={r.proposed_vbn_name}>
-                                {r.proposed_vbn_name}
+                            {r.edited_vbn?.trim() && /^\d+$/.test(r.edited_vbn.trim()) && (
+                              <p className={`text-xs mt-0.5 break-words leading-snug ${
+                                vbnNameCache[r.edited_vbn.trim()]?.startsWith("⚠")
+                                  ? "text-red-400"
+                                  : vbnNameCache[r.edited_vbn.trim()] === "…"
+                                  ? "text-neutral-300 italic"
+                                  : "text-neutral-400"
+                              }`}>
+                                {vbnNameCache[r.edited_vbn.trim()] ?? ""}
                               </p>
                             )}
                           </td>
