@@ -77,6 +77,45 @@ def _login_session(cfg: Config) -> requests.Session:
     return session
 
 
+def _debug_fetch(cfg: Config, vbn_filter: str) -> dict:
+    """Diagnostic: returns login URL, product page URL, table row count and HTML snippet."""
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+    timeout = cfg.request_timeout // 1000
+
+    login_url = f"{cfg.freshportal_url}/login_v2/index/index/"
+    r = session.get(login_url, timeout=timeout)
+    soup = BeautifulSoup(r.text, "lxml")
+    data: dict[str, str] = {}
+    form = soup.find("form")
+    if form:
+        for inp in form.find_all("input"):
+            name = inp.get("name")
+            if name and inp.get("type") not in ("submit", "button"):
+                data[name] = inp.get("value", "")
+    data["USE_Username"] = cfg.freshportal_username
+    data["USE_Password"] = cfg.freshportal_password
+
+    r = session.post(login_url, data=data, timeout=timeout, allow_redirects=True)
+    login_result_url = r.url
+
+    prod_url = (f"{cfg.freshportal_url}/product/index/index/"
+                f"?1=1&vbn_number_adjustable={vbn_filter}&page=1")
+    r2 = session.get(prod_url, timeout=timeout)
+    soup2 = BeautifulSoup(r2.text, "lxml")
+    table = soup2.find("table")
+    rows = table.find("tbody").find_all("tr") if table and table.find("tbody") else []
+
+    return {
+        "login_result_url": login_result_url,
+        "product_page_url": r2.url,
+        "product_page_status": r2.status_code,
+        "table_found": table is not None,
+        "row_count": len(rows),
+        "html_snippet": r2.text[:800],
+    }
+
+
 def _detect_columns_html(soup: BeautifulSoup) -> tuple[int, int, int, int]:
     col_vbn = col_name = col_short = col_origin = -1
     thead = soup.find("thead")

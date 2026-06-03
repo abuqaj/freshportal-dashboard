@@ -17,7 +17,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
-from scraper_fp import fetch_products, fix_vbn_batch
+from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch
 from scraper_vbn import lookup_vbn_codes
 from verifier import verify_products
 from photo_uploader import run as run_photo_uploader
@@ -59,6 +59,17 @@ class VbnFixRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/debug/fp")
+def debug_fp(vbn: str = "580"):
+    """Diagnostic endpoint — shows login result and raw HTML from FreshPortal."""
+    cfg = Config()
+    try:
+        cfg.validate()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _debug_fetch(cfg, vbn)
 
 
 @app.post("/vbn-check")
