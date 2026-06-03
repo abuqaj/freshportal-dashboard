@@ -208,6 +208,59 @@ def vbn_fix(req: VbnFixRequest):
     return {"results": results, "fixed": fixed, "failed": failed}
 
 
+@app.post("/vbn-fix/stream")
+async def vbn_fix_stream(req: VbnFixRequest):
+    """Streaming SSE endpoint for VBN fix — pushes per-product progress."""
+    cfg = Config()
+    try:
+        cfg.validate()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    queue: Queue = Queue()
+    fixes = [(f.product_id, f.new_vbn) for f in req.fixes]
+
+    def run() -> None:
+        try:
+            def on_status(msg: str) -> None:
+                queue.put({"type": "status", "message": msg})
+
+            results = fix_vbn_batch(fixes, cfg, on_status=on_status)
+            fixed = sum(1 for ok in results.values() if ok)
+            failed = len(results) - fixed
+            queue.put({"type": "result", "data": {
+                "results": results,
+                "fixed": fixed,
+                "failed": failed,
+            }})
+        except Exception as e:
+            log.exception("vbn-fix/stream failed")
+            queue.put({"type": "error", "message": str(e)})
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    async def generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+        thread.join(timeout=10)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
 @app.post("/photo-upload")
 async def photo_upload(xlsx: UploadFile = File(...)):
     photo_dir = os.getenv("PHOTO_DIR", "./photos")

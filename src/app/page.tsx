@@ -168,28 +168,60 @@ export default function Dashboard() {
       return;
     }
 
-    setFixing(true);
-    setFixMessage(null);
+    flushSync(() => {
+      setFixing(true);
+      setFixMessage(null);
+    });
+
     try {
-      const res = await fetch(`${RAILWAY}/vbn-fix`, {
+      const res = await fetch(`${RAILWAY}/vbn-fix/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fixes: toFix }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? data.error ?? "Railway error");
-      setFixMessage(`✓ Poprawiono ${data.fixed} produktów. ${data.failed > 0 ? `${data.failed} nieudanych.` : ""}`);
-      // Log to Vercel DB (fire-and-forget)
-      fetch("/api/log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "vbn_fix",
-          vbn_filter: null,
-          stats: { fixed: data.fixed, failed: data.failed },
-          details: { fixes: toFix },
-        }),
-      }).catch(() => {});
+
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail ?? data.error ?? `HTTP ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let event: Record<string, unknown>;
+          try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (event.type === "status") {
+            flushSync(() => setFixMessage(event.message as string));
+          } else if (event.type === "result") {
+            const data = event.data as { fixed: number; failed: number };
+            setFixMessage(`✓ Poprawiono ${data.fixed} produktów.${data.failed > 0 ? ` ${data.failed} nieudanych.` : ""}`);
+            fetch("/api/log", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "vbn_fix",
+                vbn_filter: null,
+                stats: { fixed: data.fixed, failed: data.failed },
+                details: { fixes: toFix },
+              }),
+            }).catch(() => {});
+          } else if (event.type === "error") {
+            throw new Error(event.message as string);
+          }
+        }
+      }
     } catch (e: unknown) {
       setFixMessage(`Błąd: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -418,12 +450,20 @@ export default function Dashboard() {
                     <div className="flex gap-2 items-center">
                       {fixMessage && (
                         <span
-                          className={`text-xs px-3 py-1.5 rounded-lg ${
+                          className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg ${
                             fixMessage.startsWith("✓")
                               ? "bg-green-50 text-green-700"
-                              : "bg-red-50 text-red-600"
+                              : fixMessage.startsWith("Błąd")
+                              ? "bg-red-50 text-red-600"
+                              : "bg-violet-50 text-violet-700"
                           }`}
                         >
+                          {fixing && (
+                            <svg className="animate-spin h-3 w-3 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                          )}
                           {fixMessage}
                         </span>
                       )}
@@ -432,7 +472,7 @@ export default function Dashboard() {
                         disabled={fixing}
                         className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
                       >
-                        {fixing ? "Poprawiam w FreshPortal…" : "Zatwierdź i popraw w FreshPortal"}
+                        {fixing ? "Poprawiam…" : "Zatwierdź i popraw w FreshPortal"}
                       </button>
                     </div>
                   </div>

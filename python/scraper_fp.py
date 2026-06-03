@@ -323,15 +323,27 @@ def _fix_inline(page: Page, product_id: str, new_vbn: str, vbn_col: int, cfg: Co
     return True
 
 
-def fix_vbn_batch(fixes: list[tuple[str, str]], cfg: Config) -> dict[str, bool]:
+def fix_vbn_batch(
+    fixes: list[tuple[str, str]],
+    cfg: Config,
+    on_status=None,
+) -> dict[str, bool]:
     """Apply VBN fixes using a single Playwright browser session."""
+    def _status(msg: str) -> None:
+        logger.info(msg)
+        if on_status:
+            on_status(msg)
+
     results: dict[str, bool] = {}
+    total = len(fixes)
+
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         context = browser.new_context()
         page = context.new_page()
         _block_resources(page)
         try:
+            _status("Logowanie do FreshPortal…")
             _login(page, cfg)
             page.goto(
                 f"{cfg.freshportal_url}/product/index/index/?1=1",
@@ -340,8 +352,8 @@ def fix_vbn_batch(fixes: list[tuple[str, str]], cfg: Config) -> dict[str, bool]:
             )
             time.sleep(1.5)
             vbn_col, _, _, _ = _detect_columns(page)
-            for product_id, new_vbn in fixes:
-                logger.info("Fixing id=%s -> VBN %s", product_id, new_vbn)
+            for i, (product_id, new_vbn) in enumerate(fixes, 1):
+                _status(f"Poprawianie produktu {i}/{total} (ID {product_id} → VBN {new_vbn})…")
                 try:
                     results[product_id] = _fix_inline(page, product_id, new_vbn, vbn_col, cfg)
                 except Exception as exc:
@@ -350,6 +362,9 @@ def fix_vbn_batch(fixes: list[tuple[str, str]], cfg: Config) -> dict[str, bool]:
         finally:
             context.close()
             browser.close()
+
+    fixed = sum(1 for ok in results.values() if ok)
+    _status(f"Zakończono: {fixed}/{total} poprawionych")
     return results
 
 
