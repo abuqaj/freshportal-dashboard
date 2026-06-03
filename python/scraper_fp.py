@@ -175,7 +175,11 @@ def _goto_and_wait(page: Page, url: str, cfg: Config) -> None:
 # ---------------------------------------------------------------------------
 
 def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
-    """Fetch products in browser batches of PAGES_PER_BATCH to cap peak RAM."""
+    """Fetch products in browser batches of PAGES_PER_BATCH to cap peak RAM.
+
+    Uses a current_page counter so the first batch correctly fetches pages
+    1-N (not just page 1) even though last_page is unknown until page 1 loads.
+    """
     all_products: list[FPProduct] = []
     url_tpl = (
         f"{cfg.freshportal_url}/product/index/index/"
@@ -184,12 +188,10 @@ def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
 
     saved_cookies: list = []
     cols: tuple[int, int, int, int] | None = None
-    last_page = 1
-    next_page = 1
+    last_page: int | None = None  # discovered on first page load
+    current_page = 1
 
-    while next_page <= last_page:
-        batch = list(range(next_page, min(next_page + PAGES_PER_BATCH, last_page + 1)))
-
+    while True:
         with sync_playwright() as pw:
             browser = _launch_browser(pw)
             context = browser.new_context()
@@ -202,32 +204,39 @@ def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
                 if not saved_cookies:
                     _login(page, cfg)
 
-                for page_num in batch:
-                    _goto_and_wait(page, url_tpl.format(page=page_num), cfg)
+                pages_in_batch = 0
+                while pages_in_batch < PAGES_PER_BATCH:
+                    if last_page is not None and current_page > last_page:
+                        break
+
+                    _goto_and_wait(page, url_tpl.format(page=current_page), cfg)
                     soup = BeautifulSoup(page.content(), "lxml")
 
-                    if cols is None:
+                    if last_page is None:
                         cols = _detect_columns_html(soup)
                         last_page = _get_last_page_html(soup)
                         logger.info("Total pages for VBN '%s': %d", vbn_filter, last_page)
 
                     products = _parse_rows_html(soup, cols)
                     if not products:
-                        logger.info("Empty page %d — stopping", page_num)
-                        last_page = page_num - 1
+                        logger.info("Empty page %d — stopping", current_page)
+                        last_page = current_page - 1
                         break
+
                     all_products.extend(products)
                     logger.info("Page %d/%d: %d products (total: %d)",
-                                page_num, last_page, len(products), len(all_products))
+                                current_page, last_page, len(products), len(all_products))
+                    current_page += 1
+                    pages_in_batch += 1
 
                 saved_cookies = context.cookies()
             finally:
                 context.close()
                 browser.close()
 
-        next_page += PAGES_PER_BATCH
-        if next_page <= last_page:
-            logger.info("Batch done — restarting browser for page %d+", next_page)
+        if last_page is None or current_page > last_page:
+            break
+        logger.info("Batch done — restarting browser for page %d+", current_page)
 
     logger.info("Total fetched: %d products", len(all_products))
     return all_products
