@@ -95,15 +95,42 @@ def _get_last_page_html(soup: BeautifulSoup) -> int:
     try:
         pagination = soup.find("ul", class_="pagination")
         if pagination:
+            # Check all <a href> links — last page link often has highest page= param
+            import re as _re
+            max_from_links = 1
+            for a in pagination.find_all("a", href=True):
+                m = _re.search(r"[?&]page=(\d+)", a["href"])
+                if m:
+                    max_from_links = max(max_from_links, int(m.group(1)))
+
+            # Also collect visible digit labels
             numbers = [
                 int(li.get_text(strip=True))
                 for li in pagination.find_all("li")
                 if li.get_text(strip=True).isdigit()
             ]
             if numbers:
-                return max(numbers)
+                max_from_links = max(max_from_links, max(numbers))
+
+            if max_from_links > 1:
+                return max_from_links
     except Exception:
         pass
+
+    # Fallback: look for total-record count in the page and infer pages
+    try:
+        import re as _re
+        # FreshPortal often shows "X - Y of Z" or just a number like "2299"
+        for el in soup.find_all(string=_re.compile(r'\d{3,}')):
+            text = str(el).strip()
+            m = _re.search(r'of\s+(\d+)', text)
+            if m:
+                total = int(m.group(1))
+                # Assume 250 per page (FreshPortal default when configured)
+                return max(1, -(-total // 250))
+    except Exception:
+        pass
+
     return 1
 
 

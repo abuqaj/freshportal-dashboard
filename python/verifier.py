@@ -29,6 +29,17 @@ KNOWN_VBN: dict[str, str] = {
     "122819": "Lepidium kleurbehandeld H%",
 }
 
+# Genus-specific fallback VBNs for colour treated products.
+# Key: lowercase first word of product name.  Value: (non-spray VBN, spray VBN)
+COLOUR_TREATED_BY_GENUS: dict[str, tuple[str, str]] = {
+    "rosa":       ("15126", "16128"),  # Rosa large flowered / Rosa spray
+    "ruscus":     ("4159",  "4159"),
+    "genista":    ("17659", "17659"),
+    "amaranthus": ("121267","121267"),
+    "lepidium":   ("122819","122819"),
+}
+COLOUR_TREATED_GENERIC = "6268"  # Cutflowers other coloured — last resort
+
 TREATED_KEYWORDS = ("preserved", "bleached", "dried", "painted", "absorbed", "tinted", "colour treated")
 
 # "spray" in various languages used in flower product names
@@ -190,9 +201,22 @@ def verify_products(
             colour_vbn_names = ("kleurbehandeld", "colour treated", "coloured", "colored", "color")
             if not any(kw in official.lower() for kw in colour_vbn_names):
                 status = "ERROR"
-                genus = name.split()[0]
-                specific = find_specific_vbn(genus, "kleurbehandeld", cfg.floricode_username, cfg.floricode_password)
-                proposed = specific or "6268"
+                genus = name.split()[0].lower()
+                is_spray_product = _is_spray(name)
+
+                # 1. Try Floricode API for exact genus match
+                specific = find_specific_vbn(
+                    genus, "kleurbehandeld", cfg.floricode_username, cfg.floricode_password
+                )
+
+                # 2. If Floricode returned nothing, use genus-specific fallback table
+                if not specific:
+                    genus_vbns = COLOUR_TREATED_BY_GENUS.get(genus)
+                    if genus_vbns:
+                        specific = genus_vbns[1] if is_spray_product else genus_vbns[0]
+
+                # 3. Last resort: generic
+                proposed = specific or COLOUR_TREATED_GENERIC
                 reason = (
                     f"Product is colour treated but VBN {p.vbn_number} ({official}) "
                     "doesn't reflect colour treatment. Look for specific kleurbehandeld VBN."
