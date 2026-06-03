@@ -159,10 +159,15 @@ async def vbn_check_stream(req: VbnCheckRequest):
     thread.start()
 
     async def generate():
+        # Initial event forces proxy to flush headers and establish SSE connection
+        yield ": connected\n\n"
+
         while True:
             try:
                 item = queue.get_nowait()
             except Empty:
+                # Keepalive comment flushes nginx/Railway proxy buffers every 200 ms
+                yield ": k\n\n"
                 await asyncio.sleep(0.2)
                 continue
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { flushSync } from "react-dom";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -63,12 +64,16 @@ export default function Dashboard() {
       setCheckError("NEXT_PUBLIC_RAILWAY_API_URL not configured — redeploy Vercel after adding the env var.");
       return;
     }
-    setLoading(true);
-    setCheckError(null);
-    setResults(null);
-    setStats(null);
-    setFixMessage(null);
-    setStatusMessage("Łączenie z Railway…");
+    // flushSync forces React to render the spinner BEFORE the async fetch starts
+    flushSync(() => {
+      setLoading(true);
+      setCheckError(null);
+      setResults(null);
+      setStats(null);
+      setFixMessage(null);
+      setStatusMessage("Łączenie z Railway…");
+    });
+
     try {
       const res = await fetch(`${RAILWAY}/vbn-check/stream`, {
         method: "POST",
@@ -90,18 +95,26 @@ export default function Dashboard() {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
+        // Handle both \n and \r\n line endings
+        const lines = buffer.split(/\r?\n/);
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
+          // Skip SSE comments (keepalive) and empty lines
           if (!line.startsWith("data: ")) continue;
-          const event = JSON.parse(line.slice(6));
+          let event: Record<string, unknown>;
+          try {
+            event = JSON.parse(line.slice(6));
+          } catch {
+            continue;
+          }
 
           if (event.type === "status") {
-            setStatusMessage(event.message);
+            // Each status update triggers its own render
+            flushSync(() => setStatusMessage(event.message as string));
           } else if (event.type === "result") {
-            const data = event.data;
-            const withEdits = (data.results as VbnResult[]).map((r) => ({
+            const data = event.data as { results: VbnResult[]; stats: Stats };
+            const withEdits = data.results.map((r) => ({
               ...r,
               edited_vbn: r.proposed_vbn,
               excluded: false,
@@ -109,7 +122,7 @@ export default function Dashboard() {
             setResults(withEdits);
             setStats(data.stats);
           } else if (event.type === "error") {
-            throw new Error(event.message);
+            throw new Error(event.message as string);
           }
         }
       }
