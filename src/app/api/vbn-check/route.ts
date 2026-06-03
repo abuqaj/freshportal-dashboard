@@ -15,24 +15,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing vbn parameter" }, { status: 400 });
   }
 
+  let res: Response;
   try {
-    const res = await fetch(`${RAILWAY_URL}/vbn-check`, {
+    res = await fetch(`${RAILWAY_URL}/vbn-check`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ vbn }),
     });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      return NextResponse.json({ error: data.detail ?? "Railway API error" }, { status: res.status });
-    }
-
-    await logOperation("vbn_check", vbn, data.stats ?? {}, { result_count: data.results?.length ?? 0 });
-
-    return NextResponse.json(data);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: `Cannot reach Railway: ${msg}` }, { status: 502 });
   }
+
+  const text = await res.text();
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return NextResponse.json({ error: `Railway error (${res.status}): ${text.slice(0, 300)}` }, { status: 502 });
+  }
+
+  if (!res.ok) {
+    return NextResponse.json({ error: data.detail ?? "Railway API error" }, { status: res.status });
+  }
+
+  await logOperation("vbn_check", vbn, data.stats ?? {}, { result_count: (data.results as unknown[])?.length ?? 0 });
+
+  return NextResponse.json(data);
 }
