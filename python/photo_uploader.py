@@ -369,7 +369,12 @@ def run(
     stats = {"success": 0, "no_photo": 0, "not_found": 0, "error": 0, "skipped": 0}
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=headless)
+        browser = pw.chromium.launch(headless=headless, args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-extensions",
+        ])
         context = browser.new_context()
         page = context.new_page()
         page.set_default_timeout(cfg.request_timeout)

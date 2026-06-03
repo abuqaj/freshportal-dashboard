@@ -103,7 +103,12 @@ def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
     all_products: list[FPProduct] = []
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(headless=True, args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-extensions",
+        ])
         context = browser.new_context()
         page = context.new_page()
 
@@ -226,7 +231,12 @@ def fix_vbn_batch(fixes: list[tuple[str, str]], cfg: Config) -> dict[str, bool]:
     results: dict[str, bool] = {}
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(headless=True, args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-extensions",
+        ])
         context = browser.new_context()
         page = context.new_page()
 
