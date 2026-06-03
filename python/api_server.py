@@ -17,7 +17,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
-from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch
+from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
 from scraper_vbn import lookup_vbn_codes
 from verifier import verify_products
 from photo_uploader import run as run_photo_uploader
@@ -63,13 +63,24 @@ def health():
 
 @app.get("/debug/fp")
 def debug_fp(vbn: str = "580"):
-    """Diagnostic endpoint — shows login result and raw HTML from FreshPortal."""
+    """Diagnostic: login result and static HTML (no JS)."""
     cfg = Config()
     try:
         cfg.validate()
     except ValueError as e:
         raise HTTPException(400, str(e))
     return _debug_fetch(cfg, vbn)
+
+
+@app.get("/debug/fp-rendered")
+def debug_fp_rendered(vbn: str = "580"):
+    """Diagnostic: fully rendered HTML via Playwright — shows real pagination."""
+    cfg = Config()
+    try:
+        cfg.validate()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _debug_rendered(cfg, vbn)
 
 
 @app.post("/vbn-check")

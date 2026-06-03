@@ -380,3 +380,52 @@ def _debug_fetch(cfg: Config, vbn_filter: str) -> dict:
         "note": "row_count=0 means JS-rendered table — using Playwright batches instead",
         "html_snippet": r2.text[:600],
     }
+
+
+def _debug_rendered(cfg: Config, vbn_filter: str) -> dict:
+    """Use Playwright to get fully-rendered HTML and diagnose pagination."""
+    url = (f"{cfg.freshportal_url}/product/index/index/"
+           f"?1=1&vbn_number_adjustable={vbn_filter}&page=1")
+
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        context = browser.new_context()
+        page = context.new_page()
+        _block_resources(page)
+        try:
+            _login(page, cfg)
+            _goto_and_wait(page, url, cfg)
+            html = page.content()
+        finally:
+            context.close()
+            browser.close()
+
+    soup = BeautifulSoup(html, "lxml")
+
+    # Collect pagination element
+    pagination = soup.find("ul", class_="pagination")
+    pagination_html = str(pagination)[:2000] if pagination else "NOT FOUND"
+
+    # All links with page= in href
+    import re as _re
+    page_links = []
+    for a in soup.find_all("a", href=True):
+        m = _re.search(r"[?&]page=(\d+)", a["href"])
+        if m:
+            page_links.append({"text": a.get_text(strip=True), "page": int(m.group(1))})
+
+    # Visible page numbers in pagination li elements
+    li_texts = [li.get_text(strip=True) for li in pagination.find_all("li")] if pagination else []
+
+    # Row count after JS render
+    rows = soup.find("table").find("tbody").find_all("tr") if soup.find("table") and soup.find("table").find("tbody") else []
+
+    detected_last = _get_last_page_html(soup)
+
+    return {
+        "row_count_rendered": len(rows),
+        "detected_last_page": detected_last,
+        "pagination_li_texts": li_texts,
+        "page_links_in_pagination": page_links,
+        "pagination_html": pagination_html,
+    }
