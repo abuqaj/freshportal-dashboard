@@ -14,6 +14,7 @@ type VbnResult = {
   status: "OK" | "ERROR" | "WARNING";
   reason: string;
   proposed_vbn: string;
+  proposed_vbn_name: string;
   // local editable state
   edited_vbn?: string;
   excluded?: boolean;
@@ -421,6 +422,11 @@ export default function Dashboard() {
                               placeholder="wpisz VBN"
                               className="border border-neutral-200 rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-violet-300 disabled:bg-neutral-50"
                             />
+                            {r.proposed_vbn_name && r.edited_vbn === r.proposed_vbn && (
+                              <p className="text-xs text-neutral-400 mt-0.5 max-w-32 truncate" title={r.proposed_vbn_name}>
+                                {r.proposed_vbn_name}
+                              </p>
+                            )}
                           </td>
                           <td className="px-3 py-3 text-center">
                             <button

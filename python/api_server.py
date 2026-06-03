@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import Config
 from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table
-from verifier import verify_products
+from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -83,6 +83,30 @@ def _build_result(products, cfg: Config, queue: Queue | None = None) -> dict:
     _status("Analiza wyników…")
     results = verify_products(products, vbn_data, cfg)
 
+    # Fetch names for proposed VBN codes not already in vbn_data
+    proposed_codes = {
+        r.proposed_vbn for r in results
+        if r.proposed_vbn and r.proposed_vbn not in vbn_data
+    }
+    if proposed_codes:
+        _status("Pobieranie nazw proponowanych kodów VBN…")
+        extra = lookup_vbn_codes(
+            list(proposed_codes),
+            request_timeout=cfg.request_timeout,
+            floricode_username=cfg.floricode_username,
+            floricode_password=cfg.floricode_password,
+        )
+        vbn_data.update(extra)
+
+    def _proposed_name(code: str) -> str:
+        if not code:
+            return ""
+        # Try live lookup first, then hardcoded table
+        info = vbn_data.get(code)
+        if info and info.found and info.official_name:
+            return info.official_name
+        return KNOWN_VBN.get(code, "")
+
     out = [
         {
             "product_id": r.product.product_id,
@@ -93,6 +117,7 @@ def _build_result(products, cfg: Config, queue: Queue | None = None) -> dict:
             "status": r.status,
             "reason": r.reason,
             "proposed_vbn": r.proposed_vbn,
+            "proposed_vbn_name": _proposed_name(r.proposed_vbn),
         }
         for r in results
     ]
