@@ -2,6 +2,8 @@
 
 import { useState, useCallback } from "react";
 
+const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
+
 type VbnResult = {
   product_id: string;
   short_name: string;
@@ -62,13 +64,13 @@ export default function Dashboard() {
     setStats(null);
     setFixMessage(null);
     try {
-      const res = await fetch("/api/vbn-check", {
+      const res = await fetch(`${RAILWAY}/vbn-check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ vbn: vbnInput.trim() }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (!res.ok) throw new Error(data.detail ?? data.error ?? "Railway error");
       const withEdits = (data.results as VbnResult[]).map((r) => ({
         ...r,
         edited_vbn: r.proposed_vbn,
@@ -109,13 +111,13 @@ export default function Dashboard() {
     setFixing(true);
     setFixMessage(null);
     try {
-      const res = await fetch("/api/vbn-fix", {
+      const res = await fetch(`${RAILWAY}/vbn-fix`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fixes: toFix }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (!res.ok) throw new Error(data.detail ?? data.error ?? "Railway error");
       setFixMessage(`✓ Poprawiono ${data.fixed} produktów. ${data.failed > 0 ? `${data.failed} nieudanych.` : ""}`);
     } catch (e: unknown) {
       setFixMessage(`Błąd: ${e instanceof Error ? e.message : String(e)}`);
@@ -139,9 +141,9 @@ export default function Dashboard() {
     const fd = new FormData();
     fd.append("xlsx", xlsxFile);
     try {
-      const res = await fetch("/api/photo-upload", { method: "POST", body: fd });
+      const res = await fetch(`${RAILWAY}/photo-upload`, { method: "POST", body: fd });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (!res.ok) throw new Error(data.detail ?? data.error ?? "Railway error");
       setUploadMsg(data.message ?? "Upload zakończony pomyślnie.");
     } catch (e: unknown) {
       setUploadMsg(`Błąd: ${e instanceof Error ? e.message : String(e)}`);
