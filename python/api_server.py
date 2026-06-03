@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
-from scraper_vbn import lookup_vbn_codes
+from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table
 from verifier import verify_products
 from photo_uploader import run as run_photo_uploader
 
@@ -276,6 +276,30 @@ async def photo_upload(xlsx: UploadFile = File(...)):
     finally:
         Path(tmp_path).unlink(missing_ok=True)
     return {"success": True, "message": "Photo upload completed."}
+
+
+@app.get("/debug/colour-table")
+def debug_colour_table():
+    """Show the colour VBN table (genera and their kleurbehandeld codes)."""
+    cfg = Config()
+    table = get_colour_vbn_table(cfg.floricode_username, cfg.floricode_password)
+    return {
+        "genera_count": len(table),
+        "total_entries": sum(len(v) for v in table.values()),
+        "table": {
+            genus: [{"id": e["id"], "name": e["name"], "is_spray": e["is_spray"]} for e in entries]
+            for genus, entries in sorted(table.items())
+        },
+    }
+
+
+@app.post("/debug/colour-table/refresh")
+def refresh_colour_table():
+    """Force rebuild of colour VBN table from Floricode API."""
+    invalidate_colour_table()
+    cfg = Config()
+    table = get_colour_vbn_table(cfg.floricode_username, cfg.floricode_password)
+    return {"ok": True, "genera_count": len(table), "total_entries": sum(len(v) for v in table.values())}
 
 
 @app.get("/debug/fp")

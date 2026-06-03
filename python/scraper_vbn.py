@@ -13,8 +13,11 @@ logger = logging.getLogger(__name__)
 
 CACHE_FILE = Path(__file__).parent / ".vbn_cache.json"
 TOKEN_FILE = Path(__file__).parent / ".floricode_token.json"
+COLOUR_TABLE_FILE = Path(__file__).parent / ".colour_vbn_table.json"
 API_BASE = "https://api.floricode.com/v2"
 TOKEN_URL = "https://api.floricode.com/oauth/token"
+
+_colour_vbn_table: dict[str, list[dict]] | None = None  # genus -> [{id, name, is_spray}]
 
 
 @dataclass
@@ -167,6 +170,159 @@ def find_specific_vbn(
     if result:
         _specific_vbn_cache[key] = result
     return result
+
+
+# ---------------------------------------------------------------------------
+# Colour-treated VBN table — fetches ALL kleurbehandeld/coloured VBNs once
+# ---------------------------------------------------------------------------
+
+def _fetch_all_colour_vbns(token: str) -> list[dict]:
+    """Fetch all VBN entries whose name contains a colour-treatment keyword."""
+    seen_ids: set = set()
+    results: list[dict] = []
+
+    for keyword in ("kleurbehandeld", "colour treated", "coloured"):
+        skip = 0
+        while True:
+            try:
+                resp = requests.get(
+                    f"{API_BASE}/VBN/Product",
+                    params={
+                        "$filter": f"contains(tolower(name), '{keyword}')",
+                        "$select": "id,name",
+                        "$top": "500",
+                        "$skip": str(skip),
+                    },
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                items = resp.json().get("value", [])
+            except Exception as exc:
+                logger.warning("Colour VBN fetch failed (kw=%s, skip=%d): %s", keyword, skip, exc)
+                break
+
+            for item in items:
+                if item["id"] not in seen_ids:
+                    seen_ids.add(item["id"])
+                    results.append(item)
+
+            if len(items) < 500:
+                break
+            skip += 500
+
+    logger.info("Fetched %d unique colour-treated VBNs from Floricode", len(results))
+    return results
+
+
+def _build_colour_table(raw: list[dict]) -> dict[str, list[dict]]:
+    """Index colour VBNs by genus (first word of VBN name, lowercase)."""
+    table: dict[str, list[dict]] = {}
+    for item in raw:
+        name = item.get("name", "")
+        words = name.lower().split()
+        if not words:
+            continue
+        genus = words[0]
+        is_spray = any(kw in name.lower() for kw in ("spray", "tros"))
+        table.setdefault(genus, []).append({
+            "id": str(item["id"]),
+            "name": name,
+            "is_spray": is_spray,
+        })
+    return table
+
+
+def get_colour_vbn_table(client_id: str, client_secret: str) -> dict[str, list[dict]]:
+    """Return colour VBN table — loads from file cache or fetches from Floricode."""
+    global _colour_vbn_table
+
+    if _colour_vbn_table is not None:
+        return _colour_vbn_table
+
+    if COLOUR_TABLE_FILE.exists():
+        try:
+            _colour_vbn_table = json.loads(COLOUR_TABLE_FILE.read_text(encoding="utf-8"))
+            logger.info("Loaded colour VBN table from cache (%d genera)", len(_colour_vbn_table))
+            return _colour_vbn_table
+        except Exception:
+            pass
+
+    if not client_id or not client_secret:
+        _colour_vbn_table = {}
+        return _colour_vbn_table
+
+    try:
+        token = _get_token(client_id, client_secret)
+        raw = _fetch_all_colour_vbns(token)
+        _colour_vbn_table = _build_colour_table(raw)
+        COLOUR_TABLE_FILE.write_text(
+            json.dumps(_colour_vbn_table, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Saved colour VBN table (%d genera)", len(_colour_vbn_table))
+    except Exception as exc:
+        logger.error("Failed to build colour VBN table: %s", exc)
+        _colour_vbn_table = {}
+
+    return _colour_vbn_table
+
+
+def find_best_colour_vbn(
+    product_name: str,
+    is_spray: bool,
+    client_id: str,
+    client_secret: str,
+) -> str:
+    """Find the most specific colour-treated VBN for *product_name*.
+
+    Looks up the pre-built genus table, filters by spray/non-spray, then
+    scores candidates by word-overlap with the product name.
+    Returns VBN id string or '' if nothing suitable found.
+    """
+    table = get_colour_vbn_table(client_id, client_secret)
+    if not table:
+        return ""
+
+    product_words = set(product_name.lower().split())
+    words = product_name.lower().split()
+    genus = words[0] if words else ""
+
+    # Gather candidates: genus-specific first, then all
+    candidates = list(table.get(genus, []))
+    if not candidates:
+        # Try prefix match (e.g. "chrysanth" matching "chrysanthemum")
+        for key, entries in table.items():
+            if key.startswith(genus[:4]) or genus.startswith(key[:4]):
+                candidates.extend(entries)
+
+    if not candidates:
+        return ""
+
+    # Prefer spray/non-spray match
+    spray_matched = [c for c in candidates if c["is_spray"] == is_spray]
+    pool = spray_matched if spray_matched else candidates
+
+    def _score(c: dict) -> int:
+        return len(product_words & set(c["name"].lower().split()))
+
+    best = max(pool, key=_score)
+    if _score(best) > 0:
+        logger.info(
+            "Best colour VBN for '%s' -> %s (%s)",
+            product_name, best["id"], best["name"],
+        )
+        return best["id"]
+
+    return ""
+
+
+def invalidate_colour_table() -> None:
+    """Force rebuild of colour VBN table on next call (e.g. after cache clear)."""
+    global _colour_vbn_table
+    _colour_vbn_table = None
+    if COLOUR_TABLE_FILE.exists():
+        COLOUR_TABLE_FILE.unlink()
 
 
 def lookup_vbn_codes(
