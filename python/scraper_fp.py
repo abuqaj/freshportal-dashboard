@@ -108,9 +108,17 @@ def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--disable-translate",
+            "--metrics-recording-only",
+            "--mute-audio",
         ])
         context = browser.new_context()
         page = context.new_page()
+        page.route("**/*", lambda route: route.abort()
+            if route.request.resource_type in ("image", "font", "media", "stylesheet")
+            else route.continue_())
 
         try:
             _login(page, cfg)
@@ -236,9 +244,17 @@ def fix_vbn_batch(fixes: list[tuple[str, str]], cfg: Config) -> dict[str, bool]:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--disable-translate",
+            "--metrics-recording-only",
+            "--mute-audio",
         ])
         context = browser.new_context()
         page = context.new_page()
+        page.route("**/*", lambda route: route.abort()
+            if route.request.resource_type in ("image", "font", "media", "stylesheet")
+            else route.continue_())
 
         try:
             _login(page, cfg)

@@ -374,6 +374,11 @@ def run(
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--disable-translate",
+            "--metrics-recording-only",
+            "--mute-audio",
         ])
         context = browser.new_context()
         page = context.new_page()
