@@ -39,6 +39,7 @@ export default function Dashboard() {
   // VBN state
   const [vbnInput, setVbnInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [results, setResults] = useState<VbnResult[] | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
@@ -67,25 +68,56 @@ export default function Dashboard() {
     setResults(null);
     setStats(null);
     setFixMessage(null);
+    setStatusMessage("Łączenie z Railway…");
     try {
-      const res = await fetch(`${RAILWAY}/vbn-check`, {
+      const res = await fetch(`${RAILWAY}/vbn-check/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ vbn: vbnInput.trim() }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? data.error ?? "Railway error");
-      const withEdits = (data.results as VbnResult[]).map((r) => ({
-        ...r,
-        edited_vbn: r.proposed_vbn,
-        excluded: false,
-      }));
-      setResults(withEdits);
-      setStats(data.stats);
+
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail ?? data.error ?? `HTTP ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const event = JSON.parse(line.slice(6));
+
+          if (event.type === "status") {
+            setStatusMessage(event.message);
+          } else if (event.type === "result") {
+            const data = event.data;
+            const withEdits = (data.results as VbnResult[]).map((r) => ({
+              ...r,
+              edited_vbn: r.proposed_vbn,
+              excluded: false,
+            }));
+            setResults(withEdits);
+            setStats(data.stats);
+          } else if (event.type === "error") {
+            throw new Error(event.message);
+          }
+        }
+      }
     } catch (e: unknown) {
       setCheckError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+      setStatusMessage(null);
     }
   }
 
@@ -226,6 +258,15 @@ export default function Dashboard() {
                   {loading ? "Sprawdzam…" : "Sprawdź produkty"}
                 </button>
               </div>
+              {loading && statusMessage && (
+                <div className="mt-3 flex items-center gap-3 text-sm text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-4 py-3">
+                  <svg className="animate-spin h-4 w-4 flex-shrink-0 text-violet-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>{statusMessage}</span>
+                </div>
+              )}
               {checkError && (
                 <p className="mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
                   ⚠️ {checkError}

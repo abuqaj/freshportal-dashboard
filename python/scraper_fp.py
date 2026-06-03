@@ -174,12 +174,20 @@ def _goto_and_wait(page: Page, url: str, cfg: Config) -> None:
 # fetch_products — batched Playwright
 # ---------------------------------------------------------------------------
 
-def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
+def fetch_products(
+    vbn_filter: str,
+    cfg: Config,
+    on_status=None,
+) -> list[FPProduct]:
     """Fetch products in browser batches of PAGES_PER_BATCH to cap peak RAM.
 
-    Uses a current_page counter so the first batch correctly fetches pages
-    1-N (not just page 1) even though last_page is unknown until page 1 loads.
+    on_status: optional callable(str) — called with human-readable progress messages.
     """
+    def _status(msg: str) -> None:
+        logger.info(msg)
+        if on_status:
+            on_status(msg)
+
     all_products: list[FPProduct] = []
     url_tpl = (
         f"{cfg.freshportal_url}/product/index/index/"
@@ -188,7 +196,7 @@ def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
 
     saved_cookies: list = []
     cols: tuple[int, int, int, int] | None = None
-    last_page: int | None = None  # discovered on first page load
+    last_page: int | None = None
     current_page = 1
 
     while True:
@@ -202,6 +210,7 @@ def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
 
             try:
                 if not saved_cookies:
+                    _status("Logowanie do FreshPortal…")
                     _login(page, cfg)
 
                 pages_in_batch = 0
@@ -215,17 +224,18 @@ def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
                     if last_page is None:
                         cols = _detect_columns_html(soup)
                         last_page = _get_last_page_html(soup)
-                        logger.info("Total pages for VBN '%s': %d", vbn_filter, last_page)
+                        _status(f"Znaleziono {last_page} stron produktów z VBN {vbn_filter}")
 
                     products = _parse_rows_html(soup, cols)
                     if not products:
-                        logger.info("Empty page %d — stopping", current_page)
                         last_page = current_page - 1
                         break
 
                     all_products.extend(products)
-                    logger.info("Page %d/%d: %d products (total: %d)",
-                                current_page, last_page, len(products), len(all_products))
+                    _status(
+                        f"Strona {current_page}/{last_page} — "
+                        f"pobrano łącznie {len(all_products)} produktów"
+                    )
                     current_page += 1
                     pages_in_batch += 1
 
@@ -236,9 +246,8 @@ def fetch_products(vbn_filter: str, cfg: Config) -> list[FPProduct]:
 
         if last_page is None or current_page > last_page:
             break
-        logger.info("Batch done — restarting browser for page %d+", current_page)
 
-    logger.info("Total fetched: %d products", len(all_products))
+    _status(f"Pobieranie zakończone — {len(all_products)} produktów")
     return all_products
 
 
