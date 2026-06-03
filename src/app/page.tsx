@@ -121,6 +121,17 @@ export default function Dashboard() {
             }));
             setResults(withEdits);
             setStats(data.stats);
+            // Log to Vercel DB (fire-and-forget)
+            fetch("/api/log", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "vbn_check",
+                vbn_filter: vbnInput.trim(),
+                stats: data.stats,
+                details: { result_count: data.results.length },
+              }),
+            }).catch(() => {});
           } else if (event.type === "error") {
             throw new Error(event.message as string);
           }
@@ -168,6 +179,17 @@ export default function Dashboard() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? data.error ?? "Railway error");
       setFixMessage(`✓ Poprawiono ${data.fixed} produktów. ${data.failed > 0 ? `${data.failed} nieudanych.` : ""}`);
+      // Log to Vercel DB (fire-and-forget)
+      fetch("/api/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "vbn_fix",
+          vbn_filter: null,
+          stats: { fixed: data.fixed, failed: data.failed },
+          details: { fixes: toFix },
+        }),
+      }).catch(() => {});
     } catch (e: unknown) {
       setFixMessage(`Błąd: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
