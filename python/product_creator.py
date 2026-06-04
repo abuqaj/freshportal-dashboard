@@ -33,8 +33,52 @@ logger = logging.getLogger(__name__)
 
 # ── similarity ──────────────────────────────────────────────────────────────
 
+# Country/origin tokens that appear between genus and variety in FreshPortal names
+# e.g. "Rosa Ec Toxic" → genus="rosa", variety="toxic"
+_ORIGIN_TOKENS = {"ec", "col", "co", "ke", "ken", "nl", "et", "zim", "sa", "tz", "be", "de"}
+
+
+def _extract_parts(name: str) -> tuple[str, str]:
+    """Return (genus, variety) stripping known origin tokens.
+
+    "Rosa Ec Atena"  → ("rosa", "atena")
+    "Rosa Athena"    → ("rosa", "athena")
+    "Rosa Ec Toxic"  → ("rosa", "toxic")
+    """
+    tokens = name.lower().strip().split()
+    if not tokens:
+        return "", ""
+    genus = tokens[0]
+    variety = " ".join(t for t in tokens[1:] if t not in _ORIGIN_TOKENS)
+    return genus, variety
+
+
 def _similarity(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+    """Variety-aware similarity that ignores origin prefixes and handles typos.
+
+    Compares only the variety portion (after stripping genus + origin tokens).
+    Same genus required — different genus gets a heavy penalty.
+
+    Examples:
+      "Rosa Ec Atena"  vs "Rosa Athena"     → ~0.91  (atena ≈ athena, typo)
+      "Rosa Ec Toxic"  vs "Rosa Ec Marilyn" → ~0.17  (toxic ≠ marilyn)
+      "Rosa Ec Toxic"  vs "Rosa Toxic"      → 1.00   (same variety, origin stripped)
+    """
+    genus_a, variety_a = _extract_parts(a)
+    genus_b, variety_b = _extract_parts(b)
+
+    if genus_a and genus_b and genus_a != genus_b:
+        genus_sim = difflib.SequenceMatcher(None, genus_a, genus_b).ratio()
+        if genus_sim < 0.85:
+            # Genuinely different genus — fall back to raw similarity with penalty
+            return difflib.SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio() * 0.4
+
+    if not variety_a and not variety_b:
+        return 1.0 if genus_a == genus_b else 0.5
+    if not variety_a or not variety_b:
+        return 0.5
+
+    return difflib.SequenceMatcher(None, variety_a, variety_b).ratio()
 
 
 @dataclass
