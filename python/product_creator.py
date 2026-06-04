@@ -135,10 +135,13 @@ def search_products(
             on_status(msg)
 
     words = query.strip().split()
+    _, variety = _extract_parts(query)
+
     search_terms = list(dict.fromkeys(filter(None, [
-        query.strip(),
-        " ".join(words[:2]) if len(words) >= 2 else None,
-        words[0] if words else None,
+        query.strip(),                                    # "Rosa Ec Atena"
+        variety if variety else None,                     # "Atena"  ← finds Athena, Atena, etc.
+        " ".join(words[:2]) if len(words) >= 2 else None, # "Rosa Ec"
+        words[0] if words else None,                      # "Rosa"
     ])))
 
     seen_ids: set[str] = set()
