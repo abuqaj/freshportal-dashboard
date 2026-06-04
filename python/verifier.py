@@ -9,7 +9,7 @@ import anthropic
 
 from config import Config
 from scraper_fp import FPProduct
-from scraper_vbn import VBNInfo, find_specific_vbn, find_best_colour_vbn
+from scraper_vbn import VBNInfo, find_specific_vbn, find_best_colour_vbn, search_vbn_by_name, _NOISE_WORDS
 
 logger = logging.getLogger(__name__)
 
@@ -210,13 +210,35 @@ def verify_products(
                     cfg.floricode_username, cfg.floricode_password,
                 )
 
-                # 2. Hardcoded genus fallback (when Floricode creds not set)
+                # 2. Direct Floricode search — catches genera not in cached table
+                #    (e.g. table not yet built, or genus uses 'gekleurd' keyword)
+                if not specific and cfg.floricode_username:
+                    for treatment_kw in ("kleurbehandeld", "coloured", "gekleurd", "colour treated"):
+                        hits = search_vbn_by_name(
+                            f"{genus} {treatment_kw}",
+                            cfg.floricode_username, cfg.floricode_password,
+                            limit=10,
+                        )
+                        if hits:
+                            # Score by botanical word overlap with product name
+                            product_botanical = {
+                                w for w in name.lower().split()
+                                if len(w) > 2 and w not in _NOISE_WORDS
+                            }
+                            best = max(hits, key=lambda h: len(
+                                product_botanical & {w for w in h["name"].lower().split() if len(w) > 2}
+                            ))
+                            specific = best["id"]
+                            logger.info("Direct search found colour VBN for '%s': %s (%s)", name, specific, best["name"])
+                            break
+
+                # 3. Hardcoded genus fallback (when Floricode creds not set)
                 if not specific:
                     genus_vbns = COLOUR_TREATED_BY_GENUS.get(genus)
                     if genus_vbns:
                         specific = genus_vbns[1] if is_spray_product else genus_vbns[0]
 
-                # 3. Last resort: generic
+                # 4. Last resort: generic
                 proposed = specific or COLOUR_TREATED_GENERIC
                 reason = (
                     f"Product is colour treated but VBN {p.vbn_number} ({official}) "

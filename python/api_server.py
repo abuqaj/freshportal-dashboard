@@ -33,6 +33,19 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(title="FreshPortal API", version="1.0.0")
 
+
+@app.on_event("startup")
+async def _warm_colour_table() -> None:
+    """Pre-build colour VBN table in background thread on startup."""
+    def _build():
+        cfg = Config()
+        if cfg.floricode_username and cfg.floricode_password:
+            log.info("Warming colour VBN table on startup…")
+            table = get_colour_vbn_table(cfg.floricode_username, cfg.floricode_password)
+            log.info("Colour VBN table ready: %d genera", len(table))
+    import threading
+    threading.Thread(target=_build, daemon=True).start()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

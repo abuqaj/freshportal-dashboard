@@ -222,7 +222,8 @@ def _fetch_all_colour_vbns(token: str) -> list[dict]:
     seen_ids: set = set()
     results: list[dict] = []
 
-    for keyword in ("kleurbehandeld", "colour treated", "coloured"):
+    # Include all Dutch/English colour-treatment terms used in Floricode VBN names
+    for keyword in ("kleurbehandeld", "colour treated", "coloured", "gekleurd", "color treated"):
         skip = 0
         while True:
             try:
@@ -290,8 +291,7 @@ def get_colour_vbn_table(client_id: str, client_secret: str) -> dict[str, list[d
             pass
 
     if not client_id or not client_secret:
-        _colour_vbn_table = {}
-        return _colour_vbn_table
+        return {}  # don't cache — credentials may be added later
 
     try:
         token = _get_token(client_id, client_secret)
