@@ -92,6 +92,31 @@ class ProductMatch:
 
 # ── FreshPortal search ───────────────────────────────────────────────────────
 
+def _variety_search_terms(variety: str) -> list[str]:
+    """Generate FreshPortal search terms that survive single-character typos.
+
+    Works by using substrings common to the mistyped and correct spelling:
+      "Atena"  → ["Atena", "Aten", "ena"]   — "ena" is in both Atena & Athena
+      "Toxic"  → ["Toxic", "Toxi", "xic"]
+      "portal" → ["portal", "porta", "tal"]
+
+    Strategy per word:
+      1. exact word
+      2. word[:-1]      (drop last char  — handles extra char at end)
+      3. word[n//2:]    (second half     — handles insertion/deletion in first half)
+    """
+    if not variety:
+        return []
+    terms = [variety]
+    for word in variety.split():
+        n = len(word)
+        if n >= 5:
+            terms.append(word[:-1])
+        if n >= 6:
+            terms.append(word[n // 2:])
+    return list(dict.fromkeys(terms))
+
+
 def _search_page(page: Page, url: str, query: str, cfg: Config) -> list[ProductMatch]:
     """Fetch one FreshPortal URL and return matching rows with similarity scores."""
     try:
@@ -138,10 +163,10 @@ def search_products(
     _, variety = _extract_parts(query)
 
     search_terms = list(dict.fromkeys(filter(None, [
-        query.strip(),                                    # "Rosa Ec Atena"
-        variety if variety else None,                     # "Atena"  ← finds Athena, Atena, etc.
-        " ".join(words[:2]) if len(words) >= 2 else None, # "Rosa Ec"
-        words[0] if words else None,                      # "Rosa"
+        query.strip(),                                     # "Rosa Ec Atena"
+        *_variety_search_terms(variety),                   # "Atena", "Aten", "ena"
+        " ".join(words[:2]) if len(words) >= 2 else None,  # "Rosa Ec"
+        words[0] if words else None,                       # "Rosa"
     ])))
 
     seen_ids: set[str] = set()
