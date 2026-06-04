@@ -35,7 +35,7 @@ export async function getHistory(limit = 50) {
   try {
     await ensureTables();
     const { rows } = await sql`
-      SELECT id, type, vbn_filter, stats, created_at
+      SELECT id, type, vbn_filter, stats, details, created_at
       FROM operations
       ORDER BY created_at DESC
       LIMIT ${limit}

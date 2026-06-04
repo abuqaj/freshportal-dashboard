@@ -27,11 +27,14 @@ type Stats = {
   ok: number;
 };
 
+type FixEntry = { product_id: string; name: string; old_vbn: string; new_vbn: string };
+
 type HistoryRow = {
   id: number;
   type: string;
   vbn_filter: string | null;
   stats: Stats;
+  details: { fixes?: FixEntry[] } | null;
   created_at: string;
 };
 
@@ -55,6 +58,7 @@ export default function Dashboard() {
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
   const [histLoading, setHistLoading] = useState(false);
+  const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
 
   // Photo
   const [xlsxFile, setXlsxFile] = useState<File | null>(null);
@@ -201,7 +205,12 @@ export default function Dashboard() {
     if (!results) return;
     const toFix = results
       .filter((r) => !r.excluded && r.status !== "OK" && r.edited_vbn?.trim())
-      .map((r) => ({ product_id: r.product_id, new_vbn: r.edited_vbn!.trim() }));
+      .map((r) => ({
+        product_id: r.product_id,
+        new_vbn: r.edited_vbn!.trim(),
+        old_vbn: r.current_vbn,
+        name: r.name,
+      }));
 
     if (toFix.length === 0) {
       setFixMessage("Brak produktów do poprawy.");
@@ -214,10 +223,12 @@ export default function Dashboard() {
     });
 
     try {
+      // Railway only needs product_id + new_vbn
+      const fixPayload = toFix.map(({ product_id, new_vbn }) => ({ product_id, new_vbn }));
       const res = await fetch(`${RAILWAY}/vbn-fix/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fixes: toFix }),
+        body: JSON.stringify({ fixes: fixPayload }),
       });
 
       if (!res.ok || !res.body) {
@@ -681,38 +692,86 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {history.map((row) => (
-                      <tr key={row.id} className="border-b border-neutral-50 hover:bg-neutral-50">
-                        <td className="px-5 py-3">
-                          <span
-                            className={`text-xs px-2 py-1 rounded font-medium ${
-                              row.type === "vbn_check"
-                                ? "bg-violet-50 text-violet-700"
-                                : row.type === "vbn_fix"
-                                ? "bg-green-50 text-green-700"
-                                : "bg-blue-50 text-blue-700"
+                    {history.map((row) => {
+                      const fixes = row.details?.fixes ?? [];
+                      const isExpanded = expandedHistoryId === row.id;
+                      const canExpand = row.type === "vbn_fix" && fixes.length > 0;
+                      return (
+                        <>
+                          <tr
+                            key={row.id}
+                            onClick={() => canExpand && setExpandedHistoryId(isExpanded ? null : row.id)}
+                            className={`border-b border-neutral-50 transition-colors ${
+                              canExpand ? "cursor-pointer hover:bg-neutral-50" : "hover:bg-neutral-50"
                             }`}
                           >
-                            {row.type === "vbn_check"
-                              ? "VBN Sprawdzanie"
-                              : row.type === "vbn_fix"
-                              ? "VBN Naprawa"
-                              : "Photo Upload"}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-neutral-600">{row.vbn_filter ?? "—"}</td>
-                        <td className="px-3 py-3 text-neutral-500 text-xs">
-                          {row.stats
-                            ? Object.entries(row.stats)
-                                .map(([k, v]) => `${k}: ${v}`)
-                                .join(", ")
-                            : "—"}
-                        </td>
-                        <td className="px-3 py-3 text-neutral-400 text-xs">
-                          {new Date(row.created_at).toLocaleString("pl-PL")}
-                        </td>
-                      </tr>
-                    ))}
+                            <td className="px-5 py-3">
+                              <div className="flex items-center gap-2">
+                                {canExpand && (
+                                  <span className="text-neutral-300 text-xs">{isExpanded ? "▼" : "▶"}</span>
+                                )}
+                                <span
+                                  className={`text-xs px-2 py-1 rounded font-medium ${
+                                    row.type === "vbn_check"
+                                      ? "bg-violet-50 text-violet-700"
+                                      : row.type === "vbn_fix"
+                                      ? "bg-green-50 text-green-700"
+                                      : "bg-blue-50 text-blue-700"
+                                  }`}
+                                >
+                                  {row.type === "vbn_check"
+                                    ? "VBN Sprawdzanie"
+                                    : row.type === "vbn_fix"
+                                    ? "VBN Naprawa"
+                                    : "Photo Upload"}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-3 text-neutral-600">{row.vbn_filter ?? "—"}</td>
+                            <td className="px-3 py-3 text-neutral-500 text-xs">
+                              {row.stats
+                                ? Object.entries(row.stats)
+                                    .map(([k, v]) => `${k}: ${v}`)
+                                    .join(", ")
+                                : "—"}
+                            </td>
+                            <td className="px-3 py-3 text-neutral-400 text-xs">
+                              {new Date(row.created_at).toLocaleString("pl-PL")}
+                            </td>
+                          </tr>
+                          {isExpanded && fixes.length > 0 && (
+                            <tr key={`${row.id}-detail`} className="border-b border-neutral-100 bg-green-50/40">
+                              <td colSpan={4} className="px-8 py-3">
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="text-neutral-400 uppercase tracking-wide">
+                                      <th className="text-left pb-1 font-medium">Produkt</th>
+                                      <th className="text-left pb-1 font-medium">Stary VBN</th>
+                                      <th className="text-left pb-1 font-medium"></th>
+                                      <th className="text-left pb-1 font-medium">Nowy VBN</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {fixes.map((f, i) => (
+                                      <tr key={i} className="border-t border-green-100">
+                                        <td className="py-1.5 pr-4 text-neutral-700">{f.name || f.product_id}</td>
+                                        <td className="py-1.5 pr-2">
+                                          <span className="bg-red-50 text-red-700 px-1.5 py-0.5 rounded font-mono">{f.old_vbn}</span>
+                                        </td>
+                                        <td className="py-1.5 px-2 text-neutral-300">→</td>
+                                        <td className="py-1.5">
+                                          <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-mono">{f.new_vbn}</span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
