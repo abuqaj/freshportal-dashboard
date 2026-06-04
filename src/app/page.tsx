@@ -37,6 +37,22 @@ type ProductSearchResult = {
 
 type FixEntry = { product_id: string; name: string; old_vbn: string; new_vbn: string };
 
+type AIAnalysis = {
+  duplicate: {
+    found: boolean;
+    product_id?: string | null;
+    product_name?: string | null;
+    confidence?: string;
+    reason?: string;
+  };
+  vbn: {
+    code?: string | null;
+    name?: string | null;
+    confidence?: string;
+    explanation?: string;
+  };
+};
+
 type HistoryRow = {
   id: number;
   type: string;
@@ -108,6 +124,8 @@ export default function Dashboard() {
   const [createStatus, setCreateStatus] = useState<string | null>(null);
   const [createResult, setCreateResult] = useState<{ ok: boolean; message: string; url?: string } | null>(null);
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -371,6 +389,8 @@ export default function Dashboard() {
       setSearchError(null);
       setCreateResult(null);
       setSearchStatus("Łączenie z Railway…");
+      setAiAnalysis(null);
+      setAiLoading(false);
     });
     try {
       const res = await fetch(`${RAILWAY}/product-search/stream`, {
@@ -401,8 +421,21 @@ export default function Dashboard() {
             flushSync(() => setSearchStatus(event.message as string));
           } else if (event.type === "result") {
             const d = event.data as { results: ProductSearchResult[] };
-            setSearchResults(d.results ?? []);
+            const results = d.results ?? [];
+            setSearchResults(results);
             setSearchStatus(null);
+            // Fire AI analysis in background — don't await, show results immediately
+            if (results.length > 0 && RAILWAY) {
+              setAiLoading(true);
+              fetch(`${RAILWAY}/product-ai-analyze`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: createInput.trim(), candidates: results.slice(0, 6) }),
+              })
+                .then((r) => r.json())
+                .then((data: AIAnalysis) => { setAiAnalysis(data); setAiLoading(false); })
+                .catch(() => setAiLoading(false));
+            }
           } else if (event.type === "error") {
             throw new Error(event.message as string);
           }
@@ -917,6 +950,78 @@ export default function Dashboard() {
               </div>
               );
             })()}
+
+            {/* AI Analysis */}
+            {searchResults !== null && (aiLoading || aiAnalysis) && (
+              <div className="mt-4 bg-white border border-neutral-200 rounded-xl overflow-hidden">
+                <div className="px-5 py-3 border-b border-neutral-100 flex items-center gap-2">
+                  <span className="text-xs font-medium text-neutral-500 uppercase tracking-wide">Analiza AI</span>
+                  {aiLoading && (
+                    <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  )}
+                </div>
+                {aiLoading ? (
+                  <p className="px-5 py-4 text-sm text-neutral-400">Sprawdzam duplikaty i sugeruję VBN…</p>
+                ) : aiAnalysis && (
+                  <div className="p-5 flex flex-col gap-3">
+                    {/* Duplicate result */}
+                    {aiAnalysis.duplicate.found && aiAnalysis.duplicate.product_id ? (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                        <p className="text-sm font-semibold text-amber-800">⚠ Prawdopodobny duplikat</p>
+                        <p className="text-sm text-amber-700 mt-0.5">
+                          Ten produkt może już istnieć jako{" "}
+                          <strong>{aiAnalysis.duplicate.product_name}</strong>
+                          {aiAnalysis.duplicate.confidence && (
+                            <span className="ml-2 text-xs font-medium px-1.5 py-0.5 rounded bg-amber-100">
+                              pewność: {aiAnalysis.duplicate.confidence}
+                            </span>
+                          )}
+                        </p>
+                        {aiAnalysis.duplicate.reason && (
+                          <p className="text-xs text-amber-600 mt-1">{aiAnalysis.duplicate.reason}</p>
+                        )}
+                        <button
+                          onClick={() => handleCreateFromTemplate(
+                            aiAnalysis.duplicate.product_id!,
+                            aiAnalysis.duplicate.product_name ?? ""
+                          )}
+                          disabled={creating}
+                          className="mt-2 text-xs px-3 py-1.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+                        >
+                          Użyj jako szablon
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3">
+                        <p className="text-sm text-green-700">✓ AI nie znalazła duplikatu — produkt prawdopodobnie nie istnieje w systemie.</p>
+                      </div>
+                    )}
+
+                    {/* VBN suggestion */}
+                    {aiAnalysis.vbn.code && (
+                      <div className="bg-violet-50 border border-violet-200 rounded-lg px-4 py-3">
+                        <p className="text-xs font-medium text-violet-500 uppercase tracking-wide mb-1">Sugerowany VBN dla nowego produktu</p>
+                        <p className="text-sm font-semibold text-violet-800">
+                          <span className="font-mono">{aiAnalysis.vbn.code}</span>
+                          {aiAnalysis.vbn.name && <span className="font-normal"> — {aiAnalysis.vbn.name}</span>}
+                          {aiAnalysis.vbn.confidence && (
+                            <span className="ml-2 text-xs font-medium px-1.5 py-0.5 rounded bg-violet-100 text-violet-600">
+                              {aiAnalysis.vbn.confidence}
+                            </span>
+                          )}
+                        </p>
+                        {aiAnalysis.vbn.explanation && (
+                          <p className="text-xs text-violet-600 mt-1">{aiAnalysis.vbn.explanation}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Manual template ID */}
             {searchResults !== null && (

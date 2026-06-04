@@ -24,10 +24,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
-from product_creator import search_products, find_best_template, copy_and_create
+from product_creator import ProductMatch, search_products, find_best_template, copy_and_create
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
+from ai_helper import ai_analyze_product
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -390,6 +391,11 @@ class ProductCreateRequest(BaseModel):
     new_name: str
 
 
+class AIAnalyzeRequest(BaseModel):
+    name: str
+    candidates: list[dict]
+
+
 @app.post("/product-search")
 def product_search(req: ProductSearchRequest):
     cfg = Config()
@@ -469,6 +475,34 @@ async def product_search_stream(req: ProductSearchRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
+
+
+@app.post("/product-ai-analyze")
+def product_ai_analyze(req: AIAnalyzeRequest):
+    """Duplicate check + VBN suggestion via Claude Haiku (single call)."""
+    cfg = Config()
+    if not cfg.anthropic_api_key:
+        return {
+            "duplicate": {"found": False, "reason": "ANTHROPIC_API_KEY not configured"},
+            "vbn": {"code": None, "explanation": "ANTHROPIC_API_KEY not configured"},
+        }
+    candidates = [
+        ProductMatch(
+            product_id=c.get("product_id", ""),
+            name=c.get("name", ""),
+            short_name=c.get("short_name", ""),
+            vbn_number=c.get("vbn_number", ""),
+            similarity=float(c.get("similarity", 0)),
+        )
+        for c in req.candidates[:6]
+    ]
+    result = ai_analyze_product(req.name, candidates, cfg)
+    if result is None:
+        return {
+            "duplicate": {"found": False, "reason": "AI analysis failed"},
+            "vbn": {"code": None, "explanation": "AI analysis failed"},
+        }
+    return result
 
 
 @app.post("/product-create/stream")
