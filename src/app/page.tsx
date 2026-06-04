@@ -816,9 +816,9 @@ export default function Dashboard() {
                   </div>
                 ) : (
                   <>
-                    {searchResults.some(r => r.similarity >= 0.75) && (
+                    {searchResults.some(r => r.similarity >= 0.80) && (
                       <div className="px-5 py-3 bg-amber-50 border-b border-amber-100 text-xs text-amber-700">
-                        ⚠ Podobny produkt już może istnieć (podobieństwo ≥75%). Sprawdź listę przed tworzeniem.
+                        ⚠ Podobny produkt już może istnieć (podobieństwo ≥80%). Sprawdź listę przed tworzeniem.
                       </div>
                     )}
                     <table className="w-full text-sm">
@@ -840,7 +840,7 @@ export default function Dashboard() {
                             <td className="px-3 py-3 text-xs font-mono text-neutral-500">{r.vbn_number || "—"}</td>
                             <td className="px-3 py-3">
                               <span className={`text-xs px-2 py-0.5 rounded font-medium ${
-                                r.similarity >= 0.75
+                                r.similarity >= 0.80
                                   ? "bg-amber-50 text-amber-700"
                                   : r.similarity >= 0.5
                                   ? "bg-blue-50 text-blue-700"

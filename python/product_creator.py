@@ -140,7 +140,7 @@ def search_products(
 def find_best_template(
     target_name: str,
     products: list[ProductMatch],
-    high_threshold: float = 0.75,
+    high_threshold: float = 0.80,
 ) -> tuple[ProductMatch | None, bool]:
     """Return (best_template, already_exists).
 
