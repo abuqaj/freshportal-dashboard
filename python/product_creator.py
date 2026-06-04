@@ -70,8 +70,7 @@ def _similarity(a: str, b: str) -> float:
     if genus_a and genus_b and genus_a != genus_b:
         genus_sim = difflib.SequenceMatcher(None, genus_a, genus_b).ratio()
         if genus_sim < 0.85:
-            # Genuinely different genus — fall back to raw similarity with penalty
-            return difflib.SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio() * 0.4
+            return 0.0  # Different genus (Rosa ≠ Dianthus) — never a match
 
     if not variety_a and not variety_b:
         return 1.0 if genus_a == genus_b else 0.5

@@ -794,16 +794,19 @@ export default function Dashboard() {
             )}
 
             {/* Search results */}
-            {searchResults !== null && (
+            {searchResults !== null && (() => {
+              const highMatches = searchResults.filter(r => r.similarity >= 0.80);
+              const isFallback = highMatches.length === 0 && searchResults.length > 0;
+              const displayResults = isFallback ? searchResults.slice(0, 1) : highMatches;
+              return (
               <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
-                <div className="px-5 py-4 border-b border-neutral-100 flex justify-between items-center">
+                <div className="px-5 py-4 border-b border-neutral-100">
                   <p className="text-sm font-medium text-neutral-800">
                     Podobne produkty
-                    <span className="ml-2 text-xs text-neutral-400">({searchResults.length} wyników)</span>
+                    {highMatches.length > 0 && (
+                      <span className="ml-2 text-xs text-neutral-400">({highMatches.length} wyników ≥80%)</span>
+                    )}
                   </p>
-                  {searchResults.length === 0 && (
-                    <span className="text-xs text-neutral-400">Brak podobnych — wybierz szablon ręcznie poniżej</span>
-                  )}
                 </div>
 
                 {searchResults.length === 0 ? (
@@ -816,9 +819,14 @@ export default function Dashboard() {
                   </div>
                 ) : (
                   <>
-                    {searchResults.some(r => r.similarity >= 0.80) && (
+                    {highMatches.length > 0 && (
                       <div className="px-5 py-3 bg-amber-50 border-b border-amber-100 text-xs text-amber-700">
                         ⚠ Podobny produkt już może istnieć (podobieństwo ≥80%). Sprawdź listę przed tworzeniem.
+                      </div>
+                    )}
+                    {isFallback && (
+                      <div className="px-5 py-3 bg-neutral-50 border-b border-neutral-100 text-xs text-neutral-500">
+                        Brak produktów z podobieństwem ≥80%. Najbliższy znaleziony wynik:
                       </div>
                     )}
                     <table className="w-full text-sm">
@@ -831,7 +839,7 @@ export default function Dashboard() {
                         </tr>
                       </thead>
                       <tbody>
-                        {searchResults.slice(0, 10).map((r) => (
+                        {displayResults.map((r) => (
                           <tr key={r.product_id} className="border-b border-neutral-50 hover:bg-neutral-50">
                             <td className="px-5 py-3">
                               <p className="font-medium text-neutral-800">{r.name}</p>
@@ -842,8 +850,6 @@ export default function Dashboard() {
                               <span className={`text-xs px-2 py-0.5 rounded font-medium ${
                                 r.similarity >= 0.80
                                   ? "bg-amber-50 text-amber-700"
-                                  : r.similarity >= 0.5
-                                  ? "bg-blue-50 text-blue-700"
                                   : "bg-neutral-100 text-neutral-500"
                               }`}>
                                 {Math.round(r.similarity * 100)}%
@@ -865,7 +871,8 @@ export default function Dashboard() {
                   </>
                 )}
               </div>
-            )}
+              );
+            })()}
 
             {/* Manual template ID */}
             {searchResults !== null && (
