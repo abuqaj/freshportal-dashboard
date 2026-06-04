@@ -111,7 +111,7 @@ def _variety_search_terms(variety: str) -> list[str]:
         n = len(word)
         if n >= 5:
             terms.append(word[:-1])
-        if n >= 6:
+        if n >= 5:
             terms.append(word[n // 2:])
     return list(dict.fromkeys(terms))
 
