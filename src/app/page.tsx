@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import { flushSync } from "react-dom";
+import { flushSync, createPortal } from "react-dom";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -55,7 +55,10 @@ export default function Dashboard() {
   const [vbnNameCache, setVbnNameCache] = useState<Record<string, string>>({});
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   // Autocomplete suggestions for current active input
-  const [suggestions, setSuggestions] = useState<{ product_id: string; items: { id: string; name: string }[] } | null>(null);;
+  const [suggestions, setSuggestions] = useState<{ product_id: string; items: { id: string; name: string }[] } | null>(null);
+  // Fixed-position anchor for portal dropdown (avoids table overflow-hidden clipping)
+  const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number } | null>(null);
+  const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});;
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -193,8 +196,13 @@ export default function Dashboard() {
       }, 600);
     } else {
       // Text → search by name, show autocomplete dropdown
-      setVbnNameCache((prev) => ({ ...prev })); // keep existing
       debounceTimers.current[product_id] = setTimeout(async () => {
+        // Calculate input position for portal dropdown
+        const el = inputRefs.current[product_id];
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          setDropdownAnchor({ top: rect.bottom + 4, left: rect.left });
+        }
         try {
           const res = await fetch(`${RAILWAY}/vbn-search?q=${encodeURIComponent(trimmed)}&limit=8`);
           const data = await res.json();
@@ -497,8 +505,9 @@ export default function Dashboard() {
                           <td className="px-3 py-3 max-w-xs">
                             <p className="text-xs text-neutral-500 leading-snug">{r.reason || "—"}</p>
                           </td>
-                          <td className="px-3 py-3 min-w-44 relative">
+                          <td className="px-3 py-3 min-w-44">
                             <input
+                              ref={(el) => { inputRefs.current[r.product_id] = el; }}
                               type="text"
                               value={r.edited_vbn ?? ""}
                               onChange={(e) => updateVbn(r.product_id, e.target.value)}
@@ -507,26 +516,6 @@ export default function Dashboard() {
                               placeholder="VBN lub nazwa…"
                               className="border border-neutral-200 rounded px-2 py-1 text-xs w-36 focus:outline-none focus:ring-1 focus:ring-violet-300 disabled:bg-neutral-50"
                             />
-                            {/* Autocomplete dropdown */}
-                            {suggestions?.product_id === r.product_id && suggestions.items.length > 0 && (
-                              <div className="absolute left-3 top-full z-20 mt-0.5 w-80 bg-white border border-neutral-200 rounded-lg shadow-lg overflow-hidden">
-                                {suggestions.items.map((s) => (
-                                  <button
-                                    key={s.id}
-                                    onMouseDown={() => applySuggestion(r.product_id, s.id, s.name)}
-                                    className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-violet-50 border-b border-neutral-50 last:border-0"
-                                  >
-                                    <span className="font-mono text-violet-600 shrink-0">{s.id}</span>
-                                    <span className="text-neutral-700 leading-snug">{s.name}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                            {suggestions?.product_id === r.product_id && suggestions.items.length === 0 && (
-                              <div className="absolute left-3 top-full z-20 mt-0.5 w-64 bg-white border border-neutral-200 rounded-lg shadow px-3 py-2 text-xs text-neutral-400">
-                                Brak wyników w Floricode
-                              </div>
-                            )}
                             {/* Name label for numeric codes */}
                             {r.edited_vbn?.trim() && /^\d+$/.test(r.edited_vbn.trim()) && (
                               <p className={`text-xs mt-0.5 break-words leading-snug ${
@@ -820,6 +809,30 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+
+      {/* Portal dropdown — rendered in document.body to escape table overflow:hidden */}
+      {suggestions && dropdownAnchor && typeof document !== "undefined" && createPortal(
+        <div
+          style={{ position: "fixed", top: dropdownAnchor.top, left: dropdownAnchor.left, width: 320, zIndex: 9999 }}
+          className="bg-white border border-neutral-200 rounded-lg shadow-xl overflow-hidden"
+        >
+          {suggestions.items.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-neutral-400">Brak wyników w Floricode</p>
+          ) : (
+            suggestions.items.map((s) => (
+              <button
+                key={s.id}
+                onMouseDown={() => applySuggestion(suggestions.product_id, s.id, s.name)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-violet-50 border-b border-neutral-50 last:border-0 transition-colors"
+              >
+                <span className="font-mono text-violet-600 shrink-0">{s.id}</span>
+                <span className="text-neutral-700 leading-snug">{s.name}</span>
+              </button>
+            ))
+          )}
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
