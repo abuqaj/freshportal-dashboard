@@ -54,6 +54,8 @@ export default function Dashboard() {
   // VBN code → official name cache (populated on load + live lookup)
   const [vbnNameCache, setVbnNameCache] = useState<Record<string, string>>({});
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Autocomplete suggestions for current active input
+  const [suggestions, setSuggestions] = useState<{ product_id: string; items: { id: string; name: string }[] } | null>(null);;
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -168,31 +170,48 @@ export default function Dashboard() {
       prev ? prev.map((r) => (r.product_id === product_id ? { ...r, edited_vbn: val } : r)) : prev
     );
 
-    const code = val.trim();
-    if (!code || !/^\d+$/.test(code) || !RAILWAY) return;
+    const trimmed = val.trim();
+    if (!trimmed || !RAILWAY) { setSuggestions(null); return; }
 
-    // Already have a real name — skip
-    if (debounceTimers.current[code]) clearTimeout(debounceTimers.current[code]);
+    if (debounceTimers.current[product_id]) clearTimeout(debounceTimers.current[product_id]);
 
-    setVbnNameCache((prev) => ({ ...prev, [code]: prev[code] && prev[code] !== "…" ? prev[code] : "…" }));
+    if (/^\d+$/.test(trimmed)) {
+      // Numeric → look up official name
+      setSuggestions(null);
+      setVbnNameCache((prev) => ({ ...prev, [trimmed]: prev[trimmed] && prev[trimmed] !== "…" ? prev[trimmed] : "…" }));
+      debounceTimers.current[product_id] = setTimeout(async () => {
+        try {
+          const res = await fetch(`${RAILWAY}/vbn-name/${trimmed}`);
+          const data = await res.json();
+          setVbnNameCache((prev) => ({
+            ...prev,
+            [trimmed]: data.found ? (data.name ?? "") : "⚠ Nieznany kod VBN",
+          }));
+        } catch {
+          setVbnNameCache((prev) => ({ ...prev, [trimmed]: "" }));
+        }
+      }, 600);
+    } else {
+      // Text → search by name, show autocomplete dropdown
+      setVbnNameCache((prev) => ({ ...prev })); // keep existing
+      debounceTimers.current[product_id] = setTimeout(async () => {
+        try {
+          const res = await fetch(`${RAILWAY}/vbn-search?q=${encodeURIComponent(trimmed)}&limit=8`);
+          const data = await res.json();
+          setSuggestions({ product_id, items: data.results ?? [] });
+        } catch {
+          setSuggestions(null);
+        }
+      }, 500);
+    }
+  }
 
-    debounceTimers.current[code] = setTimeout(async () => {
-      // If already resolved, skip the fetch
-      setVbnNameCache((prev) => {
-        if (prev[code] && prev[code] !== "…") return prev;
-        return prev; // fetch will update it
-      });
-      try {
-        const res = await fetch(`${RAILWAY}/vbn-name/${code}`);
-        const data = await res.json();
-        setVbnNameCache((prev) => ({
-          ...prev,
-          [code]: data.found ? (data.name ?? "") : "⚠ Nieznany kod VBN",
-        }));
-      } catch {
-        setVbnNameCache((prev) => ({ ...prev, [code]: "" }));
-      }
-    }, 600);
+  function applySuggestion(product_id: string, id: string, name: string) {
+    setResults((prev) =>
+      prev ? prev.map((r) => (r.product_id === product_id ? { ...r, edited_vbn: id } : r)) : prev
+    );
+    setVbnNameCache((prev) => ({ ...prev, [id]: name }));
+    setSuggestions(null);
   }
 
   function toggleExclude(product_id: string) {
@@ -478,15 +497,37 @@ export default function Dashboard() {
                           <td className="px-3 py-3 max-w-xs">
                             <p className="text-xs text-neutral-500 leading-snug">{r.reason || "—"}</p>
                           </td>
-                          <td className="px-3 py-3 min-w-40">
+                          <td className="px-3 py-3 min-w-44 relative">
                             <input
                               type="text"
                               value={r.edited_vbn ?? ""}
                               onChange={(e) => updateVbn(r.product_id, e.target.value)}
+                              onBlur={() => setTimeout(() => setSuggestions(null), 150)}
                               disabled={r.excluded}
-                              placeholder="wpisz VBN"
-                              className="border border-neutral-200 rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-violet-300 disabled:bg-neutral-50"
+                              placeholder="VBN lub nazwa…"
+                              className="border border-neutral-200 rounded px-2 py-1 text-xs w-36 focus:outline-none focus:ring-1 focus:ring-violet-300 disabled:bg-neutral-50"
                             />
+                            {/* Autocomplete dropdown */}
+                            {suggestions?.product_id === r.product_id && suggestions.items.length > 0 && (
+                              <div className="absolute left-3 top-full z-20 mt-0.5 w-80 bg-white border border-neutral-200 rounded-lg shadow-lg overflow-hidden">
+                                {suggestions.items.map((s) => (
+                                  <button
+                                    key={s.id}
+                                    onMouseDown={() => applySuggestion(r.product_id, s.id, s.name)}
+                                    className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-violet-50 border-b border-neutral-50 last:border-0"
+                                  >
+                                    <span className="font-mono text-violet-600 shrink-0">{s.id}</span>
+                                    <span className="text-neutral-700 leading-snug">{s.name}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {suggestions?.product_id === r.product_id && suggestions.items.length === 0 && (
+                              <div className="absolute left-3 top-full z-20 mt-0.5 w-64 bg-white border border-neutral-200 rounded-lg shadow px-3 py-2 text-xs text-neutral-400">
+                                Brak wyników w Floricode
+                              </div>
+                            )}
+                            {/* Name label for numeric codes */}
                             {r.edited_vbn?.trim() && /^\d+$/.test(r.edited_vbn.trim()) && (
                               <p className={`text-xs mt-0.5 break-words leading-snug ${
                                 vbnNameCache[r.edited_vbn.trim()]?.startsWith("⚠")

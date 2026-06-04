@@ -98,6 +98,47 @@ def _lookup_via_api(code: str, token: str) -> VBNInfo:
 _specific_vbn_cache: dict[str, str] = {}
 
 
+def search_vbn_by_name(
+    query: str,
+    client_id: str,
+    client_secret: str,
+    limit: int = 8,
+) -> list[dict]:
+    """Search VBN products by name fragment.
+
+    All words in *query* must appear in the VBN name (AND logic).
+    Returns list of {id, name} dicts, up to *limit* results.
+    """
+    if not client_id or not client_secret or not query.strip():
+        return []
+
+    words = [w.lower() for w in query.strip().split() if len(w) >= 2]
+    if not words:
+        return []
+
+    filter_str = " and ".join(f"contains(tolower(name), '{w}')" for w in words)
+
+    try:
+        token = _get_token(client_id, client_secret)
+        resp = requests.get(
+            f"{API_BASE}/VBN/Product",
+            params={
+                "$filter": filter_str,
+                "$select": "id,name",
+                "$top": str(limit),
+                "$orderby": "name",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("value", [])
+        return [{"id": str(i["id"]), "name": i["name"]} for i in items]
+    except Exception as exc:
+        logger.warning("search_vbn_by_name('%s') failed: %s", query, exc)
+        return []
+
+
 def find_specific_vbn(
     genus: str,
     treatment: str,

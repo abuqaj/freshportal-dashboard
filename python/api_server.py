@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
-from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table
+from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 
@@ -333,6 +333,14 @@ async def photo_upload(xlsx: UploadFile = File(...)):
     finally:
         Path(tmp_path).unlink(missing_ok=True)
     return {"success": True, "message": "Photo upload completed."}
+
+
+@app.get("/vbn-search")
+def vbn_search_endpoint(q: str, limit: int = 8):
+    """Search VBN codes by name words. q='dianthus solex' finds VBNs containing both words."""
+    cfg = Config()
+    results = search_vbn_by_name(q, cfg.floricode_username, cfg.floricode_password, limit=limit)
+    return {"results": results}
 
 
 @app.get("/vbn-name/{code}")
