@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
+from product_creator import search_products, find_best_template, copy_and_create
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
@@ -374,6 +375,87 @@ def get_vbn_name(code: str):
     if info and info.found and info.official_name:
         return {"code": code, "name": info.official_name, "found": True}
     return {"code": code, "name": None, "found": False}
+
+
+# ---------------------------------------------------------------------------
+# Product creation
+# ---------------------------------------------------------------------------
+
+class ProductSearchRequest(BaseModel):
+    name: str
+
+
+class ProductCreateRequest(BaseModel):
+    template_id: str
+    new_name: str
+
+
+@app.post("/product-search")
+def product_search(req: ProductSearchRequest):
+    cfg = Config()
+    try:
+        cfg.validate()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    matches = search_products(req.name, cfg)
+    return {
+        "results": [
+            {
+                "product_id": m.product_id,
+                "name": m.name,
+                "short_name": m.short_name,
+                "vbn_number": m.vbn_number,
+                "similarity": round(m.similarity, 3),
+            }
+            for m in matches
+        ]
+    }
+
+
+@app.post("/product-create/stream")
+async def product_create_stream(req: ProductCreateRequest):
+    """SSE stream: copies template product, renames it, returns result."""
+    cfg = Config()
+    try:
+        cfg.validate()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            def on_status(msg: str) -> None:
+                queue.put({"type": "status", "message": msg})
+
+            result = copy_and_create(req.template_id, req.new_name, cfg, on_status=on_status)
+            queue.put({"type": "result", "data": result})
+        except Exception as e:
+            log.exception("product-create/stream failed")
+            queue.put({"type": "error", "message": str(e)})
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    async def generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+        thread.join(timeout=10)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.get("/debug/colour-table")

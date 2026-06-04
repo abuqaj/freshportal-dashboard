@@ -27,6 +27,14 @@ type Stats = {
   ok: number;
 };
 
+type ProductSearchResult = {
+  product_id: string;
+  name: string;
+  short_name: string;
+  vbn_number: string;
+  similarity: number;
+};
+
 type FixEntry = { product_id: string; name: string; old_vbn: string; new_vbn: string };
 
 type HistoryRow = {
@@ -38,8 +46,39 @@ type HistoryRow = {
   created_at: string;
 };
 
+function ManualTemplateForm({
+  newName,
+  onCreate,
+  disabled,
+}: {
+  newName: string;
+  onCreate: (id: string, name: string) => void;
+  disabled: boolean;
+}) {
+  const [id, setId] = useState("");
+  return (
+    <div className="flex gap-3">
+      <input
+        type="text"
+        value={id}
+        onChange={(e) => setId(e.target.value)}
+        placeholder="ID produktu (np. 65945)"
+        className="border border-neutral-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-1 focus:ring-violet-300"
+      />
+      <button
+        onClick={() => id.trim() && onCreate(id.trim(), newName)}
+        disabled={disabled || !id.trim()}
+        className="bg-neutral-700 hover:bg-neutral-800 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+      >
+        Kopiuj ten produkt
+      </button>
+    </div>
+  );
+}
+
+
 export default function Dashboard() {
-  const [tab, setTab] = useState<"vbn" | "photos" | "history">("vbn");
+  const [tab, setTab] = useState<"vbn" | "photos" | "history" | "create">("vbn");
 
   // VBN state
   const [vbnInput, setVbnInput] = useState("");
@@ -59,6 +98,15 @@ export default function Dashboard() {
   // Fixed-position anchor for portal dropdown (avoids table overflow-hidden clipping)
   const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number } | null>(null);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});;
+
+  // Product creation
+  const [createInput, setCreateInput] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<ProductSearchResult[] | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createStatus, setCreateStatus] = useState<string | null>(null);
+  const [createResult, setCreateResult] = useState<{ ok: boolean; message: string; url?: string } | null>(null);
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -314,6 +362,64 @@ export default function Dashboard() {
     }
   }
 
+  async function handleProductSearch() {
+    if (!createInput.trim() || !RAILWAY) return;
+    flushSync(() => { setSearching(true); setSearchResults(null); setSearchError(null); setCreateResult(null); });
+    try {
+      const res = await fetch(`${RAILWAY}/product-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: createInput.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? "Błąd wyszukiwania");
+      setSearchResults(data.results ?? []);
+    } catch (e: unknown) {
+      setSearchError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function handleCreateFromTemplate(templateId: string, templateName: string) {
+    if (!RAILWAY) return;
+    flushSync(() => { setCreating(true); setCreateStatus("Inicjalizacja…"); setCreateResult(null); });
+    try {
+      const res = await fetch(`${RAILWAY}/product-create/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template_id: templateId, new_name: createInput.trim() }),
+      });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let event: Record<string, unknown>;
+          try { event = JSON.parse(line.slice(6)); } catch { continue; }
+          if (event.type === "status") flushSync(() => setCreateStatus(event.message as string));
+          else if (event.type === "result") {
+            const d = event.data as { ok: boolean; message: string; url?: string };
+            setCreateResult(d);
+          } else if (event.type === "error") throw new Error(event.message as string);
+        }
+      }
+    } catch (e: unknown) {
+      setCreateResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setCreating(false);
+      setCreateStatus(null);
+    }
+  }
+
   const loadHistory = useCallback(async () => {
     setHistLoading(true);
     const res = await fetch("/api/history");
@@ -351,6 +457,7 @@ export default function Dashboard() {
         <nav className="flex-1 py-3">
           {[
             { id: "vbn", label: "VBN Checker", icon: "🏷️" },
+            { id: "create", label: "Nowe produkty", icon: "➕" },
             { id: "photos", label: "Photo Uploader", icon: "🖼️" },
             { id: "history", label: "Historia", icon: "📋" },
           ].map((item) => (
@@ -618,6 +725,160 @@ export default function Dashboard() {
                   </tbody>
                 </table>
               </details>
+            )}
+          </div>
+        )}
+
+        {/* Product Creation */}
+        {tab === "create" && (
+          <div className="p-8 max-w-3xl">
+            <div className="mb-6">
+              <h1 className="text-xl font-semibold text-neutral-900">Nowe produkty</h1>
+              <p className="text-sm text-neutral-500 mt-1">
+                Wpisz nazwę produktu — system znajdzie podobne lub stworzy kopię najbliższego
+              </p>
+            </div>
+
+            {/* Search bar */}
+            <div className="bg-white border border-neutral-200 rounded-xl p-5 mb-5">
+              <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">
+                Nazwa nowego produktu
+              </label>
+              <div className="flex gap-3">
+                <input
+                  type="text"
+                  value={createInput}
+                  onChange={(e) => setCreateInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleProductSearch()}
+                  placeholder="np. Rosa Ec Toxic"
+                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                />
+                <button
+                  onClick={handleProductSearch}
+                  disabled={searching || !createInput.trim()}
+                  className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+                >
+                  {searching ? "Szukam…" : "Szukaj podobnych"}
+                </button>
+              </div>
+              {searchError && (
+                <p className="mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  ⚠️ {searchError}
+                </p>
+              )}
+            </div>
+
+            {/* Create result */}
+            {createResult && (
+              <div className={`mb-5 rounded-xl px-5 py-4 border text-sm ${
+                createResult.ok
+                  ? "bg-green-50 border-green-200 text-green-700"
+                  : "bg-red-50 border-red-200 text-red-600"
+              }`}>
+                <p className="font-medium">{createResult.ok ? "✓ " : "⚠ "}{createResult.message}</p>
+                {createResult.ok && createResult.url && (
+                  <p className="text-xs mt-1 opacity-70">URL: {createResult.url}</p>
+                )}
+              </div>
+            )}
+
+            {/* Creating spinner */}
+            {creating && createStatus && (
+              <div className="mb-5 flex items-center gap-3 text-sm text-violet-700 bg-violet-50 border border-violet-200 rounded-xl px-5 py-3">
+                <svg className="animate-spin h-4 w-4 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span>{createStatus}</span>
+              </div>
+            )}
+
+            {/* Search results */}
+            {searchResults !== null && (
+              <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
+                <div className="px-5 py-4 border-b border-neutral-100 flex justify-between items-center">
+                  <p className="text-sm font-medium text-neutral-800">
+                    Podobne produkty
+                    <span className="ml-2 text-xs text-neutral-400">({searchResults.length} wyników)</span>
+                  </p>
+                  {searchResults.length === 0 && (
+                    <span className="text-xs text-neutral-400">Brak podobnych — wybierz szablon ręcznie poniżej</span>
+                  )}
+                </div>
+
+                {searchResults.length === 0 ? (
+                  <div className="px-5 py-6 text-sm text-neutral-500 text-center">
+                    Nie znaleziono podobnych produktów w FreshPortal.
+                    <br />
+                    <span className="text-xs text-neutral-400 mt-1 block">
+                      Wyszukaj ręcznie produkt do skopiowania wpisując jego ID poniżej.
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    {searchResults.some(r => r.similarity >= 0.75) && (
+                      <div className="px-5 py-3 bg-amber-50 border-b border-amber-100 text-xs text-amber-700">
+                        ⚠ Podobny produkt już może istnieć (podobieństwo ≥75%). Sprawdź listę przed tworzeniem.
+                      </div>
+                    )}
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-neutral-100 text-xs text-neutral-400 uppercase tracking-wide">
+                          <th className="text-left px-5 py-3 font-medium">Nazwa produktu</th>
+                          <th className="text-left px-3 py-3 font-medium">VBN</th>
+                          <th className="text-left px-3 py-3 font-medium">Podobieństwo</th>
+                          <th className="px-3 py-3 font-medium">Akcja</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {searchResults.slice(0, 10).map((r) => (
+                          <tr key={r.product_id} className="border-b border-neutral-50 hover:bg-neutral-50">
+                            <td className="px-5 py-3">
+                              <p className="font-medium text-neutral-800">{r.name}</p>
+                              <p className="text-xs text-neutral-400">{r.short_name}</p>
+                            </td>
+                            <td className="px-3 py-3 text-xs font-mono text-neutral-500">{r.vbn_number || "—"}</td>
+                            <td className="px-3 py-3">
+                              <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                                r.similarity >= 0.75
+                                  ? "bg-amber-50 text-amber-700"
+                                  : r.similarity >= 0.5
+                                  ? "bg-blue-50 text-blue-700"
+                                  : "bg-neutral-100 text-neutral-500"
+                              }`}>
+                                {Math.round(r.similarity * 100)}%
+                              </span>
+                            </td>
+                            <td className="px-3 py-3 text-center">
+                              <button
+                                onClick={() => handleCreateFromTemplate(r.product_id, r.name)}
+                                disabled={creating}
+                                className="text-xs px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+                              >
+                                Kopiuj jako szablon
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Manual template ID */}
+            {searchResults !== null && (
+              <div className="mt-4 bg-white border border-neutral-200 rounded-xl p-5">
+                <p className="text-xs font-medium text-neutral-500 mb-3 uppercase tracking-wide">
+                  Lub podaj ID produktu-szablonu ręcznie
+                </p>
+                <ManualTemplateForm
+                  newName={createInput}
+                  onCreate={handleCreateFromTemplate}
+                  disabled={creating}
+                />
+              </div>
             )}
           </div>
         )}
