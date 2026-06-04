@@ -160,6 +160,7 @@ def search_products(
 
     words = query.strip().split()
     _, variety = _extract_parts(query)
+    variety_terms = set(_variety_search_terms(variety))
 
     search_terms = list(dict.fromkeys(filter(None, [
         query.strip(),                                     # "Rosa Ec Atena"
@@ -184,19 +185,24 @@ def search_products(
             for term in search_terms:
                 _s(f"Szukam '{term}'…")
                 encoded = term.replace(" ", "+")
-                # Try short_name filter first (usually faster/more precise)
+                # Short variety substrings (≤4 chars, e.g. "ena") can have the
+                # target on page 2 — fetch extra page for name_adjustable only.
+                extra_pages = 2 if (term in variety_terms and len(term) <= 4) else 1
+
                 for param in ("short_name_adjustable", "name_adjustable"):
-                    url = (
-                        f"{cfg.freshportal_url}/product/index/index/"
-                        f"?1=1&{param}={encoded}&page=1"
-                    )
-                    matches = _search_page(page, url, query, cfg)
-                    for m in matches:
-                        if m.product_id not in seen_ids:
-                            seen_ids.add(m.product_id)
-                            all_matches.append(m)
-                    if matches:
-                        break  # found results with this param, skip the other
+                    pages = extra_pages if param == "name_adjustable" else 1
+                    for page_num in range(1, pages + 1):
+                        url = (
+                            f"{cfg.freshportal_url}/product/index/index/"
+                            f"?1=1&{param}={encoded}&page={page_num}"
+                        )
+                        page_matches = _search_page(page, url, query, cfg)
+                        for m in page_matches:
+                            if m.product_id not in seen_ids:
+                                seen_ids.add(m.product_id)
+                                all_matches.append(m)
+                        if not page_matches:
+                            break  # no more pages for this param
         finally:
             context.close()
             browser.close()
