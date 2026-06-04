@@ -148,10 +148,9 @@ def search_products(
 ) -> list[ProductMatch]:
     """Search FreshPortal for products with names similar to *query*.
 
-    Tries three progressively broader searches:
-    1. full query  ("Rosa Ec Toxic")
-    2. first 2 words  ("Rosa Ec")
-    3. first word  ("Rosa")
+    Searches name_adjustable first (more reliable), then short_name_adjustable.
+    Fetches all pages up to a per-term limit.
+    Skips broad fallback terms once enough high-similarity matches are found.
     """
     def _s(msg: str) -> None:
         logger.info(msg)
@@ -159,15 +158,22 @@ def search_products(
             on_status(msg)
 
     words = query.strip().split()
+    genus = words[0].lower() if words else ""
     _, variety = _extract_parts(query)
     variety_terms = set(_variety_search_terms(variety))
 
     search_terms = list(dict.fromkeys(filter(None, [
-        query.strip(),                                     # "Rosa Ec Atena"
-        *_variety_search_terms(variety),                   # "Atena", "Aten", "ena"
-        " ".join(words[:2]) if len(words) >= 2 else None,  # "Rosa Ec"
-        words[0] if words else None,                       # "Rosa"
+        query.strip(),
+        *_variety_search_terms(variety),
+        " ".join(words[:2]) if len(words) >= 2 else None,
+        words[0] if words else None,
     ])))
+
+    def _max_pages(term: str) -> int:
+        n = len(term.replace(" ", ""))
+        if n <= 3:  return 3   # "ena" — broad, keep short
+        if n <= 5:  return 10  # "atena" — fairly specific
+        return 15              # longer terms
 
     seen_ids: set[str] = set()
     all_matches: list[ProductMatch] = []
@@ -183,32 +189,66 @@ def search_products(
             _login(page, cfg)
 
             for term in search_terms:
-                _s(f"Szukam '{term}'…")
-                encoded = term.replace(" ", "+")
-                # Short variety substrings (≤4 chars, e.g. "ena") can have the
-                # target on page 2 — fetch extra page for name_adjustable only.
-                extra_pages = 2 if (term in variety_terms and len(term) <= 4) else 1
+                # Skip broad fallbacks once we have enough strong matches
+                good = sum(1 for m in all_matches if m.similarity >= 0.8)
+                if good >= 3 and term not in variety_terms and term != query.strip():
+                    _s(f"Pomijam '{term}' — mamy już {good} dopasowań ≥80%")
+                    continue
 
-                for param in ("short_name_adjustable", "name_adjustable"):
-                    pages = extra_pages if param == "name_adjustable" else 1
-                    for page_num in range(1, pages + 1):
+                encoded = term.replace(" ", "+")
+                max_p = _max_pages(term)
+
+                # name_adjustable first — product names are more reliable than short names
+                for param in ("name_adjustable", "short_name_adjustable"):
+                    last_page: int | None = None
+                    for page_num in range(1, max_p + 1):
                         url = (
                             f"{cfg.freshportal_url}/product/index/index/"
                             f"?1=1&{param}={encoded}&page={page_num}"
                         )
-                        page_matches = _search_page(page, url, query, cfg)
-                        for m in page_matches:
-                            if m.product_id not in seen_ids:
-                                seen_ids.add(m.product_id)
-                                all_matches.append(m)
-                        if not page_matches:
-                            break  # no more pages for this param
+                        try:
+                            _goto_and_wait(page, url, cfg)
+                        except Exception:
+                            break
+
+                        soup = BeautifulSoup(page.content(), "lxml")
+
+                        if last_page is None:
+                            last_page = min(_get_last_page_html(soup), max_p)
+                            _s(f"Szukam '{term}' — {last_page} stron…")
+
+                        cols = _detect_columns_html(soup)
+                        rows = _parse_rows_html(soup, cols)
+                        if not rows:
+                            break
+
+                        for r in rows:
+                            if r.product_id not in seen_ids:
+                                sim = _similarity(query, r.name)
+                                if sim > 0.05 or genus in r.name.lower():
+                                    seen_ids.add(r.product_id)
+                                    all_matches.append(ProductMatch(
+                                        product_id=r.product_id,
+                                        name=r.name,
+                                        short_name=r.short_name,
+                                        vbn_number=r.vbn_number,
+                                        similarity=sim,
+                                    ))
+
+                        _s(
+                            f"Strona {page_num}/{last_page} ({param})"
+                            f" — {len(all_matches)} produktów łącznie"
+                        )
+
+                        if page_num >= (last_page or 1):
+                            break
         finally:
             context.close()
             browser.close()
 
     all_matches.sort(key=lambda m: m.similarity, reverse=True)
-    _s(f"Znaleziono {len(all_matches)} produktów")
+    best = f", najlepsze: {all_matches[0].similarity:.0%}" if all_matches else ""
+    _s(f"Zakończono — {len(all_matches)} produktów{best}")
     return all_matches
 
 

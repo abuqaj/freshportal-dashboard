@@ -107,6 +107,7 @@ export default function Dashboard() {
   const [creating, setCreating] = useState(false);
   const [createStatus, setCreateStatus] = useState<string | null>(null);
   const [createResult, setCreateResult] = useState<{ ok: boolean; message: string; url?: string } | null>(null);
+  const [searchStatus, setSearchStatus] = useState<string | null>(null);
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -364,20 +365,54 @@ export default function Dashboard() {
 
   async function handleProductSearch() {
     if (!createInput.trim() || !RAILWAY) return;
-    flushSync(() => { setSearching(true); setSearchResults(null); setSearchError(null); setCreateResult(null); });
+    flushSync(() => {
+      setSearching(true);
+      setSearchResults(null);
+      setSearchError(null);
+      setCreateResult(null);
+      setSearchStatus("Łączenie z Railway…");
+    });
     try {
-      const res = await fetch(`${RAILWAY}/product-search`, {
+      const res = await fetch(`${RAILWAY}/product-search/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: createInput.trim() }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? "Błąd wyszukiwania");
-      setSearchResults(data.results ?? []);
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail ?? `HTTP ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let event: Record<string, unknown>;
+          try { event = JSON.parse(line.slice(6)); } catch { continue; }
+          if (event.type === "status") {
+            flushSync(() => setSearchStatus(event.message as string));
+          } else if (event.type === "result") {
+            const d = event.data as { results: ProductSearchResult[] };
+            setSearchResults(d.results ?? []);
+            setSearchStatus(null);
+          } else if (event.type === "error") {
+            throw new Error(event.message as string);
+          }
+        }
+      }
     } catch (e: unknown) {
       setSearchError(e instanceof Error ? e.message : String(e));
     } finally {
       setSearching(false);
+      setSearchStatus(null);
     }
   }
 
@@ -761,6 +796,15 @@ export default function Dashboard() {
                   {searching ? "Szukam…" : "Szukaj podobnych"}
                 </button>
               </div>
+              {searching && searchStatus && (
+                <div className="mt-3 flex items-center gap-3 text-sm text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-4 py-3">
+                  <svg className="animate-spin h-4 w-4 flex-shrink-0 text-violet-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>{searchStatus}</span>
+                </div>
+              )}
               {searchError && (
                 <p className="mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
                   ⚠️ {searchError}

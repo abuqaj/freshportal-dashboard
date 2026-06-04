@@ -412,6 +412,65 @@ def product_search(req: ProductSearchRequest):
     }
 
 
+def _matches_to_results(matches) -> list[dict]:
+    return [
+        {
+            "product_id": m.product_id,
+            "name": m.name,
+            "short_name": m.short_name,
+            "vbn_number": m.vbn_number,
+            "similarity": round(m.similarity, 3),
+        }
+        for m in matches
+    ]
+
+
+@app.post("/product-search/stream")
+async def product_search_stream(req: ProductSearchRequest):
+    """SSE stream: status messages while searching, then result."""
+    cfg = Config()
+    try:
+        cfg.validate()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            def on_status(msg: str) -> None:
+                queue.put({"type": "status", "message": msg})
+
+            matches = search_products(req.name, cfg, on_status=on_status)
+            queue.put({"type": "result", "data": {"results": _matches_to_results(matches)}})
+        except Exception as e:
+            log.exception("product-search/stream failed")
+            queue.put({"type": "error", "message": str(e)})
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    async def generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+        thread.join(timeout=10)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
 @app.post("/product-create/stream")
 async def product_create_stream(req: ProductCreateRequest):
     """SSE stream: copies template product, renames it, returns result."""
