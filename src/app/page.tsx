@@ -204,7 +204,7 @@ export default function Dashboard() {
           setDropdownAnchor({ top: rect.bottom + 4, left: rect.left });
         }
         try {
-          const res = await fetch(`${RAILWAY}/vbn-search?q=${encodeURIComponent(trimmed)}&limit=8`);
+          const res = await fetch(`${RAILWAY}/vbn-search?q=${encodeURIComponent(trimmed)}&limit=15`);
           const data = await res.json();
           setSuggestions({ product_id, items: data.results ?? [] });
         } catch {
@@ -814,7 +814,7 @@ export default function Dashboard() {
       {suggestions && dropdownAnchor && typeof document !== "undefined" && createPortal(
         <div
           style={{ position: "fixed", top: dropdownAnchor.top, left: dropdownAnchor.left, width: 320, zIndex: 9999 }}
-          className="bg-white border border-neutral-200 rounded-lg shadow-xl overflow-hidden"
+          className="bg-white border border-neutral-200 rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto"
         >
           {suggestions.items.length === 0 ? (
             <p className="px-3 py-2 text-xs text-neutral-400">Brak wyników w Floricode</p>
