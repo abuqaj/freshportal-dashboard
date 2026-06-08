@@ -131,6 +131,9 @@ export default function Dashboard() {
   const [productNumber, setProductNumber] = useState("");
   const [numberChecking, setNumberChecking] = useState(false);
   const [numberCheckResult, setNumberCheckResult] = useState<{ changed: boolean; original: string } | null>(null);
+  const [showDuplicateWarning, setShowDuplicateWarning] = useState<{ templateId: string; templateName: string } | null>(null);
+  const [selectedTemplateWas100Pct, setSelectedTemplateWas100Pct] = useState(false);
+  const [showSecondDuplicateWarning, setShowSecondDuplicateWarning] = useState(false);
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -396,6 +399,7 @@ export default function Dashboard() {
       setSearchStatus("Łączenie z Railway…");
       setAiAnalysis(null);
       setAiLoading(false);
+      setSelectedTemplateWas100Pct(false);
     });
     try {
       const res = await fetch(`${RAILWAY}/product-search/stream`, {
@@ -481,8 +485,19 @@ export default function Dashboard() {
       .finally(() => setNumberChecking(false));
   }
 
-  async function handleConfirmCreate() {
+  async function handleConfirmCreate(skipWarning = false) {
     if (!pendingCreate || !RAILWAY) return;
+
+    if (
+      !skipWarning &&
+      selectedTemplateWas100Pct &&
+      finalName.trim().toLowerCase() === createInput.trim().toLowerCase()
+    ) {
+      setShowSecondDuplicateWarning(true);
+      return;
+    }
+    setShowSecondDuplicateWarning(false);
+
     const { templateId, templateName } = pendingCreate;
     const nameForLog = finalName.trim();
     const numberForLog = productNumber.trim();
@@ -981,7 +996,13 @@ export default function Dashboard() {
                             </td>
                             <td className="px-3 py-3 text-center">
                               <button
-                                onClick={() => handleCreateFromTemplate(r.product_id, r.name)}
+                                onClick={() => {
+                                  if (r.similarity >= 1.0) {
+                                    setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name });
+                                  } else {
+                                    handleCreateFromTemplate(r.product_id, r.name);
+                                  }
+                                }}
                                 disabled={creating}
                                 className="text-xs px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded-lg transition-colors"
                               >
@@ -1357,6 +1378,80 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+
+      {/* Duplicate warning modal — step 1: before opening form */}
+      {showDuplicateWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
+            <div className="flex items-start gap-4 mb-5">
+              <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0 text-2xl">
+                ⚠️
+              </div>
+              <div>
+                <p className="text-lg font-semibold text-neutral-900">Produkt już istnieje!</p>
+                <p className="text-sm text-neutral-600 mt-1">
+                  Znaleziono produkt{" "}
+                  <strong className="text-neutral-800">{showDuplicateWarning.templateName}</strong>{" "}
+                  z identyczną nazwą (podobieństwo 100%). Czy na pewno chcesz stworzyć duplikat?
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowDuplicateWarning(null)}
+                className="px-4 py-2 text-sm border border-neutral-200 rounded-lg text-neutral-600 hover:bg-neutral-50 transition-colors"
+              >
+                Anuluj
+              </button>
+              <button
+                onClick={() => {
+                  handleCreateFromTemplate(showDuplicateWarning.templateId, showDuplicateWarning.templateName);
+                  setSelectedTemplateWas100Pct(true);
+                  setShowDuplicateWarning(null);
+                }}
+                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+              >
+                Tak, utwórz duplikat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate warning modal — step 2: before submitting form */}
+      {showSecondDuplicateWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
+            <div className="flex items-start gap-4 mb-5">
+              <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center flex-shrink-0 text-2xl">
+                ⚠️
+              </div>
+              <div>
+                <p className="text-lg font-semibold text-neutral-900">Ostatnie ostrzeżenie!</p>
+                <p className="text-sm text-neutral-600 mt-1">
+                  Nazwa produktu{" "}
+                  <strong className="text-neutral-800">{finalName}</strong>{" "}
+                  jest identyczna z istniejącym produktem w FreshPortal. Duplikat zostanie utworzony w systemie.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowSecondDuplicateWarning(false)}
+                className="px-4 py-2 text-sm border border-neutral-200 rounded-lg text-neutral-600 hover:bg-neutral-50 transition-colors"
+              >
+                Zmień nazwę
+              </button>
+              <button
+                onClick={() => handleConfirmCreate(true)}
+                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+              >
+                Tak, utwórz mimo to
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Portal dropdown — rendered in document.body to escape table overflow:hidden */}
       {suggestions && dropdownAnchor && typeof document !== "undefined" && createPortal(
