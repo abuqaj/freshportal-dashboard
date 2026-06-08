@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
-from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number
+from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
@@ -504,6 +504,23 @@ def product_ai_analyze(req: AIAnalyzeRequest):
             "vbn": {"code": None, "explanation": "AI analysis failed"},
         }
     return result
+
+
+@app.get("/product-number-suggest")
+def product_number_suggest(name: str = "", number: str = ""):
+    """Return first available product number for given name or base number.
+
+    Called by the frontend immediately when the create-confirmation form opens,
+    so the user sees a validated, free number before clicking Create.
+    """
+    cfg = Config()
+    base = number.strip() or (generate_product_number(name.strip()) if name.strip() else "")
+    if not base:
+        raise HTTPException(400, "Provide 'name' or 'number' query param")
+    result = find_available_number(base, cfg)
+    if result is None:
+        return {"available_number": None, "original_number": base, "changed": False}
+    return {"available_number": result, "original_number": base, "changed": result != base}
 
 
 @app.post("/product-create/stream")

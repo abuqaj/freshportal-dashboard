@@ -57,8 +57,8 @@ type HistoryRow = {
   id: number;
   type: string;
   vbn_filter: string | null;
-  stats: Stats;
-  details: { fixes?: FixEntry[] } | null;
+  stats: Record<string, unknown> | null;
+  details: { fixes?: FixEntry[]; name?: string; product_number?: string; template_name?: string } | null;
   created_at: string;
 };
 
@@ -129,6 +129,8 @@ export default function Dashboard() {
   const [pendingCreate, setPendingCreate] = useState<{ templateId: string; templateName: string } | null>(null);
   const [finalName, setFinalName] = useState("");
   const [productNumber, setProductNumber] = useState("");
+  const [numberChecking, setNumberChecking] = useState(false);
+  const [numberCheckResult, setNumberCheckResult] = useState<{ changed: boolean; original: string } | null>(null);
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -459,21 +461,37 @@ export default function Dashboard() {
 
   function handleCreateFromTemplate(templateId: string, templateName: string) {
     const name = createInput.trim();
+    const initialNumber = genProductNumber(name);
     setPendingCreate({ templateId, templateName });
     setFinalName(name);
-    setProductNumber(genProductNumber(name));
+    setProductNumber(initialNumber);
     setCreateResult(null);
+    setNumberChecking(true);
+    setNumberCheckResult(null);
+
+    fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(initialNumber)}`)
+      .then((r) => r.json())
+      .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
+        if (data.available_number) {
+          setProductNumber(data.available_number);
+          setNumberCheckResult({ changed: data.changed, original: data.original_number });
+        }
+      })
+      .catch(() => {})
+      .finally(() => setNumberChecking(false));
   }
 
   async function handleConfirmCreate() {
     if (!pendingCreate || !RAILWAY) return;
-    const { templateId } = pendingCreate;
+    const { templateId, templateName } = pendingCreate;
+    const nameForLog = finalName.trim();
+    const numberForLog = productNumber.trim();
     flushSync(() => { setCreating(true); setCreateStatus("Inicjalizacja…"); setCreateResult(null); setPendingCreate(null); });
     try {
       const res = await fetch(`${RAILWAY}/product-create/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template_id: templateId, new_name: finalName.trim(), product_number: productNumber.trim() || null }),
+        body: JSON.stringify({ template_id: templateId, new_name: nameForLog, product_number: numberForLog || null }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
@@ -494,6 +512,18 @@ export default function Dashboard() {
           else if (event.type === "result") {
             const d = event.data as { ok: boolean; message: string; url?: string };
             setCreateResult(d);
+            if (d.ok) {
+              fetch("/api/log", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  type: "product_create",
+                  vbn_filter: null,
+                  stats: {},
+                  details: { name: nameForLog, product_number: numberForLog, template_id: templateId, template_name: templateName },
+                }),
+              }).catch(() => {});
+            }
           } else if (event.type === "error") throw new Error(event.message as string);
         }
       }
@@ -983,30 +1013,47 @@ export default function Dashboard() {
                       <input
                         type="text"
                         value={finalName}
-                        onChange={(e) => { setFinalName(e.target.value); setProductNumber(genProductNumber(e.target.value)); }}
+                        onChange={(e) => { setFinalName(e.target.value); setProductNumber(genProductNumber(e.target.value)); setNumberCheckResult(null); }}
                         placeholder="Nazwa nowego produktu…"
                         className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                         autoFocus
                       />
                     </div>
                     <div>
-                      <label className="block text-xs text-neutral-400 mb-1">Nr produktu (maks. 8 znaków)</label>
+                      <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
+                        Nr produktu (maks. 8 znaków)
+                        {numberChecking && (
+                          <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                        )}
+                        {!numberChecking && numberCheckResult && !numberCheckResult.changed && (
+                          <span className="text-green-600 text-xs">✓ wolny</span>
+                        )}
+                      </label>
                       <input
                         type="text"
                         value={productNumber}
-                        onChange={(e) => setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8))}
+                        onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8)); setNumberCheckResult(null); }}
                         placeholder="np. ROECAT"
                         className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-36 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                       />
                     </div>
                   </div>
+                  {numberCheckResult?.changed && (
+                    <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      <span>⚠</span>
+                      <span>Nr <span className="font-mono font-medium">{numberCheckResult.original}</span> jest zajęty — zmieniono na <span className="font-mono font-medium">{productNumber}</span></span>
+                    </div>
+                  )}
                   <div className="flex gap-3">
                     <button
                       onClick={handleConfirmCreate}
-                      disabled={creating || !finalName.trim() || !productNumber.trim()}
+                      disabled={creating || numberChecking || !finalName.trim() || !productNumber.trim()}
                       className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
                     >
-                      {creating ? "Tworzę…" : "Utwórz produkt"}
+                      {creating ? "Tworzę…" : numberChecking ? "Sprawdzam numer…" : "Utwórz produkt"}
                     </button>
                     <button
                       onClick={() => setPendingCreate(null)}
@@ -1202,8 +1249,8 @@ export default function Dashboard() {
                   <thead>
                     <tr className="border-b border-neutral-100 text-xs text-neutral-400 uppercase tracking-wide">
                       <th className="text-left px-5 py-3 font-medium">Typ</th>
-                      <th className="text-left px-3 py-3 font-medium">Filtr VBN</th>
-                      <th className="text-left px-3 py-3 font-medium">Statystyki</th>
+                      <th className="text-left px-3 py-3 font-medium">Filtr / Nr</th>
+                      <th className="text-left px-3 py-3 font-medium">Szczegóły</th>
                       <th className="text-left px-3 py-3 font-medium">Data</th>
                     </tr>
                   </thead>
@@ -1232,23 +1279,38 @@ export default function Dashboard() {
                                       ? "bg-violet-50 text-violet-700"
                                       : row.type === "vbn_fix"
                                       ? "bg-green-50 text-green-700"
-                                      : "bg-blue-50 text-blue-700"
+                                      : row.type === "product_create"
+                                      ? "bg-blue-50 text-blue-700"
+                                      : "bg-neutral-100 text-neutral-600"
                                   }`}
                                 >
                                   {row.type === "vbn_check"
                                     ? "VBN Sprawdzanie"
                                     : row.type === "vbn_fix"
                                     ? "VBN Naprawa"
+                                    : row.type === "product_create"
+                                    ? "Nowy produkt"
                                     : "Photo Upload"}
                                 </span>
                               </div>
                             </td>
-                            <td className="px-3 py-3 text-neutral-600">{row.vbn_filter ?? "—"}</td>
+                            <td className="px-3 py-3 text-neutral-600 font-mono text-xs">
+                              {row.type === "product_create"
+                                ? (row.details?.product_number ?? "—")
+                                : (row.vbn_filter ?? "—")}
+                            </td>
                             <td className="px-3 py-3 text-neutral-500 text-xs">
-                              {row.stats
-                                ? Object.entries(row.stats)
-                                    .map(([k, v]) => `${k}: ${v}`)
-                                    .join(", ")
+                              {row.type === "product_create"
+                                ? (
+                                  <span>
+                                    <span className="font-medium text-neutral-700">{row.details?.name ?? "—"}</span>
+                                    {row.details?.template_name && (
+                                      <span className="text-neutral-400 ml-1">(szablon: {row.details.template_name})</span>
+                                    )}
+                                  </span>
+                                )
+                                : row.stats && Object.keys(row.stats).length > 0
+                                ? Object.entries(row.stats).map(([k, v]) => `${k}: ${v}`).join(", ")
                                 : "—"}
                             </td>
                             <td className="px-3 py-3 text-neutral-400 text-xs">

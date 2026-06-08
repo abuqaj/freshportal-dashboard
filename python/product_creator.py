@@ -281,6 +281,64 @@ def _was_recently_created(soup: BeautifulSoup, minutes: int = 15) -> bool:
     return False
 
 
+def _find_available_number_on_page(
+    page,
+    base: str,
+    cfg,
+    on_status: Callable | None = None,
+) -> str | None:
+    """Check candidate numbers on an already-open FreshPortal page.
+
+    Returns the first available number (may equal *base*) or None if all
+    10 variants are occupied.
+    """
+    def _s(msg: str) -> None:
+        logger.info(msg)
+        if on_status:
+            on_status(msg)
+
+    for candidate in itertools.islice(_number_candidates(base), 11):
+        url = (f"{cfg.freshportal_url}/product/index/index/"
+               f"?1=1&number_adjustable={candidate}&page=1")
+        page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+        soup = BeautifulSoup(page.content(), "lxml")
+        rows = _parse_rows_html(soup, _detect_columns_html(soup))
+        if not rows:
+            if candidate != base:
+                _s(f"Nr {base} zajęty — używam: {candidate}")
+            return candidate
+        if candidate == base:
+            _s(f"Nr {base} zajęty — szukam wolnego wariantu…")
+    return None
+
+
+def find_available_number(
+    base: str,
+    cfg,
+    on_status: Callable | None = None,
+) -> str | None:
+    """Launch a fresh browser session and return the first available product number.
+
+    Used by the /product-number-suggest API endpoint so the frontend can
+    validate the number *before* the user clicks create.
+    Returns None when all 10 candidates are taken (shouldn't happen in practice).
+    """
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        context = browser.new_context()
+        page = context.new_page()
+        _block_resources(page)
+        try:
+            _login(page, cfg)
+            return _find_available_number_on_page(page, base, cfg, on_status)
+        except Exception:
+            logger.exception("find_available_number failed")
+            return None
+        finally:
+            context.close()
+            browser.close()
+
+
 def copy_and_create(
     template_id: str,
     new_name: str,
@@ -321,20 +379,8 @@ def copy_and_create(
             # ── Find available product number ────────────────────────────────
             pnum = product_number or generate_product_number(new_name)
             _s(f"Sprawdzam dostępność numeru {pnum}…")
-            for _cand in itertools.islice(_number_candidates(pnum), 11):
-                _cu = (f"{cfg.freshportal_url}/product/index/index/"
-                       f"?1=1&number_adjustable={_cand}&page=1")
-                page.goto(_cu, wait_until="load", timeout=cfg.request_timeout)
-                _cs = BeautifulSoup(page.content(), "lxml")
-                _cr = _parse_rows_html(_cs, _detect_columns_html(_cs))
-                if not _cr:
-                    if _cand != pnum:
-                        _s(f"Nr {pnum} zajęty — używam: {_cand}")
-                    pnum = _cand
-                    break
-                if _cand == pnum:
-                    _s(f"Nr {pnum} zajęty — szukam wolnego wariantu…")
-            else:
+            available = _find_available_number_on_page(page, pnum, cfg, on_status)
+            if available is None:
                 return {
                     "ok": False,
                     "message": (
@@ -342,6 +388,7 @@ def copy_and_create(
                         "Zmień numer ręcznie w formularzu i spróbuj ponownie."
                     ),
                 }
+            pnum = available
 
             # ── Navigate directly to copy URL ───────────────────────────────
             # Debug confirmed: /product/index/copy/PRO_ID/{id}/ opens the copy
