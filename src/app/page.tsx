@@ -128,6 +128,7 @@ export default function Dashboard() {
   const [aiLoading, setAiLoading] = useState(false);
   const [pendingCreate, setPendingCreate] = useState<{ templateId: string; templateName: string } | null>(null);
   const [finalName, setFinalName] = useState("");
+  const [productNumber, setProductNumber] = useState("");
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -451,9 +452,16 @@ export default function Dashboard() {
     }
   }
 
+  function genProductNumber(name: string): string {
+    const words = name.replace(/[^A-Za-z0-9\s]/g, "").toUpperCase().split(/\s+/).filter(Boolean);
+    return words.map(w => w.slice(0, 2)).join("").slice(0, 8) || "PROD";
+  }
+
   function handleCreateFromTemplate(templateId: string, templateName: string) {
+    const name = createInput.trim();
     setPendingCreate({ templateId, templateName });
-    setFinalName(createInput.trim());
+    setFinalName(name);
+    setProductNumber(genProductNumber(name));
     setCreateResult(null);
   }
 
@@ -465,7 +473,7 @@ export default function Dashboard() {
       const res = await fetch(`${RAILWAY}/product-create/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template_id: templateId, new_name: finalName.trim() }),
+        body: JSON.stringify({ template_id: templateId, new_name: finalName.trim(), product_number: productNumber.trim() || null }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
@@ -968,29 +976,46 @@ export default function Dashboard() {
                   Szablon: <span className="font-medium text-neutral-700">{pendingCreate.templateName}</span>
                   <span className="ml-2 text-neutral-400">(ID: {pendingCreate.templateId})</span>
                 </p>
-                <div className="flex gap-3">
-                  <input
-                    type="text"
-                    value={finalName}
-                    onChange={(e) => setFinalName(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && finalName.trim() && handleConfirmCreate()}
-                    placeholder="Nazwa nowego produktu…"
-                    className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
-                    autoFocus
-                  />
-                  <button
-                    onClick={handleConfirmCreate}
-                    disabled={creating || !finalName.trim()}
-                    className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
-                  >
-                    {creating ? "Tworzę…" : "Utwórz produkt"}
-                  </button>
-                  <button
-                    onClick={() => setPendingCreate(null)}
-                    className="border border-neutral-200 text-neutral-500 hover:bg-neutral-50 text-sm px-4 py-2.5 rounded-lg transition-colors"
-                  >
-                    Anuluj
-                  </button>
+                <div className="flex flex-col gap-3">
+                  <div className="flex gap-3">
+                    <div className="flex-1">
+                      <label className="block text-xs text-neutral-400 mb-1">Nazwa produktu</label>
+                      <input
+                        type="text"
+                        value={finalName}
+                        onChange={(e) => { setFinalName(e.target.value); setProductNumber(genProductNumber(e.target.value)); }}
+                        placeholder="Nazwa nowego produktu…"
+                        className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-neutral-400 mb-1">Nr produktu (maks. 8 znaków)</label>
+                      <input
+                        type="text"
+                        value={productNumber}
+                        onChange={(e) => setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8))}
+                        placeholder="np. ROECAT"
+                        className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-36 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleConfirmCreate}
+                      disabled={creating || !finalName.trim() || !productNumber.trim()}
+                      className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+                    >
+                      {creating ? "Tworzę…" : "Utwórz produkt"}
+                    </button>
+                    <button
+                      onClick={() => setPendingCreate(null)}
+                      className="border border-neutral-200 text-neutral-500 hover:bg-neutral-50 text-sm px-4 py-2.5 rounded-lg transition-colors"
+                    >
+                      Anuluj
+                    </button>
+                  </div>
+                  <p className="text-xs text-neutral-400">Format: tylko wielkie litery, bez spacji, unikalny w systemie</p>
                 </div>
               </div>
             )}

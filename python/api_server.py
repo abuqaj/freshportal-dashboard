@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
-from product_creator import ProductMatch, search_products, find_best_template, copy_and_create
+from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
@@ -389,6 +389,7 @@ class ProductSearchRequest(BaseModel):
 class ProductCreateRequest(BaseModel):
     template_id: str
     new_name: str
+    product_number: str | None = None
 
 
 class AIAnalyzeRequest(BaseModel):
@@ -521,7 +522,7 @@ async def product_create_stream(req: ProductCreateRequest):
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
-            result = copy_and_create(req.template_id, req.new_name, cfg, on_status=on_status)
+            result = copy_and_create(req.template_id, req.new_name, cfg, on_status=on_status, product_number=req.product_number)
             queue.put({"type": "result", "data": result})
         except Exception as e:
             log.exception("product-create/stream failed")

@@ -212,6 +212,22 @@ def search_products(
 
 # ── template selection ───────────────────────────────────────────────────────
 
+def generate_product_number(name: str) -> str:
+    """Generate a FreshPortal product number from a product name.
+
+    Rules: max 8 chars, uppercase only, no spaces or special characters.
+    Strategy: first 2 chars of each word, concatenated and truncated.
+
+    Examples:
+      "Rosa Ec Atena"             → ROECAT
+      "Rosa Ec Honey Hearst"      → ROECHOHE
+      "Rosa Ec Spray Julieta Honey" → ROECSPJU
+    """
+    words = re.sub(r"[^A-Za-z0-9\s]", "", name).upper().split()
+    code = "".join(w[:2] for w in words)[:8]
+    return code if code else "PROD"
+
+
 def find_best_template(
     target_name: str,
     products: list[ProductMatch],
@@ -235,6 +251,7 @@ def copy_and_create(
     new_name: str,
     cfg: Config,
     on_status: Callable | None = None,
+    product_number: str | None = None,
 ) -> dict:
     """Copy *template_id* in FreshPortal and save it as *new_name*.
 
@@ -295,6 +312,24 @@ def copy_and_create(
             if not name_field_ids:
                 return {"ok": False, "message": "Nie znaleziono fps-input[name*='form_name_'] w formularzu"}
 
+            # ── Fill product number (mandatory, unique) ─────────────────────
+            pnum = product_number or generate_product_number(new_name)
+            _s(f"Wypełnianie numeru produktu: {pnum}…")
+            page.evaluate(f"""
+                () => {{
+                    const el = document.querySelector("fps-input[name='product_index_form_number']");
+                    if (!el || !el.shadowRoot) return;
+                    const inp = el.shadowRoot.querySelector('input');
+                    if (!inp) return;
+                    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                    setter.call(inp, '{pnum}');
+                    ['input', 'change', 'blur'].forEach(t =>
+                        inp.dispatchEvent(new Event(t, {{bubbles: true}}))
+                    );
+                }}
+            """)
+            time.sleep(0.3)
+
             safe_name = new_name.replace("'", "\\'").replace('"', '\\"')
             for fps_name in name_field_ids:
                 page.evaluate(f"""
@@ -346,35 +381,59 @@ def copy_and_create(
             time.sleep(0.5)
             page.keyboard.press("Enter")
 
-            # Wait for URL to change away from the copy form (indicates success)
-            _s("Czekam na przekierowanie po zapisaniu…")
+            # URL doesn't change after save in FreshPortal — wait for save to complete,
+            # then check for form errors and search for the new product by name.
+            _s("Czekam na zapis…")
+            time.sleep(3)
+
+            # Check for visible error messages on the form
+            for err_sel in [".alert-danger", ".text-danger", "[class*='error-message']"]:
+                err = page.query_selector(err_sel)
+                if err and err.is_visible():
+                    return {"ok": False, "message": f"Błąd formularza: {err.inner_text()[:300]}"}
+
+            # Navigate to product list and search by the new name to find its ID
+            _s("Szukam nowo utworzonego produktu…")
+            encoded = new_name.replace(" ", "+")
+            search_url = (
+                f"{cfg.freshportal_url}/product/index/index/"
+                f"?1=1&name_adjustable={encoded}&page=1"
+            )
+            page.goto(search_url, wait_until="load", timeout=cfg.request_timeout)
             try:
-                page.wait_for_url(
-                    lambda url: "copy" not in url,
-                    timeout=25_000,
-                )
+                page.wait_for_selector("table tbody tr", timeout=12_000)
             except PWTimeout:
-                # Check for error messages on the form
-                for err_sel in [".alert-danger", ".error-message", "[class*='error']"]:
-                    err = page.query_selector(err_sel)
-                    if err and err.is_visible():
-                        return {"ok": False, "message": f"Błąd zapisu: {err.inner_text()[:300]}"}
-                return {"ok": False, "message": "Brak przekierowania po zapisaniu — formularz mógł nie zostać wysłany poprawnie"}
+                time.sleep(3)
 
-            new_url = page.url
-            _s(f"Przekierowano do: {new_url}")
+            soup = BeautifulSoup(page.content(), "lxml")
+            rows = _parse_rows_html(soup, _detect_columns_html(soup))
 
-            # Extract new product ID from the redirect URL
-            id_match = re.search(r"[/=](\d+)/?(?:\?|$)", new_url)
-            new_id = id_match.group(1) if id_match else "?"
+            new_id: str | None = None
+            # Prefer exact name match
+            for r in rows:
+                if r.name.strip().lower() == new_name.strip().lower():
+                    new_id = r.product_id
+                    break
+            # Fallback: first result that isn't the template
+            if not new_id:
+                for r in rows:
+                    if r.product_id != template_id:
+                        new_id = r.product_id
+                        break
 
-            if new_id == template_id:
-                return {"ok": False, "message": f"ID nowego produktu ({new_id}) jest identyczne z szablonem — produkt prawdopodobnie nie został utworzony"}
+            if not new_id:
+                return {
+                    "ok": True,
+                    "product_id": None,
+                    "message": f"Produkt '{new_name}' prawdopodobnie utworzony, ale nie udało się znaleźć jego ID",
+                }
 
+            product_url = f"{cfg.freshportal_url}/product/index/index/?1=1&id={new_id}"
+            _s(f"Produkt znaleziony: ID={new_id}")
             return {
                 "ok": True,
                 "product_id": new_id,
-                "url": new_url,
+                "url": product_url,
                 "message": f"Produkt '{new_name}' utworzony (ID: {new_id})",
             }
 

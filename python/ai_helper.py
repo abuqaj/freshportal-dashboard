@@ -81,7 +81,15 @@ You are an expert in Dutch flower auction product names and VBN product codes.
 
 ---
 
-### TASK 1 — Duplicate check
+### Naming conventions (from company style guide)
+- Format: {{Family Name}} {{Origin/Type}} {{Variety/Color}}
+- Rosa large-flowered (non-spray): "Rosa {{Name}}" or "Rosa Ec {{Name}}" (Ec = Ecuador)
+- Rosa spray: "Rosa Spray {{Name}}" or "Rosa Ec Spray {{Name}}"
+- Use English language (color names etc.)
+- "Tros", "Tr", "Sp" → should be "Spray" in the name
+- Preserved/Bleached/Dried: "{{Family}} {{Treatment}} {{Variety/Color}}"
+
+## TASK 1 — Duplicate check
 Is any of the candidates the SAME variety as "{query}"?
 
 Rules:
