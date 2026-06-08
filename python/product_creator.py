@@ -230,75 +230,6 @@ def find_best_template(
 
 # ── copy product via Playwright ───────────────────────────────────────────────
 
-def _find_copy_button(page: Page, product_id: str):
-    """Try to locate the copy/duplicate button for a product row."""
-    # Navigate directly to the product row
-    selectors = [
-        # data-action patterns
-        f"tr:has(td:text-is('{product_id}')) a[data-action*='copy']",
-        f"tr:has(td:text-is('{product_id}')) a[data-action*='duplicate']",
-        f"tr:has(td:text-is('{product_id}')) a[data-action*='clone']",
-        # title/aria patterns
-        f"tr:has(td:text-is('{product_id}')) a[title*='opy']",
-        f"tr:has(td:text-is('{product_id}')) a[title*='uplic']",
-        f"tr:has(td:text-is('{product_id}')) a[title*='loon']",
-        # href patterns
-        f"tr:has(td:text-is('{product_id}')) a[href*='copy']",
-        f"tr:has(td:text-is('{product_id}')) a[href*='duplic']",
-        # class patterns
-        f"tr:has(td:text-is('{product_id}')) .copy-btn",
-        f"tr:has(td:text-is('{product_id}')) .btn-copy",
-    ]
-    for sel in selectors:
-        try:
-            el = page.query_selector(sel)
-            if el:
-                logger.info("Copy button found: %s", sel)
-                return el
-        except Exception:
-            continue
-    return None
-
-
-def _fill_name_fields(page: Page, name: str) -> None:
-    """Fill all name/short-name text inputs on the product form with *name*."""
-    # FreshPortal product form has language-flagged inputs
-    # Try to fill English name field first, then all visible text inputs in name sections
-    filled = False
-
-    # Look for the English (EN) name input specifically
-    for sel in [
-        "input[name*='name'][lang='en'], input[name*='Name'][lang='en']",
-        "input[placeholder*='Name'][lang='en']",
-        # Generic: fill all name inputs
-        "input[name*='PRO_Name']",
-        "input[name*='product_name']",
-    ]:
-        try:
-            els = page.query_selector_all(sel)
-            for el in els:
-                if el.is_visible():
-                    el.fill(name)
-                    filled = True
-        except Exception:
-            continue
-
-    if not filled:
-        # Fallback: fill all visible text inputs that look like name fields
-        try:
-            all_inputs = page.query_selector_all("input[type='text']:visible")
-            for inp in all_inputs:
-                inp_name = (inp.get_attribute("name") or "").lower()
-                inp_placeholder = (inp.get_attribute("placeholder") or "").lower()
-                if "name" in inp_name or "name" in inp_placeholder:
-                    inp.fill(name)
-                    filled = True
-        except Exception:
-            pass
-
-    logger.info("Name fields filled (%s): %s", "ok" if filled else "uncertain", name)
-
-
 def copy_and_create(
     template_id: str,
     new_name: str,
@@ -306,6 +237,13 @@ def copy_and_create(
     on_status: Callable | None = None,
 ) -> dict:
     """Copy *template_id* in FreshPortal and save it as *new_name*.
+
+    FreshPortal copy flow (discovered via /debug/product-row):
+      1. Navigate to list filtered by product ID
+      2. Click the row to select it
+      3. Click fps-button[name="button_copy"] in the toolbar
+      4. A popup/dialog appears — fill in the name fields
+      5. Submit
 
     Returns {"ok": True, "product_id": "...", "message": "..."}
     or      {"ok": False, "message": "..."}.
@@ -319,7 +257,7 @@ def copy_and_create(
         browser = _launch_browser(pw)
         context = browser.new_context()
         page = context.new_page()
-        # Don't block stylesheets here — form may need them to render correctly
+        # Allow stylesheets — Angular/fps-button components need them to render
         page.route("**/*", lambda route: route.abort()
             if route.request.resource_type in ("image", "font", "media")
             else route.continue_())
@@ -328,6 +266,7 @@ def copy_and_create(
             _s("Logowanie do FreshPortal…")
             _login(page, cfg)
 
+            # ── 1. Navigate to filtered product list ────────────────────────
             _s(f"Nawigacja do produktu {template_id}…")
             list_url = (
                 f"{cfg.freshportal_url}/product/index/index/"
@@ -339,60 +278,117 @@ def copy_and_create(
             except PWTimeout:
                 time.sleep(2)
 
-            # ── Find and click copy button ──────────────────────────────────
-            copy_btn = _find_copy_button(page, template_id)
+            rows = page.query_selector_all("table tbody tr")
+            if not rows:
+                return {"ok": False, "message": f"Produkt ID={template_id} nie znaleziony"}
 
-            if copy_btn:
-                _s("Kopiowanie produktu…")
-                copy_btn.click()
-            else:
-                # Fallback: try direct copy URL
-                _s("Próba bezpośredniego URL kopiowania…")
-                for copy_url_pattern in [
-                    f"{cfg.freshportal_url}/product/index/copy/id/{template_id}/",
-                    f"{cfg.freshportal_url}/product/index/duplicate/{template_id}/",
-                    f"{cfg.freshportal_url}/product/index/add/?copy={template_id}",
-                ]:
-                    page.goto(copy_url_pattern, wait_until="load", timeout=cfg.request_timeout)
-                    current = page.url
-                    if "add" in current or "copy" in current or "edit" in current:
-                        break
+            # ── 2. Select the row ───────────────────────────────────────────
+            _s("Zaznaczam wiersz produktu…")
+            rows[0].click()
+            time.sleep(0.8)
 
-            # Wait for form to appear
-            time.sleep(1.5)
-            try:
-                page.wait_for_selector("input[type='text']", timeout=10_000)
-            except PWTimeout:
-                return {"ok": False, "message": "Formularz nie otworzył się po kliknięciu kopiuj"}
+            # ── 3. Click the fps-button copy toolbar button ─────────────────
+            _s("Klikam przycisk kopiowania…")
+            copy_btn = None
+            for sel in [
+                "fps-button[name='button_copy']",
+                "#btn_product_index_index_button_copy",
+                "fps-button[type='copy']",
+                "fps-button[fps-tooltip-text='Copy']",
+            ]:
+                copy_btn = page.query_selector(sel)
+                if copy_btn:
+                    logger.info("Copy fps-button found: %s", sel)
+                    break
 
+            if not copy_btn:
+                return {"ok": False, "message": "Nie znaleziono fps-button[name='button_copy'] w pasku narzędzi"}
+
+            copy_btn.click()
+            time.sleep(2)  # wait for Angular popup to render
+
+            # ── 4. Wait for the copy popup ──────────────────────────────────
+            _s("Czekam na popup kopiowania…")
+            popup_found = False
+            for popup_sel in [
+                "fps-dialog",
+                "fps-modal",
+                "[role='dialog']",
+                ".modal.in",
+                ".modal-open .modal",
+            ]:
+                try:
+                    page.wait_for_selector(popup_sel, timeout=6_000)
+                    popup_found = True
+                    logger.info("Popup found: %s", popup_sel)
+                    break
+                except PWTimeout:
+                    continue
+
+            if not popup_found:
+                # Popup might not use a dialog — check for new visible text inputs
+                try:
+                    page.wait_for_selector("input[type='text']:visible", timeout=4_000)
+                    popup_found = True
+                except PWTimeout:
+                    pass
+
+            if not popup_found:
+                return {"ok": False, "message": "Popup kopiowania nie pojawił się po kliknięciu przycisku"}
+
+            # ── 5. Fill name fields ─────────────────────────────────────────
             _s(f"Wypełnianie nazwy: {new_name}…")
-            _fill_name_fields(page, new_name)
+            visible_text_inputs = [
+                inp for inp in page.query_selector_all("input[type='text']")
+                if inp.is_visible()
+            ]
+            if not visible_text_inputs:
+                return {"ok": False, "message": "Brak widocznych pól tekstowych w popupie kopiowania"}
+
+            # Fill the first N visible text inputs (name in multiple languages)
+            for inp in visible_text_inputs[:6]:
+                try:
+                    placeholder = inp.get_attribute("placeholder") or ""
+                    # Skip non-name fields
+                    if placeholder.lower() in ("product number", "note"):
+                        continue
+                    inp.triple_click()
+                    inp.fill(new_name)
+                except Exception:
+                    pass
+
             time.sleep(0.5)
 
-            # ── Submit form ─────────────────────────────────────────────────
+            # ── 6. Submit ───────────────────────────────────────────────────
             _s("Zapisywanie produktu…")
+            submitted = False
             for save_sel in [
-                "button[type='submit']:has-text('Save')",
-                "button[type='submit']:has-text('Opslaan')",
-                "button[type='submit']:has-text('Zapisz')",
-                "input[type='submit']",
+                "fps-button[name='save']",
+                "fps-button[name='confirm']",
+                "fps-button[type='submit']",
                 "button[type='submit']",
-                ".btn-primary[type='submit']",
+                "fps-button:has-text('Save')",
+                "fps-button:has-text('Opslaan')",
+                ".modal-footer fps-button",
+                ".modal-footer button",
             ]:
                 btn = page.query_selector(save_sel)
                 if btn and btn.is_visible():
                     btn.click()
+                    submitted = True
+                    logger.info("Submitted via: %s", save_sel)
                     break
 
+            if not submitted:
+                return {"ok": False, "message": "Nie znaleziono przycisku zapisu w popupie"}
+
             try:
-                page.wait_for_load_state("networkidle", timeout=15_000)
+                page.wait_for_load_state("networkidle", timeout=20_000)
             except PWTimeout:
                 time.sleep(3)
 
             new_url = page.url
-            _s(f"Produkt zapisany. URL: {new_url}")
-
-            # Try to extract new product ID from URL
+            _s(f"Zapisano. URL: {new_url}")
             id_match = re.search(r"/(\d+)/?$", new_url)
             new_id = id_match.group(1) if id_match else "?"
 
