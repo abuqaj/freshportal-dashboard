@@ -20,6 +20,41 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def ai_suggest_spellings(variety: str, cfg: "Config") -> list[str]:
+    """Ask Claude for likely correct spellings of a possibly misspelled variety name.
+
+    Returns 2-3 candidate spellings (NOT including the original).
+    Fast call — max_tokens=80, single sentence prompt.
+    """
+    if not cfg.anthropic_api_key or not variety:
+        return []
+    try:
+        client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
+        msg = client.messages.create(
+            model=cfg.anthropic_model,
+            max_tokens=80,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f'The flower variety name "{variety}" may be misspelled. '
+                    "List 2-3 likely CORRECT spellings (common fixes: missing h, "
+                    "double letters, i↔y, c↔k). "
+                    'Return ONLY a JSON array, e.g. ["Athena","Atena"]'
+                ),
+            }],
+        )
+        text = msg.content[0].text.strip()
+        m = re.search(r"\[.*?\]", text, re.DOTALL)
+        if not m:
+            return []
+        spellings: list[str] = json.loads(m.group())
+        # Exclude the original variety (case-insensitive) to avoid redundant searches
+        return [s for s in spellings if s.lower() != variety.lower()]
+    except Exception as exc:
+        logger.error("ai_suggest_spellings failed: %s", exc)
+        return []
+
 _VBN_CONTEXT = """
 Common VBN category codes:
   580   — Rosa grootbloemig overig (large-flowered, non-spray, non-specific origin)

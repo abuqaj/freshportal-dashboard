@@ -26,8 +26,8 @@ from scraper_fp import (
     _launch_browser,
     _detect_columns_html,
     _parse_rows_html,
-    _get_last_page_html,
 )
+from ai_helper import ai_suggest_spellings
 
 logger = logging.getLogger(__name__)
 
@@ -116,41 +116,16 @@ def _variety_search_terms(variety: str) -> list[str]:
     return list(dict.fromkeys(terms))
 
 
-def _search_page(page: Page, url: str, query: str, cfg: Config) -> list[ProductMatch]:
-    """Fetch one FreshPortal URL and return matching rows with similarity scores."""
-    try:
-        _goto_and_wait(page, url, cfg)
-    except Exception:
-        return []
-
-    soup = BeautifulSoup(page.content(), "lxml")
-    cols = _detect_columns_html(soup)
-    rows = _parse_rows_html(soup, cols)
-
-    results = []
-    for r in rows:
-        sim = _similarity(query, r.name)
-        if sim > 0.1 or query.lower().split()[0] in r.name.lower():
-            results.append(ProductMatch(
-                product_id=r.product_id,
-                name=r.name,
-                short_name=r.short_name,
-                vbn_number=r.vbn_number,
-                similarity=sim,
-            ))
-    return results
-
-
 def search_products(
     query: str,
     cfg: Config,
     on_status: Callable | None = None,
 ) -> list[ProductMatch]:
-    """Search FreshPortal for products with names similar to *query*.
+    """Two-phase product search — fast and typo-aware.
 
-    Searches name_adjustable first (more reliable), then short_name_adjustable.
-    Fetches all pages up to a per-term limit.
-    Skips broad fallback terms once enough high-similarity matches are found.
+    Phase 1 (~8 s): search exact query + variety name via name_adjustable, 2 pages each.
+    Phase 2 (~8 s): if no ≥80% matches and ANTHROPIC_API_KEY set, ask Claude for correct
+                    spellings of the variety, then search each suggestion (1 page each).
     """
     def _s(msg: str) -> None:
         logger.info(msg)
@@ -160,88 +135,71 @@ def search_products(
     words = query.strip().split()
     genus = words[0].lower() if words else ""
     _, variety = _extract_parts(query)
-    variety_terms = set(_variety_search_terms(variety))
-
-    search_terms = list(dict.fromkeys(filter(None, [
-        query.strip(),
-        *_variety_search_terms(variety),
-        " ".join(words[:2]) if len(words) >= 2 else None,
-        words[0] if words else None,
-    ])))
-
-    def _max_pages(term: str) -> int:
-        n = len(term.replace(" ", ""))
-        if n <= 3:  return 3   # "ena" — broad, keep short
-        if n <= 5:  return 10  # "atena" — fairly specific
-        return 15              # longer terms
 
     seen_ids: set[str] = set()
     all_matches: list[ProductMatch] = []
 
+    def _fetch(fp_page: Page, term: str, pages: int = 2) -> None:
+        """Fetch up to `pages` pages for `term` via name_adjustable and collect matches."""
+        encoded = term.replace(" ", "+")
+        for page_num in range(1, pages + 1):
+            url = (
+                f"{cfg.freshportal_url}/product/index/index/"
+                f"?1=1&name_adjustable={encoded}&page={page_num}"
+            )
+            try:
+                _goto_and_wait(fp_page, url, cfg)
+            except Exception:
+                break
+            soup = BeautifulSoup(fp_page.content(), "lxml")
+            rows = _parse_rows_html(soup, _detect_columns_html(soup))
+            if not rows:
+                break
+            new = 0
+            for r in rows:
+                if r.product_id not in seen_ids:
+                    sim = _similarity(query, r.name)
+                    if sim > 0.05 or genus in r.name.lower():
+                        seen_ids.add(r.product_id)
+                        all_matches.append(ProductMatch(
+                            product_id=r.product_id,
+                            name=r.name,
+                            short_name=r.short_name,
+                            vbn_number=r.vbn_number,
+                            similarity=sim,
+                        ))
+                        new += 1
+            _s(f"'{term}' strona {page_num} — {len(all_matches)} produktów łącznie")
+
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         context = browser.new_context()
-        page = context.new_page()
-        _block_resources(page)
+        fp_page = context.new_page()
+        _block_resources(fp_page)
 
         try:
             _s("Logowanie do FreshPortal…")
-            _login(page, cfg)
+            _login(fp_page, cfg)
 
-            for term in search_terms:
-                # Skip broad fallbacks once we have enough strong matches
-                good = sum(1 for m in all_matches if m.similarity >= 0.8)
-                if good >= 3 and term not in variety_terms and term != query.strip():
-                    _s(f"Pomijam '{term}' — mamy już {good} dopasowań ≥80%")
-                    continue
+            # Phase 1: exact query + extracted variety, 2 pages each
+            phase1 = list(dict.fromkeys(filter(None, [query.strip(), variety])))
+            for term in phase1:
+                _s(f"Szukam '{term}'…")
+                _fetch(fp_page, term, pages=2)
 
-                encoded = term.replace(" ", "+")
-                max_p = _max_pages(term)
+            # Phase 2: AI spelling correction when no good matches found
+            good = sum(1 for m in all_matches if m.similarity >= 0.8)
+            if good == 0 and variety:
+                _s("Brak wyników ≥80% — sprawdzam pisownię z AI…")
+                spellings = ai_suggest_spellings(variety, cfg)
+                if spellings:
+                    _s(f"AI sugeruje: {', '.join(spellings)}")
+                    for spelling in spellings:
+                        _s(f"Szukam '{spelling}'…")
+                        _fetch(fp_page, spelling, pages=2)
+                else:
+                    _s("AI niedostępne — pomijam korektę pisowni")
 
-                # name_adjustable first — product names are more reliable than short names
-                for param in ("name_adjustable", "short_name_adjustable"):
-                    last_page: int | None = None
-                    for page_num in range(1, max_p + 1):
-                        url = (
-                            f"{cfg.freshportal_url}/product/index/index/"
-                            f"?1=1&{param}={encoded}&page={page_num}"
-                        )
-                        try:
-                            _goto_and_wait(page, url, cfg)
-                        except Exception:
-                            break
-
-                        soup = BeautifulSoup(page.content(), "lxml")
-
-                        if last_page is None:
-                            last_page = min(_get_last_page_html(soup), max_p)
-                            _s(f"Szukam '{term}' — {last_page} stron…")
-
-                        cols = _detect_columns_html(soup)
-                        rows = _parse_rows_html(soup, cols)
-                        if not rows:
-                            break
-
-                        for r in rows:
-                            if r.product_id not in seen_ids:
-                                sim = _similarity(query, r.name)
-                                if sim > 0.05 or genus in r.name.lower():
-                                    seen_ids.add(r.product_id)
-                                    all_matches.append(ProductMatch(
-                                        product_id=r.product_id,
-                                        name=r.name,
-                                        short_name=r.short_name,
-                                        vbn_number=r.vbn_number,
-                                        similarity=sim,
-                                    ))
-
-                        _s(
-                            f"Strona {page_num}/{last_page} ({param})"
-                            f" — {len(all_matches)} produktów łącznie"
-                        )
-
-                        if page_num >= (last_page or 1):
-                            break
         finally:
             context.close()
             browser.close()
