@@ -126,6 +126,8 @@ export default function Dashboard() {
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [pendingCreate, setPendingCreate] = useState<{ templateId: string; templateName: string } | null>(null);
+  const [finalName, setFinalName] = useState("");
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -449,14 +451,21 @@ export default function Dashboard() {
     }
   }
 
-  async function handleCreateFromTemplate(templateId: string, templateName: string) {
-    if (!RAILWAY) return;
-    flushSync(() => { setCreating(true); setCreateStatus("Inicjalizacja…"); setCreateResult(null); });
+  function handleCreateFromTemplate(templateId: string, templateName: string) {
+    setPendingCreate({ templateId, templateName });
+    setFinalName(createInput.trim());
+    setCreateResult(null);
+  }
+
+  async function handleConfirmCreate() {
+    if (!pendingCreate || !RAILWAY) return;
+    const { templateId } = pendingCreate;
+    flushSync(() => { setCreating(true); setCreateStatus("Inicjalizacja…"); setCreateResult(null); setPendingCreate(null); });
     try {
       const res = await fetch(`${RAILWAY}/product-create/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template_id: templateId, new_name: createInput.trim() }),
+        body: JSON.stringify({ template_id: templateId, new_name: finalName.trim() }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
@@ -950,6 +959,41 @@ export default function Dashboard() {
               </div>
               );
             })()}
+
+            {/* Confirmation step before creating */}
+            {pendingCreate && (
+              <div className="mt-4 bg-white border-2 border-violet-300 rounded-xl p-5">
+                <p className="text-sm font-semibold text-neutral-800 mb-1">Potwierdź nazwę nowego produktu</p>
+                <p className="text-xs text-neutral-500 mb-3">
+                  Szablon: <span className="font-medium text-neutral-700">{pendingCreate.templateName}</span>
+                  <span className="ml-2 text-neutral-400">(ID: {pendingCreate.templateId})</span>
+                </p>
+                <div className="flex gap-3">
+                  <input
+                    type="text"
+                    value={finalName}
+                    onChange={(e) => setFinalName(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && finalName.trim() && handleConfirmCreate()}
+                    placeholder="Nazwa nowego produktu…"
+                    className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleConfirmCreate}
+                    disabled={creating || !finalName.trim()}
+                    className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+                  >
+                    {creating ? "Tworzę…" : "Utwórz produkt"}
+                  </button>
+                  <button
+                    onClick={() => setPendingCreate(null)}
+                    className="border border-neutral-200 text-neutral-500 hover:bg-neutral-50 text-sm px-4 py-2.5 rounded-lg transition-colors"
+                  >
+                    Anuluj
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* AI Analysis */}
             {searchResults !== null && (aiLoading || aiAnalysis) && (

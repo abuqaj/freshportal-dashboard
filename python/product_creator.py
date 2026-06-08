@@ -279,72 +279,97 @@ def copy_and_create(
             except PWTimeout:
                 return {"ok": False, "message": f"Formularz kopiowania nie załadował się ({copy_url})"}
 
-            # ── Fill name fields ────────────────────────────────────────────
-            # Form uses fps-input Web Components (Shadow DOM).
-            # Name fields: fps-input[name*='form_name_'] excluding 'short_name'
-            # Short name fields: fps-input[name*='form_short_name_'] — skip (auto)
+            # ── Fill name fields via Angular-compatible JS ──────────────────
+            # fps-input uses Shadow DOM. Playwright's fill() dispatches input
+            # events, but Angular reactive forms also need 'change' and 'blur'.
+            # Use native value setter + full event sequence to trigger Angular
+            # change detection.
             _s(f"Wypełnianie nazwy: {new_name}…")
-            filled = 0
 
+            name_field_ids: list[str] = []
             for fps in page.query_selector_all("fps-input"):
                 fps_name = fps.get_attribute("name") or ""
-                if "form_name_" not in fps_name or "short" in fps_name:
-                    continue
-                # Pierce Shadow DOM via locator
-                try:
-                    loc = page.locator(f"fps-input[name='{fps_name}']").locator("input")
-                    if loc.count() > 0:
-                        loc.fill(new_name)
-                        filled += 1
-                        continue
-                except Exception:
-                    pass
-                # Fallback: direct inner query
-                inner = fps.query_selector("input")
-                if inner:
-                    try:
-                        inner.fill(new_name)
-                        filled += 1
-                    except Exception:
-                        pass
+                if "form_name_" in fps_name and "short" not in fps_name:
+                    name_field_ids.append(fps_name)
 
-            if filled == 0:
+            if not name_field_ids:
                 return {"ok": False, "message": "Nie znaleziono fps-input[name*='form_name_'] w formularzu"}
-            _s(f"Wypełniono {filled} pól nazwy")
-            time.sleep(0.5)
 
-            # ── Submit via Shadow DOM click ─────────────────────────────────
+            safe_name = new_name.replace("'", "\\'").replace('"', '\\"')
+            for fps_name in name_field_ids:
+                page.evaluate(f"""
+                    () => {{
+                        const el = document.querySelector("fps-input[name='{fps_name}']");
+                        if (!el || !el.shadowRoot) return;
+                        const inp = el.shadowRoot.querySelector('input');
+                        if (!inp) return;
+                        const setter = Object.getOwnPropertyDescriptor(
+                            HTMLInputElement.prototype, 'value'
+                        ).set;
+                        setter.call(inp, '{safe_name}');
+                        ['input', 'change', 'blur'].forEach(type =>
+                            inp.dispatchEvent(new Event(type, {{bubbles: true}}))
+                        );
+                    }}
+                """)
+            _s(f"Wypełniono {len(name_field_ids)} pól nazwy")
+            time.sleep(1)
+
+            # ── Submit form ─────────────────────────────────────────────────
             _s("Zapisywanie produktu…")
             submitted = False
-            for save_sel in [
-                "#product_index_form_submit",
-                "fps-button[name='submit']",
-                "fps-button[type='save']",
-                "fps-button[submit='true']",
-            ]:
+
+            # Try 1: click inner shadow DOM button of the save fps-button
+            for save_sel in ["#product_index_form_submit", "fps-button[name='submit']", "fps-button[type='save']"]:
                 loc = page.locator(save_sel)
                 if loc.count() > 0:
                     inner = loc.locator("button")
                     if inner.count() > 0:
                         inner.click()
-                    else:
-                        loc.click(force=True)
-                    submitted = True
-                    logger.info("Submitted via: %s", save_sel)
-                    break
+                        submitted = True
+                        break
 
+            # Try 2: JS click on both the fps-button AND its inner button
             if not submitted:
-                return {"ok": False, "message": "Nie znaleziono przycisku zapisu"}
+                page.evaluate("""
+                    () => {
+                        const btn = document.querySelector('#product_index_form_submit');
+                        if (!btn) return;
+                        btn.click();
+                        const inner = btn.shadowRoot?.querySelector('button');
+                        if (inner) inner.click();
+                    }
+                """)
+                submitted = True
 
+            # Try 3: press Enter on the last name field
+            time.sleep(0.5)
+            page.keyboard.press("Enter")
+
+            # Wait for URL to change away from the copy form (indicates success)
+            _s("Czekam na przekierowanie po zapisaniu…")
             try:
-                page.wait_for_load_state("networkidle", timeout=20_000)
+                page.wait_for_url(
+                    lambda url: "copy" not in url,
+                    timeout=25_000,
+                )
             except PWTimeout:
-                time.sleep(3)
+                # Check for error messages on the form
+                for err_sel in [".alert-danger", ".error-message", "[class*='error']"]:
+                    err = page.query_selector(err_sel)
+                    if err and err.is_visible():
+                        return {"ok": False, "message": f"Błąd zapisu: {err.inner_text()[:300]}"}
+                return {"ok": False, "message": "Brak przekierowania po zapisaniu — formularz mógł nie zostać wysłany poprawnie"}
 
             new_url = page.url
-            _s(f"Zapisano. URL: {new_url}")
-            id_match = re.search(r"/(\d+)/?$", new_url)
+            _s(f"Przekierowano do: {new_url}")
+
+            # Extract new product ID from the redirect URL
+            id_match = re.search(r"[/=](\d+)/?(?:\?|$)", new_url)
             new_id = id_match.group(1) if id_match else "?"
+
+            if new_id == template_id:
+                return {"ok": False, "message": f"ID nowego produktu ({new_id}) jest identyczne z szablonem — produkt prawdopodobnie nie został utworzony"}
 
             return {
                 "ok": True,
