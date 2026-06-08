@@ -403,19 +403,9 @@ def copy_and_create(
             _s("Logowanie do FreshPortal…")
             _login(page, cfg)
 
-            # ── Find available product number ────────────────────────────────
+            # Number was already validated by /product-number-suggest before the
+            # user clicked Create — no need to re-check here.
             pnum = product_number or generate_product_number(new_name)
-            _s(f"Sprawdzam dostępność numeru {pnum}…")
-            available = _find_available_number_on_page(page, pnum, cfg, on_status)
-            if available is None:
-                return {
-                    "ok": False,
-                    "message": (
-                        f"Nr produktu '{pnum}' jest już w użyciu. "
-                        "Zmień numer ręcznie w formularzu i spróbuj ponownie."
-                    ),
-                }
-            pnum = available
 
             # ── Navigate directly to copy URL ───────────────────────────────
             # Debug confirmed: /product/index/copy/PRO_ID/{id}/ opens the copy
@@ -544,39 +534,56 @@ def copy_and_create(
             except Exception:
                 pass
 
-            # Validate by searching for the product using name + product number + creation date.
-            # A match with a creation date within the last 15 minutes confirms success.
-            _s("Weryfikuję utworzony produkt (nazwa + nr + data)…")
-            encoded_name = new_name.replace(" ", "+")
+            # Validate: search by number (exact) — if the row exists, creation succeeded.
+            # Uses page.evaluate() on the rendered DOM so the SPA has time to paint.
+            _s("Weryfikuję utworzony produkt…")
             encoded_num = pnum.replace(" ", "+")
+            verify_url = (
+                f"{cfg.freshportal_url}/product/index/index/"
+                f"?1=1&number_adjustable={encoded_num}&page=1"
+            )
+            page.goto(verify_url, wait_until="load", timeout=cfg.request_timeout)
+            try:
+                page.wait_for_selector(
+                    "td[data-cell-action='product_number']", timeout=12_000
+                )
+            except Exception:
+                pass
 
-            for search_url in [
-                # Primary: filter by both name and product number
-                (f"{cfg.freshportal_url}/product/index/index/"
-                 f"?1=1&name_adjustable={encoded_name}&number_adjustable={encoded_num}&page=1"),
-                # Fallback: filter by name only
-                (f"{cfg.freshportal_url}/product/index/index/"
-                 f"?1=1&name_adjustable={encoded_name}&page=1"),
-            ]:
-                page.goto(search_url, wait_until="load", timeout=cfg.request_timeout)
-                try:
-                    page.wait_for_selector("table tbody tr", timeout=12_000)
-                except PWTimeout:
-                    time.sleep(3)
-
-                soup = BeautifulSoup(page.content(), "lxml")
-                if _was_recently_created(soup, minutes=15):
-                    _s("Produkt zweryfikowany — data utworzenia aktualna")
-                    return {
-                        "ok": True,
-                        "message": f"Produkt '{new_name}' (nr {pnum}) został pomyślnie utworzony",
+            found: bool = page.evaluate(
+                """
+                ([pnum, pname]) => {
+                    const numTarget  = pnum.toUpperCase();
+                    const nameTarget = pname.toUpperCase();
+                    for (const tr of document.querySelectorAll('table tbody tr')) {
+                        const numCell  = tr.querySelector(
+                            'td[data-cell-action="product_number"]');
+                        const nameCell = tr.querySelector(
+                            'td[data-cell-action="product_name"]');
+                        if (!numCell || !nameCell) continue;
+                        if (numCell.textContent.trim().toUpperCase()  === numTarget &&
+                            nameCell.textContent.trim().toUpperCase() === nameTarget) {
+                            return true;
+                        }
                     }
+                    return false;
+                }
+                """,
+                [pnum, new_name],
+            )
+
+            if found:
+                _s("Produkt zweryfikowany pomyślnie")
+                return {
+                    "ok": True,
+                    "message": f"Produkt '{new_name}' (nr {pnum}) został pomyślnie utworzony",
+                }
 
             return {
                 "ok": False,
                 "message": (
                     f"Nie znaleziono produktu '{new_name}' (nr {pnum}) "
-                    "z aktualną datą utworzenia — sprawdź ręcznie w FreshPortal"
+                    "w FreshPortal — sprawdź ręcznie"
                 ),
             }
 
