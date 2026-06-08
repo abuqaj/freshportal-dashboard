@@ -305,18 +305,24 @@ def _find_available_number_on_page(
         url = (f"{cfg.freshportal_url}/product/index/index/"
                f"?1=1&number_adjustable={candidate}&page=1")
         page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+        # Wait for the SPA to finish rendering the table rows.
+        # If no rows appear within 8 s the number is definitely free.
+        try:
+            page.wait_for_selector(
+                "td[data-cell-action='product_number']", timeout=8_000
+            )
+        except Exception:
+            pass  # no rows → number is free, skip evaluate
 
-        # Use live DOM: check both textContent and input.value of every table cell.
-        # number_adjustable is a CONTAINS filter so we need exact-match ourselves.
+        # Only inspect td[data-cell-action="product_number"] cells — exact match.
+        # number_adjustable is a CONTAINS filter, so we must compare ourselves.
         taken: bool = page.evaluate(
             """
             (candidate) => {
                 const target = candidate.toUpperCase();
-                for (const td of document.querySelectorAll('table tbody tr td')) {
+                for (const td of document.querySelectorAll(
+                        'td[data-cell-action="product_number"]')) {
                     if (td.textContent.trim().toUpperCase() === target) return true;
-                    for (const inp of td.querySelectorAll('input')) {
-                        if ((inp.value || '').trim().toUpperCase() === target) return true;
-                    }
                 }
                 return false;
             }
