@@ -627,6 +627,96 @@ def debug_product_row(product_id: str):
     return result
 
 
+@app.get("/debug/product-copy-flow/{product_id}")
+def debug_product_copy_flow(product_id: str):
+    """Simulate clicking the copy button and return what's on the page afterwards."""
+    from scraper_fp import _launch_browser, _login
+    from playwright.sync_api import sync_playwright
+    import time as _time
+
+    cfg = Config()
+    result: dict = {
+        "url_before": "",
+        "url_after": "",
+        "navigated": False,
+        "fps_buttons_after": [],
+        "visible_inputs_after": [],
+        "html_snippet": "",
+        "steps": [],
+    }
+
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        context = browser.new_context()
+        page = context.new_page()
+        page.route("**/*", lambda route: route.abort()
+            if route.request.resource_type in ("image", "font", "media")
+            else route.continue_())
+        try:
+            _login(page, cfg)
+            url = f"{cfg.freshportal_url}/product/index/index/?1=1&id={product_id}&page=1"
+            page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+            page.wait_for_selector("table tbody tr", timeout=15_000)
+            result["steps"].append("navigated to product list")
+            result["url_before"] = page.url
+
+            rows = page.query_selector_all("table tbody tr")
+            if not rows:
+                result["steps"].append("ERROR: no rows found")
+                return result
+            rows[0].click()
+            _time.sleep(0.8)
+            result["steps"].append("clicked row to select")
+
+            copy_btn = None
+            for sel in ["fps-button[name='button_copy']", "#btn_product_index_index_button_copy", "fps-button[type='copy']"]:
+                copy_btn = page.query_selector(sel)
+                if copy_btn:
+                    result["steps"].append(f"found copy button: {sel}")
+                    break
+            if not copy_btn:
+                result["steps"].append("ERROR: copy button not found")
+                return result
+
+            copy_btn.click()
+            result["steps"].append("clicked copy button")
+            _time.sleep(3)
+
+            result["url_after"] = page.url
+            result["navigated"] = page.url != result["url_before"]
+            result["steps"].append(f"navigated={result['navigated']}")
+
+            # Collect all fps-buttons on page
+            for btn in page.query_selector_all("fps-button"):
+                result["fps_buttons_after"].append({
+                    "id": btn.get_attribute("id"),
+                    "name": btn.get_attribute("name"),
+                    "type": btn.get_attribute("type"),
+                    "submit": btn.get_attribute("submit"),
+                    "aria_disabled": btn.get_attribute("aria-disabled"),
+                })
+
+            # Collect all visible inputs
+            for inp in page.query_selector_all("input"):
+                if inp.is_visible():
+                    result["visible_inputs_after"].append({
+                        "type": inp.get_attribute("type"),
+                        "placeholder": inp.get_attribute("placeholder"),
+                        "name": inp.get_attribute("name"),
+                        "id": inp.get_attribute("id"),
+                    })
+
+            result["html_snippet"] = page.content()[3000:7000]  # middle section
+
+        except Exception as exc:
+            result["steps"].append(f"ERROR: {exc}")
+        finally:
+            context.close()
+            browser.close()
+
+    return result
+
+
 @app.get("/debug/product-add-page")
 def debug_product_add_page():
     """Return the HTML of the add-product page so we can see its form fields."""
