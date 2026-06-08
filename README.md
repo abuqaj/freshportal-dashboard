@@ -5,9 +5,9 @@ Dashboard do zarządzania produktami w FreshPortal — weryfikacja VBN, tworzeni
 ## Funkcje
 
 - **VBN Checker** — wpisz numer VBN, sprawdź poprawność kodów wszystkich produktów, edytuj i zatwierdź poprawki inline (streaming SSE)
-- **Nowe produkty** — wpisz nazwę produktu, system znajdzie podobne (fuzzy search odporny na literówki, próg 80%), skopiuje najbliższy jako szablon
+- **Nowe produkty** — wpisz nazwę produktu, system znajdzie podobne (fuzzy search odporny na literówki, próg 80%), skopiuje najbliższy jako szablon; numer produktu jest weryfikowany w FreshPortal jeszcze przed kliknięciem "Utwórz" — jeśli zajęty, automatycznie proponowany jest wolny wariant
 - **Photo Uploader** — uploaduj Excel z mapowaniem `product_id → zdjęcie`
-- **Historia** — logi operacji VBN i photo upload (wymaga Vercel Postgres)
+- **Historia** — logi operacji VBN, tworzenia produktów i photo upload (wymaga Vercel Postgres)
 
 ## Architektura
 
@@ -17,6 +17,7 @@ Vercel (Next.js)          Railway (FastAPI + Playwright)
 page.tsx  ──────SSE──────▶  /vbn-check/stream
           ──────SSE──────▶  /vbn-fix/stream
           ──────SSE──────▶  /product-search/stream
+          ──────GET──────▶  /product-number-suggest
           ──────SSE──────▶  /product-create/stream
           ──────POST─────▶  /photo-upload
           ──────GET──────▶  /vbn-name/:code
@@ -84,7 +85,7 @@ Ustaw `NEXT_PUBLIC_RAILWAY_API_URL=http://localhost:8000` w `.env.local` żeby f
 | `FRESHPORTAL_PASSWORD` | Railway | Hasło FreshPortal |
 | `FLORICODE_USERNAME` | Railway | Login Floricode (weryfikacja VBN) |
 | `FLORICODE_PASSWORD` | Railway | Hasło Floricode |
-| `ANTHROPIC_API_KEY` | Railway | Opcjonalne — Claude AI do sugerowania kodów VBN |
+| `ANTHROPIC_API_KEY` | Railway | Opcjonalne — Claude AI do sugerowania kodów VBN i wykrywania duplikatów |
 | `NEXT_PUBLIC_RAILWAY_API_URL` | Vercel | Publiczny URL Railway API |
 | `POSTGRES_URL` | Vercel | Connection string Vercel Postgres (historia operacji) |
 
@@ -117,10 +118,28 @@ Ustaw `NEXT_PUBLIC_RAILWAY_API_URL=http://localhost:8000` w `.env.local` żeby f
 | `/vbn-name/:code` | GET | Oficjalna nazwa kodu VBN z Floricode |
 | `/vbn-search` | GET | Wyszukiwanie kodów VBN po nazwie (`?q=dianthus&limit=15`) |
 | `/product-search/stream` | POST | SSE: wyszukiwanie podobnych produktów (`{ name: "Rosa Ec Atena" }`) |
-| `/product-create/stream` | POST | SSE: kopiowanie produktu jako szablon (`{ template_id, new_name }`) |
+| `/product-number-suggest` | GET | Sprawdź dostępność numeru i zwróć wolny wariant (`?number=ROECAT`) |
+| `/product-create/stream` | POST | SSE: kopiowanie produktu jako szablon (`{ template_id, new_name, product_number }`) |
+| `/product-ai-analyze` | POST | Analiza duplikatów i sugestia VBN przez Claude AI (`{ name, candidates }`) |
 | `/photo-upload` | POST | Upload zdjęć z pliku Excel (multipart) |
 | `/debug/fp` | GET | Diagnostyka połączenia z FreshPortal |
 | `/debug/colour-table` | GET | Podgląd tabeli kolorów VBN z Floricode |
+
+## Tworzenie nowego produktu — szczegółowy flow
+
+1. Użytkownik wpisuje nazwę (np. `Rosa Ec Athena`) i klika **Szukaj podobnych**
+2. Backend (`product_creator.search_products`) przeszukuje FreshPortal fuzzy matchingiem
+3. Wyniki ≥80% podobieństwa wyświetlane jako szablony do skopiowania
+4. Po kliknięciu **Kopiuj jako szablon** formularz potwierdzenia pojawia się natychmiast, a w tle startuje `GET /product-number-suggest?number=ROECAT`:
+   - Sprawdza `td[data-cell-action="product_number"]` w wynikach FreshPortal (exact match)
+   - Jeśli zajęty — próbuje `ROECATA`, `ROECATB` … aż do 10 wariantów
+   - Pole numeru aktualizuje się automatycznie; przycisk **Utwórz produkt** jest zablokowany do czasu zakończenia sprawdzania
+5. Po kliknięciu **Utwórz produkt** backend (`product_creator.copy_and_create`):
+   - Otwiera `/product/index/copy/PRO_ID/{id}/` (formularz kopiowania)
+   - Wypełnia pola nazwy i numeru produktu przez Shadow DOM (Angular fps-input)
+   - Zapisuje formularz
+   - Weryfikuje sukces szukając wiersza z dokładnym `product_number` i `product_name` w wyrenderowanym DOM
+6. Wynik (sukces / błąd) pojawia się w UI, operacja zapisywana jest do historii
 
 ## Algorytm wyszukiwania podobnych produktów
 
@@ -128,6 +147,16 @@ Ustaw `NEXT_PUBLIC_RAILWAY_API_URL=http://localhost:8000` w `.env.local` żeby f
 
 1. **Ekstrakcja variety** — wycina tokeny origin (`Ec`, `Col`, `Ke`…) z nazwy, porównuje tylko nazwę odmiany: `"Rosa Ec Atena"` → variety = `"Atena"`
 2. **Generowanie search terms** — pełna fraza + warianty odporności na literówki (np. `"Atena"` → `["Atena", "Aten", "ena"]`), sufiks drugiej połowy słowa (`"ena"`) trafia w `"Ath-ena"` w FreshPortal
-3. **Pobieranie wszystkich stron** — dla każdego termu pobiera wszystkie strony (cap: 3/10/15 w zależności od długości), zawsze `name_adjustable` przed `short_name_adjustable`
-4. **Similarity scoring** — `SequenceMatcher` na samej variety (bez genus i origin): `"atena"` vs `"athena"` ≈ 91%
-5. **Wyświetlanie** — tylko wyniki ≥80%; jeśli brak, 1 najlepszy z adnotacją
+3. **Pobieranie stron** — dla każdego termu pobiera do 2 stron wyników przez `name_adjustable`
+4. **Phase 2 (AI)** — jeśli brak wyników ≥80% i dostępny `ANTHROPIC_API_KEY`, Claude sugeruje alternatywną pisownię variety i wyszukuje ponownie
+5. **Similarity scoring** — `SequenceMatcher` na samej variety (bez genus i origin): `"atena"` vs `"athena"` ≈ 91%
+6. **Wyświetlanie** — tylko wyniki ≥80%; jeśli brak, 1 najlepszy z adnotacją
+
+## Sprawdzanie dostępności numeru produktu
+
+`number_adjustable` w FreshPortal to filtr **contains**, nie exact match. Dlatego `find_available_number()` / `_find_available_number_on_page()`:
+
+1. Nawiguje do `?1=1&number_adjustable={kandydat}&page=1`
+2. Czeka na `td[data-cell-action='product_number']` (SPA musi wyrenderować tabelę)
+3. Sprawdza przez `page.evaluate()` czy którakolwiek komórka `td[data-cell-action="product_number"]` ma **dokładnie** ten tekst (case-insensitive)
+4. Jeśli zajęty — przechodzi do następnego kandydata (`ROECATA`, `ROECATB` …)
