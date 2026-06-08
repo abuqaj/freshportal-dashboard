@@ -664,22 +664,39 @@ def debug_product_copy_flow(product_id: str):
             if not rows:
                 result["steps"].append("ERROR: no rows found")
                 return result
-            rows[0].click()
-            _time.sleep(0.8)
-            result["steps"].append("clicked row to select")
+
+            # Capture JS console errors
+            console_errors = []
+            page.on("console", lambda msg: console_errors.append(f"{msg.type}: {msg.text}") if msg.type in ("error", "warning") else None)
+
+            # Try several selection methods
+            row = rows[0]
+            box = row.bounding_box()
+            if box:
+                # Physical mouse click at center of first cell (most reliable for Angular)
+                page.mouse.click(box["x"] + 20, box["y"] + box["height"] / 2)
+                result["steps"].append(f"mouse.click on row at ({box['x']+20}, {box['y']+box['height']/2})")
+            else:
+                row.click()
+                result["steps"].append("clicked row (no bounding box)")
+            _time.sleep(1.5)
+
+            # Check row selected state
+            row_class = row.get_attribute("class") or ""
+            first_cell_class = (row.query_selector("td:first-child") or row).get_attribute("class") or ""
+            result["steps"].append(f"row class after click: '{row_class}', first cell: '{first_cell_class}'")
 
             copy_loc = None
             for sel in ["fps-button[name='button_copy']", "#btn_product_index_index_button_copy", "fps-button[type='copy']"]:
                 loc = page.locator(sel)
                 if loc.count() > 0:
                     copy_loc = loc
-                    result["steps"].append(f"found copy button: {sel}")
+                    result["steps"].append(f"found copy button: {sel}, aria-disabled={loc.get_attribute('aria-disabled')}")
                     break
             if not copy_loc:
                 result["steps"].append("ERROR: copy button not found")
                 return result
 
-            # Pierce Shadow DOM
             inner = copy_loc.locator("button")
             if inner.count() > 0:
                 inner.click()
@@ -687,7 +704,26 @@ def debug_product_copy_flow(product_id: str):
             else:
                 copy_loc.click(force=True)
                 result["steps"].append("clicked outer fps-button (force)")
-            _time.sleep(4)
+            _time.sleep(6)
+
+            result["console_errors"] = console_errors[-20:]  # last 20 errors
+
+            # Also try direct copy URLs
+            result["steps"].append("trying direct copy URLs…")
+            copy_urls_tried = []
+            for copy_url in [
+                f"{cfg.freshportal_url}/product/index/copy/id/{product_id}/",
+                f"{cfg.freshportal_url}/product/index/copy/PRO_ID/{product_id}/",
+                f"{cfg.freshportal_url}/product/index/add/?copy={product_id}",
+            ]:
+                page.goto(copy_url, wait_until="load", timeout=30_000)
+                landed = page.url
+                has_form = bool(page.query_selector("#product_index_form_submit"))
+                copy_urls_tried.append({"url": copy_url, "landed": landed, "has_form": has_form})
+                if has_form or "add" in landed:
+                    result["steps"].append(f"DIRECT URL WORKS: {copy_url} → {landed}")
+                    break
+            result["copy_urls_tried"] = copy_urls_tried
 
             result["url_after"] = page.url
             result["navigated"] = page.url != result["url_before"]
