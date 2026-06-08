@@ -363,12 +363,11 @@ def copy_and_create(
             _s("Zapisywanie produktu…")
             submitted = False
             for save_sel in [
-                "fps-button[name='save']",
-                "fps-button[name='confirm']",
-                "fps-button[type='submit']",
+                "#product_index_form_submit",     # exact id
+                "fps-button[name='submit']",      # name=submit, type=save
+                "fps-button[type='save']",        # type=save
+                "fps-button[submit='true']",      # submit attribute
                 "button[type='submit']",
-                "fps-button:has-text('Save')",
-                "fps-button:has-text('Opslaan')",
                 ".modal-footer fps-button",
                 ".modal-footer button",
             ]:
