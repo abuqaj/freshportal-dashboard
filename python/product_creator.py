@@ -79,7 +79,18 @@ def _similarity(a: str, b: str) -> float:
     if not variety_a or not variety_b:
         return 0.5
 
-    return difflib.SequenceMatcher(None, variety_a, variety_b).ratio()
+    full_sim = difflib.SequenceMatcher(None, variety_a, variety_b).ratio()
+
+    # Boost for products in the same named series (shared first variety word).
+    # e.g. "Matsumoto Lavender" vs "Matsumoto Blue" → treat as same template pool.
+    words_a = variety_a.split()
+    words_b = variety_b.split()
+    if words_a and words_b:
+        first_word_sim = difflib.SequenceMatcher(None, words_a[0], words_b[0]).ratio()
+        if first_word_sim >= 0.90:
+            return max(full_sim, 0.82)
+
+    return full_sim
 
 
 @dataclass
@@ -183,8 +194,15 @@ def search_products(
             _s("Logowanie do FreshPortal…")
             _login(fp_page, cfg)
 
-            # Phase 1: exact query + extracted variety, 2 pages each
-            phase1 = list(dict.fromkeys(filter(None, [query.strip(), variety])))
+            # Phase 1: exact query + variety search terms (typo-resistant substrings)
+            # Also add individual words from multi-word varieties so that e.g.
+            # "Matsumoto Lavender" triggers a search for "Matsumoto" which finds
+            # all "Callistephus Matsumoto *" products in FreshPortal.
+            variety_terms = _variety_search_terms(variety)
+            for word in variety.split():
+                if len(word) >= 4 and word not in variety_terms:
+                    variety_terms.append(word)
+            phase1 = list(dict.fromkeys(filter(None, [query.strip()] + variety_terms)))
             for term in phase1:
                 _s(f"Szukam '{term}'…")
                 _fetch(fp_page, term, pages=2)
