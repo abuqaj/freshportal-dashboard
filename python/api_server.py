@@ -760,6 +760,68 @@ def debug_product_copy_flow(product_id: str):
     return result
 
 
+@app.get("/debug/product-copy-form/{product_id}")
+def debug_product_copy_form(product_id: str):
+    """Inspect all form elements on the copy product page."""
+    from scraper_fp import _launch_browser, _login
+    from playwright.sync_api import sync_playwright
+
+    cfg = Config()
+    result: dict = {"url": "", "all_inputs": [], "all_custom": [], "fps_inputs": [], "html": ""}
+
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        context = browser.new_context()
+        page = context.new_page()
+        page.route("**/*", lambda route: route.abort()
+            if route.request.resource_type in ("image", "font", "media")
+            else route.continue_())
+        try:
+            _login(page, cfg)
+            copy_url = f"{cfg.freshportal_url}/product/index/copy/PRO_ID/{product_id}/"
+            page.goto(copy_url, wait_until="load", timeout=cfg.request_timeout)
+            page.wait_for_selector("#product_index_form_submit", timeout=15_000)
+            result["url"] = page.url
+
+            # All standard inputs
+            for inp in page.query_selector_all("input, textarea, select"):
+                result["all_inputs"].append({
+                    "tag": inp.evaluate("el => el.tagName"),
+                    "type": inp.get_attribute("type"),
+                    "name": inp.get_attribute("name"),
+                    "id": inp.get_attribute("id"),
+                    "placeholder": inp.get_attribute("placeholder"),
+                    "value": inp.evaluate("el => el.value"),
+                    "visible": inp.is_visible(),
+                })
+
+            # fps-input and other custom components
+            for el in page.query_selector_all("fps-input, fps-textarea, fps-select, [fps-input], [data-input]"):
+                result["fps_inputs"].append({
+                    "tag": el.evaluate("el => el.tagName.toLowerCase()"),
+                    "name": el.get_attribute("name"),
+                    "label": el.get_attribute("label"),
+                    "id": el.get_attribute("id"),
+                    "placeholder": el.get_attribute("placeholder"),
+                })
+
+            # Any element with a label nearby
+            result["html"] = page.evaluate("""
+                () => {
+                    const form = document.querySelector('form') || document.querySelector('.crud_form') || document.body;
+                    return form.innerHTML.substring(0, 8000);
+                }
+            """)
+
+        except Exception as exc:
+            result["error"] = str(exc)
+        finally:
+            context.close()
+            browser.close()
+
+    return result
+
+
 @app.get("/debug/product-add-page")
 def debug_product_add_page():
     """Return the HTML of the add-product page so we can see its form fields."""
