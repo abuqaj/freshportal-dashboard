@@ -8,6 +8,7 @@ Flow:
 from __future__ import annotations
 
 import difflib
+import itertools
 import logging
 import re
 import time
@@ -247,6 +248,16 @@ def find_best_template(
 
 # ── copy product via Playwright ───────────────────────────────────────────────
 
+def _number_candidates(base: str):
+    """Yield product number candidates: base first, then base+A, base+B, … (max 8 chars)."""
+    yield base
+    for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789":
+        if len(base) < 8:
+            yield base + ch
+        else:
+            yield base[:7] + ch  # replace last char
+
+
 def _was_recently_created(soup: BeautifulSoup, minutes: int = 15) -> bool:
     """Return True if any table row contains a datetime within the last `minutes` minutes.
 
@@ -307,6 +318,31 @@ def copy_and_create(
             _s("Logowanie do FreshPortal…")
             _login(page, cfg)
 
+            # ── Find available product number ────────────────────────────────
+            pnum = product_number or generate_product_number(new_name)
+            _s(f"Sprawdzam dostępność numeru {pnum}…")
+            for _cand in itertools.islice(_number_candidates(pnum), 11):
+                _cu = (f"{cfg.freshportal_url}/product/index/index/"
+                       f"?1=1&number_adjustable={_cand}&page=1")
+                page.goto(_cu, wait_until="load", timeout=cfg.request_timeout)
+                _cs = BeautifulSoup(page.content(), "lxml")
+                _cr = _parse_rows_html(_cs, _detect_columns_html(_cs))
+                if not _cr:
+                    if _cand != pnum:
+                        _s(f"Nr {pnum} zajęty — używam: {_cand}")
+                    pnum = _cand
+                    break
+                if _cand == pnum:
+                    _s(f"Nr {pnum} zajęty — szukam wolnego wariantu…")
+            else:
+                return {
+                    "ok": False,
+                    "message": (
+                        f"Nr produktu '{pnum}' jest już w użyciu. "
+                        "Zmień numer ręcznie w formularzu i spróbuj ponownie."
+                    ),
+                }
+
             # ── Navigate directly to copy URL ───────────────────────────────
             # Debug confirmed: /product/index/copy/PRO_ID/{id}/ opens the copy
             # form directly (has_form=True). The toolbar button opens a popup
@@ -337,7 +373,6 @@ def copy_and_create(
                 return {"ok": False, "message": "Nie znaleziono fps-input[name*='form_name_'] w formularzu"}
 
             # ── Fill product number (mandatory, unique) ─────────────────────
-            pnum = product_number or generate_product_number(new_name)
             _s(f"Wypełnianie numeru produktu: {pnum}…")
             page.evaluate(f"""
                 () => {{
