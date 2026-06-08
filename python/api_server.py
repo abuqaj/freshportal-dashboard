@@ -575,6 +575,58 @@ def refresh_colour_table():
     return {"ok": True, "genera_count": len(table), "total_entries": sum(len(v) for v in table.values())}
 
 
+@app.get("/debug/product-row/{product_id}")
+def debug_product_row(product_id: str):
+    """Return every link and button found in a product row — used to discover copy UI."""
+    from scraper_fp import _launch_browser, _block_resources, _login, _goto_and_wait
+    from playwright.sync_api import sync_playwright
+
+    cfg = Config()
+    result: dict = {"product_id": product_id, "links": [], "buttons": [], "row_html": ""}
+
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        context = browser.new_context()
+        page = context.new_page()
+        _block_resources(page)
+        try:
+            _login(page, cfg)
+            url = f"{cfg.freshportal_url}/product/index/index/?1=1&id={product_id}&page=1"
+            page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+            try:
+                page.wait_for_selector("table tbody tr", timeout=15_000)
+            except Exception:
+                pass
+
+            rows = page.query_selector_all("table tbody tr")
+            if rows:
+                row = rows[0]
+                for a in row.query_selector_all("a"):
+                    result["links"].append({
+                        "text": (a.inner_text() or "").strip()[:60],
+                        "href": a.get_attribute("href"),
+                        "title": a.get_attribute("title"),
+                        "data_action": a.get_attribute("data-action"),
+                        "class": a.get_attribute("class"),
+                    })
+                for btn in row.query_selector_all("button"):
+                    result["buttons"].append({
+                        "text": (btn.inner_text() or "").strip()[:60],
+                        "data_action": btn.get_attribute("data-action"),
+                        "class": btn.get_attribute("class"),
+                    })
+                result["row_html"] = row.inner_html()[:5000]
+            else:
+                result["error"] = "No rows found — check product_id"
+        except Exception as exc:
+            result["error"] = str(exc)
+        finally:
+            context.close()
+            browser.close()
+
+    return result
+
+
 @app.get("/debug/fp")
 def debug_fp(vbn: str = "580"):
     cfg = Config()
