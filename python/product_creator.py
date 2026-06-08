@@ -281,28 +281,6 @@ def _was_recently_created(soup: BeautifulSoup, minutes: int = 15) -> bool:
     return False
 
 
-def _number_is_taken(soup: BeautifulSoup, candidate: str) -> bool:
-    """Return True if any table cell text is an exact (case-insensitive) match for *candidate*.
-
-    FreshPortal's number_adjustable filter is a CONTAINS search, so the results
-    page may include rows where the product number merely contains the candidate
-    as a substring (e.g. searching ROECAT also returns ROECATA, ROECATB …).
-    We must compare cell text exactly to avoid false "taken" results.
-    """
-    table = soup.find("table")
-    if not table:
-        return False
-    tbody = table.find("tbody")
-    if not tbody:
-        return False
-    target = candidate.upper()
-    for row in tbody.find_all("tr"):
-        for cell in row.find_all("td"):
-            if cell.get_text(strip=True).upper() == target:
-                return True
-    return False
-
-
 def _find_available_number_on_page(
     page,
     base: str,
@@ -313,6 +291,10 @@ def _find_available_number_on_page(
 
     Returns the first available number (may equal *base*) or None if all
     10 variants are occupied.
+
+    Uses page.evaluate() instead of BeautifulSoup so that input[value]
+    fields are checked too — FreshPortal renders the product number column
+    as an <input>, which get_text() would miss entirely.
     """
     def _s(msg: str) -> None:
         logger.info(msg)
@@ -323,8 +305,26 @@ def _find_available_number_on_page(
         url = (f"{cfg.freshportal_url}/product/index/index/"
                f"?1=1&number_adjustable={candidate}&page=1")
         page.goto(url, wait_until="load", timeout=cfg.request_timeout)
-        soup = BeautifulSoup(page.content(), "lxml")
-        if not _number_is_taken(soup, candidate):
+
+        # Use live DOM: check both textContent and input.value of every table cell.
+        # number_adjustable is a CONTAINS filter so we need exact-match ourselves.
+        taken: bool = page.evaluate(
+            """
+            (candidate) => {
+                const target = candidate.toUpperCase();
+                for (const td of document.querySelectorAll('table tbody tr td')) {
+                    if (td.textContent.trim().toUpperCase() === target) return true;
+                    for (const inp of td.querySelectorAll('input')) {
+                        if ((inp.value || '').trim().toUpperCase() === target) return true;
+                    }
+                }
+                return false;
+            }
+            """,
+            candidate,
+        )
+
+        if not taken:
             if candidate != base:
                 _s(f"Nr {base} zajęty — używam: {candidate}")
             return candidate
