@@ -627,6 +627,65 @@ def debug_product_row(product_id: str):
     return result
 
 
+@app.get("/debug/product-add-page")
+def debug_product_add_page():
+    """Return the HTML of the add-product page so we can see its form fields."""
+    from scraper_fp import _launch_browser, _block_resources, _login
+    from playwright.sync_api import sync_playwright
+
+    cfg = Config()
+    result: dict = {"url": "", "form_fields": [], "buttons": [], "html_snippet": ""}
+
+    candidate_urls = [
+        f"{cfg.freshportal_url}/product/index/add/",
+        f"{cfg.freshportal_url}/product/index/new/",
+        f"{cfg.freshportal_url}/product/add/",
+    ]
+
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        context = browser.new_context()
+        page = context.new_page()
+        # Don't block stylesheets — form rendering may depend on them
+        page.route("**/*", lambda route: route.abort()
+            if route.request.resource_type in ("image", "font", "media")
+            else route.continue_())
+        try:
+            _login(page, cfg)
+
+            # Try each candidate URL
+            for url in candidate_urls:
+                page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+                result["url"] = page.url
+                if page.url != f"{cfg.freshportal_url}/product/index/index/":
+                    break  # Didn't get redirected back to list — probably the right URL
+
+            # Collect all inputs / selects
+            for inp in page.query_selector_all("input, select, textarea"):
+                result["form_fields"].append({
+                    "tag": inp.evaluate("el => el.tagName.toLowerCase()"),
+                    "name": inp.get_attribute("name"),
+                    "type": inp.get_attribute("type"),
+                    "placeholder": inp.get_attribute("placeholder"),
+                    "id": inp.get_attribute("id"),
+                    "value": inp.get_attribute("value"),
+                })
+            for btn in page.query_selector_all("button, input[type=submit]"):
+                result["buttons"].append({
+                    "text": (btn.inner_text() or "").strip()[:60],
+                    "type": btn.get_attribute("type"),
+                    "name": btn.get_attribute("name"),
+                })
+            result["html_snippet"] = page.content()[:8000]
+        except Exception as exc:
+            result["error"] = str(exc)
+        finally:
+            context.close()
+            browser.close()
+
+    return result
+
+
 @app.get("/debug/fp")
 def debug_fp(vbn: str = "580"):
     cfg = Config()
