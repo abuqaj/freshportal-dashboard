@@ -282,30 +282,42 @@ def copy_and_create(
             if not rows:
                 return {"ok": False, "message": f"Produkt ID={template_id} nie znaleziony"}
 
-            # ── 2. Select the row ───────────────────────────────────────────
+            # ── 2. Select the row (click first cell — the selection indicator) ─
             _s("Zaznaczam wiersz produktu…")
-            rows[0].click()
+            first_cell = rows[0].query_selector("td:first-child")
+            if first_cell:
+                first_cell.click()
+            else:
+                rows[0].click()
             time.sleep(0.8)
 
-            # ── 3. Click the fps-button copy toolbar button ─────────────────
-            _s("Klikam przycisk kopiowania…")
-            copy_btn = None
+            # ── 3. Click the fps-button copy toolbar button via Shadow DOM ───
+            # fps-button is an Angular Web Component — outer .click() doesn't
+            # reach the inner <button> inside Shadow DOM. Use Playwright locator
+            # which pierces Shadow DOM automatically.
+            _s("Klikam przycisk kopiowania (Shadow DOM)…")
+            copy_loc = None
             for sel in [
                 "fps-button[name='button_copy']",
                 "#btn_product_index_index_button_copy",
                 "fps-button[type='copy']",
-                "fps-button[fps-tooltip-text='Copy']",
             ]:
-                copy_btn = page.query_selector(sel)
-                if copy_btn:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    copy_loc = loc
                     logger.info("Copy fps-button found: %s", sel)
                     break
 
-            if not copy_btn:
+            if not copy_loc:
                 return {"ok": False, "message": "Nie znaleziono fps-button[name='button_copy'] w pasku narzędzi"}
 
-            copy_btn.click()
-            time.sleep(2)  # wait for Angular popup to render
+            # Pierce Shadow DOM to click the inner <button>
+            inner = copy_loc.locator("button")
+            if inner.count() > 0:
+                inner.click()
+            else:
+                copy_loc.click(force=True)
+            time.sleep(3)  # wait for Angular dialog to render
 
             # ── 4. Wait for the copy popup ──────────────────────────────────
             _s("Czekam na popup kopiowania…")
@@ -367,25 +379,27 @@ def copy_and_create(
                 "fps-button[name='submit']",
                 "fps-button[type='save']",
                 "fps-button[submit='true']",
-                "button[type='submit']",
-                ".modal-footer fps-button",
-                ".modal-footer button",
             ]:
-                btn = page.query_selector(save_sel)
-                if btn:
-                    try:
-                        # fps-button Shadow DOM may fail is_visible() — use JS click
-                        page.evaluate("el => el.click()", btn)
+                loc = page.locator(save_sel)
+                if loc.count() > 0:
+                    # Pierce Shadow DOM to click the inner <button>
+                    inner = loc.locator("button")
+                    if inner.count() > 0:
+                        inner.click()
+                    else:
+                        loc.click(force=True)
+                    submitted = True
+                    logger.info("Submitted via Shadow DOM click: %s", save_sel)
+                    break
+
+            if not submitted:
+                # Last resort: any visible submit button
+                for sel in ["button[type='submit']", ".modal-footer button"]:
+                    btn = page.query_selector(sel)
+                    if btn and btn.is_visible():
+                        btn.click()
                         submitted = True
-                        logger.info("Submitted via JS click: %s", save_sel)
                         break
-                    except Exception:
-                        try:
-                            btn.click(force=True)
-                            submitted = True
-                            break
-                        except Exception:
-                            continue
 
             if not submitted:
                 return {"ok": False, "message": "Nie znaleziono przycisku zapisu w popupie"}

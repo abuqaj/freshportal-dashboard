@@ -668,19 +668,26 @@ def debug_product_copy_flow(product_id: str):
             _time.sleep(0.8)
             result["steps"].append("clicked row to select")
 
-            copy_btn = None
+            copy_loc = None
             for sel in ["fps-button[name='button_copy']", "#btn_product_index_index_button_copy", "fps-button[type='copy']"]:
-                copy_btn = page.query_selector(sel)
-                if copy_btn:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    copy_loc = loc
                     result["steps"].append(f"found copy button: {sel}")
                     break
-            if not copy_btn:
+            if not copy_loc:
                 result["steps"].append("ERROR: copy button not found")
                 return result
 
-            copy_btn.click()
-            result["steps"].append("clicked copy button")
-            _time.sleep(3)
+            # Pierce Shadow DOM
+            inner = copy_loc.locator("button")
+            if inner.count() > 0:
+                inner.click()
+                result["steps"].append("clicked inner shadow-dom button")
+            else:
+                copy_loc.click(force=True)
+                result["steps"].append("clicked outer fps-button (force)")
+            _time.sleep(4)
 
             result["url_after"] = page.url
             result["navigated"] = page.url != result["url_before"]
