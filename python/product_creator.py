@@ -280,24 +280,36 @@ def copy_and_create(
                 return {"ok": False, "message": f"Formularz kopiowania nie załadował się ({copy_url})"}
 
             # ── Fill name fields ────────────────────────────────────────────
+            # Form uses fps-input Web Components (Shadow DOM).
+            # Name fields: fps-input[name*='form_name_'] excluding 'short_name'
+            # Short name fields: fps-input[name*='form_short_name_'] — skip (auto)
             _s(f"Wypełnianie nazwy: {new_name}…")
-            skip_placeholders = {"product number", "vbn number", "note"}
             filled = 0
-            for inp in page.query_selector_all("input[type='text']"):
-                if not inp.is_visible():
+
+            for fps in page.query_selector_all("fps-input"):
+                fps_name = fps.get_attribute("name") or ""
+                if "form_name_" not in fps_name or "short" in fps_name:
                     continue
-                placeholder = (inp.get_attribute("placeholder") or "").strip().lower()
-                if placeholder in skip_placeholders:
-                    continue
+                # Pierce Shadow DOM via locator
                 try:
-                    inp.triple_click()
-                    inp.fill(new_name)
-                    filled += 1
+                    loc = page.locator(f"fps-input[name='{fps_name}']").locator("input")
+                    if loc.count() > 0:
+                        loc.fill(new_name)
+                        filled += 1
+                        continue
                 except Exception:
                     pass
+                # Fallback: direct inner query
+                inner = fps.query_selector("input")
+                if inner:
+                    try:
+                        inner.fill(new_name)
+                        filled += 1
+                    except Exception:
+                        pass
 
             if filled == 0:
-                return {"ok": False, "message": "Nie znaleziono pól nazwy w formularzu"}
+                return {"ok": False, "message": "Nie znaleziono fps-input[name*='form_name_'] w formularzu"}
             _s(f"Wypełniono {filled} pól nazwy")
             time.sleep(0.5)
 
