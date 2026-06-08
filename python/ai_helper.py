@@ -57,12 +57,17 @@ def ai_suggest_spellings(variety: str, cfg: "Config") -> list[str]:
 
 _VBN_CONTEXT = """
 Common VBN category codes:
-  580   — Rosa grootbloemig overig (large-flowered, non-spray, non-specific origin)
-  595   — Rosa grootbloemig Ecuador (large-flowered, Ecuador origin)
+  580   — Rosa grootbloemig overig (large-flowered NON-spray, any origin including Ecuador)
+  595   — Rosa spray other (SPRAY type roses — tros, spray, ramificado)
   2712  — Droogbloemen bewerkt (Preserved / Bleached / Dried flowers)
   6268  — Cutflowers other coloured (colour-treated, no specific code)
   15126 — Rosa large flowered colour treated
   16128 — Rosa spray colour treated
+
+IMPORTANT: "Ec" in the product name means Ecuador COUNTRY OF ORIGIN, NOT a VBN category.
+  - "Rosa Ec Atena" = Ecuador origin, NON-spray → VBN 580 (Rosa grootbloemig overig)
+  - "Rosa Sp Atena" = spray type → VBN 595 (Rosa spray other)
+  - Only use 595 when the name contains "Spray", "Sp", "Tros", or similar spray indicators.
 """
 
 _PROMPT_TEMPLATE = """\
@@ -93,11 +98,11 @@ Assuming "{query}" does not yet exist, what VBN code should be assigned?
 {vbn_context}
 
 Additional rules:
-- "Ec" in name → Ecuador origin. For Rosa → likely 595.
-- "Spray" / "Sp" in name → use the spray variant of the VBN.
-- No "Spray" / "Sp" → use non-spray VBN.
+- "Ec", "Col", "Ke" etc. in name = country of origin ONLY — do NOT use to determine VBN category.
+- "Spray" / "Sp" / "Tros" in name → spray VBN (e.g. 595 for Rosa spray).
+- No spray indicator → non-spray VBN (e.g. 580 for Rosa grootbloemig overig).
 - "Preserved" / "Bleached" / "Dried" → 2712.
-- "Colour treated" / "Painted" / "Absorbed" → 6268 or a specific kleurbehandeld code.
+- "Colour treated" / "Painted" / "Absorbed" → 6268 or specific kleurbehandeld code.
 
 ---
 

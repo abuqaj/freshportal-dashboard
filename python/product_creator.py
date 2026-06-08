@@ -363,20 +363,29 @@ def copy_and_create(
             _s("Zapisywanie produktu…")
             submitted = False
             for save_sel in [
-                "#product_index_form_submit",     # exact id
-                "fps-button[name='submit']",      # name=submit, type=save
-                "fps-button[type='save']",        # type=save
-                "fps-button[submit='true']",      # submit attribute
+                "#product_index_form_submit",
+                "fps-button[name='submit']",
+                "fps-button[type='save']",
+                "fps-button[submit='true']",
                 "button[type='submit']",
                 ".modal-footer fps-button",
                 ".modal-footer button",
             ]:
                 btn = page.query_selector(save_sel)
-                if btn and btn.is_visible():
-                    btn.click()
-                    submitted = True
-                    logger.info("Submitted via: %s", save_sel)
-                    break
+                if btn:
+                    try:
+                        # fps-button Shadow DOM may fail is_visible() — use JS click
+                        page.evaluate("el => el.click()", btn)
+                        submitted = True
+                        logger.info("Submitted via JS click: %s", save_sel)
+                        break
+                    except Exception:
+                        try:
+                            btn.click(force=True)
+                            submitted = True
+                            break
+                        except Exception:
+                            continue
 
             if not submitted:
                 return {"ok": False, "message": "Nie znaleziono przycisku zapisu w popupie"}
