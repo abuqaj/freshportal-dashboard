@@ -89,6 +89,7 @@ def _ask_claude(
     vbn_official_name: str,
     vbn_group: str,
     client: anthropic.Anthropic,
+    model: str = "claude-haiku-4-5",
 ) -> tuple[bool, str, str]:
     """
     Ask Claude whether the VBN assignment is correct.
@@ -117,7 +118,7 @@ LINE 3: Suggested VBN code if wrong (or "N/A" if correct or unknown)
 
     try:
         message = client.messages.create(
-            model="claude-haiku-4-5",
+            model=cfg.anthropic_model,
             max_tokens=256,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -252,7 +253,7 @@ def verify_products(
                 # Could be wrong — spray product with non-spray VBN
                 if client:
                     is_correct, ai_reason, ai_proposed = _ask_claude(
-                        name, p.vbn_number, official, group, client
+                        name, p.vbn_number, official, group, client, cfg.anthropic_model
                     )
                     if not is_correct:
                         status = "ERROR"

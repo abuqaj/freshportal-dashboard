@@ -23,6 +23,9 @@ class Config:
     anthropic_api_key: str = field(
         default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "")
     )
+    anthropic_model: str = field(
+        default_factory=lambda: os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
+    )
     floricode_username: str = field(
         default_factory=lambda: os.getenv("FLORICODE_USERNAME", "")
     )

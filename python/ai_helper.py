@@ -115,7 +115,7 @@ def ai_analyze_product(
     try:
         client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
         msg = client.messages.create(
-            model="claude-haiku-4-5",
+            model=cfg.anthropic_model,
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
         )
