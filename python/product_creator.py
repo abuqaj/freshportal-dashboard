@@ -381,16 +381,23 @@ def copy_and_create(
             time.sleep(0.5)
             page.keyboard.press("Enter")
 
-            # URL doesn't change after save in FreshPortal — wait for save to complete,
-            # then check for form errors and search for the new product by name.
+            # Wait for the page to settle — FreshPortal may or may not navigate after save.
             _s("Czekam na zapis…")
-            time.sleep(3)
+            try:
+                page.wait_for_load_state("load", timeout=10_000)
+            except Exception:
+                pass
+            time.sleep(2)
 
-            # Check for visible error messages on the form
-            for err_sel in [".alert-danger", ".text-danger", "[class*='error-message']"]:
-                err = page.query_selector(err_sel)
-                if err and err.is_visible():
-                    return {"ok": False, "message": f"Błąd formularza: {err.inner_text()[:300]}"}
+            # Check for visible error messages — wrapped in try/except because
+            # the execution context may be destroyed mid-navigation.
+            try:
+                for err_sel in [".alert-danger", ".text-danger", "[class*='error-message']"]:
+                    err = page.query_selector(err_sel)
+                    if err and err.is_visible():
+                        return {"ok": False, "message": f"Błąd formularza: {err.inner_text()[:300]}"}
+            except Exception:
+                pass  # Page navigated — not an error
 
             # Navigate to product list and search by the new name to find its ID
             _s("Szukam nowo utworzonego produktu…")
