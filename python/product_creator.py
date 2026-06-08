@@ -266,112 +266,42 @@ def copy_and_create(
             _s("Logowanie do FreshPortal…")
             _login(page, cfg)
 
-            # ── 1. Navigate to filtered product list ────────────────────────
-            _s(f"Nawigacja do produktu {template_id}…")
-            list_url = (
-                f"{cfg.freshportal_url}/product/index/index/"
-                f"?1=1&id={template_id}&page=1"
-            )
-            page.goto(list_url, wait_until="load", timeout=cfg.request_timeout)
+            # ── Navigate directly to copy URL ───────────────────────────────
+            # Debug confirmed: /product/index/copy/PRO_ID/{id}/ opens the copy
+            # form directly (has_form=True). The toolbar button opens a popup
+            # that gets blocked in headless mode — skip it entirely.
+            _s(f"Otwieranie formularza kopiowania produktu {template_id}…")
+            copy_url = f"{cfg.freshportal_url}/product/index/copy/PRO_ID/{template_id}/"
+            page.goto(copy_url, wait_until="load", timeout=cfg.request_timeout)
+
             try:
-                page.wait_for_selector("table tbody tr", timeout=15_000)
+                page.wait_for_selector("#product_index_form_submit", timeout=15_000)
             except PWTimeout:
-                time.sleep(2)
+                return {"ok": False, "message": f"Formularz kopiowania nie załadował się ({copy_url})"}
 
-            rows = page.query_selector_all("table tbody tr")
-            if not rows:
-                return {"ok": False, "message": f"Produkt ID={template_id} nie znaleziony"}
-
-            # ── 2. Select the row (click first cell — the selection indicator) ─
-            _s("Zaznaczam wiersz produktu…")
-            first_cell = rows[0].query_selector("td:first-child")
-            if first_cell:
-                first_cell.click()
-            else:
-                rows[0].click()
-            time.sleep(0.8)
-
-            # ── 3. Click the fps-button copy toolbar button via Shadow DOM ───
-            # fps-button is an Angular Web Component — outer .click() doesn't
-            # reach the inner <button> inside Shadow DOM. Use Playwright locator
-            # which pierces Shadow DOM automatically.
-            _s("Klikam przycisk kopiowania (Shadow DOM)…")
-            copy_loc = None
-            for sel in [
-                "fps-button[name='button_copy']",
-                "#btn_product_index_index_button_copy",
-                "fps-button[type='copy']",
-            ]:
-                loc = page.locator(sel)
-                if loc.count() > 0:
-                    copy_loc = loc
-                    logger.info("Copy fps-button found: %s", sel)
-                    break
-
-            if not copy_loc:
-                return {"ok": False, "message": "Nie znaleziono fps-button[name='button_copy'] w pasku narzędzi"}
-
-            # Pierce Shadow DOM to click the inner <button>
-            inner = copy_loc.locator("button")
-            if inner.count() > 0:
-                inner.click()
-            else:
-                copy_loc.click(force=True)
-            time.sleep(3)  # wait for Angular dialog to render
-
-            # ── 4. Wait for the copy popup ──────────────────────────────────
-            _s("Czekam na popup kopiowania…")
-            popup_found = False
-            for popup_sel in [
-                "fps-dialog",
-                "fps-modal",
-                "[role='dialog']",
-                ".modal.in",
-                ".modal-open .modal",
-            ]:
-                try:
-                    page.wait_for_selector(popup_sel, timeout=6_000)
-                    popup_found = True
-                    logger.info("Popup found: %s", popup_sel)
-                    break
-                except PWTimeout:
-                    continue
-
-            if not popup_found:
-                # Popup might not use a dialog — check for new visible text inputs
-                try:
-                    page.wait_for_selector("input[type='text']:visible", timeout=4_000)
-                    popup_found = True
-                except PWTimeout:
-                    pass
-
-            if not popup_found:
-                return {"ok": False, "message": "Popup kopiowania nie pojawił się po kliknięciu przycisku"}
-
-            # ── 5. Fill name fields ─────────────────────────────────────────
+            # ── Fill name fields ────────────────────────────────────────────
             _s(f"Wypełnianie nazwy: {new_name}…")
-            visible_text_inputs = [
-                inp for inp in page.query_selector_all("input[type='text']")
-                if inp.is_visible()
-            ]
-            if not visible_text_inputs:
-                return {"ok": False, "message": "Brak widocznych pól tekstowych w popupie kopiowania"}
-
-            # Fill the first N visible text inputs (name in multiple languages)
-            for inp in visible_text_inputs[:6]:
+            skip_placeholders = {"product number", "vbn number", "note"}
+            filled = 0
+            for inp in page.query_selector_all("input[type='text']"):
+                if not inp.is_visible():
+                    continue
+                placeholder = (inp.get_attribute("placeholder") or "").strip().lower()
+                if placeholder in skip_placeholders:
+                    continue
                 try:
-                    placeholder = inp.get_attribute("placeholder") or ""
-                    # Skip non-name fields
-                    if placeholder.lower() in ("product number", "note"):
-                        continue
                     inp.triple_click()
                     inp.fill(new_name)
+                    filled += 1
                 except Exception:
                     pass
 
+            if filled == 0:
+                return {"ok": False, "message": "Nie znaleziono pól nazwy w formularzu"}
+            _s(f"Wypełniono {filled} pól nazwy")
             time.sleep(0.5)
 
-            # ── 6. Submit ───────────────────────────────────────────────────
+            # ── Submit via Shadow DOM click ─────────────────────────────────
             _s("Zapisywanie produktu…")
             submitted = False
             for save_sel in [
@@ -382,27 +312,17 @@ def copy_and_create(
             ]:
                 loc = page.locator(save_sel)
                 if loc.count() > 0:
-                    # Pierce Shadow DOM to click the inner <button>
                     inner = loc.locator("button")
                     if inner.count() > 0:
                         inner.click()
                     else:
                         loc.click(force=True)
                     submitted = True
-                    logger.info("Submitted via Shadow DOM click: %s", save_sel)
+                    logger.info("Submitted via: %s", save_sel)
                     break
 
             if not submitted:
-                # Last resort: any visible submit button
-                for sel in ["button[type='submit']", ".modal-footer button"]:
-                    btn = page.query_selector(sel)
-                    if btn and btn.is_visible():
-                        btn.click()
-                        submitted = True
-                        break
-
-            if not submitted:
-                return {"ok": False, "message": "Nie znaleziono przycisku zapisu w popupie"}
+                return {"ok": False, "message": "Nie znaleziono przycisku zapisu"}
 
             try:
                 page.wait_for_load_state("networkidle", timeout=20_000)
