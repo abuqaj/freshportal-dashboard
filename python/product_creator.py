@@ -281,6 +281,28 @@ def _was_recently_created(soup: BeautifulSoup, minutes: int = 15) -> bool:
     return False
 
 
+def _number_is_taken(soup: BeautifulSoup, candidate: str) -> bool:
+    """Return True if any table cell text is an exact (case-insensitive) match for *candidate*.
+
+    FreshPortal's number_adjustable filter is a CONTAINS search, so the results
+    page may include rows where the product number merely contains the candidate
+    as a substring (e.g. searching ROECAT also returns ROECATA, ROECATB …).
+    We must compare cell text exactly to avoid false "taken" results.
+    """
+    table = soup.find("table")
+    if not table:
+        return False
+    tbody = table.find("tbody")
+    if not tbody:
+        return False
+    target = candidate.upper()
+    for row in tbody.find_all("tr"):
+        for cell in row.find_all("td"):
+            if cell.get_text(strip=True).upper() == target:
+                return True
+    return False
+
+
 def _find_available_number_on_page(
     page,
     base: str,
@@ -302,8 +324,7 @@ def _find_available_number_on_page(
                f"?1=1&number_adjustable={candidate}&page=1")
         page.goto(url, wait_until="load", timeout=cfg.request_timeout)
         soup = BeautifulSoup(page.content(), "lxml")
-        rows = _parse_rows_html(soup, _detect_columns_html(soup))
-        if not rows:
+        if not _number_is_taken(soup, candidate):
             if candidate != base:
                 _s(f"Nr {base} zajęty — używam: {candidate}")
             return candidate
