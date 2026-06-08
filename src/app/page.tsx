@@ -1070,7 +1070,7 @@ export default function Dashboard() {
                   )}
                   <div className="flex gap-3">
                     <button
-                      onClick={handleConfirmCreate}
+                      onClick={() => handleConfirmCreate()}
                       disabled={creating || numberChecking || !finalName.trim() || !productNumber.trim()}
                       className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
                     >
