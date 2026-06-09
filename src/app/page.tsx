@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { flushSync, createPortal } from "react-dom";
+import { translations, Lang } from "@/lib/i18n";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -66,10 +68,14 @@ function ManualTemplateForm({
   newName,
   onCreate,
   disabled,
+  placeholder,
+  copyLabel,
 }: {
   newName: string;
   onCreate: (id: string, name: string) => void;
   disabled: boolean;
+  placeholder: string;
+  copyLabel: string;
 }) {
   const [id, setId] = useState("");
   return (
@@ -78,7 +84,7 @@ function ManualTemplateForm({
         type="text"
         value={id}
         onChange={(e) => setId(e.target.value)}
-        placeholder="ID produktu (np. 65945)"
+        placeholder={placeholder}
         className="border border-neutral-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-1 focus:ring-violet-300"
       />
       <button
@@ -86,7 +92,7 @@ function ManualTemplateForm({
         disabled={disabled || !id.trim()}
         className="bg-neutral-700 hover:bg-neutral-800 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
       >
-        Kopiuj ten produkt
+        {copyLabel}
       </button>
     </div>
   );
@@ -94,6 +100,14 @@ function ManualTemplateForm({
 
 
 export default function Dashboard() {
+  const [lang, setLangState] = useState<Lang>("en");
+  useEffect(() => {
+    const saved = localStorage.getItem("fp_lang") as Lang | null;
+    if (saved && ["en", "nl", "pl", "es"].includes(saved)) setLangState(saved);
+  }, []);
+  function setLang(l: Lang) { setLangState(l); localStorage.setItem("fp_lang", l); }
+  const t = translations[lang];
+
   const [tab, setTab] = useState<"vbn" | "photos" | "history" | "create">("vbn");
 
   // VBN state
@@ -163,7 +177,7 @@ export default function Dashboard() {
       setResults(null);
       setStats(null);
       setFixMessage(null);
-      setStatusMessage("Łączenie z Railway…");
+      setStatusMessage(t.common.connecting);
     });
 
     try {
@@ -266,7 +280,7 @@ export default function Dashboard() {
           const data = await res.json();
           setVbnNameCache((prev) => ({
             ...prev,
-            [trimmed]: data.found ? (data.name ?? "") : "⚠ Nieznany kod VBN",
+            [trimmed]: data.found ? (data.name ?? "") : t.vbn.unknownCode,
           }));
         } catch {
           setVbnNameCache((prev) => ({ ...prev, [trimmed]: "" }));
@@ -318,7 +332,7 @@ export default function Dashboard() {
       }));
 
     if (toFix.length === 0) {
-      setFixMessage("Brak produktów do poprawy.");
+      setFixMessage(t.vbn.nothingToFix);
       return;
     }
 
@@ -362,7 +376,7 @@ export default function Dashboard() {
             flushSync(() => setFixMessage(event.message as string));
           } else if (event.type === "result") {
             const data = event.data as { fixed: number; failed: number };
-            const msg = `✓ Poprawiono ${data.fixed} produktów.${data.failed > 0 ? ` ${data.failed} nieudanych.` : ""}`;
+            const msg = t.vbn.fixedMsg(data.fixed, data.failed);
             // Reset search, show banner
             setResults(null);
             setStats(null);
@@ -399,7 +413,7 @@ export default function Dashboard() {
       setSearchResults(null);
       setSearchError(null);
       setCreateResult(null);
-      setSearchStatus("Łączenie z Railway…");
+      setSearchStatus(t.common.connecting);
       setAiAnalysis(null);
       setAiLoading(false);
       setSelectedTemplateWas100Pct(false);
@@ -621,15 +635,15 @@ export default function Dashboard() {
       {/* Sidebar */}
       <aside className="w-56 flex-shrink-0 bg-white border-r border-neutral-200 flex flex-col">
         <div className="px-5 py-5 border-b border-neutral-200">
-          <p className="text-sm font-semibold text-neutral-800 tracking-tight">FreshPortal Tools</p>
-          <p className="text-xs text-neutral-400 mt-0.5">fp042100.freshportal.nl</p>
+          <p className="text-sm font-semibold text-neutral-800 tracking-tight">FreshPortal Product Management</p>
+          <p className="text-xs text-neutral-400 mt-0.5">DFG Stamgegevens</p>
         </div>
         <nav className="flex-1 py-3">
           {[
-            { id: "vbn", label: "VBN Checker", icon: "🏷️" },
-            { id: "create", label: "Nowe produkty", icon: "➕" },
-            { id: "photos", label: "Photo Uploader", icon: "🖼️" },
-            { id: "history", label: "Historia", icon: "📋" },
+            { id: "vbn",     label: "VBN Checker",        icon: "🏷️" },
+            { id: "create",  label: t.nav.newProducts,    icon: "➕" },
+            { id: "photos",  label: "Photo Uploader",     icon: "🖼️" },
+            { id: "history", label: t.nav.history,        icon: "📋" },
           ].map((item) => (
             <button
               key={item.id}
@@ -649,9 +663,14 @@ export default function Dashboard() {
           ))}
         </nav>
         <div className="px-5 py-4 border-t border-neutral-200">
-          <p className="text-xs text-neutral-400">FreshPortal Dashboard v1.0</p>
+          <p className="text-xs text-neutral-400">FreshPortal Product Management</p>
         </div>
       </aside>
+
+      {/* Language switcher — fixed top right */}
+      <div className="fixed top-4 right-4 z-40">
+        <LanguageSwitcher lang={lang} setLang={setLang} />
+      </div>
 
       {/* Main */}
       <main className="flex-1 overflow-y-auto">
@@ -660,9 +679,7 @@ export default function Dashboard() {
           <div className="p-8 max-w-5xl">
             <div className="mb-6">
               <h1 className="text-xl font-semibold text-neutral-900">VBN Checker</h1>
-              <p className="text-sm text-neutral-500 mt-1">
-                Sprawdź poprawność kodów VBN produktów w FreshPortal na podstawie danych Floricode
-              </p>
+              <p className="text-sm text-neutral-500 mt-1">{t.vbn.description}</p>
             </div>
 
             {/* Fix success banner */}
@@ -676,7 +693,7 @@ export default function Dashboard() {
             {/* Search bar */}
             <div className="bg-white border border-neutral-200 rounded-xl p-5 mb-5">
               <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">
-                Kody VBN do sprawdzenia
+                {t.vbn.codesLabel}
               </label>
               <div className="flex gap-3">
                 <input
@@ -684,7 +701,7 @@ export default function Dashboard() {
                   value={vbnInput}
                   onChange={(e) => setVbnInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleCheck()}
-                  placeholder="np. 580, 595, 580"
+                  placeholder={t.vbn.placeholder}
                   className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-64 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                 />
                 <button
@@ -692,7 +709,7 @@ export default function Dashboard() {
                   disabled={loading || !vbnInput.trim()}
                   className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
                 >
-                  {loading ? "Sprawdzam…" : "Sprawdź produkty"}
+                  {loading ? t.vbn.checking : t.vbn.checkBtn}
                 </button>
               </div>
               {loading && statusMessage && (
@@ -715,10 +732,10 @@ export default function Dashboard() {
             {stats && (
               <div className="grid grid-cols-4 gap-3 mb-5">
                 {[
-                  { label: "Wszystkich", value: stats.total, color: "text-neutral-800" },
-                  { label: "Błędy", value: stats.errors, color: "text-red-600" },
-                  { label: "Ostrzeżenia", value: stats.warnings, color: "text-amber-600" },
-                  { label: "Poprawne", value: stats.ok, color: "text-green-600" },
+                  { label: t.vbn.statTotal,    value: stats.total,    color: "text-neutral-800" },
+                  { label: t.vbn.statErrors,   value: stats.errors,   color: "text-red-600" },
+                  { label: t.vbn.statWarnings, value: stats.warnings, color: "text-amber-600" },
+                  { label: t.vbn.statOk,       value: stats.ok,       color: "text-green-600" },
                 ].map((s) => (
                   <div key={s.label} className="bg-white border border-neutral-200 rounded-xl p-4">
                     <p className="text-xs text-neutral-400 mb-1">{s.label}</p>
@@ -733,24 +750,24 @@ export default function Dashboard() {
               <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden mb-4">
                 <div className="px-5 py-4 border-b border-neutral-100 flex justify-between items-center">
                   <p className="text-sm font-medium text-neutral-800">
-                    Produkty z błędami / ostrzeżeniami
-                    <span className="ml-2 text-xs text-neutral-400">({errorResults.length} do poprawy)</span>
+                    {t.vbn.errorsTitle}
+                    <span className="ml-2 text-xs text-neutral-400">({errorResults.length} {t.vbn.toFix})</span>
                   </p>
                 </div>
 
                 {errorResults.length === 0 ? (
                   <div className="px-5 py-8 text-center text-sm text-green-600">
-                    ✓ Wszystkie produkty mają poprawne kody VBN
+                    {t.vbn.allOk}
                   </div>
                 ) : (
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-neutral-100 text-xs text-neutral-400 uppercase tracking-wide">
-                        <th className="text-left px-5 py-3 font-medium">Nazwa produktu</th>
-                        <th className="text-left px-3 py-3 font-medium">Aktualny VBN</th>
-                        <th className="text-left px-3 py-3 font-medium">Powód</th>
-                        <th className="text-left px-3 py-3 font-medium">Proponowany VBN</th>
-                        <th className="px-3 py-3 font-medium">Akcja</th>
+                        <th className="text-left px-5 py-3 font-medium">{t.vbn.tableProduct}</th>
+                        <th className="text-left px-3 py-3 font-medium">{t.vbn.tableCurrent}</th>
+                        <th className="text-left px-3 py-3 font-medium">{t.vbn.tableReason}</th>
+                        <th className="text-left px-3 py-3 font-medium">{t.vbn.tableProposed}</th>
+                        <th className="px-3 py-3 font-medium">{t.vbn.tableAction}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -815,7 +832,7 @@ export default function Dashboard() {
                                   : "border-neutral-200 text-neutral-400 hover:border-red-200 hover:text-red-500"
                               }`}
                             >
-                              {r.excluded ? "Przywróć" : "Pomiń"}
+                              {r.excluded ? t.vbn.restore : t.vbn.skip}
                             </button>
                           </td>
                         </tr>
@@ -828,8 +845,7 @@ export default function Dashboard() {
                 {errorResults.length > 0 && (
                   <div className="px-5 py-4 bg-neutral-50 border-t border-neutral-100 flex items-center justify-between">
                     <p className="text-xs text-neutral-500">
-                      {errorResults.filter((r) => !r.excluded && r.edited_vbn?.trim()).length} produktów zostanie
-                      zaktualizowanych w FreshPortal
+                      {errorResults.filter((r) => !r.excluded && r.edited_vbn?.trim()).length} {t.vbn.willBeUpdated}
                     </p>
                     <div className="flex gap-2 items-center">
                       {fixMessage && (
@@ -856,7 +872,7 @@ export default function Dashboard() {
                         disabled={fixing}
                         className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
                       >
-                        {fixing ? "Poprawiam…" : "Zatwierdź i popraw w FreshPortal"}
+                        {fixing ? t.vbn.fixing : t.vbn.fixBtn}
                       </button>
                     </div>
                   </div>
@@ -868,14 +884,14 @@ export default function Dashboard() {
             {results && stats && stats.ok > 0 && (
               <details className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
                 <summary className="px-5 py-3 text-sm text-neutral-500 cursor-pointer hover:bg-neutral-50">
-                  ✓ {stats.ok} produktów z poprawnym VBN (kliknij aby rozwinąć)
+                  {t.vbn.okExpand(stats.ok)}
                 </summary>
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-neutral-100 text-neutral-400">
-                      <th className="text-left px-5 py-2">Nazwa</th>
-                      <th className="text-left px-3 py-2">VBN</th>
-                      <th className="text-left px-3 py-2">Oficjalna nazwa VBN</th>
+                      <th className="text-left px-5 py-2">{t.vbn.okName}</th>
+                      <th className="text-left px-3 py-2">{t.vbn.okVbn}</th>
+                      <th className="text-left px-3 py-2">{t.vbn.okOfficial}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -903,16 +919,14 @@ export default function Dashboard() {
         {tab === "create" && (
           <div className="p-8 max-w-3xl">
             <div className="mb-6">
-              <h1 className="text-xl font-semibold text-neutral-900">Nowe produkty</h1>
-              <p className="text-sm text-neutral-500 mt-1">
-                Wpisz nazwę produktu — system znajdzie podobne lub stworzy kopię najbliższego
-              </p>
+              <h1 className="text-xl font-semibold text-neutral-900">{t.nav.newProducts}</h1>
+              <p className="text-sm text-neutral-500 mt-1">{t.create.description}</p>
             </div>
 
             {/* Search bar */}
             <div className="bg-white border border-neutral-200 rounded-xl p-5 mb-5">
               <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">
-                Nazwa nowego produktu
+                {t.create.nameLabel}
               </label>
               <div className="flex gap-3">
                 <input
@@ -920,7 +934,7 @@ export default function Dashboard() {
                   value={createInput}
                   onChange={(e) => setCreateInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleProductSearch()}
-                  placeholder="np. Rosa Ec Toxic"
+                  placeholder={t.create.namePlaceholder}
                   className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                 />
                 <button
@@ -928,7 +942,7 @@ export default function Dashboard() {
                   disabled={searching || !createInput.trim()}
                   className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
                 >
-                  {searching ? "Szukam…" : "Szukaj podobnych"}
+                  {searching ? t.create.searching : t.create.searchBtn}
                 </button>
               </div>
               {searching && searchStatus && (
@@ -983,40 +997,40 @@ export default function Dashboard() {
               <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-neutral-100">
                   <p className="text-sm font-medium text-neutral-800">
-                    Podobne produkty
+                    {t.create.similarTitle}
                     {highMatches.length > 0 && (
-                      <span className="ml-2 text-xs text-neutral-400">({highMatches.length} wyników ≥80%)</span>
+                      <span className="ml-2 text-xs text-neutral-400">{t.create.resultsCount(highMatches.length)}</span>
                     )}
                   </p>
                 </div>
 
                 {searchResults.length === 0 ? (
                   <div className="px-5 py-6 text-sm text-neutral-500 text-center">
-                    Nie znaleziono podobnych produktów w FreshPortal.
+                    {t.create.noResults}
                     <br />
                     <span className="text-xs text-neutral-400 mt-1 block">
-                      Wyszukaj ręcznie produkt do skopiowania wpisując jego ID poniżej.
+                      {t.create.noResultsHint}
                     </span>
                   </div>
                 ) : (
                   <>
                     {highMatches.length > 0 && (
                       <div className="px-5 py-3 bg-amber-50 border-b border-amber-100 text-xs text-amber-700">
-                        ⚠ Podobny produkt już może istnieć (podobieństwo ≥80%). Sprawdź listę przed tworzeniem.
+                        {t.create.warning}
                       </div>
                     )}
                     {isFallback && (
                       <div className="px-5 py-3 bg-neutral-50 border-b border-neutral-100 text-xs text-neutral-500">
-                        Brak produktów z podobieństwem ≥80%. Najbliższy znaleziony wynik:
+                        {t.create.fallback}
                       </div>
                     )}
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-neutral-100 text-xs text-neutral-400 uppercase tracking-wide">
-                          <th className="text-left px-5 py-3 font-medium">Nazwa produktu</th>
-                          <th className="text-left px-3 py-3 font-medium">VBN</th>
-                          <th className="text-left px-3 py-3 font-medium">Podobieństwo</th>
-                          <th className="px-3 py-3 font-medium">Akcja</th>
+                          <th className="text-left px-5 py-3 font-medium">{t.create.tableProduct}</th>
+                          <th className="text-left px-3 py-3 font-medium">{t.create.tableVbn}</th>
+                          <th className="text-left px-3 py-3 font-medium">{t.create.tableSim}</th>
+                          <th className="px-3 py-3 font-medium">{t.create.tableAction}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1050,7 +1064,7 @@ export default function Dashboard() {
                                 disabled={creating}
                                 className="text-xs px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded-lg transition-colors"
                               >
-                                Kopiuj jako szablon
+                                {t.create.useAsTemplate}
                               </button>
                             </td>
                           </tr>
@@ -1063,7 +1077,7 @@ export default function Dashboard() {
                           onClick={() => setShowAllResults(true)}
                           className="text-xs text-violet-600 hover:text-violet-700 font-medium"
                         >
-                          Pokaż więcej ({allDisplayResults.length - 5} kolejnych)
+                          {t.create.showMore(allDisplayResults.length - 5)}
                         </button>
                       </div>
                     )}
@@ -1076,15 +1090,15 @@ export default function Dashboard() {
             {/* Confirmation step before creating */}
             {pendingCreate && (
               <div className="mt-4 bg-white border-2 border-violet-300 rounded-xl p-5">
-                <p className="text-sm font-semibold text-neutral-800 mb-1">Potwierdź nazwę nowego produktu</p>
+                <p className="text-sm font-semibold text-neutral-800 mb-1">{t.create.confirmTitle}</p>
                 <p className="text-xs text-neutral-500 mb-3">
-                  Szablon: <span className="font-medium text-neutral-700">{pendingCreate.templateName}</span>
+                  {t.create.templateLabel} <span className="font-medium text-neutral-700">{pendingCreate.templateName}</span>
                   <span className="ml-2 text-neutral-400">(ID: {pendingCreate.templateId})</span>
                 </p>
                 <div className="flex flex-col gap-3">
                   <div className="flex gap-3">
                     <div className="flex-1">
-                      <label className="block text-xs text-neutral-400 mb-1">Nazwa produktu</label>
+                      <label className="block text-xs text-neutral-400 mb-1">{t.create.nameLabel}</label>
                       <input
                         type="text"
                         value={finalName}
@@ -1121,7 +1135,7 @@ export default function Dashboard() {
                     </div>
                     <div>
                       <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
-                        Nr produktu (maks. 8 znaków)
+                        {t.create.numberLabel}
                         {numberChecking && (
                           <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -1129,7 +1143,7 @@ export default function Dashboard() {
                           </svg>
                         )}
                         {!numberChecking && numberCheckResult && !numberCheckResult.changed && (
-                          <span className="text-green-600 text-xs">✓ wolny</span>
+                          <span className="text-green-600 text-xs">{t.create.numberFree}</span>
                         )}
                       </label>
                       <input
@@ -1144,7 +1158,7 @@ export default function Dashboard() {
                   {numberCheckResult?.changed && (
                     <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                       <span>⚠</span>
-                      <span>Nr <span className="font-mono font-medium">{numberCheckResult.original}</span> jest zajęty — zmieniono na <span className="font-mono font-medium">{productNumber}</span></span>
+                      <span>{t.create.numberTaken(numberCheckResult.original, productNumber)}</span>
                     </div>
                   )}
                   <div className="flex gap-3">
@@ -1153,16 +1167,16 @@ export default function Dashboard() {
                       disabled={creating || numberChecking || !finalName.trim() || !productNumber.trim()}
                       className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
                     >
-                      {creating ? "Tworzę…" : numberChecking ? "Sprawdzam numer…" : "Utwórz produkt"}
+                      {creating ? t.create.creating : numberChecking ? t.create.checkingNumber : t.create.createBtn}
                     </button>
                     <button
                       onClick={() => setPendingCreate(null)}
                       className="border border-neutral-200 text-neutral-500 hover:bg-neutral-50 text-sm px-4 py-2.5 rounded-lg transition-colors"
                     >
-                      Anuluj
+                      {t.common.cancel}
                     </button>
                   </div>
-                  <p className="text-xs text-neutral-400">Format: tylko wielkie litery, bez spacji, unikalny w systemie</p>
+                  <p className="text-xs text-neutral-400">{t.create.numberHint}</p>
                 </div>
               </div>
             )}
@@ -1171,7 +1185,7 @@ export default function Dashboard() {
             {searchResults !== null && (aiLoading || aiAnalysis) && (
               <div className="mt-4 bg-white border border-neutral-200 rounded-xl overflow-hidden">
                 <div className="px-5 py-3 border-b border-neutral-100 flex items-center gap-2">
-                  <span className="text-xs font-medium text-neutral-500 uppercase tracking-wide">Analiza AI</span>
+                  <span className="text-xs font-medium text-neutral-500 uppercase tracking-wide">{t.create.aiTitle}</span>
                   {aiLoading && (
                     <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -1180,19 +1194,19 @@ export default function Dashboard() {
                   )}
                 </div>
                 {aiLoading ? (
-                  <p className="px-5 py-4 text-sm text-neutral-400">Sprawdzam duplikaty i sugeruję VBN…</p>
+                  <p className="px-5 py-4 text-sm text-neutral-400">{t.create.aiChecking}</p>
                 ) : aiAnalysis && (
                   <div className="p-5 flex flex-col gap-3">
                     {/* Duplicate result */}
                     {aiAnalysis.duplicate.found && aiAnalysis.duplicate.product_id ? (
                       <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-                        <p className="text-sm font-semibold text-amber-800">⚠ Prawdopodobny duplikat</p>
+                        <p className="text-sm font-semibold text-amber-800">{t.create.aiDuplicate}</p>
                         <p className="text-sm text-amber-700 mt-0.5">
-                          Ten produkt może już istnieć jako{" "}
+                          {t.create.aiDuplicateAs}{" "}
                           <strong>{aiAnalysis.duplicate.product_name}</strong>
                           {aiAnalysis.duplicate.confidence && (
                             <span className="ml-2 text-xs font-medium px-1.5 py-0.5 rounded bg-amber-100">
-                              pewność: {aiAnalysis.duplicate.confidence}
+                              {t.create.confidence} {aiAnalysis.duplicate.confidence}
                             </span>
                           )}
                         </p>
@@ -1207,19 +1221,19 @@ export default function Dashboard() {
                           disabled={creating}
                           className="mt-2 text-xs px-3 py-1.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-lg transition-colors"
                         >
-                          Użyj jako szablon
+                          {t.create.useAsTemplate}
                         </button>
                       </div>
                     ) : (
                       <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3">
-                        <p className="text-sm text-green-700">✓ AI nie znalazła duplikatu — produkt prawdopodobnie nie istnieje w systemie.</p>
+                        <p className="text-sm text-green-700">{t.create.aiNoDuplicate}</p>
                       </div>
                     )}
 
                     {/* VBN suggestion */}
                     {aiAnalysis.vbn.code && (
                       <div className="bg-violet-50 border border-violet-200 rounded-lg px-4 py-3">
-                        <p className="text-xs font-medium text-violet-500 uppercase tracking-wide mb-1">Sugerowany VBN dla nowego produktu</p>
+                        <p className="text-xs font-medium text-violet-500 uppercase tracking-wide mb-1">{t.create.aiVbnTitle}</p>
                         <p className="text-sm font-semibold text-violet-800">
                           <span className="font-mono">{aiAnalysis.vbn.code}</span>
                           {aiAnalysis.vbn.name && <span className="font-normal"> — {aiAnalysis.vbn.name}</span>}
@@ -1243,12 +1257,14 @@ export default function Dashboard() {
             {searchResults !== null && (
               <div className="mt-4 bg-white border border-neutral-200 rounded-xl p-5">
                 <p className="text-xs font-medium text-neutral-500 mb-3 uppercase tracking-wide">
-                  Lub podaj ID produktu-szablonu ręcznie
+                  {t.create.manualTitle}
                 </p>
                 <ManualTemplateForm
                   newName={createInput}
                   onCreate={handleCreateFromTemplate}
                   disabled={creating}
+                  placeholder={t.create.manualPlaceholder}
+                  copyLabel={t.create.manualCopy}
                 />
               </div>
             )}
@@ -1260,21 +1276,19 @@ export default function Dashboard() {
           <div className="p-8 max-w-2xl">
             <div className="mb-6">
               <h1 className="text-xl font-semibold text-neutral-900">Photo Uploader</h1>
-              <p className="text-sm text-neutral-500 mt-1">
-                Dodaj zdjęcia do produktów FreshPortal na podstawie pliku Excel
-              </p>
+              <p className="text-sm text-neutral-500 mt-1">{t.photo.description}</p>
             </div>
 
             <div className="bg-white border border-neutral-200 rounded-xl p-6">
-              <p className="text-sm font-medium text-neutral-700 mb-3">Format pliku Excel</p>
+              <p className="text-sm font-medium text-neutral-700 mb-3">{t.photo.formatTitle}</p>
               <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 mb-5 text-xs text-neutral-500 font-mono">
-                <p className="font-medium text-neutral-600 mb-1">Wymagane kolumny:</p>
-                <p>• <strong>product_id</strong> — ID produktu w FreshPortal</p>
-                <p>• <strong>photo_name</strong> — nazwa pliku zdjęcia (np. rosa_red.jpg)</p>
+                <p className="font-medium text-neutral-600 mb-1">{t.photo.requiredCols}</p>
+                <p>• <strong>product_id</strong> — {t.photo.col1.replace("product_id — ", "")}</p>
+                <p>• <strong>photo_name</strong> — {t.photo.col2.replace("photo_name — ", "")}</p>
               </div>
 
               <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">
-                Plik Excel (.xlsx)
+                {t.photo.fileLabel}
               </label>
               <div className="border-2 border-dashed border-neutral-200 rounded-xl p-8 text-center hover:border-violet-300 transition-colors">
                 <input
@@ -1287,10 +1301,10 @@ export default function Dashboard() {
                 <label htmlFor="xlsx-input" className="cursor-pointer">
                   <p className="text-3xl mb-2">📊</p>
                   <p className="text-sm text-neutral-600">
-                    {xlsxFile ? xlsxFile.name : "Kliknij aby wybrać plik .xlsx"}
+                    {xlsxFile ? xlsxFile.name : t.photo.filePrompt}
                   </p>
                   {!xlsxFile && (
-                    <p className="text-xs text-neutral-400 mt-1">lub przeciągnij i upuść</p>
+                    <p className="text-xs text-neutral-400 mt-1">{t.photo.fileDrag}</p>
                   )}
                 </label>
               </div>
@@ -1301,7 +1315,7 @@ export default function Dashboard() {
                   disabled={!xlsxFile || uploading}
                   className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
                 >
-                  {uploading ? "Uploaduję…" : "Uruchom Photo Uploader"}
+                  {uploading ? t.photo.uploading : t.photo.uploadBtn}
                 </button>
               </div>
 
@@ -1323,35 +1337,33 @@ export default function Dashboard() {
           <div className="p-8 max-w-4xl">
             <div className="mb-6 flex justify-between items-start">
               <div>
-                <h1 className="text-xl font-semibold text-neutral-900">Historia operacji</h1>
-                <p className="text-sm text-neutral-500 mt-1">Logi wszystkich operacji VBN i photo upload</p>
+                <h1 className="text-xl font-semibold text-neutral-900">{t.history.title}</h1>
+                <p className="text-sm text-neutral-500 mt-1">{t.history.description}</p>
               </div>
               <button
                 onClick={loadHistory}
                 className="text-sm text-violet-600 hover:text-violet-700 border border-violet-200 rounded-lg px-3 py-1.5"
               >
-                Odśwież
+                {t.history.refresh}
               </button>
             </div>
 
             <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
               {histLoading ? (
-                <div className="p-8 text-center text-sm text-neutral-400">Ładuję historię…</div>
+                <div className="p-8 text-center text-sm text-neutral-400">{t.history.loading}</div>
               ) : !history || history.length === 0 ? (
                 <div className="p-8 text-center text-sm text-neutral-400">
-                  Brak historii operacji. Uruchom najpierw VBN Checker lub Photo Uploader.
-                  <p className="text-xs mt-1 text-neutral-300">
-                    (Wymaga skonfigurowanej bazy danych Vercel Postgres)
-                  </p>
+                  {t.history.empty}
+                  <p className="text-xs mt-1 text-neutral-300">{t.history.emptyHint}</p>
                 </div>
               ) : (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-neutral-100 text-xs text-neutral-400 uppercase tracking-wide">
-                      <th className="text-left px-5 py-3 font-medium">Typ</th>
-                      <th className="text-left px-3 py-3 font-medium">Filtr / Nr</th>
-                      <th className="text-left px-3 py-3 font-medium">Szczegóły</th>
-                      <th className="text-left px-3 py-3 font-medium">Data</th>
+                      <th className="text-left px-5 py-3 font-medium">{t.history.colType}</th>
+                      <th className="text-left px-3 py-3 font-medium">{t.history.colFilter}</th>
+                      <th className="text-left px-3 py-3 font-medium">{t.history.colDetails}</th>
+                      <th className="text-left px-3 py-3 font-medium">{t.history.colDate}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1385,12 +1397,12 @@ export default function Dashboard() {
                                   }`}
                                 >
                                   {row.type === "vbn_check"
-                                    ? "VBN Sprawdzanie"
+                                    ? t.history.vbnCheck
                                     : row.type === "vbn_fix"
-                                    ? "VBN Naprawa"
+                                    ? t.history.vbnFix
                                     : row.type === "product_create"
-                                    ? "Nowy produkt"
-                                    : "Photo Upload"}
+                                    ? t.history.productCreate
+                                    : t.history.photoUpload}
                                 </span>
                               </div>
                             </td>
@@ -1405,7 +1417,7 @@ export default function Dashboard() {
                                   <span>
                                     <span className="font-medium text-neutral-700">{row.details?.name ?? "—"}</span>
                                     {row.details?.template_name && (
-                                      <span className="text-neutral-400 ml-1">(szablon: {row.details.template_name})</span>
+                                      <span className="text-neutral-400 ml-1">({t.create.templateLabel} {row.details.template_name})</span>
                                     )}
                                   </span>
                                 )
@@ -1414,7 +1426,7 @@ export default function Dashboard() {
                                 : "—"}
                             </td>
                             <td className="px-3 py-3 text-neutral-400 text-xs">
-                              {new Date(row.created_at).toLocaleString("pl-PL")}
+                              {new Date(row.created_at).toLocaleString(lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL")}
                             </td>
                           </tr>
                           {isExpanded && fixes.length > 0 && (
@@ -1423,10 +1435,10 @@ export default function Dashboard() {
                                 <table className="w-full text-xs">
                                   <thead>
                                     <tr className="text-neutral-400 uppercase tracking-wide">
-                                      <th className="text-left pb-1 font-medium">Produkt</th>
-                                      <th className="text-left pb-1 font-medium">Stary VBN</th>
+                                      <th className="text-left pb-1 font-medium">{t.history.expandProduct}</th>
+                                      <th className="text-left pb-1 font-medium">{t.history.expandOldVbn}</th>
                                       <th className="text-left pb-1 font-medium"></th>
-                                      <th className="text-left pb-1 font-medium">Nowy VBN</th>
+                                      <th className="text-left pb-1 font-medium">{t.history.expandNewVbn}</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -1467,11 +1479,9 @@ export default function Dashboard() {
                 ⚠️
               </div>
               <div>
-                <p className="text-lg font-semibold text-neutral-900">Produkt już istnieje!</p>
+                <p className="text-lg font-semibold text-neutral-900">{t.create.dupWarn1Title}</p>
                 <p className="text-sm text-neutral-600 mt-1">
-                  Znaleziono produkt{" "}
-                  <strong className="text-neutral-800">{showDuplicateWarning.templateName}</strong>{" "}
-                  z identyczną nazwą (podobieństwo 100%). Czy na pewno chcesz stworzyć duplikat?
+                  {t.create.dupWarn1Text(showDuplicateWarning.templateName)}
                 </p>
               </div>
             </div>
@@ -1480,7 +1490,7 @@ export default function Dashboard() {
                 onClick={() => setShowDuplicateWarning(null)}
                 className="px-4 py-2 text-sm border border-neutral-200 rounded-lg text-neutral-600 hover:bg-neutral-50 transition-colors"
               >
-                Anuluj
+                {t.common.cancel}
               </button>
               <button
                 onClick={() => {
@@ -1490,7 +1500,7 @@ export default function Dashboard() {
                 }}
                 className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
               >
-                Tak, utwórz duplikat
+                {t.create.dupWarn1Confirm}
               </button>
             </div>
           </div>
@@ -1506,11 +1516,9 @@ export default function Dashboard() {
                 ⚠️
               </div>
               <div>
-                <p className="text-lg font-semibold text-neutral-900">Ostatnie ostrzeżenie!</p>
+                <p className="text-lg font-semibold text-neutral-900">{t.create.dupWarn2Title}</p>
                 <p className="text-sm text-neutral-600 mt-1">
-                  Nazwa produktu{" "}
-                  <strong className="text-neutral-800">{finalName}</strong>{" "}
-                  jest identyczna z istniejącym produktem w FreshPortal. Duplikat zostanie utworzony w systemie.
+                  {t.create.dupWarn2Text(finalName)}
                 </p>
               </div>
             </div>
@@ -1519,13 +1527,13 @@ export default function Dashboard() {
                 onClick={() => setShowSecondDuplicateWarning(false)}
                 className="px-4 py-2 text-sm border border-neutral-200 rounded-lg text-neutral-600 hover:bg-neutral-50 transition-colors"
               >
-                Zmień nazwę
+                {t.create.dupWarn2Cancel}
               </button>
               <button
                 onClick={() => handleConfirmCreate(true)}
                 className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
               >
-                Tak, utwórz mimo to
+                {t.create.dupWarn2Confirm}
               </button>
             </div>
           </div>
@@ -1539,7 +1547,7 @@ export default function Dashboard() {
           className="bg-white border border-neutral-200 rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto"
         >
           {suggestions.items.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-neutral-400">Brak wyników w Floricode</p>
+            <p className="px-3 py-2 text-xs text-neutral-400">{t.vbn.noFloricode}</p>
           ) : (
             suggestions.items.map((s) => (
               <button
