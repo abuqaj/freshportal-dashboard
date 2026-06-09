@@ -17,6 +17,8 @@ COLOUR_TABLE_FILE = Path(__file__).parent / ".colour_vbn_table.json"
 COLORS_CACHE_FILE = Path(__file__).parent / ".floricode_colors.json"
 API_BASE = "https://api.floricode.com/v2"
 TOKEN_URL = "https://api.floricode.com/oauth/token"
+# Bump to force token re-fetch (e.g. when changing requested scopes)
+_TOKEN_SCHEMA_VERSION = 2
 
 _colour_vbn_table: dict[str, list[dict]] | None = None  # genus -> [{id, name, is_spray}]
 _colors_cache: list[dict] | None = None  # [{id, name}]
@@ -48,19 +50,21 @@ def _get_token(client_id: str, client_secret: str) -> str:
     if TOKEN_FILE.exists():
         try:
             data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-            if data.get("expires_at", 0) > time.time() + 60:
+            if (data.get("expires_at", 0) > time.time() + 60
+                    and data.get("v") == _TOKEN_SCHEMA_VERSION):
                 logger.debug("Reusing cached Floricode token")
                 return data["access_token"]
         except Exception:
             pass
 
+    # No explicit scope → Floricode grants all scopes the client is entitled to
+    # (including FLC/Color). A narrow scope like "vbn_product:read" blocks FLC endpoints.
     resp = requests.post(
         TOKEN_URL,
         data={
             "grant_type": "client_credentials",
             "client_id": client_id,
             "client_secret": client_secret,
-            "scope": "vbn_product:read",
         },
         timeout=30,
     )
@@ -70,7 +74,10 @@ def _get_token(client_id: str, client_secret: str) -> str:
     expires_in = token_data.get("expires_in", 3600)
 
     TOKEN_FILE.write_text(
-        json.dumps({"access_token": access_token, "expires_at": time.time() + expires_in}, indent=2),
+        json.dumps(
+            {"access_token": access_token, "expires_at": time.time() + expires_in, "v": _TOKEN_SCHEMA_VERSION},
+            indent=2,
+        ),
         encoding="utf-8",
     )
     logger.info("Floricode token obtained (expires in %ds)", expires_in)

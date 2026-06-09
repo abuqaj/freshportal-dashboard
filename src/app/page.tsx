@@ -116,6 +116,7 @@ export default function Dashboard() {
     document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, []);
+
   function setLang(l: Lang) { setLangState(l); localStorage.setItem("fp_lang", l); }
   const t = translations[lang];
 
@@ -172,6 +173,7 @@ export default function Dashboard() {
   // Create form — Color
   const [colorList, setColorList] = useState<{ id: string; name: string }[]>([]);
   const [colorListLoading, setColorListLoading] = useState(false);
+  const [colorLoadError, setColorLoadError] = useState<string | null>(null);
   const [colorForCreate, setColorForCreate] = useState("");
   const [colorSearch, setColorSearch] = useState("");
   const [colorDropdownOpen, setColorDropdownOpen] = useState(false);
@@ -186,6 +188,36 @@ export default function Dashboard() {
   const [xlsxFile, setXlsxFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+
+  // Pre-load color list when the Create tab is first opened
+  useEffect(() => {
+    if (tab === "create" && colorList.length === 0 && !colorListLoading && RAILWAY) {
+      setColorListLoading(true);
+      setColorLoadError(null);
+      fetch(`${RAILWAY}/floricode/colors`)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then((d: { colors: { id: string; name: string }[] }) => setColorList(d.colors ?? []))
+        .catch((e: unknown) => setColorLoadError(e instanceof Error ? e.message : String(e)))
+        .finally(() => setColorListLoading(false));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  // Auto-fill VBN from AI analysis when it arrives and the create form is already open
+  useEffect(() => {
+    if (pendingCreate && !vbnForCreate && aiAnalysis?.vbn?.code && RAILWAY) {
+      const code = aiAnalysis.vbn.code;
+      setVbnForCreate(code);
+      setVbnForCreateChecking(true);
+      setVbnForCreateInfo(null);
+      fetch(`${RAILWAY}/vbn-name/${code}`)
+        .then(r => r.json())
+        .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+        .catch(() => {})
+        .finally(() => setVbnForCreateChecking(false));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiAnalysis]);
 
   const errorResults = results?.filter((r) => !r.excluded && r.status !== "OK") ?? [];
 
@@ -563,16 +595,6 @@ export default function Dashboard() {
         .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
         .catch(() => {})
         .finally(() => setVbnForCreateChecking(false));
-    }
-
-    // Load color list if not yet loaded
-    if (colorList.length === 0 && !colorListLoading && RAILWAY) {
-      setColorListLoading(true);
-      fetch(`${RAILWAY}/floricode/colors`)
-        .then(r => r.json())
-        .then((d: { colors: { id: string; name: string }[] }) => setColorList(d.colors ?? []))
-        .catch(() => {})
-        .finally(() => setColorListLoading(false));
     }
 
     fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(initialNumber)}&name=${encodeURIComponent(name)}`)
@@ -1281,6 +1303,9 @@ export default function Dashboard() {
                           disabled={colorListLoading}
                           className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400 disabled:bg-neutral-50"
                         />
+                        {colorLoadError && (
+                          <p className="text-xs text-red-500 mt-0.5">{colorLoadError}</p>
+                        )}
                         {colorDropdownOpen && !colorListLoading && (
                           <div className="absolute z-30 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-neutral-200 rounded-xl shadow-xl">
                             <button
