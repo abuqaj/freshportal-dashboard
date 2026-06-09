@@ -109,6 +109,8 @@ export default function Dashboard() {
   // VBN code → official name cache (populated on load + live lookup)
   const [vbnNameCache, setVbnNameCache] = useState<Record<string, string>>({});
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const nameChangeDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialFormName = useRef<string>("");
   // Autocomplete suggestions for current active input
   const [suggestions, setSuggestions] = useState<{ product_id: string; items: { id: string; name: string }[] } | null>(null);
   // Fixed-position anchor for portal dropdown (avoids table overflow-hidden clipping)
@@ -134,6 +136,7 @@ export default function Dashboard() {
   const [showDuplicateWarning, setShowDuplicateWarning] = useState<{ templateId: string; templateName: string } | null>(null);
   const [selectedTemplateWas100Pct, setSelectedTemplateWas100Pct] = useState(false);
   const [showSecondDuplicateWarning, setShowSecondDuplicateWarning] = useState(false);
+  const [showAllResults, setShowAllResults] = useState(false);
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -400,6 +403,7 @@ export default function Dashboard() {
       setAiAnalysis(null);
       setAiLoading(false);
       setSelectedTemplateWas100Pct(false);
+      setShowAllResults(false);
     });
     try {
       const res = await fetch(`${RAILWAY}/product-search/stream`, {
@@ -458,6 +462,16 @@ export default function Dashboard() {
     }
   }
 
+  function wordJaccard(a: string, b: string): number {
+    const setA = new Set(a.toLowerCase().trim().split(/\s+/).filter(Boolean));
+    const setB = new Set(b.toLowerCase().trim().split(/\s+/).filter(Boolean));
+    if (setA.size === 0 && setB.size === 0) return 1;
+    let intersection = 0;
+    setA.forEach(w => { if (setB.has(w)) intersection++; });
+    const union = setA.size + setB.size - intersection;
+    return union > 0 ? intersection / union : 1;
+  }
+
   function genProductNumber(name: string): string {
     const words = name.replace(/[^A-Za-z0-9\s]/g, "").toUpperCase().split(/\s+/).filter(Boolean);
     return words.map(w => w.slice(0, 2)).join("").slice(0, 8) || "PROD";
@@ -466,6 +480,7 @@ export default function Dashboard() {
   function handleCreateFromTemplate(templateId: string, templateName: string) {
     const name = createInput.trim();
     const initialNumber = genProductNumber(name);
+    initialFormName.current = name;
     setPendingCreate({ templateId, templateName });
     setFinalName(name);
     setProductNumber(initialNumber);
@@ -934,9 +949,11 @@ export default function Dashboard() {
 
             {/* Search results */}
             {searchResults !== null && (() => {
-              const highMatches = searchResults.filter(r => r.similarity >= 0.80);
+              const highMatches = searchResults.filter(r => r.similarity >= 0.80).slice(0, 10);
               const isFallback = highMatches.length === 0 && searchResults.length > 0;
-              const displayResults = isFallback ? searchResults.slice(0, 1) : highMatches;
+              const allDisplayResults = isFallback ? searchResults.slice(0, 1) : highMatches;
+              const displayResults = showAllResults ? allDisplayResults : allDisplayResults.slice(0, 5);
+              const hasMore = allDisplayResults.length > 5 && !showAllResults;
               return (
               <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-neutral-100">
@@ -987,7 +1004,9 @@ export default function Dashboard() {
                             <td className="px-3 py-3 text-xs font-mono text-neutral-500">{r.vbn_number || "—"}</td>
                             <td className="px-3 py-3">
                               <span className={`text-xs px-2 py-0.5 rounded font-medium ${
-                                r.similarity >= 0.80
+                                r.similarity >= 1.0
+                                  ? "bg-green-50 text-green-700"
+                                  : r.similarity >= 0.80
                                   ? "bg-amber-50 text-amber-700"
                                   : "bg-neutral-100 text-neutral-500"
                               }`}>
@@ -1013,6 +1032,16 @@ export default function Dashboard() {
                         ))}
                       </tbody>
                     </table>
+                    {hasMore && (
+                      <div className="px-5 py-3 border-t border-neutral-100 text-center">
+                        <button
+                          onClick={() => setShowAllResults(true)}
+                          className="text-xs text-violet-600 hover:text-violet-700 font-medium"
+                        >
+                          Pokaż więcej ({allDisplayResults.length - 5} kolejnych)
+                        </button>
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -1034,7 +1063,32 @@ export default function Dashboard() {
                       <input
                         type="text"
                         value={finalName}
-                        onChange={(e) => { setFinalName(e.target.value); setProductNumber(genProductNumber(e.target.value)); setNumberCheckResult(null); }}
+                        onChange={(e) => {
+                          const newName = e.target.value;
+                          setFinalName(newName);
+                          setNumberCheckResult(null);
+                          if (nameChangeDebounce.current) clearTimeout(nameChangeDebounce.current);
+                          nameChangeDebounce.current = setTimeout(() => {
+                            const sim = wordJaccard(initialFormName.current, newName.trim());
+                            if (sim < 0.60) {
+                              // Name changed >40% — regenerate number and re-check availability
+                              const newBase = genProductNumber(newName.trim());
+                              setProductNumber(newBase);
+                              setNumberChecking(true);
+                              fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(newBase)}`)
+                                .then((r) => r.json())
+                                .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
+                                  if (data.available_number) {
+                                    setProductNumber(data.available_number);
+                                    setNumberCheckResult({ changed: data.changed, original: data.original_number });
+                                  }
+                                })
+                                .catch(() => {})
+                                .finally(() => setNumberChecking(false));
+                            }
+                            // else: name changed <40% — keep existing validated number
+                          }, 1000);
+                        }}
                         placeholder="Nazwa nowego produktu…"
                         className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                         autoFocus
