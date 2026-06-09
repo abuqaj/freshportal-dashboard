@@ -191,15 +191,7 @@ export default function Dashboard() {
 
   // Pre-load color list when the Create tab is first opened
   useEffect(() => {
-    if (tab === "create" && colorList.length === 0 && !colorListLoading && RAILWAY) {
-      setColorListLoading(true);
-      setColorLoadError(null);
-      fetch(`${RAILWAY}/floricode/colors`)
-        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-        .then((d: { colors: { id: string; name: string }[] }) => setColorList(d.colors ?? []))
-        .catch((e: unknown) => setColorLoadError(e instanceof Error ? e.message : String(e)))
-        .finally(() => setColorListLoading(false));
-    }
+    if (tab === "create" && colorList.length === 0 && !colorListLoading) loadColors();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -573,7 +565,18 @@ export default function Dashboard() {
     return words.map(w => w.slice(0, 2)).join("").slice(0, 8) || "PROD";
   }
 
-  function handleCreateFromTemplate(templateId: string, templateName: string) {
+  function loadColors() {
+    if (colorListLoading || !RAILWAY) return;
+    setColorListLoading(true);
+    setColorLoadError(null);
+    fetch(`${RAILWAY}/floricode/colors`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((d: { colors: { id: string; name: string }[] }) => setColorList(d.colors ?? []))
+      .catch((e: unknown) => setColorLoadError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setColorListLoading(false));
+  }
+
+  function handleCreateFromTemplate(templateId: string, templateName: string, templateVbn = "") {
     const name = createInput.trim();
     const initialNumber = genProductNumber(name);
     initialFormName.current = name;
@@ -584,13 +587,13 @@ export default function Dashboard() {
     setNumberChecking(true);
     setNumberCheckResult(null);
 
-    // Pre-fill VBN from AI suggestion and immediately validate
-    const aiVbn = aiAnalysis?.vbn?.code ?? "";
-    setVbnForCreate(aiVbn);
+    // Pre-fill VBN: AI suggestion if available, else fall back to template's own VBN
+    const initialVbn = aiAnalysis?.vbn?.code ?? templateVbn;
+    setVbnForCreate(initialVbn);
     setVbnForCreateInfo(null);
-    if (aiVbn && RAILWAY) {
+    if (initialVbn && RAILWAY) {
       setVbnForCreateChecking(true);
-      fetch(`${RAILWAY}/vbn-name/${aiVbn}`)
+      fetch(`${RAILWAY}/vbn-name/${initialVbn}`)
         .then(r => r.json())
         .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
         .catch(() => {})
@@ -1128,7 +1131,7 @@ export default function Dashboard() {
                                   if (r.similarity >= 1.0) {
                                     setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name });
                                   } else {
-                                    handleCreateFromTemplate(r.product_id, r.name);
+                                    handleCreateFromTemplate(r.product_id, r.name, r.vbn_number);
                                   }
                                 }}
                                 disabled={creating}
@@ -1304,7 +1307,13 @@ export default function Dashboard() {
                           className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400 disabled:bg-neutral-50"
                         />
                         {colorLoadError && (
-                          <p className="text-xs text-red-500 mt-0.5">{colorLoadError}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <p className="text-xs text-red-500 flex-1 truncate">{colorLoadError}</p>
+                            <button onClick={loadColors} className="text-xs text-violet-600 hover:underline shrink-0">Retry</button>
+                          </div>
+                        )}
+                        {!colorListLoading && !colorLoadError && colorList.length === 0 && (
+                          <button onClick={loadColors} className="text-xs text-violet-500 hover:underline mt-0.5">Load colors</button>
                         )}
                         {colorDropdownOpen && !colorListLoading && (
                           <div className="absolute z-30 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-neutral-200 rounded-xl shadow-xl">
