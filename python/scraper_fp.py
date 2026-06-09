@@ -351,6 +351,7 @@ def fetch_products(
 def scrape_all_products(
     cfg: Config,
     on_status=None,
+    on_batch=None,
     from_date: str = "",
     to_date: str = "",
 ) -> list[FPProduct]:
@@ -359,6 +360,10 @@ def scrape_all_products(
     When from_date/to_date are given, filters by mutation_date_time_from/to
     (incremental sync).  Otherwise fetches all 64 K products (full sync).
     Uses the same 6-pages-per-browser-batch strategy to cap peak RAM.
+
+    on_batch: optional callable(batch: list[FPProduct]) — called after each
+    browser session closes (every PAGES_PER_BATCH pages).  Useful for
+    progressive upserts so DB is populated while scraping continues.
     """
     def _status(msg: str) -> None:
         logger.info(msg)
@@ -381,6 +386,8 @@ def scrape_all_products(
     current_page = 1
 
     while True:
+        batch_start = len(all_products)
+
         with sync_playwright() as pw:
             browser = _launch_browser(pw)
             context = browser.new_context()
@@ -425,6 +432,10 @@ def scrape_all_products(
             finally:
                 context.close()
                 browser.close()
+
+        # Flush this browser session's products to DB while next session loads
+        if on_batch and len(all_products) > batch_start:
+            on_batch(all_products[batch_start:])
 
         if last_page is None or current_page > last_page:
             break

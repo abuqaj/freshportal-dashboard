@@ -47,16 +47,20 @@ def run_full_sync(cfg: Config, on_status=None) -> dict:
 
     try:
         _s("Starting full product sync from FreshPortal…")
-        products = scrape_all_products(cfg, on_status=_s)
-        _s(f"Scraped {len(products)} products — upserting to DB…")
+        total_upserted = 0
 
-        product_dicts = [asdict(p) for p in products]
-        upserted = upsert_products(product_dicts)
+        def _on_batch(batch: list) -> None:
+            nonlocal total_upserted
+            n = upsert_products([asdict(p) for p in batch])
+            total_upserted += n
+            _s(f"Upserted {total_upserted} products so far…")
+
+        scrape_all_products(cfg, on_status=_s, on_batch=_on_batch)
 
         count = get_product_count()
         log_sync_finish(sync_id, count)
-        _s(f"Sync complete — {upserted} upserted, {count} total in DB")
-        return {"ok": True, "product_count": count, "upserted": upserted, "error": ""}
+        _s(f"Sync complete — {total_upserted} upserted, {count} total in DB")
+        return {"ok": True, "product_count": count, "upserted": total_upserted, "error": ""}
 
     except Exception as exc:
         error = str(exc)
