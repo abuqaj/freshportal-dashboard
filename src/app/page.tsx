@@ -105,6 +105,17 @@ export default function Dashboard() {
     const saved = localStorage.getItem("fp_lang") as Lang | null;
     if (saved && ["en", "nl", "pl", "es"].includes(saved)) setLangState(saved);
   }, []);
+
+  useEffect(() => {
+    function handleOutsideClick(e: MouseEvent) {
+      if (colorDropdownRef.current && !colorDropdownRef.current.contains(e.target as Node)) {
+        setColorDropdownOpen(false);
+        setColorSearch("");
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
   function setLang(l: Lang) { setLangState(l); localStorage.setItem("fp_lang", l); }
   const t = translations[lang];
 
@@ -151,6 +162,20 @@ export default function Dashboard() {
   const [selectedTemplateWas100Pct, setSelectedTemplateWas100Pct] = useState(false);
   const [showSecondDuplicateWarning, setShowSecondDuplicateWarning] = useState(false);
   const [showAllResults, setShowAllResults] = useState(false);
+
+  // Create form — VBN
+  const [vbnForCreate, setVbnForCreate] = useState("");
+  const [vbnForCreateInfo, setVbnForCreateInfo] = useState<{ found: boolean; name: string } | null>(null);
+  const [vbnForCreateChecking, setVbnForCreateChecking] = useState(false);
+  const vbnForCreateDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Create form — Color
+  const [colorList, setColorList] = useState<{ id: string; name: string }[]>([]);
+  const [colorListLoading, setColorListLoading] = useState(false);
+  const [colorForCreate, setColorForCreate] = useState("");
+  const [colorSearch, setColorSearch] = useState("");
+  const [colorDropdownOpen, setColorDropdownOpen] = useState(false);
+  const colorDropdownRef = useRef<HTMLDivElement>(null);
 
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
@@ -527,6 +552,29 @@ export default function Dashboard() {
     setNumberChecking(true);
     setNumberCheckResult(null);
 
+    // Pre-fill VBN from AI suggestion and immediately validate
+    const aiVbn = aiAnalysis?.vbn?.code ?? "";
+    setVbnForCreate(aiVbn);
+    setVbnForCreateInfo(null);
+    if (aiVbn && RAILWAY) {
+      setVbnForCreateChecking(true);
+      fetch(`${RAILWAY}/vbn-name/${aiVbn}`)
+        .then(r => r.json())
+        .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+        .catch(() => {})
+        .finally(() => setVbnForCreateChecking(false));
+    }
+
+    // Load color list if not yet loaded
+    if (colorList.length === 0 && !colorListLoading && RAILWAY) {
+      setColorListLoading(true);
+      fetch(`${RAILWAY}/floricode/colors`)
+        .then(r => r.json())
+        .then((d: { colors: { id: string; name: string }[] }) => setColorList(d.colors ?? []))
+        .catch(() => {})
+        .finally(() => setColorListLoading(false));
+    }
+
     fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(initialNumber)}&name=${encodeURIComponent(name)}`)
       .then((r) => r.json())
       .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
@@ -555,12 +603,12 @@ export default function Dashboard() {
     const { templateId, templateName } = pendingCreate;
     const nameForLog = finalName.trim();
     const numberForLog = productNumber.trim();
-    flushSync(() => { setCreating(true); setCreateStatus("Inicjalizacja…"); setCreateResult(null); setPendingCreate(null); });
+    flushSync(() => { setCreating(true); setCreateStatus(t.create.creating); setCreateResult(null); setPendingCreate(null); setColorDropdownOpen(false); });
     try {
       const res = await fetch(`${RAILWAY}/product-create/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template_id: templateId, new_name: nameForLog, product_number: numberForLog || null, lang }),
+        body: JSON.stringify({ template_id: templateId, new_name: nameForLog, product_number: numberForLog || null, lang, vbn_code: vbnForCreate || null, color_id: colorForCreate || null }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
@@ -1161,6 +1209,111 @@ export default function Dashboard() {
                       <span>{t.create.numberTaken(numberCheckResult.original, productNumber)}</span>
                     </div>
                   )}
+
+                  {/* VBN + Color row */}
+                  <div className="flex gap-3">
+                    {/* VBN input */}
+                    <div className="flex-1">
+                      <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
+                        {t.create.vbnLabel}
+                        {vbnForCreateChecking && (
+                          <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                        )}
+                        {!vbnForCreateChecking && vbnForCreateInfo && (
+                          <span className={vbnForCreateInfo.found ? "text-green-600" : "text-red-500"}>
+                            {vbnForCreateInfo.found ? "✓" : "✗"}
+                          </span>
+                        )}
+                      </label>
+                      <input
+                        type="text"
+                        value={vbnForCreate}
+                        onChange={(e) => {
+                          const code = e.target.value.replace(/\D/g, "").slice(0, 6);
+                          setVbnForCreate(code);
+                          setVbnForCreateInfo(null);
+                          if (vbnForCreateDebounce.current) clearTimeout(vbnForCreateDebounce.current);
+                          if (code.length >= 3 && RAILWAY) {
+                            vbnForCreateDebounce.current = setTimeout(() => {
+                              setVbnForCreateChecking(true);
+                              fetch(`${RAILWAY}/vbn-name/${code}`)
+                                .then(r => r.json())
+                                .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+                                .catch(() => {})
+                                .finally(() => setVbnForCreateChecking(false));
+                            }, 500);
+                          }
+                        }}
+                        placeholder={t.create.vbnPlaceholder}
+                        className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                      />
+                      {!vbnForCreateChecking && vbnForCreateInfo && (
+                        <p className={`text-xs mt-0.5 truncate ${vbnForCreateInfo.found ? "text-green-600" : "text-red-500"}`}>
+                          {vbnForCreateInfo.found ? vbnForCreateInfo.name : t.create.vbnNotFound}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Color dropdown */}
+                    <div className="flex-1" ref={colorDropdownRef}>
+                      <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
+                        {t.create.colorLabel}
+                        {colorListLoading && (
+                          <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                        )}
+                        {colorForCreate && (
+                          <button onClick={() => { setColorForCreate(""); setColorSearch(""); }} className="text-neutral-300 hover:text-neutral-500 text-xs">✕</button>
+                        )}
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={colorSearch !== "" ? colorSearch : (colorList.find(c => c.id === colorForCreate)?.name ?? "")}
+                          onChange={(e) => { setColorSearch(e.target.value); setColorDropdownOpen(true); }}
+                          onFocus={() => { setColorSearch(""); setColorDropdownOpen(true); }}
+                          placeholder={colorListLoading ? t.create.colorLoading : colorForCreate ? "" : t.create.colorPlaceholder}
+                          disabled={colorListLoading}
+                          className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400 disabled:bg-neutral-50"
+                        />
+                        {colorDropdownOpen && !colorListLoading && (
+                          <div className="absolute z-30 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-neutral-200 rounded-xl shadow-xl">
+                            <button
+                              onMouseDown={(e) => { e.preventDefault(); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); }}
+                              className="w-full text-left px-3 py-2 text-xs text-neutral-400 hover:bg-neutral-50 border-b border-neutral-100"
+                            >
+                              — {t.create.colorNone}
+                            </button>
+                            {colorList
+                              .filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase()))
+                              .slice(0, 80)
+                              .map(c => (
+                                <button
+                                  key={c.id}
+                                  onMouseDown={(e) => { e.preventDefault(); setColorForCreate(c.id); setColorSearch(""); setColorDropdownOpen(false); }}
+                                  className={`w-full text-left px-3 py-2 text-xs hover:bg-violet-50 flex justify-between items-center ${
+                                    colorForCreate === c.id ? "bg-violet-50 text-violet-700 font-medium" : "text-neutral-700"
+                                  }`}
+                                >
+                                  <span>{c.name}</span>
+                                  <span className="text-neutral-300 font-mono text-xs ml-2">{c.id}</span>
+                                </button>
+                              ))
+                            }
+                            {colorList.filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase())).length === 0 && (
+                              <p className="px-3 py-2 text-xs text-neutral-400 text-center">—</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="flex gap-3">
                     <button
                       onClick={() => handleConfirmCreate()}
@@ -1170,7 +1323,7 @@ export default function Dashboard() {
                       {creating ? t.create.creating : numberChecking ? t.create.checkingNumber : t.create.createBtn}
                     </button>
                     <button
-                      onClick={() => setPendingCreate(null)}
+                      onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); }}
                       className="border border-neutral-200 text-neutral-500 hover:bg-neutral-50 text-sm px-4 py-2.5 rounded-lg transition-colors"
                     >
                       {t.common.cancel}

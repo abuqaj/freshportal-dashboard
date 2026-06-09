@@ -22,6 +22,8 @@ MSGS: dict[str, dict[str, str]] = {
         "product_verified":    "Product verified successfully",
         "initializing":        "Initializing…",
         "connecting":          "Connecting to Railway…",
+        "filling_vbn":         "Filling in VBN code: {code}…",
+        "filling_color":       "Filling in color: {name}…",
     },
     "nl": {
         "logging_in":          "Inloggen bij FreshPortal…",
@@ -43,6 +45,8 @@ MSGS: dict[str, dict[str, str]] = {
         "product_verified":    "Product succesvol geverifieerd",
         "initializing":        "Initialiseren…",
         "connecting":          "Verbinding met Railway…",
+        "filling_vbn":         "VBN-code invullen: {code}…",
+        "filling_color":       "Kleur invullen: {name}…",
     },
     "pl": {
         "logging_in":          "Logowanie do FreshPortal…",
@@ -64,6 +68,8 @@ MSGS: dict[str, dict[str, str]] = {
         "product_verified":    "Produkt zweryfikowany pomyślnie",
         "initializing":        "Inicjalizacja…",
         "connecting":          "Łączenie z Railway…",
+        "filling_vbn":         "Wypełnianie kodu VBN: {code}…",
+        "filling_color":       "Wypełnianie koloru: {name}…",
     },
     "es": {
         "logging_in":          "Iniciando sesión en FreshPortal…",
@@ -85,6 +91,8 @@ MSGS: dict[str, dict[str, str]] = {
         "product_verified":    "Producto verificado correctamente",
         "initializing":        "Inicializando…",
         "connecting":          "Conectando con Railway…",
+        "filling_vbn":         "Rellenando código VBN: {code}…",
+        "filling_color":       "Rellenando color: {name}…",
     },
 }
 

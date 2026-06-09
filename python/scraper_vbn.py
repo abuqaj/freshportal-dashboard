@@ -14,10 +14,12 @@ logger = logging.getLogger(__name__)
 CACHE_FILE = Path(__file__).parent / ".vbn_cache.json"
 TOKEN_FILE = Path(__file__).parent / ".floricode_token.json"
 COLOUR_TABLE_FILE = Path(__file__).parent / ".colour_vbn_table.json"
+COLORS_CACHE_FILE = Path(__file__).parent / ".floricode_colors.json"
 API_BASE = "https://api.floricode.com/v2"
 TOKEN_URL = "https://api.floricode.com/oauth/token"
 
 _colour_vbn_table: dict[str, list[dict]] | None = None  # genus -> [{id, name, is_spray}]
+_colors_cache: list[dict] | None = None  # [{id, name}]
 
 
 @dataclass
@@ -400,6 +402,49 @@ def invalidate_colour_table() -> None:
     _colour_vbn_table = None
     if COLOUR_TABLE_FILE.exists():
         COLOUR_TABLE_FILE.unlink()
+
+
+def get_floricode_colors(client_id: str, client_secret: str) -> list[dict]:
+    """Return all FLC/Color entries from Floricode, using file cache.
+
+    Each entry: {"id": str, "name": str}.
+    Returns [] when credentials are missing or the call fails.
+    """
+    global _colors_cache
+    if _colors_cache is not None:
+        return _colors_cache
+
+    if COLORS_CACHE_FILE.exists():
+        try:
+            _colors_cache = json.loads(COLORS_CACHE_FILE.read_text(encoding="utf-8"))
+            logger.info("Loaded %d colors from cache", len(_colors_cache))
+            return _colors_cache
+        except Exception:
+            pass
+
+    if not client_id or not client_secret:
+        return []
+
+    try:
+        token = _get_token(client_id, client_secret)
+        resp = requests.get(
+            f"{API_BASE}/FLC/Color",
+            params={"$select": "id,name", "$top": "500", "$orderby": "name"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("value", [])
+        _colors_cache = [{"id": str(i["id"]), "name": i["name"]} for i in items]
+        COLORS_CACHE_FILE.write_text(
+            json.dumps(_colors_cache, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Fetched and cached %d Floricode colors", len(_colors_cache))
+        return _colors_cache
+    except Exception as exc:
+        logger.error("get_floricode_colors failed: %s", exc)
+        return []
 
 
 def lookup_vbn_codes(

@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import Config
 from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
 from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
-from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name
+from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name, get_floricode_colors
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
@@ -183,6 +183,14 @@ def _build_result(products, cfg: Config, queue: Queue | None = None) -> dict:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/floricode/colors")
+def floricode_colors_endpoint():
+    """Return all FLC/Color entries from Floricode (cached after first fetch)."""
+    cfg = Config()
+    colors = get_floricode_colors(cfg.floricode_username, cfg.floricode_password)
+    return {"colors": colors}
 
 
 @app.post("/vbn-check")
@@ -392,6 +400,8 @@ class ProductCreateRequest(BaseModel):
     new_name: str
     product_number: str | None = None
     lang: str = "en"
+    vbn_code: str | None = None
+    color_id: str | None = None
 
 
 class AIAnalyzeRequest(BaseModel):
@@ -567,7 +577,7 @@ async def product_create_stream(req: ProductCreateRequest):
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
-            result = copy_and_create(req.template_id, req.new_name, cfg, on_status=on_status, product_number=req.product_number, lang=req.lang)
+            result = copy_and_create(req.template_id, req.new_name, cfg, on_status=on_status, product_number=req.product_number, lang=req.lang, vbn_code=req.vbn_code, color_id=req.color_id)
             queue.put({"type": "result", "data": result})
         except Exception as e:
             log.exception("product-create/stream failed")

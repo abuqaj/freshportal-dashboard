@@ -420,6 +420,8 @@ def copy_and_create(
     on_status: Callable | None = None,
     product_number: str | None = None,
     lang: str = "en",
+    vbn_code: str | None = None,
+    color_id: str | None = None,
 ) -> dict:
     """Copy *template_id* in FreshPortal and save it as *new_name*.
 
@@ -528,6 +530,48 @@ def copy_and_create(
                 _fill_fps(fps_name, new_name)
 
             _s(msg(lang, "fields_filled", name_n=len(name_field_ids), short_n=len(short_name_ids)))
+
+            # ── Fill VBN code (best-effort — field name varies by FreshPortal config) ──
+            if vbn_code:
+                _s(msg(lang, "filling_vbn", code=vbn_code))
+                for vbn_sel in [
+                    "fps-input[name='product_index_form_vbn_number']",
+                    "fps-input[name*='form_vbn']",
+                    "fps-input[name*='vbn_number']",
+                ]:
+                    try:
+                        el = page.query_selector(vbn_sel)
+                        if el:
+                            _fill_fps(el.get_attribute("name") or vbn_sel, vbn_code)
+                            break
+                    except Exception as exc:
+                        logger.debug("VBN fill failed for %s: %s", vbn_sel, exc)
+
+            # ── Fill color (best-effort) ─────────────────────────────────────
+            if color_id:
+                _s(msg(lang, "filling_color", name=color_id))
+                for color_sel in [
+                    "fps-select[name*='color_id']",
+                    "fps-select[name*='form_color']",
+                    "fps-select[name*='colour']",
+                ]:
+                    try:
+                        el = page.query_selector(color_sel)
+                        if el:
+                            # fps-select uses Shadow DOM; set value on inner <select>
+                            page.evaluate(
+                                """([el, val]) => {
+                                    const s = el.shadowRoot?.querySelector('select');
+                                    if (!s) return;
+                                    s.value = val;
+                                    s.dispatchEvent(new Event('change', {bubbles: true}));
+                                }""",
+                                [el, color_id],
+                            )
+                            break
+                    except Exception as exc:
+                        logger.debug("Color fill failed for %s: %s", color_sel, exc)
+
             time.sleep(1)
 
             # ── Submit form ─────────────────────────────────────────────────
