@@ -423,7 +423,7 @@ export default function Dashboard() {
       const res = await fetch(`${RAILWAY}/product-search/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: createInput.trim() }),
+        body: JSON.stringify({ name: createInput.trim(), lang }),
       });
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
@@ -527,7 +527,7 @@ export default function Dashboard() {
     setNumberChecking(true);
     setNumberCheckResult(null);
 
-    fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(initialNumber)}`)
+    fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(initialNumber)}&name=${encodeURIComponent(name)}`)
       .then((r) => r.json())
       .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
         if (data.available_number) {
@@ -560,7 +560,7 @@ export default function Dashboard() {
       const res = await fetch(`${RAILWAY}/product-create/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template_id: templateId, new_name: nameForLog, product_number: numberForLog || null }),
+        body: JSON.stringify({ template_id: templateId, new_name: nameForLog, product_number: numberForLog || null, lang }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
@@ -1114,7 +1114,7 @@ export default function Dashboard() {
                               const newBase = genProductNumber(newName.trim());
                               setProductNumber(newBase);
                               setNumberChecking(true);
-                              fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(newBase)}`)
+                              fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(newBase)}&name=${encodeURIComponent(newName.trim())}`)
                                 .then((r) => r.json())
                                 .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
                                   if (data.available_number) {

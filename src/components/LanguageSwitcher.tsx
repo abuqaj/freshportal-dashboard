@@ -3,6 +3,20 @@
 import { useEffect, useRef, useState } from "react";
 import { LANGUAGES, Lang } from "@/lib/i18n";
 
+function FlagImg({ countryCode, label }: { countryCode: string; label: string }) {
+  return (
+    <img
+      src={`https://flagcdn.com/w40/${countryCode}.png`}
+      srcSet={`https://flagcdn.com/w80/${countryCode}.png 2x`}
+      width={20}
+      height={15}
+      alt={label}
+      className="rounded-sm object-cover flex-shrink-0"
+      style={{ width: 20, height: 15 }}
+    />
+  );
+}
+
 export default function LanguageSwitcher({
   lang,
   setLang,
@@ -29,9 +43,9 @@ export default function LanguageSwitcher({
       <button
         onClick={() => setOpen((o) => !o)}
         title={current.label}
-        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white border border-neutral-200 hover:bg-neutral-50 shadow-sm transition-colors text-sm"
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white border border-neutral-200 hover:bg-neutral-50 shadow-sm transition-colors"
       >
-        <span className="text-lg leading-none">{current.flag}</span>
+        <FlagImg countryCode={current.countryCode} label={current.label} />
         <svg
           className={`w-3 h-3 text-neutral-400 transition-transform ${open ? "rotate-180" : ""}`}
           fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
@@ -48,7 +62,7 @@ export default function LanguageSwitcher({
               onClick={() => { setLang(l.code); setOpen(false); }}
               className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-neutral-700 hover:bg-violet-50 hover:text-violet-700 transition-colors"
             >
-              <span className="text-lg leading-none">{l.flag}</span>
+              <FlagImg countryCode={l.countryCode} label={l.label} />
               <span>{l.label}</span>
             </button>
           ))}

@@ -1,10 +1,10 @@
 export type Lang = "en" | "nl" | "pl" | "es";
 
-export const LANGUAGES: { code: Lang; label: string; flag: string }[] = [
-  { code: "en", label: "English",    flag: "🇬🇧" },
-  { code: "nl", label: "Nederlands", flag: "🇳🇱" },
-  { code: "pl", label: "Polski",     flag: "🇵🇱" },
-  { code: "es", label: "Español",    flag: "🇪🇸" },
+export const LANGUAGES: { code: Lang; label: string; countryCode: string }[] = [
+  { code: "en", label: "English",    countryCode: "gb" },
+  { code: "nl", label: "Nederlands", countryCode: "nl" },
+  { code: "pl", label: "Polski",     countryCode: "pl" },
+  { code: "es", label: "Español",    countryCode: "es" },
 ];
 
 const en = {

@@ -30,6 +30,7 @@ from scraper_fp import (
     _parse_rows_html,
 )
 from ai_helper import ai_suggest_spellings
+from i18n import msg
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,7 @@ def search_products(
     query: str,
     cfg: Config,
     on_status: Callable | None = None,
+    lang: str = "en",
 ) -> list[ProductMatch]:
     """Two-phase product search — fast and typo-aware.
 
@@ -140,10 +142,10 @@ def search_products(
     Phase 2 (~8 s): if no ≥80% matches and ANTHROPIC_API_KEY set, ask Claude for correct
                     spellings of the variety, then search each suggestion (1 page each).
     """
-    def _s(msg: str) -> None:
-        logger.info(msg)
+    def _s(m: str) -> None:
+        logger.info(m)
         if on_status:
-            on_status(msg)
+            on_status(m)
 
     words = query.strip().split()
     genus = words[0].lower() if words else ""
@@ -182,7 +184,7 @@ def search_products(
                             similarity=sim,
                         ))
                         new += 1
-            _s(f"'{term}' strona {page_num} — {len(all_matches)} produktów łącznie")
+            _s(msg(lang, "page_result", term=term, page=page_num, total=len(all_matches)))
 
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
@@ -191,7 +193,7 @@ def search_products(
         _block_resources(fp_page)
 
         try:
-            _s("Logowanie do FreshPortal…")
+            _s(msg(lang, "logging_in"))
             _login(fp_page, cfg)
 
             # Phase 1: exact query + variety search terms (typo-resistant substrings)
@@ -204,29 +206,29 @@ def search_products(
                     variety_terms.append(word)
             phase1 = list(dict.fromkeys(filter(None, [query.strip()] + variety_terms)))
             for term in phase1:
-                _s(f"Szukam '{term}'…")
+                _s(msg(lang, "searching", term=term))
                 _fetch(fp_page, term, pages=2)
 
             # Phase 2: AI spelling correction when no good matches found
             good = sum(1 for m in all_matches if m.similarity >= 0.8)
             if good == 0 and variety:
-                _s("Brak wyników ≥80% — sprawdzam pisownię z AI…")
+                _s(msg(lang, "no_good_matches"))
                 spellings = ai_suggest_spellings(variety, cfg)
                 if spellings:
-                    _s(f"AI sugeruje: {', '.join(spellings)}")
+                    _s(msg(lang, "ai_suggests", spellings=", ".join(spellings)))
                     for spelling in spellings:
-                        _s(f"Szukam '{spelling}'…")
+                        _s(msg(lang, "searching", term=spelling))
                         _fetch(fp_page, spelling, pages=2)
                 else:
-                    _s("AI niedostępne — pomijam korektę pisowni")
+                    _s(msg(lang, "ai_unavailable"))
 
         finally:
             context.close()
             browser.close()
 
     all_matches.sort(key=lambda m: m.similarity, reverse=True)
-    best = f", najlepsze: {all_matches[0].similarity:.0%}" if all_matches else ""
-    _s(f"Zakończono — {len(all_matches)} produktów{best}")
+    best = f", best: {all_matches[0].similarity:.0%}" if all_matches else ""
+    _s(msg(lang, "finished_search", total=len(all_matches), best=best))
     return all_matches
 
 
@@ -266,14 +268,37 @@ def find_best_template(
 
 # ── copy product via Playwright ───────────────────────────────────────────────
 
-def _number_candidates(base: str):
-    """Yield product number candidates: base first, then base+A, base+B, … (max 8 chars)."""
+def _number_candidates(base: str, name: str = ""):
+    """Yield product number candidates.
+
+    Strategy:
+    1. base itself
+    2. Extend using the remaining chars of the last word in *name* (after the 2
+       already used), e.g. base=CAMALA, name="… Lavender" → CAMALAV, CAMALAVE
+    3. Fall back to alphabet / digits suffix / last-char replacement
+    """
     yield base
+    seen: set[str] = {base}
+
+    # Phase 1: extend with next chars of the last word
+    if name:
+        words = re.sub(r"[^A-Za-z0-9]", " ", name).upper().split()
+        if words:
+            extra = ""
+            for ch in words[-1][2:]:          # skip the 2 chars already in base
+                extra += ch
+                candidate = (base + extra)[:8]
+                if candidate not in seen:
+                    seen.add(candidate)
+                    yield candidate
+
+    # Phase 2: alphabet / digits fallback (append when room, else replace last char)
     for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789":
-        if len(base) < 8:
-            yield base + ch
-        else:
-            yield base[:7] + ch  # replace last char
+        candidate = (base + ch) if len(base) < 8 else base[:7] + ch
+        candidate = candidate[:8]
+        if candidate not in seen:
+            seen.add(candidate)
+            yield candidate
 
 
 def _was_recently_created(soup: BeautifulSoup, minutes: int = 15) -> bool:
@@ -304,6 +329,8 @@ def _find_available_number_on_page(
     base: str,
     cfg,
     on_status: Callable | None = None,
+    name: str = "",
+    lang: str = "en",
 ) -> str | None:
     """Check candidate numbers on an already-open FreshPortal page.
 
@@ -314,12 +341,12 @@ def _find_available_number_on_page(
     fields are checked too — FreshPortal renders the product number column
     as an <input>, which get_text() would miss entirely.
     """
-    def _s(msg: str) -> None:
-        logger.info(msg)
+    def _s(m: str) -> None:
+        logger.info(m)
         if on_status:
-            on_status(msg)
+            on_status(m)
 
-    for candidate in itertools.islice(_number_candidates(base), 11):
+    for candidate in itertools.islice(_number_candidates(base, name), 11):
         url = (f"{cfg.freshportal_url}/product/index/index/"
                f"?1=1&number_adjustable={candidate}&page=1")
         page.goto(url, wait_until="load", timeout=cfg.request_timeout)
@@ -350,10 +377,10 @@ def _find_available_number_on_page(
 
         if not taken:
             if candidate != base:
-                _s(f"Nr {base} zajęty — używam: {candidate}")
+                _s(msg(lang, "number_taken_using", base=base, candidate=candidate))
             return candidate
         if candidate == base:
-            _s(f"Nr {base} zajęty — szukam wolnego wariantu…")
+            _s(msg(lang, "number_taken_search", base=base))
     return None
 
 
@@ -361,6 +388,8 @@ def find_available_number(
     base: str,
     cfg,
     on_status: Callable | None = None,
+    name: str = "",
+    lang: str = "en",
 ) -> str | None:
     """Launch a fresh browser session and return the first available product number.
 
@@ -375,7 +404,7 @@ def find_available_number(
         _block_resources(page)
         try:
             _login(page, cfg)
-            return _find_available_number_on_page(page, base, cfg, on_status)
+            return _find_available_number_on_page(page, base, cfg, on_status, name=name, lang=lang)
         except Exception:
             logger.exception("find_available_number failed")
             return None
@@ -390,6 +419,7 @@ def copy_and_create(
     cfg: Config,
     on_status: Callable | None = None,
     product_number: str | None = None,
+    lang: str = "en",
 ) -> dict:
     """Copy *template_id* in FreshPortal and save it as *new_name*.
 
@@ -403,10 +433,10 @@ def copy_and_create(
     Returns {"ok": True, "product_id": "...", "message": "..."}
     or      {"ok": False, "message": "..."}.
     """
-    def _s(msg: str) -> None:
-        logger.info(msg)
+    def _s(m: str) -> None:
+        logger.info(m)
         if on_status:
-            on_status(msg)
+            on_status(m)
 
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
@@ -418,18 +448,14 @@ def copy_and_create(
             else route.continue_())
 
         try:
-            _s("Logowanie do FreshPortal…")
+            _s(msg(lang, "logging_in"))
             _login(page, cfg)
 
             # Number was already validated by /product-number-suggest before the
             # user clicked Create — no need to re-check here.
             pnum = product_number or generate_product_number(new_name)
 
-            # ── Navigate directly to copy URL ───────────────────────────────
-            # Debug confirmed: /product/index/copy/PRO_ID/{id}/ opens the copy
-            # form directly (has_form=True). The toolbar button opens a popup
-            # that gets blocked in headless mode — skip it entirely.
-            _s(f"Otwieranie formularza kopiowania produktu {template_id}…")
+            _s(msg(lang, "opening_copy_form", id=template_id))
             copy_url = f"{cfg.freshportal_url}/product/index/copy/PRO_ID/{template_id}/"
             page.goto(copy_url, wait_until="load", timeout=cfg.request_timeout)
 
@@ -443,7 +469,7 @@ def copy_and_create(
             # events, but Angular reactive forms also need 'change' and 'blur'.
             # Use native value setter + full event sequence to trigger Angular
             # change detection.
-            _s(f"Wypełnianie nazwy: {new_name}…")
+            _s(msg(lang, "filling_name", name=new_name))
 
             name_field_ids: list[str] = []
             for fps in page.query_selector_all("fps-input"):
@@ -455,7 +481,7 @@ def copy_and_create(
                 return {"ok": False, "message": "Nie znaleziono fps-input[name*='form_name_'] w formularzu"}
 
             # ── Fill product number (mandatory, unique) ─────────────────────
-            _s(f"Wypełnianie numeru produktu: {pnum}…")
+            _s(msg(lang, "filling_number", num=pnum))
             page.evaluate(f"""
                 () => {{
                     const el = document.querySelector("fps-input[name='product_index_form_number']");
@@ -501,11 +527,11 @@ def copy_and_create(
             for fps_name in short_name_ids:
                 _fill_fps(fps_name, new_name)
 
-            _s(f"Wypełniono {len(name_field_ids)} pól nazwy i {len(short_name_ids)} pól short name")
+            _s(msg(lang, "fields_filled", name_n=len(name_field_ids), short_n=len(short_name_ids)))
             time.sleep(1)
 
             # ── Submit form ─────────────────────────────────────────────────
-            _s("Zapisywanie produktu…")
+            _s(msg(lang, "saving_product"))
             submitted = False
 
             # Try 1: click inner shadow DOM button of the save fps-button
@@ -536,7 +562,7 @@ def copy_and_create(
             page.keyboard.press("Enter")
 
             # Wait for save to complete — page may or may not navigate
-            _s("Czekam na zapis…")
+            _s(msg(lang, "waiting_save"))
             try:
                 page.wait_for_load_state("load", timeout=10_000)
             except Exception:
@@ -554,7 +580,7 @@ def copy_and_create(
 
             # Validate: search by number (exact) — if the row exists, creation succeeded.
             # Uses page.evaluate() on the rendered DOM so the SPA has time to paint.
-            _s("Weryfikuję utworzony produkt…")
+            _s(msg(lang, "verifying_product"))
             encoded_num = pnum.replace(" ", "+")
             verify_url = (
                 f"{cfg.freshportal_url}/product/index/index/"
@@ -591,7 +617,7 @@ def copy_and_create(
             )
 
             if found:
-                _s("Produkt zweryfikowany pomyślnie")
+                _s(msg(lang, "product_verified"))
                 return {
                     "ok": True,
                     "message": f"Produkt '{new_name}' (nr {pnum}) został pomyślnie utworzony",

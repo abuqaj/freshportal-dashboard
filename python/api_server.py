@@ -384,12 +384,14 @@ def get_vbn_name(code: str):
 
 class ProductSearchRequest(BaseModel):
     name: str
+    lang: str = "en"
 
 
 class ProductCreateRequest(BaseModel):
     template_id: str
     new_name: str
     product_number: str | None = None
+    lang: str = "en"
 
 
 class AIAnalyzeRequest(BaseModel):
@@ -448,7 +450,7 @@ async def product_search_stream(req: ProductSearchRequest):
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
-            matches = search_products(req.name, cfg, on_status=on_status)
+            matches = search_products(req.name, cfg, on_status=on_status, lang=req.lang)
             queue.put({"type": "result", "data": {"results": _matches_to_results(matches)}})
         except Exception as e:
             log.exception("product-search/stream failed")
@@ -543,7 +545,7 @@ def product_number_suggest(name: str = "", number: str = ""):
     base = number.strip() or (generate_product_number(name.strip()) if name.strip() else "")
     if not base:
         raise HTTPException(400, "Provide 'name' or 'number' query param")
-    result = find_available_number(base, cfg)
+    result = find_available_number(base, cfg, name=name.strip())
     if result is None:
         return {"available_number": None, "original_number": base, "changed": False}
     return {"available_number": result, "original_number": base, "changed": result != base}
@@ -565,7 +567,7 @@ async def product_create_stream(req: ProductCreateRequest):
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
-            result = copy_and_create(req.template_id, req.new_name, cfg, on_status=on_status, product_number=req.product_number)
+            result = copy_and_create(req.template_id, req.new_name, cfg, on_status=on_status, product_number=req.product_number, lang=req.lang)
             queue.put({"type": "result", "data": result})
         except Exception as e:
             log.exception("product-create/stream failed")

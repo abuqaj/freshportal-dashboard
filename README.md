@@ -5,7 +5,8 @@ Dashboard do zarządzania produktami w FreshPortal — weryfikacja VBN, tworzeni
 ## Funkcje
 
 - **VBN Checker** — wpisz numer VBN, sprawdź poprawność kodów wszystkich produktów, edytuj i zatwierdź poprawki inline (streaming SSE)
-- **Nowe produkty** — wpisz nazwę produktu, system znajdzie podobne (fuzzy search odporny na literówki, próg 80%), skopiuje najbliższy jako szablon; numer produktu jest weryfikowany w FreshPortal jeszcze przed kliknięciem "Utwórz" — jeśli zajęty, automatycznie proponowany jest wolny wariant
+- **Nowe produkty** — wpisz nazwę produktu, system znajdzie podobne (fuzzy search odporny na literówki, próg 80%), skopiuje najbliższy jako szablon; numer produktu jest weryfikowany w FreshPortal jeszcze przed kliknięciem "Utwórz" — jeśli zajęty, proponowany jest wariant rozszerzony o kolejne litery ostatniego słowa nazwy (np. CAMALA → CAMALAV → CAMALAVE)
+- **Wielojęzyczność** — interfejs dostępny w 4 językach: angielski, holenderski, polski, hiszpański; wybór przez menu flagowe w prawym górnym rogu, statusy z backendu tłumaczone dynamicznie
 - **Photo Uploader** — uploaduj Excel z mapowaniem `product_id → zdjęcie`
 - **Historia** — logi operacji VBN, tworzenia produktów i photo upload (wymaga Vercel Postgres)
 
@@ -44,10 +45,15 @@ python/
   scraper_vbn.py             — Floricode API: weryfikacja kodów VBN, wyszukiwanie po nazwie
   verifier.py                — reguły weryfikacji VBN (spray, kolor, preserved, brak VBN…)
   product_creator.py         — wyszukiwanie podobnych produktów + kopiowanie jako szablon
+  i18n.py                    — tłumaczenia komunikatów backendowych (EN/NL/PL/ES)
   photo_uploader.py          — upload zdjęć do produktów FreshPortal
   reporter.py                — generowanie raportów Excel
   config.py                  — konfiguracja z env
   requirements.txt
+
+src/
+  lib/i18n.ts                — tłumaczenia UI (EN/NL/PL/ES) + lista języków z kodami krajów
+  components/LanguageSwitcher.tsx — dropdown flagowy w prawym górnym rogu
 ```
 
 ## Lokalne uruchomienie
@@ -117,9 +123,9 @@ Ustaw `NEXT_PUBLIC_RAILWAY_API_URL=http://localhost:8000` w `.env.local` żeby f
 | `/vbn-fix/stream` | POST | SSE: naprawa VBN (`{ fixes: [{product_id, new_vbn}] }`) |
 | `/vbn-name/:code` | GET | Oficjalna nazwa kodu VBN z Floricode |
 | `/vbn-search` | GET | Wyszukiwanie kodów VBN po nazwie (`?q=dianthus&limit=15`) |
-| `/product-search/stream` | POST | SSE: wyszukiwanie podobnych produktów (`{ name: "Rosa Ec Atena" }`) |
-| `/product-number-suggest` | GET | Sprawdź dostępność numeru i zwróć wolny wariant (`?number=ROECAT`) |
-| `/product-create/stream` | POST | SSE: kopiowanie produktu jako szablon (`{ template_id, new_name, product_number }`) |
+| `/product-search/stream` | POST | SSE: wyszukiwanie podobnych produktów (`{ name: "Rosa Ec Atena", lang: "en" }`) |
+| `/product-number-suggest` | GET | Sprawdź dostępność numeru i zwróć wolny wariant (`?number=ROECAT&name=Rosa+Ec+Athena`) |
+| `/product-create/stream` | POST | SSE: kopiowanie produktu jako szablon (`{ template_id, new_name, product_number, lang }`) |
 | `/product-ai-analyze` | POST | Analiza duplikatów i sugestia VBN przez Claude AI (`{ name, candidates }`) |
 | `/photo-upload` | POST | Upload zdjęć z pliku Excel (multipart) |
 | `/debug/fp` | GET | Diagnostyka połączenia z FreshPortal |
@@ -130,9 +136,9 @@ Ustaw `NEXT_PUBLIC_RAILWAY_API_URL=http://localhost:8000` w `.env.local` żeby f
 1. Użytkownik wpisuje nazwę (np. `Rosa Ec Athena`) i klika **Szukaj podobnych**
 2. Backend (`product_creator.search_products`) przeszukuje FreshPortal fuzzy matchingiem
 3. Wyniki ≥80% podobieństwa wyświetlane jako szablony do skopiowania
-4. Po kliknięciu **Kopiuj jako szablon** formularz potwierdzenia pojawia się natychmiast, a w tle startuje `GET /product-number-suggest?number=ROECAT`:
+4. Po kliknięciu **Kopiuj jako szablon** formularz potwierdzenia pojawia się natychmiast, a w tle startuje `GET /product-number-suggest?number=CAMALA&name=Callistephus+Matsumoto+Lavender`:
    - Sprawdza `td[data-cell-action="product_number"]` w wynikach FreshPortal (exact match)
-   - Jeśli zajęty — próbuje `ROECATA`, `ROECATB` … aż do 10 wariantów
+   - Jeśli zajęty — rozszerza numer o kolejne litery ostatniego słowa nazwy: `CAMALA` → `CAMALAV` → `CAMALAVE`, potem fallback na alfabet
    - Pole numeru aktualizuje się automatycznie; przycisk **Utwórz produkt** jest zablokowany do czasu zakończenia sprawdzania
 5. Po kliknięciu **Utwórz produkt** backend (`product_creator.copy_and_create`):
    - Otwiera `/product/index/copy/PRO_ID/{id}/` (formularz kopiowania)
@@ -159,4 +165,6 @@ Ustaw `NEXT_PUBLIC_RAILWAY_API_URL=http://localhost:8000` w `.env.local` żeby f
 1. Nawiguje do `?1=1&number_adjustable={kandydat}&page=1`
 2. Czeka na `td[data-cell-action='product_number']` (SPA musi wyrenderować tabelę)
 3. Sprawdza przez `page.evaluate()` czy którakolwiek komórka `td[data-cell-action="product_number"]` ma **dokładnie** ten tekst (case-insensitive)
-4. Jeśli zajęty — przechodzi do następnego kandydata (`ROECATA`, `ROECATB` …)
+4. Jeśli zajęty — następny kandydat generowany jest przez `_number_candidates(base, name)`:
+   - **Faza 1**: dokłada kolejne litery ostatniego słowa nazwy (po pierwszych 2 już użytych): `CAMALA` + `V` → `CAMALAV`, + `E` → `CAMALAVE`
+   - **Faza 2**: fallback alfabetyczny / cyfry gdy wyczerpano litery słowa lub osiągnięto 8 znaków
