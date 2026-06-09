@@ -463,13 +463,38 @@ export default function Dashboard() {
   }
 
   function wordJaccard(a: string, b: string): number {
-    const setA = new Set(a.toLowerCase().trim().split(/\s+/).filter(Boolean));
-    const setB = new Set(b.toLowerCase().trim().split(/\s+/).filter(Boolean));
-    if (setA.size === 0 && setB.size === 0) return 1;
-    let intersection = 0;
-    setA.forEach(w => { if (setB.has(w)) intersection++; });
-    const union = setA.size + setB.size - intersection;
-    return union > 0 ? intersection / union : 1;
+    const wordsA = a.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const wordsB = b.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    if (wordsA.length === 0 && wordsB.length === 0) return 1;
+    const maxWords = Math.max(wordsA.length, wordsB.length);
+    if (maxWords === 0) return 1;
+    // Fuzzy per-word similarity: greedy sequential char match
+    function fuzzyWordSim(w1: string, w2: string): number {
+      if (w1 === w2) return 1;
+      const longer = w1.length >= w2.length ? w1 : w2;
+      const shorter = w1.length < w2.length ? w1 : w2;
+      if (longer.length === 0) return 1;
+      let matches = 0, si = 0;
+      for (let li = 0; li < longer.length && si < shorter.length; li++) {
+        if (longer[li] === shorter[si]) { matches++; si++; }
+      }
+      return (2 * matches) / (longer.length + shorter.length);
+    }
+    const usedB = new Set<number>();
+    let totalSim = 0;
+    for (const wA of wordsA) {
+      let bestSim = 0, bestJ = -1;
+      for (let j = 0; j < wordsB.length; j++) {
+        if (usedB.has(j)) continue;
+        const s = fuzzyWordSim(wA, wordsB[j]);
+        if (s > bestSim) { bestSim = s; bestJ = j; }
+      }
+      if (bestJ >= 0 && bestSim >= 0.80) {
+        totalSim += bestSim;
+        usedB.add(bestJ);
+      }
+    }
+    return totalSim / maxWords;
   }
 
   function genProductNumber(name: string): string {
