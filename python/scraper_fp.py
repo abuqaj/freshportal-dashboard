@@ -119,13 +119,21 @@ _FALLBACK_COLS = {
 }
 
 
+def _header_text(h) -> str:
+    """Extract header text: prefer data-header-title (clean, no sort icons)."""
+    title = h.get("data-header-title", "").strip()
+    if title:
+        return title.lower()
+    return " ".join(h.get_text(separator=" ", strip=True).split()).lower()
+
+
 def _detect_columns_html(soup: BeautifulSoup) -> dict[str, int]:
     """Return {field_name: col_index} for all detectable columns."""
     col_map: dict[str, int] = {}
     thead = soup.find("thead")
     if thead:
         for i, h in enumerate(thead.find_all(["th", "td"])):
-            text = h.get_text(strip=True).lower()
+            text = _header_text(h)
             field = _HEADER_MAP.get(text)
             if field and field not in col_map:
                 col_map[field] = i
@@ -459,7 +467,9 @@ def _detect_columns(page: Page) -> dict[str, int]:
     headers = page.query_selector_all("table thead th, table thead td")
     col_map: dict[str, int] = {}
     for i, h in enumerate(headers):
-        text = h.inner_text().strip().lower()
+        # data-header-title is cleaner than inner_text (no sort-icon noise)
+        title_attr = h.get_attribute("data-header-title") or ""
+        text = (title_attr.strip() or " ".join(h.inner_text().split())).lower()
         field = _HEADER_MAP.get(text)
         if field and field not in col_map:
             col_map[field] = i
