@@ -503,6 +503,32 @@ def product_ai_analyze(req: AIAnalyzeRequest):
             "duplicate": {"found": False, "reason": "AI analysis failed"},
             "vbn": {"code": None, "explanation": "AI analysis failed"},
         }
+
+    # Validate AI-suggested VBN against Floricode before returning.
+    # AI hallucinates codes — never show a suggestion that doesn't exist.
+    vbn_info = result.get("vbn") or {}
+    ai_code = str(vbn_info.get("code") or "").strip()
+    if ai_code:
+        if ai_code in KNOWN_VBN:
+            vbn_info["name"] = KNOWN_VBN[ai_code]
+        else:
+            lookup = lookup_vbn_codes(
+                [ai_code],
+                request_timeout=cfg.request_timeout,
+                floricode_username=cfg.floricode_username,
+                floricode_password=cfg.floricode_password,
+            )
+            info = lookup.get(ai_code)
+            if info and info.found and info.official_name:
+                vbn_info["name"] = info.official_name
+            else:
+                vbn_info["code"] = None
+                vbn_info["name"] = None
+                vbn_info["explanation"] = (
+                    f"AI suggested code {ai_code} but it was not found in Floricode"
+                )
+        result["vbn"] = vbn_info
+
     return result
 
 
