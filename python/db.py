@@ -253,6 +253,25 @@ def log_sync_finish(sync_id: int, product_count: int, error: str = "") -> None:
         logger.error("log_sync_finish: %s", exc)
 
 
+def get_last_successful_sync_date() -> str | None:
+    """Return ISO string of finished_at for the last successful sync, or None."""
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT finished_at FROM sync_log
+                    WHERE status = 'ok'
+                    ORDER BY id DESC LIMIT 1
+                """)
+                row = cur.fetchone()
+                if not row or not row[0]:
+                    return None
+                dt = row[0]
+                return dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+    except Exception:
+        return None
+
+
 def get_last_sync() -> dict | None:
     try:
         with _conn() as conn:

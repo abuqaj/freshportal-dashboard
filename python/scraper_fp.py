@@ -351,12 +351,14 @@ def fetch_products(
 def scrape_all_products(
     cfg: Config,
     on_status=None,
+    from_date: str = "",
+    to_date: str = "",
 ) -> list[FPProduct]:
-    """Scrape ALL products from FreshPortal (no VBN filter).
+    """Scrape products from FreshPortal.
 
-    Uses the same 6-pages-per-browser-batch strategy as fetch_products
-    to keep peak RAM under control.  Typically takes 10-20 min for 64 K
-    products (256 pages × ~3 s/page).
+    When from_date/to_date are given, filters by mutation_date_time_from/to
+    (incremental sync).  Otherwise fetches all 64 K products (full sync).
+    Uses the same 6-pages-per-browser-batch strategy to cap peak RAM.
     """
     def _status(msg: str) -> None:
         logger.info(msg)
@@ -364,7 +366,14 @@ def scrape_all_products(
             on_status(msg)
 
     all_products: list[FPProduct] = []
-    url_tpl = f"{cfg.freshportal_url}/product/index/index/?1=1&page={{page}}"
+    if from_date:
+        url_tpl = (
+            f"{cfg.freshportal_url}/product/index/index/"
+            f"?1=1&mutation_date_time_from={from_date}"
+            f"&mutation_date_time_to={to_date}&page={{page}}"
+        )
+    else:
+        url_tpl = f"{cfg.freshportal_url}/product/index/index/?1=1&page={{page}}"
 
     saved_cookies: list = []
     col_map: dict[str, int] | None = None

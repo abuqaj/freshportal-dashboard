@@ -31,7 +31,7 @@ from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
 from db import search_products_db, get_product_count, get_last_sync
-from sync import run_full_sync, is_sync_running
+from sync import run_full_sync, run_incremental_sync, is_sync_running
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ _scheduler = BackgroundScheduler(timezone="UTC")
 def _hourly_sync() -> None:
     cfg = Config()
     log.info("Hourly sync started")
-    result = run_full_sync(cfg)
+    result = run_incremental_sync(cfg)
     log.info("Hourly sync finished: %s", result)
 
 
@@ -221,13 +221,20 @@ def sync_status():
 
 
 @app.post("/sync/run")
-def sync_run():
-    """Manually trigger a full product sync (non-blocking)."""
+def sync_run(full: bool = False):
+    """Manually trigger product sync (non-blocking).
+
+    ?full=true forces a full rescan of all 64 K products.
+    Default (no param) runs incremental sync from last sync date.
+    """
     if is_sync_running():
         raise HTTPException(409, "Sync already running")
     cfg = Config()
-    threading.Thread(target=run_full_sync, args=(cfg,), daemon=True).start()
-    return {"ok": True, "message": "Full sync started in background"}
+    if full:
+        threading.Thread(target=run_full_sync, args=(cfg,), daemon=True).start()
+        return {"ok": True, "message": "Full sync started in background"}
+    threading.Thread(target=run_incremental_sync, args=(cfg,), daemon=True).start()
+    return {"ok": True, "message": "Incremental sync started in background"}
 
 
 @app.get("/floricode/colors")
