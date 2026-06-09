@@ -37,57 +37,150 @@ CHROMIUM_ARGS = [
 @dataclass
 class FPProduct:
     product_id: str
-    short_name: str
     name: str
+    short_name: str
     vbn_number: str
     origin: str = ""
+    product_number: str = ""
+    color: str = ""
+    product_gtin: str = ""
+    product_group_code: str = ""
+    product_group: str = ""
+    application: str = ""
+    vat_rate: str = ""
+    cbs_group_code: str = ""
+    main_group: str = ""
+    creation_moment: str = ""
+    change_moment: str = ""
 
 
 # ---------------------------------------------------------------------------
-# HTML parsing helpers (work on rendered HTML from page.content())
+# Column detection — maps lowercased header text → FPProduct field name
 # ---------------------------------------------------------------------------
 
-def _detect_columns_html(soup: BeautifulSoup) -> tuple[int, int, int, int]:
-    col_vbn = col_name = col_short = col_origin = -1
+_HEADER_MAP: dict[str, str] = {
+    # VBN
+    "vbn number": "vbn_number",
+    "vbn nr": "vbn_number",
+    "vbn": "vbn_number",
+    # Name
+    "name": "name",
+    # Short name
+    "short name": "short_name",
+    "shortname": "short_name",
+    # Origin
+    "origin": "origin",
+    # Product number
+    "number": "product_number",
+    "product number": "product_number",
+    "productnumber": "product_number",
+    # Color
+    "color": "color",
+    "colour": "color",
+    # GTIN
+    "gtin": "product_gtin",
+    "product gtin": "product_gtin",
+    "ean": "product_gtin",
+    # Product group code
+    "product group code": "product_group_code",
+    "productgroupcode": "product_group_code",
+    # Product group
+    "product group": "product_group",
+    "productgroup": "product_group",
+    # Application
+    "application": "application",
+    # VAT rate
+    "vat rate": "vat_rate",
+    "vatrate": "vat_rate",
+    "vat": "vat_rate",
+    # CBS group code
+    "cbs group code": "cbs_group_code",
+    "cbsgroupcode": "cbs_group_code",
+    "cbs group": "cbs_group_code",
+    # Main group
+    "main group": "main_group",
+    "maingroup": "main_group",
+    # Timestamps
+    "creation moment": "creation_moment",
+    "created": "creation_moment",
+    "creation date": "creation_moment",
+    "change moment": "change_moment",
+    "changed": "change_moment",
+    "modification date": "change_moment",
+    "last modified": "change_moment",
+}
+
+# Required fields — if header not found, fall back to these column indices
+_FALLBACK_COLS = {
+    "vbn_number": 8,
+    "name": 10,
+    "short_name": 11,
+    "origin": 18,
+}
+
+
+def _detect_columns_html(soup: BeautifulSoup) -> dict[str, int]:
+    """Return {field_name: col_index} for all detectable columns."""
+    col_map: dict[str, int] = {}
     thead = soup.find("thead")
     if thead:
         for i, h in enumerate(thead.find_all(["th", "td"])):
-            t = h.get_text(strip=True).lower()
-            if t == "vbn number":               col_vbn = i
-            elif t == "name" and col_name == -1: col_name = i
-            elif t == "short name":             col_short = i
-            elif t == "origin":                 col_origin = i
-    if col_vbn == -1:    col_vbn = 8
-    if col_name == -1:   col_name = 10
-    if col_short == -1:  col_short = 11
-    if col_origin == -1: col_origin = 18
-    logger.info("Columns: VBN=%d Name=%d Short=%d Origin=%d", col_vbn, col_name, col_short, col_origin)
-    return col_vbn, col_name, col_short, col_origin
+            text = h.get_text(strip=True).lower()
+            field = _HEADER_MAP.get(text)
+            if field and field not in col_map:
+                col_map[field] = i
+    # Apply fallbacks for critical fields not found by header
+    for field, fallback_idx in _FALLBACK_COLS.items():
+        if field not in col_map:
+            col_map[field] = fallback_idx
+    logger.info("Detected columns: %s", col_map)
+    return col_map
 
 
-def _parse_rows_html(soup: BeautifulSoup, cols: tuple[int, int, int, int]) -> list[FPProduct]:
-    col_vbn, col_name, col_short, col_origin = cols
+def _parse_rows_html(soup: BeautifulSoup, col_map: dict[str, int]) -> list[FPProduct]:
     table = soup.find("table")
     if not table:
         return []
     tbody = table.find("tbody")
     if not tbody:
         return []
+
+    required = max(col_map.get("vbn_number", 0), col_map.get("name", 0), col_map.get("short_name", 0))
     products: list[FPProduct] = []
+
+    def _cell(cells: list, field: str) -> str:
+        idx = col_map.get(field, -1)
+        if idx < 0 or idx >= len(cells):
+            return ""
+        return cells[idx].get_text(strip=True)
+
     for row in tbody.find_all("tr"):
         cells = row.find_all("td")
-        if len(cells) <= max(col_vbn, col_name, col_short):
+        if len(cells) <= required:
             continue
         product_id = cells[0].get_text(strip=True)
-        vbn   = cells[col_vbn].get_text(strip=True)
-        name  = cells[col_name].get_text(strip=True)
-        short = cells[col_short].get_text(strip=True)
-        origin = cells[col_origin].get_text(strip=True) if len(cells) > col_origin else ""
-        if vbn or name:
-            products.append(FPProduct(
-                product_id=product_id, short_name=short,
-                name=name, vbn_number=vbn, origin=origin,
-            ))
+        name = _cell(cells, "name")
+        vbn  = _cell(cells, "vbn_number")
+        if not product_id or (not vbn and not name):
+            continue
+        products.append(FPProduct(
+            product_id=product_id,
+            name=name,
+            short_name=_cell(cells, "short_name"),
+            vbn_number=vbn,
+            origin=_cell(cells, "origin"),
+            product_number=_cell(cells, "product_number"),
+            color=_cell(cells, "color"),
+            product_gtin=_cell(cells, "product_gtin"),
+            product_group_code=_cell(cells, "product_group_code"),
+            product_group=_cell(cells, "product_group"),
+            application=_cell(cells, "application"),
+            vat_rate=_cell(cells, "vat_rate"),
+            cbs_group_code=_cell(cells, "cbs_group_code"),
+            main_group=_cell(cells, "main_group"),
+            creation_moment=_cell(cells, "creation_moment"),
+            change_moment=_cell(cells, "change_moment"),
+        ))
     return products
 
 
@@ -252,6 +345,86 @@ def fetch_products(
 
 
 # ---------------------------------------------------------------------------
+# scrape_all_products — no VBN filter, fetches every product
+# ---------------------------------------------------------------------------
+
+def scrape_all_products(
+    cfg: Config,
+    on_status=None,
+) -> list[FPProduct]:
+    """Scrape ALL products from FreshPortal (no VBN filter).
+
+    Uses the same 6-pages-per-browser-batch strategy as fetch_products
+    to keep peak RAM under control.  Typically takes 10-20 min for 64 K
+    products (256 pages × ~3 s/page).
+    """
+    def _status(msg: str) -> None:
+        logger.info(msg)
+        if on_status:
+            on_status(msg)
+
+    all_products: list[FPProduct] = []
+    url_tpl = f"{cfg.freshportal_url}/product/index/index/?1=1&page={{page}}"
+
+    saved_cookies: list = []
+    col_map: dict[str, int] | None = None
+    last_page: int | None = None
+    current_page = 1
+
+    while True:
+        with sync_playwright() as pw:
+            browser = _launch_browser(pw)
+            context = browser.new_context()
+            if saved_cookies:
+                context.add_cookies(saved_cookies)
+            page = context.new_page()
+            _block_resources(page)
+
+            try:
+                if not saved_cookies:
+                    _status("Logging into FreshPortal…")
+                    _login(page, cfg)
+
+                pages_in_batch = 0
+                while pages_in_batch < PAGES_PER_BATCH:
+                    if last_page is not None and current_page > last_page:
+                        break
+
+                    _goto_and_wait(page, url_tpl.format(page=current_page), cfg)
+                    soup = BeautifulSoup(page.content(), "lxml")
+
+                    if col_map is None:
+                        col_map = _detect_columns_html(soup)
+                        last_page = _get_last_page_html(soup)
+                        _status(f"Detected {last_page} pages total")
+
+                    products = _parse_rows_html(soup, col_map)
+                    if not products:
+                        last_page = current_page - 1
+                        break
+
+                    all_products.extend(products)
+                    if current_page % 10 == 0 or current_page == last_page:
+                        _status(
+                            f"Page {current_page}/{last_page} — "
+                            f"{len(all_products)} products so far"
+                        )
+                    current_page += 1
+                    pages_in_batch += 1
+
+                saved_cookies = context.cookies()
+            finally:
+                context.close()
+                browser.close()
+
+        if last_page is None or current_page > last_page:
+            break
+
+    _status(f"Scrape complete — {len(all_products)} products")
+    return all_products
+
+
+# ---------------------------------------------------------------------------
 # fix_vbn_batch — single Playwright session
 # ---------------------------------------------------------------------------
 
@@ -261,20 +434,19 @@ def _id_filter(cfg: Config, product_id: str) -> str:
     return f"external_id={product_id}"
 
 
-def _detect_columns(page: Page) -> tuple[int, int, int, int]:
+def _detect_columns(page: Page) -> dict[str, int]:
+    """Playwright version of column detection — returns {field: col_index}."""
     headers = page.query_selector_all("table thead th, table thead td")
-    col_vbn = col_name = col_short = col_origin = -1
+    col_map: dict[str, int] = {}
     for i, h in enumerate(headers):
-        t = h.inner_text().strip().lower()
-        if t == "vbn number":               col_vbn = i
-        elif t == "name" and col_name == -1: col_name = i
-        elif t == "short name":             col_short = i
-        elif t == "origin":                 col_origin = i
-    if col_vbn == -1:    col_vbn = 8
-    if col_name == -1:   col_name = 10
-    if col_short == -1:  col_short = 11
-    if col_origin == -1: col_origin = 18
-    return col_vbn, col_name, col_short, col_origin
+        text = h.inner_text().strip().lower()
+        field = _HEADER_MAP.get(text)
+        if field and field not in col_map:
+            col_map[field] = i
+    for field, fallback_idx in _FALLBACK_COLS.items():
+        if field not in col_map:
+            col_map[field] = fallback_idx
+    return col_map
 
 
 def _fix_inline(page: Page, product_id: str, new_vbn: str, vbn_col: int, cfg: Config) -> bool:
@@ -351,7 +523,8 @@ def fix_vbn_batch(
                 timeout=cfg.request_timeout,
             )
             time.sleep(1.5)
-            vbn_col, _, _, _ = _detect_columns(page)
+            col_map = _detect_columns(page)
+            vbn_col = col_map.get("vbn_number", 8)
             for i, (product_id, new_vbn) in enumerate(fixes, 1):
                 _status(f"Poprawianie produktu {i}/{total} (ID {product_id} → VBN {new_vbn})…")
                 try:

@@ -179,6 +179,11 @@ export default function Dashboard() {
   const [colorDropdownOpen, setColorDropdownOpen] = useState(false);
   const colorDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Sync status
+  type SyncStatus = { running: boolean; product_count: number; last_sync: { started_at: string; finished_at: string | null; product_count: number | null; status: string } | null };
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncTriggering, setSyncTriggering] = useState(false);
+
   // History
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
   const [histLoading, setHistLoading] = useState(false);
@@ -189,9 +194,17 @@ export default function Dashboard() {
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
 
-  // Pre-load color list when the Create tab is first opened
+  // Pre-load color list + fetch sync status when entering Create tab
   useEffect(() => {
-    if (tab === "create" && colorList.length === 0 && !colorListLoading) loadColors();
+    if (tab === "create") {
+      if (colorList.length === 0 && !colorListLoading) loadColors();
+      if (RAILWAY) {
+        fetch(`${RAILWAY}/sync/status`)
+          .then(r => r.json())
+          .then((d: SyncStatus) => setSyncStatus(d))
+          .catch(() => {});
+      }
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -574,6 +587,28 @@ export default function Dashboard() {
       .then((d: { colors: { id: string; name: string }[] }) => setColorList(d.colors ?? []))
       .catch((e: unknown) => setColorLoadError(e instanceof Error ? e.message : String(e)))
       .finally(() => setColorListLoading(false));
+  }
+
+  async function triggerSync() {
+    if (!RAILWAY || syncTriggering) return;
+    setSyncTriggering(true);
+    try {
+      await fetch(`${RAILWAY}/sync/run`, { method: "POST" });
+      // Poll status every 5 s while running
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        try {
+          const r = await fetch(`${RAILWAY}/sync/status`);
+          const d: SyncStatus = await r.json();
+          setSyncStatus(d);
+          if (!d.running || attempts > 180) clearInterval(poll);
+        } catch { clearInterval(poll); }
+        finally { if (!syncStatus?.running) setSyncTriggering(false); }
+      }, 5000);
+    } catch {
+      setSyncTriggering(false);
+    }
   }
 
   function handleCreateFromTemplate(templateId: string, templateName: string, templateVbn = "") {
@@ -991,9 +1026,46 @@ export default function Dashboard() {
         {/* Product Creation */}
         {tab === "create" && (
           <div className="p-8 max-w-3xl">
-            <div className="mb-6">
-              <h1 className="text-xl font-semibold text-neutral-900">{t.nav.newProducts}</h1>
-              <p className="text-sm text-neutral-500 mt-1">{t.create.description}</p>
+            <div className="mb-6 flex items-start justify-between gap-4">
+              <div>
+                <h1 className="text-xl font-semibold text-neutral-900">{t.nav.newProducts}</h1>
+                <p className="text-sm text-neutral-500 mt-1">{t.create.description}</p>
+              </div>
+              {/* Sync status badge */}
+              <div className="flex-shrink-0 text-right">
+                {syncStatus ? (
+                  <div className="flex flex-col items-end gap-1">
+                    <div className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${
+                      syncStatus.running ? "bg-violet-50 text-violet-700" :
+                      syncStatus.product_count > 0 ? "bg-green-50 text-green-700" : "bg-neutral-100 text-neutral-500"
+                    }`}>
+                      {syncStatus.running && (
+                        <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        </svg>
+                      )}
+                      {syncStatus.running ? "Syncing…" :
+                       syncStatus.product_count > 0 ? `${syncStatus.product_count.toLocaleString()} products in DB` :
+                       "DB empty"}
+                    </div>
+                    {syncStatus.last_sync?.finished_at && !syncStatus.running && (
+                      <p className="text-xs text-neutral-400">
+                        Last sync: {new Date(syncStatus.last_sync.finished_at).toLocaleString()}
+                      </p>
+                    )}
+                    <button
+                      onClick={triggerSync}
+                      disabled={syncTriggering || syncStatus.running}
+                      className="text-xs text-violet-600 hover:text-violet-700 disabled:opacity-40 underline"
+                    >
+                      {syncTriggering || syncStatus.running ? "Syncing…" : "Sync now"}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-xs text-neutral-300">Loading DB status…</div>
+                )}
+              </div>
             </div>
 
             {/* Search bar */}

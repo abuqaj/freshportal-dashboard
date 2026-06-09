@@ -15,6 +15,7 @@ from pathlib import Path
 from queue import Empty, Queue
 
 import uvicorn
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -29,6 +30,8 @@ from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colou
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
+from db import search_products_db, get_product_count, get_last_sync
+from sync import run_full_sync, is_sync_running
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -36,17 +39,34 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="FreshPortal API", version="1.0.0")
 
 
+_scheduler = BackgroundScheduler(timezone="UTC")
+
+
+def _hourly_sync() -> None:
+    cfg = Config()
+    log.info("Hourly sync started")
+    result = run_full_sync(cfg)
+    log.info("Hourly sync finished: %s", result)
+
+
 @app.on_event("startup")
-async def _warm_colour_table() -> None:
-    """Pre-build colour VBN table in background thread on startup."""
-    def _build():
+async def _on_startup() -> None:
+    """Warm colour VBN table + schedule hourly product sync."""
+    def _warm():
         cfg = Config()
         if cfg.floricode_username and cfg.floricode_password:
             log.info("Warming colour VBN table on startup…")
             table = get_colour_vbn_table(cfg.floricode_username, cfg.floricode_password)
             log.info("Colour VBN table ready: %d genera", len(table))
-    import threading
-    threading.Thread(target=_build, daemon=True).start()
+    threading.Thread(target=_warm, daemon=True).start()
+
+    # First sync: 60 s after startup (lets Railway finish booting)
+    import datetime
+    first_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=60)
+    _scheduler.add_job(_hourly_sync, "date", run_date=first_run, id="initial_sync")
+    _scheduler.add_job(_hourly_sync, "interval", hours=1, id="hourly_sync")
+    _scheduler.start()
+    log.info("APScheduler started — first product sync in 60 s, then every hour")
 
 app.add_middleware(
     CORSMiddleware,
@@ -183,6 +203,31 @@ def _build_result(products, cfg: Config, queue: Queue | None = None) -> dict:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Product mirror — sync control
+# ---------------------------------------------------------------------------
+
+@app.get("/sync/status")
+def sync_status():
+    """Current sync state + last sync info."""
+    last = get_last_sync()
+    return {
+        "running": is_sync_running(),
+        "product_count": get_product_count(),
+        "last_sync": last,
+    }
+
+
+@app.post("/sync/run")
+def sync_run():
+    """Manually trigger a full product sync (non-blocking)."""
+    if is_sync_running():
+        raise HTTPException(409, "Sync already running")
+    cfg = Config()
+    threading.Thread(target=run_full_sync, args=(cfg,), daemon=True).start()
+    return {"ok": True, "message": "Full sync started in background"}
 
 
 @app.get("/floricode/colors")
@@ -446,7 +491,7 @@ def _matches_to_results(matches) -> list[dict]:
 
 @app.post("/product-search/stream")
 async def product_search_stream(req: ProductSearchRequest):
-    """SSE stream: status messages while searching, then result."""
+    """SSE stream: DB search first (instant), Playwright fallback if DB empty."""
     cfg = Config()
     try:
         cfg.validate()
@@ -460,8 +505,28 @@ async def product_search_stream(req: ProductSearchRequest):
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
+            # Try DB first — fast path (< 100 ms)
+            db_rows = search_products_db(req.name, limit=30)
+            if db_rows:
+                from product_creator import _similarity
+                results = []
+                for row in db_rows:
+                    sim = _similarity(req.name, row.get("name", ""))
+                    results.append({
+                        "product_id": row["product_id"],
+                        "name": row.get("name", ""),
+                        "short_name": row.get("short_name", ""),
+                        "vbn_number": row.get("vbn_number", ""),
+                        "similarity": round(sim, 3),
+                    })
+                results.sort(key=lambda r: r["similarity"], reverse=True)
+                queue.put({"type": "result", "data": {"results": results, "source": "db"}})
+                return
+
+            # Fallback: Playwright scrape (DB not yet populated)
+            on_status("DB not yet populated — searching via FreshPortal…")
             matches = search_products(req.name, cfg, on_status=on_status, lang=req.lang)
-            queue.put({"type": "result", "data": {"results": _matches_to_results(matches)}})
+            queue.put({"type": "result", "data": {"results": _matches_to_results(matches), "source": "scrape"}})
         except Exception as e:
             log.exception("product-search/stream failed")
             queue.put({"type": "error", "message": str(e)})
