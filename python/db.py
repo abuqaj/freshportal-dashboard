@@ -278,6 +278,31 @@ def log_sync_finish(sync_id: int, product_count: int, error: str = "") -> None:
         logger.error("log_sync_finish: %s", exc)
 
 
+def search_products_ilike_term(term: str, limit: int = 100) -> list[dict]:
+    """Return products whose name or short_name contains *term* (ILIKE).
+
+    Mirrors the name_adjustable= URL filter used in FreshPortal scraping,
+    so product_creator._similarity() can rank results identically.
+    """
+    try:
+        ensure_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                like = f"%{term}%"
+                cur.execute("""
+                    SELECT product_id, product_number, name, short_name,
+                           vbn_number, color, origin, product_group
+                    FROM products
+                    WHERE name ILIKE %s OR short_name ILIKE %s
+                    ORDER BY name
+                    LIMIT %s
+                """, (like, like, limit))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("search_products_ilike_term failed: %s", exc)
+        return []
+
+
 def is_product_number_taken(number: str) -> bool:
     """Return True if the exact product_number exists in the DB mirror."""
     try:

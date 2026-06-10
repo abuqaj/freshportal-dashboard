@@ -136,11 +136,12 @@ def search_products(
     on_status: Callable | None = None,
     lang: str = "en",
 ) -> list[ProductMatch]:
-    """Two-phase product search — fast and typo-aware.
+    """Two-phase product search — DB-first, Playwright fallback.
 
-    Phase 1 (~8 s): search exact query + variety name via name_adjustable, 2 pages each.
-    Phase 2 (~8 s): if no ≥80% matches and ANTHROPIC_API_KEY set, ask Claude for correct
-                    spellings of the variety, then search each suggestion (1 page each).
+    Phase 1: search exact query + typo-resistant variety substrings.
+    Phase 2: if no ≥80% matches and ANTHROPIC_API_KEY set, ask Claude for
+             correct spellings and search those too.
+    Same similarity logic regardless of data source.
     """
     def _s(m: str) -> None:
         logger.info(m)
@@ -154,38 +155,59 @@ def search_products(
     seen_ids: set[str] = set()
     all_matches: list[ProductMatch] = []
 
-    def _fetch(fp_page: Page, term: str, pages: int = 2) -> None:
-        """Fetch up to `pages` pages for `term` via name_adjustable and collect matches."""
-        encoded = term.replace(" ", "+")
-        for page_num in range(1, pages + 1):
-            url = (
-                f"{cfg.freshportal_url}/product/index/index/"
-                f"?1=1&name_adjustable={encoded}&page={page_num}"
-            )
-            try:
-                _goto_and_wait(fp_page, url, cfg)
-            except Exception:
-                break
-            soup = BeautifulSoup(fp_page.content(), "lxml")
-            rows = _parse_rows_html(soup, _detect_columns_html(soup))
-            if not rows:
-                break
-            new = 0
-            for r in rows:
-                if r.product_id not in seen_ids:
-                    sim = _similarity(query, r.name)
-                    if sim > 0.05 or genus in r.name.lower():
-                        seen_ids.add(r.product_id)
-                        all_matches.append(ProductMatch(
-                            product_id=r.product_id,
-                            name=r.name,
-                            short_name=r.short_name,
-                            vbn_number=r.vbn_number,
-                            similarity=sim,
-                        ))
-                        new += 1
-            _s(msg(lang, "page_result", term=term, page=page_num, total=len(all_matches)))
+    # Build search terms — shared between DB and Playwright paths
+    variety_terms = _variety_search_terms(variety)
+    for word in variety.split():
+        if len(word) >= 4 and word not in variety_terms:
+            variety_terms.append(word)
+    phase1 = list(dict.fromkeys(filter(None, [query.strip()] + variety_terms)))
 
+    def _collect(rows: list[dict]) -> None:
+        """Apply similarity filter and accumulate matches from a list of dicts."""
+        for r in rows:
+            pid = r.get("product_id", "")
+            name = r.get("name", "")
+            if not pid or pid in seen_ids:
+                continue
+            sim = _similarity(query, name)
+            if sim > 0.05 or genus in name.lower():
+                seen_ids.add(pid)
+                all_matches.append(ProductMatch(
+                    product_id=pid,
+                    name=name,
+                    short_name=r.get("short_name", ""),
+                    vbn_number=r.get("vbn_number", ""),
+                    similarity=sim,
+                ))
+
+    def _run_phases(fetch_fn: Callable[[str], list[dict]]) -> None:
+        """Execute phase 1 + optional AI phase 2 using the given fetch function."""
+        for term in phase1:
+            _s(msg(lang, "searching", term=term))
+            _collect(fetch_fn(term))
+
+        good = sum(1 for m in all_matches if m.similarity >= 0.8)
+        if good == 0 and variety:
+            _s(msg(lang, "no_good_matches"))
+            spellings = ai_suggest_spellings(variety, cfg)
+            if spellings:
+                _s(msg(lang, "ai_suggests", spellings=", ".join(spellings)))
+                for spelling in spellings:
+                    _s(msg(lang, "searching", term=spelling))
+                    _collect(fetch_fn(spelling))
+            else:
+                _s(msg(lang, "ai_unavailable"))
+
+    # ── DB path (fast, no browser) ────────────────────────────────────────────
+    from db import get_product_count, search_products_ilike_term
+    if get_product_count() > 0:
+        _run_phases(lambda term: search_products_ilike_term(term, limit=100))
+        all_matches.sort(key=lambda m: m.similarity, reverse=True)
+        best = f", best: {all_matches[0].similarity:.0%}" if all_matches else ""
+        _s(msg(lang, "finished_search", total=len(all_matches), best=best))
+        return all_matches
+
+    # ── Playwright fallback (DB not yet populated) ────────────────────────────
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         context = browser.new_context()
@@ -196,31 +218,33 @@ def search_products(
             _s(msg(lang, "logging_in"))
             _login(fp_page, cfg)
 
-            # Phase 1: exact query + variety search terms (typo-resistant substrings)
-            # Also add individual words from multi-word varieties so that e.g.
-            # "Matsumoto Lavender" triggers a search for "Matsumoto" which finds
-            # all "Callistephus Matsumoto *" products in FreshPortal.
-            variety_terms = _variety_search_terms(variety)
-            for word in variety.split():
-                if len(word) >= 4 and word not in variety_terms:
-                    variety_terms.append(word)
-            phase1 = list(dict.fromkeys(filter(None, [query.strip()] + variety_terms)))
-            for term in phase1:
-                _s(msg(lang, "searching", term=term))
-                _fetch(fp_page, term, pages=2)
+            def _pw_fetch(term: str) -> list[dict]:
+                results: list[dict] = []
+                encoded = term.replace(" ", "+")
+                for page_num in range(1, 3):
+                    url = (
+                        f"{cfg.freshportal_url}/product/index/index/"
+                        f"?1=1&name_adjustable={encoded}&page={page_num}"
+                    )
+                    try:
+                        _goto_and_wait(fp_page, url, cfg)
+                    except Exception:
+                        break
+                    soup = BeautifulSoup(fp_page.content(), "lxml")
+                    rows = _parse_rows_html(soup, _detect_columns_html(soup))
+                    if not rows:
+                        break
+                    for r in rows:
+                        results.append({
+                            "product_id": r.product_id,
+                            "name": r.name,
+                            "short_name": r.short_name,
+                            "vbn_number": r.vbn_number,
+                        })
+                    _s(msg(lang, "page_result", term=term, page=page_num, total=len(results)))
+                return results
 
-            # Phase 2: AI spelling correction when no good matches found
-            good = sum(1 for m in all_matches if m.similarity >= 0.8)
-            if good == 0 and variety:
-                _s(msg(lang, "no_good_matches"))
-                spellings = ai_suggest_spellings(variety, cfg)
-                if spellings:
-                    _s(msg(lang, "ai_suggests", spellings=", ".join(spellings)))
-                    for spelling in spellings:
-                        _s(msg(lang, "searching", term=spelling))
-                        _fetch(fp_page, spelling, pages=2)
-                else:
-                    _s(msg(lang, "ai_unavailable"))
+            _run_phases(_pw_fetch)
 
         finally:
             context.close()
