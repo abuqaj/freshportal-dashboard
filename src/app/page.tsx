@@ -64,40 +64,6 @@ type HistoryRow = {
   created_at: string;
 };
 
-function ManualTemplateForm({
-  newName,
-  onCreate,
-  disabled,
-  placeholder,
-  copyLabel,
-}: {
-  newName: string;
-  onCreate: (id: string, name: string) => void;
-  disabled: boolean;
-  placeholder: string;
-  copyLabel: string;
-}) {
-  const [id, setId] = useState("");
-  return (
-    <div className="flex gap-3">
-      <input
-        type="text"
-        value={id}
-        onChange={(e) => setId(e.target.value)}
-        placeholder={placeholder}
-        className="border border-neutral-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-1 focus:ring-violet-300"
-      />
-      <button
-        onClick={() => id.trim() && onCreate(id.trim(), newName)}
-        disabled={disabled || !id.trim()}
-        className="bg-neutral-700 hover:bg-neutral-800 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
-      >
-        {copyLabel}
-      </button>
-    </div>
-  );
-}
-
 
 export default function Dashboard() {
   const [lang, setLangState] = useState<Lang>("en");
@@ -466,6 +432,9 @@ export default function Dashboard() {
       setAiLoading(false);
       setSelectedTemplateWas100Pct(false);
       setShowAllResults(false);
+      setPendingCreate(null);
+      setVbnForCreate("");
+      setVbnForCreateInfo(null);
     });
     try {
       const res = await fetch(`${RAILWAY}/product-search/stream`, {
@@ -619,7 +588,7 @@ export default function Dashboard() {
       fetch(`${RAILWAY}/product-ai-analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, candidates: searchResults.slice(0, 6) }),
+        body: JSON.stringify({ name, candidates: searchResults.slice(0, 6), preferred_vbn: templateVbn || null }),
       })
         .then(r => r.json())
         .then((data: AIAnalysis) => {
@@ -1305,7 +1274,7 @@ export default function Dashboard() {
                               fetch(`${RAILWAY}/product-ai-analyze`, {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ name: trimmed, candidates: searchResults.slice(0, 6) }),
+                                body: JSON.stringify({ name: trimmed, candidates: searchResults.slice(0, 6), preferred_vbn: vbnForCreate || null }),
                               })
                                 .then(r => r.json())
                                 .then((data: AIAnalysis) => {
@@ -1568,21 +1537,6 @@ export default function Dashboard() {
               </div>
             )}
 
-            {/* Manual template ID */}
-            {searchResults !== null && (
-              <div className="mt-4 bg-white border border-neutral-200 rounded-xl p-5">
-                <p className="text-xs font-medium text-neutral-500 mb-3 uppercase tracking-wide">
-                  {t.create.manualTitle}
-                </p>
-                <ManualTemplateForm
-                  newName={createInput}
-                  onCreate={handleCreateFromTemplate}
-                  disabled={creating}
-                  placeholder={t.create.manualPlaceholder}
-                  copyLabel={t.create.manualCopy}
-                />
-              </div>
-            )}
           </div>
         )}
 

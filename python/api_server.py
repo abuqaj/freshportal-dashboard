@@ -492,6 +492,7 @@ class ProductCreateRequest(BaseModel):
 class AIAnalyzeRequest(BaseModel):
     name: str
     candidates: list[dict]
+    preferred_vbn: str | None = None  # template's VBN — validate first, skip AI if valid
 
 
 @app.post("/product-search")
@@ -766,6 +767,42 @@ def product_ai_analyze(req: AIAnalyzeRequest):
                     )
 
         result["vbn"] = vbn_info
+
+    # Preferred-VBN override: if caller supplied the template's VBN, validate it
+    # and use it instead of the AI's suggestion — provided there's no color conflict.
+    # This prevents AI from replacing a perfectly-valid template VBN with a generic one.
+    preferred = str(req.preferred_vbn or "").strip()
+    if preferred and result.get("vbn", {}).get("code") != preferred:
+        pref_name = KNOWN_VBN.get(preferred)
+        if pref_name is None:
+            pref_lookup = lookup_vbn_codes(
+                [preferred],
+                request_timeout=cfg.request_timeout,
+                floricode_username=cfg.floricode_username,
+                floricode_password=cfg.floricode_password,
+            )
+            pref_info = pref_lookup.get(preferred)
+            if pref_info and pref_info.found and pref_info.official_name:
+                pref_name = pref_info.official_name
+        if pref_name:
+            p_color = _extract_color(req.name)
+            v_color = _extract_color(pref_name)
+            no_conflict = not (p_color and v_color and p_color != v_color)
+            if no_conflict:
+                log.info(
+                    "Restoring template VBN %s (%s) over AI suggestion %s",
+                    preferred, pref_name, result.get("vbn", {}).get("code"),
+                )
+                result["vbn"] = {
+                    "code": preferred,
+                    "name": pref_name,
+                    "explanation": "Template VBN validated — no color conflict",
+                }
+            else:
+                log.info(
+                    "Template VBN %s has color conflict (%s ≠ %s) — keeping AI suggestion",
+                    preferred, v_color, p_color,
+                )
 
     return result
 
