@@ -271,6 +271,15 @@ def _goto_and_wait(page: Page, url: str, cfg: Config) -> None:
         time.sleep(3)
 
 
+def _goto_product_page(page: Page, url: str, cfg: Config) -> None:
+    """Navigate to product page, re-logging in if the session has expired."""
+    _goto_and_wait(page, url, cfg)
+    if "login" in page.url.lower():
+        logger.info("Session expired mid-scrape — re-logging in")
+        _login(page, cfg)
+        _goto_and_wait(page, url, cfg)
+
+
 # ---------------------------------------------------------------------------
 # fetch_products — batched Playwright
 # ---------------------------------------------------------------------------
@@ -416,7 +425,7 @@ def scrape_all_products(
 
                 pages_in_batch = 0
                 while pages_in_batch < PAGES_PER_BATCH:
-                    _goto_and_wait(page, url_tpl.format(page=current_page), cfg)
+                    _goto_product_page(page, url_tpl.format(page=current_page), cfg)
                     soup = BeautifulSoup(page.content(), "lxml")
 
                     if col_map is None:
