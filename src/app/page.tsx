@@ -208,21 +208,7 @@ export default function Dashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
-  // Auto-fill VBN from AI analysis when it arrives and the create form is already open
-  useEffect(() => {
-    if (pendingCreate && !vbnForCreate && aiAnalysis?.vbn?.code && RAILWAY) {
-      const code = aiAnalysis.vbn.code;
-      setVbnForCreate(code);
-      setVbnForCreateChecking(true);
-      setVbnForCreateInfo(null);
-      fetch(`${RAILWAY}/vbn-name/${code}`)
-        .then(r => r.json())
-        .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
-        .catch(() => {})
-        .finally(() => setVbnForCreateChecking(false));
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiAnalysis]);
+  // (VBN auto-fill now handled directly in handleCreateFromTemplate with fresh AI check)
 
   const errorResults = results?.filter((r) => !r.excluded && r.status !== "OK") ?? [];
 
@@ -622,17 +608,55 @@ export default function Dashboard() {
     setNumberChecking(true);
     setNumberCheckResult(null);
 
-    // Pre-fill VBN: AI suggestion if available, else fall back to template's own VBN
-    const initialVbn = aiAnalysis?.vbn?.code ?? templateVbn;
-    setVbnForCreate(initialVbn);
+    // Show template VBN immediately, then override with fresh AI check
+    setVbnForCreate(templateVbn);
     setVbnForCreateInfo(null);
-    if (initialVbn && RAILWAY) {
-      setVbnForCreateChecking(true);
-      fetch(`${RAILWAY}/vbn-name/${initialVbn}`)
+    setVbnForCreateChecking(true);
+
+    if (RAILWAY && searchResults && searchResults.length > 0) {
+      // Always fire a fresh AI check — applies latest rules (color conflict, Floricode, etc.)
+      // Ignores cached aiAnalysis which may be from a previous session or old deploy
+      fetch(`${RAILWAY}/product-ai-analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, candidates: searchResults.slice(0, 6) }),
+      })
+        .then(r => r.json())
+        .then((data: AIAnalysis) => {
+          const code = data?.vbn?.code ?? null;
+          const resolvedCode = code ?? templateVbn;
+          setVbnForCreate(resolvedCode);
+          setVbnForCreateInfo(null);
+          if (resolvedCode && RAILWAY) {
+            fetch(`${RAILWAY}/vbn-name/${resolvedCode}`)
+              .then(r => r.json())
+              .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+              .catch(() => {})
+              .finally(() => setVbnForCreateChecking(false));
+          } else {
+            setVbnForCreateChecking(false);
+          }
+        })
+        .catch(() => {
+          // Fallback: just validate template VBN
+          if (templateVbn) {
+            fetch(`${RAILWAY}/vbn-name/${templateVbn}`)
+              .then(r => r.json())
+              .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+              .catch(() => {})
+              .finally(() => setVbnForCreateChecking(false));
+          } else {
+            setVbnForCreateChecking(false);
+          }
+        });
+    } else if (templateVbn && RAILWAY) {
+      fetch(`${RAILWAY}/vbn-name/${templateVbn}`)
         .then(r => r.json())
         .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
         .catch(() => {})
         .finally(() => setVbnForCreateChecking(false));
+    } else {
+      setVbnForCreateChecking(false);
     }
 
     fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(initialNumber)}&name=${encodeURIComponent(name)}`)
