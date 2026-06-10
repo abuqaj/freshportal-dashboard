@@ -546,28 +546,14 @@ async def product_search_stream(req: ProductSearchRequest):
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
-            # Try DB first — fast path (< 100 ms)
-            db_rows = search_products_db(req.name, limit=30)
-            if db_rows:
-                from product_creator import _similarity
-                results = []
-                for row in db_rows:
-                    sim = _similarity(req.name, row.get("name", ""))
-                    results.append({
-                        "product_id": row["product_id"],
-                        "name": row.get("name", ""),
-                        "short_name": row.get("short_name", ""),
-                        "vbn_number": row.get("vbn_number", ""),
-                        "similarity": round(sim, 3),
-                    })
-                results.sort(key=lambda r: r["similarity"], reverse=True)
-                queue.put({"type": "result", "data": {"results": results, "source": "db"}})
-                return
-
-            # Fallback: Playwright scrape (DB not yet populated)
-            on_status("DB not yet populated — searching via FreshPortal…")
+            # Use the variety-aware search (typo-resistant ILIKE substrings + genus).
+            # Falls back to Playwright automatically when DB is not yet populated.
             matches = search_products(req.name, cfg, on_status=on_status, lang=req.lang)
-            queue.put({"type": "result", "data": {"results": _matches_to_results(matches), "source": "scrape"}})
+            source = "db" if get_product_count() > 0 else "scrape"
+            queue.put({"type": "result", "data": {
+                "results": _matches_to_results(matches),
+                "source": source,
+            }})
         except Exception as e:
             log.exception("product-search/stream failed")
             queue.put({"type": "error", "message": str(e)})

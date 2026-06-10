@@ -160,7 +160,11 @@ def search_products(
     for word in variety.split():
         if len(word) >= 4 and word not in variety_terms:
             variety_terms.append(word)
-    phase1 = list(dict.fromkeys(filter(None, [query.strip()] + variety_terms)))
+    # Include genus alone so we always find same-genus products even when the
+    # variety is misspelled or absent.  Results are ranked by _similarity so
+    # unrelated varieties in the same genus will score low and stay at the bottom.
+    genus_terms = [genus] if genus and genus not in variety_terms else []
+    phase1 = list(dict.fromkeys(filter(None, [query.strip()] + variety_terms + genus_terms)))
 
     def _collect(rows: list[dict]) -> None:
         """Apply similarity filter and accumulate matches from a list of dicts."""
