@@ -56,18 +56,26 @@ def ai_suggest_spellings(variety: str, cfg: "Config") -> list[str]:
         return []
 
 _VBN_CONTEXT = """
-Common VBN category codes:
+CRITICAL — FreshPortal names are in English, Floricode VBN names are in Dutch.
+Equivalent terms (treat as identical when matching):
+  "Spray"          ↔  "Tros"
+  "Large-flowered" ↔  "Grootbloemig"
+  "Other"          ↔  "Overig"
+  "Colour treated" ↔  "Kleurbehandeld"
+
+Always compare the DUTCH translation of the product name against Floricode VBN names.
+Example: "Rosa Spray Royal Blush" → Dutch: "Rosa Tros Royal Blush"
+  → Floricode VBN 130231 is named "Rosa Tros Royal Blush" → MATCH → suggest 130231, not 595.
+
+Category VBN codes (use ONLY when no specific variety code exists for this product):
   580   — Rosa grootbloemig overig (large-flowered NON-spray, any origin including Ecuador)
-  595   — Rosa spray other (SPRAY type roses — tros, spray, ramificado)
+  595   — Rosa spray other / tros overig (SPRAY type roses)
   2712  — Droogbloemen bewerkt (Preserved / Bleached / Dried flowers)
   6268  — Cutflowers other coloured (colour-treated, no specific code)
   15126 — Rosa large flowered colour treated
   16128 — Rosa spray colour treated
 
-IMPORTANT: "Ec" in the product name means Ecuador COUNTRY OF ORIGIN, NOT a VBN category.
-  - "Rosa Ec Atena" = Ecuador origin, NON-spray → VBN 580 (Rosa grootbloemig overig)
-  - "Rosa Sp Atena" = spray type → VBN 595 (Rosa spray other)
-  - Only use 595 when the name contains "Spray", "Sp", "Tros", or similar spray indicators.
+"Ec" in name = Ecuador COUNTRY OF ORIGIN only.
 """
 
 _PROMPT_TEMPLATE = """\
@@ -100,15 +108,25 @@ Rules:
   Atena ≈ Athena, Litchi ≈ Lychee, Naomi ≈ Naomy, Jaques ≈ Jacques, etc.
 - Only mark as duplicate when you are reasonably sure.
 
-### TASK 2 — VBN code suggestion
-Assuming "{query}" does not yet exist, what VBN code should be assigned?
+## TASK 2 — Dutch translation
+Translate "{query}" into Dutch using Floricode conventions:
+- "Spray" → "Tros"
+- Color terms → Dutch: Red→Rood, White→Wit, Yellow→Geel, Pink→Roze,
+  Purple→Paars, Blue→Blauw, Orange→Oranje, Lavender→Lavendel, Green→Groen
+- Proper variety names (Royal Blush, Athena, Naomi…) → keep unchanged
+- "Large-flowered" → "Grootbloemig"
+
+## TASK 3 — VBN code suggestion
+Using the Dutch translation of "{query}", determine the correct VBN code.
+Validate your reasoning: the Floricode VBN name should match the Dutch translation.
 
 {vbn_context}
 
 Additional rules:
-- "Ec", "Col", "Ke" etc. in name = country of origin ONLY — do NOT use to determine VBN category.
-- "Spray" / "Sp" / "Tros" in name → spray VBN (e.g. 595 for Rosa spray).
-- No spray indicator → non-spray VBN (e.g. 580 for Rosa grootbloemig overig).
+- "Ec", "Col", "Ke" etc. in name = country of origin ONLY.
+- When a candidate's VBN name (Dutch) matches the Dutch translation of "{query}",
+  that VBN is the correct specific code — prefer it over category codes.
+  But reason about it: does the product type AND color match?
 - "Preserved" / "Bleached" / "Dried" → 2712.
 - "Colour treated" / "Painted" / "Absorbed" → 6268 or specific kleurbehandeld code.
 
@@ -123,6 +141,7 @@ Respond with ONLY valid JSON (no explanation outside the JSON):
     "confidence": "high",
     "reason": "<one sentence>"
   }},
+  "dutch_name": "<Dutch translation of the product name>",
   "vbn": {{
     "code": "595",
     "name": "Rosa grootbloemig Ecuador",

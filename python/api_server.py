@@ -715,6 +715,13 @@ def product_ai_analyze(req: AIAnalyzeRequest):
             "vbn": {"code": None, "explanation": "AI analysis failed"},
         }
 
+    preferred = str(req.preferred_vbn or "").strip()
+
+    # AI also returns dutch_name (Dutch translation of the product name).
+    # We use it for color-conflict comparison against Floricode's Dutch VBN names,
+    # and for fallback VBN searches (Floricode uses Dutch).
+    dutch_name: str = str(result.get("dutch_name") or "").strip() or req.name
+
     # Validate AI-suggested VBN against Floricode before returning.
     # AI hallucinates codes — never show a suggestion that doesn't exist.
     vbn_info = result.get("vbn") or {}
@@ -739,18 +746,19 @@ def product_ai_analyze(req: AIAnalyzeRequest):
                     f"AI suggested code {ai_code} but it was not found in Floricode"
                 )
 
-        # Color-conflict guard: reject VBNs whose name implies a different color
-        # than the product being created (e.g. "Matsumoto Geel" for a lavender product).
-        # Fall back to "{genus} other" → "cut flowers other".
+        # Color-conflict guard: compare the Dutch product name against the Floricode
+        # VBN name (also Dutch) so that EN↔NL translations don't cause false conflicts.
+        # "Rosa Spray Royal Blush" → dutch_name → "Rosa Tros Royal Blush"
+        # vs VBN name "Rosa Tros Royal Blush" → same color (no conflict) ✓
         if vbn_info.get("code") and vbn_info.get("name"):
-            product_color = _extract_color(req.name)
+            product_color = _extract_color(dutch_name)
             vbn_color = _extract_color(vbn_info["name"])
             if product_color and vbn_color and product_color != vbn_color:
                 log.info(
-                    "VBN color conflict: product '%s' (%s) vs VBN '%s' (%s) — searching fallback",
-                    req.name, product_color, vbn_info["name"], vbn_color,
+                    "VBN color conflict: '%s' (%s) vs VBN '%s' (%s) — searching fallback",
+                    dutch_name, product_color, vbn_info["name"], vbn_color,
                 )
-                fallback = _find_fallback_vbn(req.name, cfg)
+                fallback = _find_fallback_vbn(dutch_name, cfg)
                 if fallback:
                     vbn_info["code"] = fallback["code"]
                     vbn_info["name"] = fallback["name"]
@@ -768,10 +776,9 @@ def product_ai_analyze(req: AIAnalyzeRequest):
 
         result["vbn"] = vbn_info
 
-    # Preferred-VBN override: if caller supplied the template's VBN, validate it
-    # and use it instead of the AI's suggestion — provided there's no color conflict.
-    # This prevents AI from replacing a perfectly-valid template VBN with a generic one.
-    preferred = str(req.preferred_vbn or "").strip()
+    # Preferred-VBN override: if AI suggested something different, try to restore
+    # the template's VBN.  FreshPortal codes may not be in Floricode — trust them
+    # unconditionally (they're already in production use, not AI hallucinations).
     if preferred and result.get("vbn", {}).get("code") != preferred:
         pref_name = KNOWN_VBN.get(preferred)
         if pref_name is None:
@@ -784,11 +791,14 @@ def product_ai_analyze(req: AIAnalyzeRequest):
             pref_info = pref_lookup.get(preferred)
             if pref_info and pref_info.found and pref_info.official_name:
                 pref_name = pref_info.official_name
+
         if pref_name:
-            p_color = _extract_color(req.name)
+            # Compare Dutch product name against Floricode's Dutch VBN name.
+            # "Rosa Spray Royal Blush" → dutch_name "Rosa Tros Royal Blush"
+            # vs pref_name "Rosa Tros Royal Blush" → same color → no conflict ✓
+            p_color = _extract_color(dutch_name)
             v_color = _extract_color(pref_name)
-            no_conflict = not (p_color and v_color and p_color != v_color)
-            if no_conflict:
+            if not (p_color and v_color and p_color != v_color):
                 log.info(
                     "Restoring template VBN %s (%s) over AI suggestion %s",
                     preferred, pref_name, result.get("vbn", {}).get("code"),
