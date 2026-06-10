@@ -366,12 +366,16 @@ def scrape_all_products(
     """Scrape products from FreshPortal.
 
     When from_date/to_date are given, filters by mutation_date_time_from/to
-    (incremental sync).  Otherwise fetches all 64 K products (full sync).
+    (incremental sync).  Otherwise fetches all products (full sync).
     Uses the same 6-pages-per-browser-batch strategy to cap peak RAM.
 
+    Stop condition: an empty page (0 products parsed) signals end of data.
+    The detected last_page is used only for progress display — FreshPortal's
+    Angular pagination only shows a sliding window of page numbers, so the
+    visible max can be lower than the actual last page.
+
     on_batch: optional callable(batch: list[FPProduct]) — called after each
-    browser session closes (every PAGES_PER_BATCH pages).  Useful for
-    progressive upserts so DB is populated while scraping continues.
+    browser session closes (every PAGES_PER_BATCH pages).
     """
     def _status(msg: str) -> None:
         logger.info(msg)
@@ -390,10 +394,11 @@ def scrape_all_products(
 
     saved_cookies: list = []
     col_map: dict[str, int] | None = None
-    last_page: int | None = None
+    last_page_hint: int | None = None  # display only, NOT used as stop condition
     current_page = 1
+    done = False
 
-    while True:
+    while not done:
         batch_start = len(all_products)
 
         with sync_playwright() as pw:
@@ -411,26 +416,27 @@ def scrape_all_products(
 
                 pages_in_batch = 0
                 while pages_in_batch < PAGES_PER_BATCH:
-                    if last_page is not None and current_page > last_page:
-                        break
-
                     _goto_and_wait(page, url_tpl.format(page=current_page), cfg)
                     soup = BeautifulSoup(page.content(), "lxml")
 
                     if col_map is None:
                         col_map = _detect_columns_html(soup)
-                        last_page = _get_last_page_html(soup)
-                        _status(f"Detected {last_page} pages total")
+                        last_page_hint = _get_last_page_html(soup)
+                        _status(
+                            f"Detected ~{last_page_hint} pages (pagination estimate — "
+                            "continuing until empty page to catch all products)"
+                        )
 
                     products = _parse_rows_html(soup, col_map)
                     if not products:
-                        last_page = current_page - 1
+                        done = True  # empty page = actual end of data
                         break
 
                     all_products.extend(products)
-                    if current_page % 10 == 0 or current_page == last_page:
+                    if current_page % 10 == 0:
+                        hint = f"/{last_page_hint}+" if last_page_hint else ""
                         _status(
-                            f"Page {current_page}/{last_page} — "
+                            f"Page {current_page}{hint} — "
                             f"{len(all_products)} products so far"
                         )
                     current_page += 1
@@ -444,9 +450,6 @@ def scrape_all_products(
         # Flush this browser session's products to DB while next session loads
         if on_batch and len(all_products) > batch_start:
             on_batch(all_products[batch_start:])
-
-        if last_page is None or current_page > last_page:
-            break
 
     _status(f"Scrape complete — {len(all_products)} products")
     return all_products

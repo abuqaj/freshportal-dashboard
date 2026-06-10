@@ -644,25 +644,47 @@ def _extract_color(name: str) -> str | None:
     return None
 
 
+_GENERIC_TERMS = frozenset({"other", "overig", "overige", "andere", "misc", "general", "overig."})
+
+
+def _is_generic(name: str) -> bool:
+    words = set(re.findall(r"[a-z]+", name.lower()))
+    return bool(words & _GENERIC_TERMS)
+
+
 def _find_fallback_vbn(product_name: str, cfg: Config) -> dict | None:
     """Find a generic (colorless) VBN when the specific one has a color conflict.
 
-    Search order:
-      1. "{genus} other"  — e.g. "Callistephus other"
-      2. "cut flowers other"
+    Search order (EN + NL):
+      1. "{genus} other"   — e.g. "Callistephus other"
+      2. "{genus} overig"  — Dutch equivalent
+      3. "cut flowers other"
+      4. "snijbloemen overig"
+    Matches any result whose name contains a generic term (other/overig/…).
     """
     genus = product_name.strip().split()[0] if product_name.strip() else ""
-    queries = ([f"{genus} other"] if genus else []) + ["cut flowers other"]
+    queries: list[str] = []
+    if genus:
+        queries += [f"{genus} other", f"{genus} overig", genus]
+    queries += ["cut flowers other", "snijbloemen overig", "cut flowers"]
+    seen_codes: set[str] = set()
     for q in queries:
         results = search_vbn_by_name(
             q,
             cfg.floricode_username,
             cfg.floricode_password,
-            limit=8,
+            limit=10,
         )
         for r in results:
-            if "other" in r.get("name", "").lower():
-                return {"code": str(r.get("id", "")), "name": r.get("name", "")}
+            name = r.get("name", "")
+            code = str(r.get("id", ""))
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
+            if _is_generic(name):
+                log.info("Fallback VBN found: %s — %s", code, name)
+                return {"code": code, "name": name}
+    log.warning("No fallback VBN found for '%s'", product_name)
     return None
 
 

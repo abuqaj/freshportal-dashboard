@@ -624,11 +624,13 @@ export default function Dashboard() {
         .then(r => r.json())
         .then((data: AIAnalysis) => {
           const code = data?.vbn?.code ?? null;
-          const resolvedCode = code ?? templateVbn;
-          setVbnForCreate(resolvedCode);
+          // Do NOT fall back to templateVbn when AI returns null — null means
+          // the AI explicitly rejected the code (e.g. color mismatch) and we
+          // must not silently keep a wrong VBN.
+          setVbnForCreate(code ?? "");
           setVbnForCreateInfo(null);
-          if (resolvedCode && RAILWAY) {
-            fetch(`${RAILWAY}/vbn-name/${resolvedCode}`)
+          if (code && RAILWAY) {
+            fetch(`${RAILWAY}/vbn-name/${code}`)
               .then(r => r.json())
               .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
               .catch(() => {})
