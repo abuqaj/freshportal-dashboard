@@ -24,13 +24,13 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
-from scraper_fp import fetch_products, fix_vbn_batch, _debug_fetch, _debug_rendered
+from scraper_fp import fetch_products, fix_vbn_batch, FPProduct, _debug_fetch, _debug_rendered
 from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name, get_floricode_colors
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
-from db import search_products_db, get_product_count, get_last_sync
+from db import search_products_db, get_products_by_vbn, get_product_count, get_last_sync
 from sync import run_full_sync, run_incremental_sync, is_sync_running
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -110,8 +110,41 @@ def _parse_vbn_codes(vbn_str: str) -> list[str]:
     return result
 
 
+def _db_row_to_fp(row: dict) -> FPProduct:
+    return FPProduct(
+        product_id=row.get("product_id", ""),
+        name=row.get("name", ""),
+        short_name=row.get("short_name", ""),
+        vbn_number=row.get("vbn_number", ""),
+        origin=row.get("origin", ""),
+        product_number=row.get("product_number", ""),
+        color=row.get("color", ""),
+        product_gtin=row.get("product_gtin", ""),
+        product_group_code=row.get("product_group_code", ""),
+        product_group=row.get("product_group", ""),
+        application=row.get("application", ""),
+        vat_rate=row.get("vat_rate", ""),
+        cbs_group_code=row.get("cbs_group_code", ""),
+        main_group=row.get("main_group", ""),
+        creation_moment=row.get("creation_moment", ""),
+        change_moment=row.get("change_moment", ""),
+    )
+
+
 def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None) -> list:
-    """Fetch products for all VBN codes, deduplicated by product_id."""
+    """Fetch products for all VBN codes — DB first, Playwright fallback."""
+    if get_product_count() > 0:
+        if on_status:
+            on_status("Szukanie produktów w bazie danych…")
+        rows = get_products_by_vbn(vbn_codes)
+        if rows:
+            if on_status:
+                on_status(f"Znaleziono {len(rows)} produktów w bazie danych")
+            return [_db_row_to_fp(r) for r in rows]
+        if on_status:
+            on_status("Brak wyników w DB — szukanie przez FreshPortal…")
+
+    # Fallback: Playwright scrape (DB empty or VBN not found)
     all_products = []
     seen_ids: set[str] = set()
     total = len(vbn_codes)

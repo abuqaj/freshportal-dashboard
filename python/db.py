@@ -260,6 +260,29 @@ def log_sync_finish(sync_id: int, product_count: int, error: str = "") -> None:
         logger.error("log_sync_finish: %s", exc)
 
 
+def get_products_by_vbn(vbn_codes: list[str]) -> list[dict]:
+    """Return all products whose vbn_number is in vbn_codes."""
+    if not vbn_codes:
+        return []
+    try:
+        ensure_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT product_id, product_number, name, short_name,
+                           vbn_number, color, product_gtin, product_group_code,
+                           product_group, application, vat_rate, cbs_group_code,
+                           main_group, origin, creation_moment, change_moment
+                    FROM products
+                    WHERE vbn_number = ANY(%s)
+                    ORDER BY name
+                """, (vbn_codes,))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_products_by_vbn failed: %s", exc)
+        return []
+
+
 def get_last_successful_sync_date() -> str | None:
     """Return ISO string of finished_at for the last successful sync, or None."""
     try:
