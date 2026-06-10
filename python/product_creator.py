@@ -391,12 +391,25 @@ def find_available_number(
     name: str = "",
     lang: str = "en",
 ) -> str | None:
-    """Launch a fresh browser session and return the first available product number.
+    """Return the first available product number — DB-first, Playwright fallback.
 
-    Used by the /product-number-suggest API endpoint so the frontend can
-    validate the number *before* the user clicks create.
-    Returns None when all 10 candidates are taken (shouldn't happen in practice).
+    DB path is instant (<10 ms); Playwright fallback used only when DB is empty.
     """
+    def _s(m: str) -> None:
+        logger.info(m)
+        if on_status:
+            on_status(m)
+
+    from db import is_product_number_taken, get_product_count
+    if get_product_count() > 0:
+        for candidate in itertools.islice(_number_candidates(base, name), 11):
+            if not is_product_number_taken(candidate):
+                if candidate != base:
+                    _s(msg(lang, "number_taken_using", base=base, candidate=candidate))
+                return candidate
+        return None
+
+    # Fallback: Playwright (DB not yet populated)
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         context = browser.new_context()

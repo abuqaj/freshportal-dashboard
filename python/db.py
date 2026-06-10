@@ -168,8 +168,29 @@ def upsert_products(products: list[dict]) -> int:
 # Search
 # ---------------------------------------------------------------------------
 
+_FTS_SELECT = """
+    SELECT product_id, product_number, name, short_name,
+           vbn_number, color, origin, product_group, change_moment,
+           ts_rank(
+               to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(short_name,'')),
+               to_tsquery('simple', %s)
+           ) AS rank
+    FROM products
+    WHERE to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(short_name,''))
+          @@ to_tsquery('simple', %s)
+    ORDER BY rank DESC
+    LIMIT %s
+"""
+
+
 def search_products_db(query: str, limit: int = 20) -> list[dict]:
-    """Full-text + ILIKE fallback search. Returns [] if DB unavailable."""
+    """Full-text search with progressive fallback. Returns [] if DB unavailable.
+
+    Strategy (stops at first non-empty result):
+    1. FTS all words AND  — e.g. Callistephus:* & Matsumoto:* & Lavender:*
+    2. FTS first 2 words  — e.g. Callistephus:* & Matsumoto:* (finds whole series)
+    3. ILIKE on each word separately with OR
+    """
     try:
         ensure_tables()
         words = [w.strip() for w in query.strip().split() if len(w.strip()) >= 2]
@@ -178,38 +199,35 @@ def search_products_db(query: str, limit: int = 20) -> list[dict]:
 
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # 1. All words (strict)
                 tsq = " & ".join(f"{w}:*" for w in words)
-                cur.execute("""
-                    SELECT product_id, product_number, name, short_name,
-                           vbn_number, color, origin, product_group, change_moment,
-                           ts_rank(
-                               to_tsvector('simple',
-                                   coalesce(name,'') || ' ' || coalesce(short_name,'')),
-                               to_tsquery('simple', %s)
-                           ) AS rank
-                    FROM products
-                    WHERE to_tsvector('simple',
-                              coalesce(name,'') || ' ' || coalesce(short_name,''))
-                          @@ to_tsquery('simple', %s)
-                    ORDER BY rank DESC
-                    LIMIT %s
-                """, (tsq, tsq, limit))
+                cur.execute(_FTS_SELECT, (tsq, tsq, limit))
                 rows = cur.fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
 
-                if not rows:
-                    # Fallback: simple ILIKE (handles single-word queries well)
-                    like = f"%{query.strip()}%"
-                    cur.execute("""
-                        SELECT product_id, product_number, name, short_name,
-                               vbn_number, color, origin, product_group, change_moment,
-                               0.5 AS rank
-                        FROM products
-                        WHERE name ILIKE %s OR short_name ILIKE %s
-                        ORDER BY name
-                        LIMIT %s
-                    """, (like, like, limit))
+                # 2. First 2 words only (genus + series — broader template search)
+                if len(words) > 2:
+                    tsq2 = " & ".join(f"{w}:*" for w in words[:2])
+                    cur.execute(_FTS_SELECT, (tsq2, tsq2, limit))
                     rows = cur.fetchall()
+                    if rows:
+                        return [dict(r) for r in rows]
 
+                # 3. ILIKE per word with OR (catches anything containing any word)
+                conditions = " OR ".join(
+                    "name ILIKE %s OR short_name ILIKE %s" for _ in words
+                )
+                params = [p for w in words for p in (f"%{w}%", f"%{w}%")]
+                params.append(limit)
+                cur.execute(
+                    f"SELECT product_id, product_number, name, short_name, "
+                    f"vbn_number, color, origin, product_group, change_moment, "
+                    f"0.3 AS rank FROM products WHERE {conditions} "
+                    f"ORDER BY name LIMIT %s",
+                    params,
+                )
+                rows = cur.fetchall()
                 return [dict(r) for r in rows]
     except Exception as exc:
         logger.warning("search_products_db failed: %s", exc)
@@ -258,6 +276,20 @@ def log_sync_finish(sync_id: int, product_count: int, error: str = "") -> None:
                 """, (product_count, "error" if error else "ok", error or None, sync_id))
     except Exception as exc:
         logger.error("log_sync_finish: %s", exc)
+
+
+def is_product_number_taken(number: str) -> bool:
+    """Return True if the exact product_number exists in the DB mirror."""
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM products WHERE product_number = %s LIMIT 1",
+                    (number.upper(),),
+                )
+                return cur.fetchone() is not None
+    except Exception:
+        return False  # on DB error assume free — Playwright will verify
 
 
 def get_products_by_vbn(vbn_codes: list[str]) -> list[dict]:
