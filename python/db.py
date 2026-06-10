@@ -120,6 +120,13 @@ def upsert_products(products: list[dict]) -> int:
     """Bulk upsert. Returns number of rows processed."""
     if not products:
         return 0
+    # Deduplicate by product_id — ON CONFLICT can't touch the same row twice
+    seen: dict[str, dict] = {}
+    for p in products:
+        pid = p.get("product_id", "")
+        if pid:
+            seen[pid] = p
+    products = list(seen.values())
     ensure_tables()
     now = datetime.now(timezone.utc).isoformat()
     total = 0
