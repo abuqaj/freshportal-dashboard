@@ -130,6 +130,14 @@ Additional rules:
 - "Preserved" / "Bleached" / "Dried" → 2712.
 - "Colour treated" / "Painted" / "Absorbed" → 6268 or specific kleurbehandeld code.
 
+IMPORTANT — candidates may have WRONG VBNs stored in the database.
+For each candidate, validate whether its VBN category (product type, treatment method,
+spray vs non-spray) actually matches the product described by "{query}".
+Do NOT copy a candidate's VBN if the category contradicts the product type.
+Instead, determine the correct VBN from the Dutch translation of "{query}".
+Always fill in the "explanation" field: state which Floricode name matched the Dutch
+translation, or why you chose a category code instead of a specific variety code.
+
 ---
 
 Respond with ONLY valid JSON (no explanation outside the JSON):
