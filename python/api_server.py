@@ -595,6 +595,77 @@ async def product_search_stream(req: ProductSearchRequest):
     )
 
 
+# ---------------------------------------------------------------------------
+# VBN color-conflict helpers
+# ---------------------------------------------------------------------------
+
+_COLOR_NORMALIZER: dict[str, str] = {
+    # English
+    "lavender": "lavender",
+    "yellow": "yellow",
+    "red": "red",
+    "pink": "pink",
+    "white": "white",
+    "blue": "blue",
+    "purple": "purple",
+    "orange": "orange",
+    "green": "green",
+    "salmon": "salmon",
+    "cream": "cream",
+    "violet": "violet",
+    "lilac": "lilac",
+    "burgundy": "burgundy",
+    "magenta": "magenta",
+    "coral": "coral",
+    "bicolor": "bicolor",
+    # Dutch
+    "lavendel": "lavender",
+    "geel": "yellow",
+    "rood": "red",
+    "roze": "pink",
+    "wit": "white",
+    "blauw": "blue",
+    "paars": "purple",
+    "oranje": "orange",
+    "groen": "green",
+    "zalm": "salmon",
+    "bordeaux": "burgundy",
+    "lila": "lilac",
+    "bicolour": "bicolor",
+}
+
+
+def _extract_color(name: str) -> str | None:
+    """Return the first normalized color word found in *name*, or None."""
+    for word in re.findall(r"[a-z]+", name.lower()):
+        color = _COLOR_NORMALIZER.get(word)
+        if color:
+            return color
+    return None
+
+
+def _find_fallback_vbn(product_name: str, cfg: Config) -> dict | None:
+    """Find a generic (colorless) VBN when the specific one has a color conflict.
+
+    Search order:
+      1. "{genus} other"  — e.g. "Callistephus other"
+      2. "cut flowers other"
+    """
+    genus = product_name.strip().split()[0] if product_name.strip() else ""
+    queries = ([f"{genus} other"] if genus else []) + ["cut flowers other"]
+    for q in queries:
+        results = search_vbn_by_name(
+            q,
+            cfg.floricode_username,
+            cfg.floricode_password,
+            limit=8,
+        )
+        for r in results:
+            if "other" in r.get("name", "").lower():
+                return {"code": str(r.get("id", "")), "name": r.get("name", "")}
+    return None
+
+
 @app.post("/product-ai-analyze")
 def product_ai_analyze(req: AIAnalyzeRequest):
     """Duplicate check + VBN suggestion via Claude Haiku (single call)."""
@@ -644,6 +715,34 @@ def product_ai_analyze(req: AIAnalyzeRequest):
                 vbn_info["explanation"] = (
                     f"AI suggested code {ai_code} but it was not found in Floricode"
                 )
+
+        # Color-conflict guard: reject VBNs whose name implies a different color
+        # than the product being created (e.g. "Matsumoto Geel" for a lavender product).
+        # Fall back to "{genus} other" → "cut flowers other".
+        if vbn_info.get("code") and vbn_info.get("name"):
+            product_color = _extract_color(req.name)
+            vbn_color = _extract_color(vbn_info["name"])
+            if product_color and vbn_color and product_color != vbn_color:
+                log.info(
+                    "VBN color conflict: product '%s' (%s) vs VBN '%s' (%s) — searching fallback",
+                    req.name, product_color, vbn_info["name"], vbn_color,
+                )
+                fallback = _find_fallback_vbn(req.name, cfg)
+                if fallback:
+                    vbn_info["code"] = fallback["code"]
+                    vbn_info["name"] = fallback["name"]
+                    vbn_info["explanation"] = (
+                        f"Color mismatch ({vbn_color} ≠ {product_color}) — "
+                        f"using generic: {fallback['name']}"
+                    )
+                else:
+                    vbn_info["code"] = None
+                    vbn_info["name"] = None
+                    vbn_info["explanation"] = (
+                        f"Color mismatch ({vbn_color} ≠ {product_color}) — "
+                        "no generic VBN found"
+                    )
+
         result["vbn"] = vbn_info
 
     return result
