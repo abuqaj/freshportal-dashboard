@@ -1253,13 +1253,14 @@ export default function Dashboard() {
                           setNumberCheckResult(null);
                           if (nameChangeDebounce.current) clearTimeout(nameChangeDebounce.current);
                           nameChangeDebounce.current = setTimeout(() => {
-                            const sim = wordJaccard(initialFormName.current, newName.trim());
+                            const trimmed = newName.trim();
+                            const sim = wordJaccard(initialFormName.current, trimmed);
                             if (sim < 0.60) {
                               // Name changed >40% — regenerate number and re-check availability
-                              const newBase = genProductNumber(newName.trim());
+                              const newBase = genProductNumber(trimmed);
                               setProductNumber(newBase);
                               setNumberChecking(true);
-                              fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(newBase)}&name=${encodeURIComponent(newName.trim())}`)
+                              fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(newBase)}&name=${encodeURIComponent(trimmed)}`)
                                 .then((r) => r.json())
                                 .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
                                   if (data.available_number) {
@@ -1270,7 +1271,36 @@ export default function Dashboard() {
                                 .catch(() => {})
                                 .finally(() => setNumberChecking(false));
                             }
-                            // else: name changed <40% — keep existing validated number
+                            // VBN re-check: run AI analysis with new name to apply all
+                            // validation rules (Floricode + color conflict + genus-other fallback)
+                            if (trimmed && RAILWAY && searchResults && searchResults.length > 0) {
+                              setVbnForCreateChecking(true);
+                              setVbnForCreateInfo(null);
+                              fetch(`${RAILWAY}/product-ai-analyze`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ name: trimmed, candidates: searchResults.slice(0, 6) }),
+                              })
+                                .then(r => r.json())
+                                .then((data: AIAnalysis) => {
+                                  const code = data?.vbn?.code ?? null;
+                                  if (code) {
+                                    setVbnForCreate(code);
+                                    setVbnForCreateInfo(null);
+                                    fetch(`${RAILWAY}/vbn-name/${code}`)
+                                      .then(r => r.json())
+                                      .then((d: { found: boolean; name?: string }) =>
+                                        setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+                                      .catch(() => {})
+                                      .finally(() => setVbnForCreateChecking(false));
+                                  } else {
+                                    setVbnForCreate("");
+                                    setVbnForCreateInfo(null);
+                                    setVbnForCreateChecking(false);
+                                  }
+                                })
+                                .catch(() => setVbnForCreateChecking(false));
+                            }
                           }, 1000);
                         }}
                         placeholder="Nazwa nowego produktu…"
