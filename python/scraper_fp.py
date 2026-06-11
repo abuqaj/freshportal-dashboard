@@ -403,10 +403,11 @@ def scrape_all_products(
 
     saved_cookies: list = []
     col_map: dict[str, int] | None = None
-    last_page: int | None = None
+    last_page_hint: int | None = None  # for logging only
     current_page = 1
+    done = False
 
-    while True:
+    while not done:
         batch_start = len(all_products)
 
         with sync_playwright() as pw:
@@ -424,31 +425,40 @@ def scrape_all_products(
 
                 pages_in_batch = 0
                 while pages_in_batch < PAGES_PER_BATCH:
-                    if last_page is not None and current_page > last_page:
-                        break
-
                     _goto_product_page(page, url_tpl.format(page=current_page), cfg)
                     soup = BeautifulSoup(page.content(), "lxml")
 
                     if col_map is None:
                         col_map = _detect_columns_html(soup)
-                        last_page = _get_last_page_html(soup)
-                        _status(f"Detected {last_page} pages — scraping all")
+                        last_page_hint = _get_last_page_html(soup)
+                        _status(f"Detected ~{last_page_hint} pages — scraping all")
 
                     products = _parse_rows_html(soup, col_map)
                     if not products:
-                        # Empty page: finalize last_page at the previous page
+                        # Empty page — FreshPortal may return an empty table when
+                        # the session expires silently (no login redirect).
+                        # Re-login once and retry; only stop if still empty.
                         logger.info(
-                            "STOP: empty page=%d url=%s total=%d last_page_was=%s",
-                            current_page, page.url, len(all_products), last_page,
+                            "Empty page=%d url=%s total=%d — re-logging in to verify",
+                            current_page, page.url, len(all_products),
                         )
-                        last_page = current_page - 1
-                        break
+                        _login(page, cfg)
+                        _goto_and_wait(page, url_tpl.format(page=current_page), cfg)
+                        soup = BeautifulSoup(page.content(), "lxml")
+                        products = _parse_rows_html(soup, col_map)
+                        if not products:
+                            logger.info(
+                                "STOP: still empty at page=%d after re-login — end of data",
+                                current_page,
+                            )
+                            done = True
+                            break
 
                     all_products.extend(products)
                     if current_page % 10 == 0:
+                        hint = f"/{last_page_hint}+" if last_page_hint else ""
                         _status(
-                            f"Page {current_page}/{last_page} — "
+                            f"Page {current_page}{hint} — "
                             f"{len(all_products)} products so far"
                         )
                     current_page += 1
@@ -462,9 +472,6 @@ def scrape_all_products(
         # Flush this browser session's products to DB while next session loads
         if on_batch and len(all_products) > batch_start:
             on_batch(all_products[batch_start:])
-
-        if last_page is None or current_page > last_page:
-            break
 
     _status(f"Scrape complete — {len(all_products)} products")
     return all_products
