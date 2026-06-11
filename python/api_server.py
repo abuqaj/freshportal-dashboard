@@ -42,6 +42,17 @@ log = logging.getLogger(__name__)
 _PHOTO_SESSIONS_DIR = Path(tempfile.gettempdir()) / "fp_photo_sessions"
 _PHOTO_SESSIONS_DIR.mkdir(exist_ok=True)
 
+
+class PhotoConfirmedItem(BaseModel):
+    filename: str
+    product_id: str
+    product_name: str
+
+
+class PhotoExecuteRequest(BaseModel):
+    session_id: str
+    confirmed: list[PhotoConfirmedItem]
+
 app = FastAPI(title="FreshPortal API", version="1.0.0")
 
 
@@ -663,17 +674,6 @@ class AIAnalyzeRequest(BaseModel):
     name: str
     candidates: list[dict]
     preferred_vbn: str | None = None  # template's VBN — validate first, skip AI if valid
-
-
-class PhotoConfirmedItem(BaseModel):
-    filename: str
-    product_id: str
-    product_name: str
-
-
-class PhotoExecuteRequest(BaseModel):
-    session_id: str
-    confirmed: list[PhotoConfirmedItem]
 
 
 @app.post("/product-search")
