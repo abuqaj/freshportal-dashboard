@@ -55,12 +55,13 @@ type AIAnalysis = {
   };
 };
 
+type PhotoUploadItem = { filename: string; product_name: string; status: string; message?: string };
 type HistoryRow = {
   id: number;
   type: string;
   vbn_filter: string | null;
   stats: Record<string, unknown> | null;
-  details: { fixes?: FixEntry[]; name?: string; product_number?: string; template_name?: string } | null;
+  details: { fixes?: FixEntry[]; name?: string; product_number?: string; template_name?: string; items?: PhotoUploadItem[] } | null;
   created_at: string;
 };
 
@@ -829,8 +830,9 @@ export default function Dashboard() {
       .flatMap((i: ReviewItem) => i.selected.map((p: ProductMatchItem) => ({ filename: i.filename, product_id: p.product_id, product_name: p.name })));
     if (confirmed.length === 0) return;
 
+    let localResults: UploadResultItem[] = confirmed.map((c: { filename: string; product_id: string; product_name: string }) => ({ filename: c.filename, product_name: c.product_name, status: 'pending' as const }));
     setPhotoPhase('uploading');
-    setUploadResults(confirmed.map(c => ({ filename: c.filename, product_name: c.product_name, status: 'pending' })));
+    setUploadResults(localResults);
     setPhotoStatusMsg("Connecting to FreshPortal…");
 
     try {
@@ -857,15 +859,27 @@ export default function Dashboard() {
           if (ev.type === "status") {
             setPhotoStatusMsg(ev.message as string);
           } else if (ev.type === "item") {
-            const item = ev as { filename: string; status: string; message?: string };
-            setUploadResults(prev => prev.map(r =>
-              r.filename === item.filename
+            const item = ev as { filename: string; product_name: string; status: string; message?: string };
+            localResults = localResults.map(r =>
+              r.filename === item.filename && r.product_name === item.product_name
                 ? { ...r, status: item.status as 'ok' | 'error', message: item.message }
                 : r
-            ));
+            );
+            setUploadResults([...localResults]);
           } else if (ev.type === "result") {
+            const d = (ev.data ?? {}) as { ok?: number; error?: number; total?: number };
             setPhotoPhase('done');
             setPhotoStatusMsg(null);
+            fetch("/api/history", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "photo_upload",
+                vbn_filter: null,
+                stats: { ok: d.ok ?? 0, error: d.error ?? 0, total: d.total ?? localResults.length },
+                details: { items: localResults },
+              }),
+            }).catch(() => {});
           } else if (ev.type === "error") {
             throw new Error(ev.message as string);
           }
@@ -1980,8 +1994,10 @@ export default function Dashboard() {
                   <tbody>
                     {history.map((row) => {
                       const fixes = row.details?.fixes ?? [];
+                      const photoItems = row.details?.items ?? [];
                       const isExpanded = expandedHistoryId === row.id;
-                      const canExpand = row.type === "vbn_fix" && fixes.length > 0;
+                      const canExpand = (row.type === "vbn_fix" && fixes.length > 0) ||
+                                        (row.type === "photo_upload" && photoItems.length > 0);
                       return (
                         <>
                           <tr
@@ -2004,6 +2020,8 @@ export default function Dashboard() {
                                       ? "bg-green-50 text-green-700"
                                       : row.type === "product_create"
                                       ? "bg-blue-50 text-blue-700"
+                                      : row.type === "photo_upload"
+                                      ? "bg-amber-50 text-amber-700"
                                       : "bg-neutral-100 text-neutral-600"
                                   }`}
                                 >
@@ -2013,13 +2031,17 @@ export default function Dashboard() {
                                     ? t.history.vbnFix
                                     : row.type === "product_create"
                                     ? t.history.productCreate
-                                    : t.history.photoUpload}
+                                    : row.type === "photo_upload"
+                                    ? t.history.photoUpload
+                                    : row.type}
                                 </span>
                               </div>
                             </td>
                             <td className="px-3 py-3 text-neutral-600 font-mono text-xs">
                               {row.type === "product_create"
                                 ? (row.details?.product_number ?? "—")
+                                : row.type === "photo_upload"
+                                ? (row.stats?.total != null ? `${row.stats.total} upload${Number(row.stats.total) !== 1 ? 's' : ''}` : "—")
                                 : (row.vbn_filter ?? "—")}
                             </td>
                             <td className="px-3 py-3 text-neutral-500 text-xs">
@@ -2029,6 +2051,17 @@ export default function Dashboard() {
                                     <span className="font-medium text-neutral-700">{row.details?.name ?? "—"}</span>
                                     {row.details?.template_name && (
                                       <span className="text-neutral-400 ml-1">({t.create.templateLabel} {row.details.template_name})</span>
+                                    )}
+                                  </span>
+                                )
+                                : row.type === "photo_upload"
+                                ? (
+                                  <span className="flex items-center gap-2">
+                                    {row.stats?.ok != null && Number(row.stats.ok) > 0 && (
+                                      <span className="text-green-600 font-medium">{String(row.stats.ok)} ok</span>
+                                    )}
+                                    {row.stats?.error != null && Number(row.stats.error) > 0 && (
+                                      <span className="text-red-500 font-medium">{String(row.stats.error)} error</span>
                                     )}
                                   </span>
                                 )
@@ -2062,6 +2095,35 @@ export default function Dashboard() {
                                         <td className="py-1.5 px-2 text-neutral-300">→</td>
                                         <td className="py-1.5">
                                           <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-mono">{f.new_vbn}</span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          )}
+                          {isExpanded && row.type === "photo_upload" && photoItems.length > 0 && (
+                            <tr key={`${row.id}-photos`} className="border-b border-neutral-100 bg-amber-50/30">
+                              <td colSpan={4} className="px-8 py-3">
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="text-neutral-400 uppercase tracking-wide">
+                                      <th className="text-left pb-1 font-medium">File</th>
+                                      <th className="text-left pb-1 font-medium">Product</th>
+                                      <th className="text-left pb-1 font-medium">Status</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {photoItems.map((item: PhotoUploadItem, i: number) => (
+                                      <tr key={i} className="border-t border-amber-100">
+                                        <td className="py-1.5 pr-4 text-neutral-500 font-mono truncate max-w-48" title={item.filename}>{item.filename}</td>
+                                        <td className="py-1.5 pr-4 text-neutral-700">{item.product_name}</td>
+                                        <td className="py-1.5">
+                                          {item.status === "ok"
+                                            ? <span className="bg-green-50 text-green-700 px-1.5 py-0.5 rounded">ok</span>
+                                            : <span className="bg-red-50 text-red-600 px-1.5 py-0.5 rounded" title={item.message}>{item.message || "error"}</span>
+                                          }
                                         </td>
                                       </tr>
                                     ))}
