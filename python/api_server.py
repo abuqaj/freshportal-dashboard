@@ -532,14 +532,14 @@ async def photo_analyze_stream(files: list[UploadFile] = File(...)):
 
     threading.Thread(target=run, daemon=True).start()
 
-    def event_stream():
+    async def event_stream():
         yield f"data: {json.dumps({'type': 'session', 'session_id': session_id, 'total': len(saved)})}\n\n"
         while True:
             try:
-                ev = queue.get(timeout=300)
+                ev = queue.get_nowait()
             except Empty:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'Matching timeout after 5 min'})}\n\n"
-                break
+                await asyncio.sleep(0.2)
+                continue
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
             if ev.get("type") in ("done", "error"):
                 break
