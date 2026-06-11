@@ -534,7 +534,7 @@ async def photo_analyze_stream(files: list[UploadFile] = File(...)):
             else:
                 cfg = Config()
                 for fn in saved:
-                    queue.put({"type": "match", **match_single_photo(fn, cfg)})
+                    queue.put({"type": "match", **match_single_photo(fn, cfg, top_k=15)})
         except Exception as exc:
             log.exception("photo analyze failed")
             queue.put({"type": "error", "message": str(exc)})

@@ -788,13 +788,17 @@ export default function Dashboard() {
             setPhotoStatusMsg(`Matching photos… 0 / ${total}`);
           } else if (ev.type === "match") {
             const m = ev as { filename: string; normalized_name: string; matches: ProductMatchItem[] };
+            const perfect = m.matches.filter((x: ProductMatchItem) => x.similarity >= 0.99);
+            const rest = m.matches.filter((x: ProductMatchItem) => x.similarity < 0.99);
+            const sel: ProductMatchItem[] = perfect.length > 0 ? perfect : (m.matches.length > 0 ? [m.matches[0]] : []);
+            const alts: ProductMatchItem[] = perfect.length > 0 ? rest.slice(0, 2) : m.matches.slice(1, 3);
             items.push({
               filename: m.filename,
               thumbnailUrl: thumbMap[m.filename] ?? "",
               normalized_name: m.normalized_name,
-              selected: m.matches.length > 0 ? [m.matches[0]] : [],
-              alternatives: m.matches.slice(1),
-              approved: (m.matches[0]?.similarity ?? 0) >= 0.40,
+              selected: sel,
+              alternatives: alts,
+              approved: sel.length > 0 && (sel[0]?.similarity ?? 0) >= 0.40,
             });
             setPhotoStatusMsg(`Matching photos… ${items.length} / ${total}`);
           } else if (ev.type === "done") {
