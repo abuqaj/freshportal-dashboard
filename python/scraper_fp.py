@@ -406,6 +406,7 @@ def scrape_all_products(
     last_page_hint: int | None = None  # for logging only
     current_page = 1
     done = False
+    fresh_login_pending = False  # True after an empty page forces a fresh session
 
     while not done:
         batch_start = len(all_products)
@@ -435,25 +436,25 @@ def scrape_all_products(
 
                     products = _parse_rows_html(soup, col_map)
                     if not products:
-                        # Empty page — FreshPortal may return an empty table when
-                        # the session expires silently (no login redirect).
-                        # Re-login once and retry; only stop if still empty.
-                        logger.info(
-                            "Empty page=%d url=%s total=%d — re-logging in to verify",
-                            current_page, page.url, len(all_products),
-                        )
-                        _login(page, cfg)
-                        _goto_and_wait(page, url_tpl.format(page=current_page), cfg)
-                        soup = BeautifulSoup(page.content(), "lxml")
-                        products = _parse_rows_html(soup, col_map)
-                        if not products:
+                        if fresh_login_pending:
+                            # Already retried with a fresh login — real end of data.
                             logger.info(
-                                "STOP: still empty at page=%d after re-login — end of data",
+                                "STOP: still empty at page=%d after fresh session — end of data",
                                 current_page,
                             )
                             done = True
-                            break
+                        else:
+                            # First empty page — may be silent session expiry.
+                            # Close this browser and open a fresh one with new login.
+                            logger.info(
+                                "Empty page=%d (total=%d) — scheduling fresh login retry",
+                                current_page, len(all_products),
+                            )
+                            saved_cookies = []   # force full re-login next iteration
+                            fresh_login_pending = True
+                        break
 
+                    fresh_login_pending = False  # successful page clears the flag
                     all_products.extend(products)
                     if current_page % 10 == 0:
                         hint = f"/{last_page_hint}+" if last_page_hint else ""
