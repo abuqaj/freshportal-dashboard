@@ -156,10 +156,22 @@ export default function Dashboard() {
   const [histLoading, setHistLoading] = useState(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
 
-  // Photo
-  const [xlsxFile, setXlsxFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+  // Photo uploader
+  type PhotoPhase = 'idle' | 'analyzing' | 'review' | 'uploading' | 'done';
+  type ProductMatchItem = { product_id: string; name: string; vbn_number: string; similarity: number };
+  type ReviewItem = {
+    filename: string; thumbnailUrl: string; normalized_name: string;
+    selected: ProductMatchItem | null; alternatives: ProductMatchItem[]; approved: boolean;
+  };
+  type UploadResultItem = { filename: string; product_name: string; status: 'pending' | 'ok' | 'error'; message?: string };
+
+  const [photoPhase, setPhotoPhase] = useState<PhotoPhase>('idle');
+  const [photoSessionId, setPhotoSessionId] = useState<string | null>(null);
+  const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
+  const [uploadResults, setUploadResults] = useState<UploadResultItem[]>([]);
+  const [photoAnalyzing, setPhotoAnalyzing] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [photoStatusMsg, setPhotoStatusMsg] = useState<string | null>(null);
 
   // Pre-load color list + fetch sync status when entering Create tab
   useEffect(() => {
@@ -718,21 +730,107 @@ export default function Dashboard() {
     setHistLoading(false);
   }, []);
 
-  async function handleUpload() {
-    if (!xlsxFile) return;
-    setUploading(true);
-    setUploadMsg(null);
+  function resetPhotoUploader() {
+    reviewItems.forEach(i => { try { URL.revokeObjectURL(i.thumbnailUrl); } catch { /* ok */ } });
+    setPhotoPhase('idle');
+    setPhotoSessionId(null);
+    setReviewItems([]);
+    setUploadResults([]);
+    setPhotoError(null);
+    setPhotoStatusMsg(null);
+  }
+
+  async function analyzePhotos(fileList: FileList) {
+    if (!RAILWAY || fileList.length === 0) return;
+    setPhotoAnalyzing(true);
+    setPhotoError(null);
+    setPhotoStatusMsg("Matching photos to products…");
+
+    const thumbMap: Record<string, string> = {};
     const fd = new FormData();
-    fd.append("xlsx", xlsxFile);
+    Array.from(fileList).forEach(f => {
+      fd.append("files", f);
+      thumbMap[f.name] = URL.createObjectURL(f);
+    });
+
     try {
-      const res = await fetch(`${RAILWAY}/photo-upload`, { method: "POST", body: fd });
+      const res = await fetch(`${RAILWAY}/photo-upload/analyze`, { method: "POST", body: fd });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? data.error ?? "Railway error");
-      setUploadMsg(data.message ?? "Upload zakończony pomyślnie.");
+      if (!res.ok) throw new Error(data.detail ?? `HTTP ${res.status}`);
+
+      const items = (data.matches as { filename: string; normalized_name: string; matches: { product_id: string; name: string; vbn_number: string; similarity: number }[] }[]).map(m => ({
+        filename: m.filename,
+        thumbnailUrl: thumbMap[m.filename] ?? "",
+        normalized_name: m.normalized_name,
+        selected: m.matches[0] ?? null,
+        alternatives: m.matches.slice(1),
+        approved: (m.matches[0]?.similarity ?? 0) >= 0.40,
+      }));
+
+      setPhotoSessionId(data.session_id);
+      setReviewItems(items);
+      setPhotoPhase('review');
     } catch (e: unknown) {
-      setUploadMsg(`Błąd: ${e instanceof Error ? e.message : String(e)}`);
+      setPhotoError(e instanceof Error ? e.message : String(e));
+      Object.values(thumbMap).forEach(u => URL.revokeObjectURL(u));
     } finally {
-      setUploading(false);
+      setPhotoAnalyzing(false);
+      setPhotoStatusMsg(null);
+    }
+  }
+
+  async function executePhotoUpload() {
+    if (!photoSessionId || !RAILWAY) return;
+    const confirmed = reviewItems
+      .filter(i => i.approved && i.selected)
+      .map(i => ({ filename: i.filename, product_id: i.selected!.product_id, product_name: i.selected!.name }));
+    if (confirmed.length === 0) return;
+
+    setPhotoPhase('uploading');
+    setUploadResults(confirmed.map(c => ({ filename: c.filename, product_name: c.product_name, status: 'pending' })));
+    setPhotoStatusMsg("Connecting to FreshPortal…");
+
+    try {
+      const res = await fetch(`${RAILWAY}/photo-upload/execute/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: photoSessionId, confirmed }),
+      });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split(/\r?\n/);
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let ev: Record<string, unknown>;
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          if (ev.type === "status") {
+            setPhotoStatusMsg(ev.message as string);
+          } else if (ev.type === "item") {
+            const item = ev as { filename: string; status: string; message?: string };
+            setUploadResults(prev => prev.map(r =>
+              r.filename === item.filename
+                ? { ...r, status: item.status as 'ok' | 'error', message: item.message }
+                : r
+            ));
+          } else if (ev.type === "result") {
+            setPhotoPhase('done');
+            setPhotoStatusMsg(null);
+          } else if (ev.type === "error") {
+            throw new Error(ev.message as string);
+          }
+        }
+      }
+    } catch (e: unknown) {
+      setPhotoError(e instanceof Error ? e.message : String(e));
+      setPhotoPhase('review');
     }
   }
 
@@ -1551,62 +1649,239 @@ export default function Dashboard() {
 
         {/* Photo Uploader */}
         {tab === "photos" && (
-          <div className="p-8 max-w-2xl">
-            <div className="mb-6">
-              <h1 className="text-xl font-semibold text-neutral-900">Photo Uploader</h1>
-              <p className="text-sm text-neutral-500 mt-1">{t.photo.description}</p>
-            </div>
-
-            <div className="bg-white border border-neutral-200 rounded-xl p-6">
-              <p className="text-sm font-medium text-neutral-700 mb-3">{t.photo.formatTitle}</p>
-              <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 mb-5 text-xs text-neutral-500 font-mono">
-                <p className="font-medium text-neutral-600 mb-1">{t.photo.requiredCols}</p>
-                <p>• <strong>product_id</strong> — {t.photo.col1.replace("product_id — ", "")}</p>
-                <p>• <strong>photo_name</strong> — {t.photo.col2.replace("photo_name — ", "")}</p>
-              </div>
-
-              <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">
-                {t.photo.fileLabel}
-              </label>
-              <div className="border-2 border-dashed border-neutral-200 rounded-xl p-8 text-center hover:border-violet-300 transition-colors">
-                <input
-                  type="file"
-                  accept=".xlsx"
-                  onChange={(e) => setXlsxFile(e.target.files?.[0] ?? null)}
-                  className="hidden"
-                  id="xlsx-input"
-                />
-                <label htmlFor="xlsx-input" className="cursor-pointer">
-                  <p className="text-3xl mb-2">📊</p>
-                  <p className="text-sm text-neutral-600">
-                    {xlsxFile ? xlsxFile.name : t.photo.filePrompt}
-                  </p>
-                  {!xlsxFile && (
-                    <p className="text-xs text-neutral-400 mt-1">{t.photo.fileDrag}</p>
-                  )}
-                </label>
-              </div>
-
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={handleUpload}
-                  disabled={!xlsxFile || uploading}
-                  className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
-                >
-                  {uploading ? t.photo.uploading : t.photo.uploadBtn}
-                </button>
-              </div>
-
-              {uploadMsg && (
-                <p
-                  className={`mt-4 text-sm px-4 py-3 rounded-lg ${
-                    uploadMsg.startsWith("Błąd") ? "bg-red-50 text-red-600" : "bg-green-50 text-green-700"
-                  }`}
-                >
-                  {uploadMsg}
+          <div className="p-8 max-w-3xl">
+            <div className="mb-6 flex items-start justify-between">
+              <div>
+                <h1 className="text-xl font-semibold text-neutral-900">Photo Uploader</h1>
+                <p className="text-sm text-neutral-500 mt-1">
+                  Drop product photos — AI matches filenames to products, you confirm before upload.
                 </p>
+              </div>
+              {photoPhase !== 'idle' && (
+                <button onClick={resetPhotoUploader} className="text-xs text-neutral-400 hover:text-neutral-600 border border-neutral-200 rounded-lg px-3 py-1.5">
+                  Start over
+                </button>
               )}
             </div>
+
+            {photoError && (
+              <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                ⚠ {photoError}
+              </div>
+            )}
+
+            {/* Phase: idle — drop zone */}
+            {photoPhase === 'idle' && (
+              <div
+                className="bg-white border-2 border-dashed border-neutral-200 rounded-xl p-12 text-center hover:border-violet-300 transition-colors cursor-pointer"
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => { e.preventDefault(); if (e.dataTransfer.files.length) analyzePhotos(e.dataTransfer.files); }}
+                onClick={() => document.getElementById('photo-file-input')?.click()}
+              >
+                <input
+                  id="photo-file-input"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={e => { if (e.target.files?.length) analyzePhotos(e.target.files); }}
+                />
+                <p className="text-4xl mb-3">📷</p>
+                <p className="text-sm font-medium text-neutral-700">Drop photos here or click to select</p>
+                <p className="text-xs text-neutral-400 mt-1">JPG, PNG, WEBP, GIF, BMP — multiple files supported</p>
+                {photoAnalyzing && (
+                  <div className="mt-4 flex items-center justify-center gap-2 text-sm text-violet-600">
+                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <span>{photoStatusMsg ?? "Analyzing…"}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Phase: analyzing — spinner overlay */}
+            {photoPhase === 'analyzing' && (
+              <div className="bg-white border border-neutral-200 rounded-xl p-12 text-center">
+                <svg className="animate-spin h-8 w-8 mx-auto text-violet-500 mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                <p className="text-sm text-neutral-600">{photoStatusMsg ?? "Matching photos to products…"}</p>
+              </div>
+            )}
+
+            {/* Phase: review — confirmation table */}
+            {photoPhase === 'review' && reviewItems.length > 0 && (() => {
+              const approvedCount = reviewItems.filter(i => i.approved && i.selected).length;
+              return (
+                <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-neutral-100 flex items-center justify-between">
+                    <p className="text-sm font-medium text-neutral-800">
+                      Review matches
+                      <span className="ml-2 text-xs text-neutral-400">{reviewItems.length} photos</span>
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-neutral-500">{approvedCount} approved</span>
+                      <button
+                        onClick={executePhotoUpload}
+                        disabled={approvedCount === 0}
+                        className="bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
+                      >
+                        Upload {approvedCount} photos
+                      </button>
+                    </div>
+                  </div>
+                  <div className="divide-y divide-neutral-50">
+                    {reviewItems.map((item, idx) => (
+                      <div key={item.filename} className={`flex items-center gap-3 px-4 py-3 ${!item.approved ? 'opacity-50' : ''}`}>
+                        {/* Thumbnail */}
+                        <div className="w-10 h-10 rounded-lg overflow-hidden bg-neutral-100 flex-shrink-0">
+                          {item.thumbnailUrl
+                            ? <img src={item.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+                            : <span className="text-xl flex items-center justify-center h-full">🖼</span>
+                          }
+                        </div>
+                        {/* Filename */}
+                        <div className="w-40 flex-shrink-0 min-w-0">
+                          <p className="text-xs text-neutral-600 truncate" title={item.filename}>{item.filename}</p>
+                          <p className="text-xs text-neutral-400 truncate">{item.normalized_name}</p>
+                        </div>
+                        {/* Match */}
+                        <div className="flex-1 min-w-0">
+                          {item.selected ? (
+                            <>
+                              <p className="text-sm text-neutral-800 truncate">{item.selected.name}</p>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                                  item.selected.similarity >= 0.80 ? 'bg-green-50 text-green-700'
+                                  : item.selected.similarity >= 0.50 ? 'bg-amber-50 text-amber-700'
+                                  : 'bg-red-50 text-red-600'
+                                }`}>
+                                  {Math.round(item.selected.similarity * 100)}%
+                                </span>
+                                <span className="text-xs text-neutral-400 font-mono">{item.selected.product_id}</span>
+                              </div>
+                            </>
+                          ) : (
+                            <p className="text-xs text-neutral-400 italic">No match found</p>
+                          )}
+                        </div>
+                        {/* Alternatives */}
+                        {item.alternatives.length > 0 && (
+                          <div className="flex gap-1 flex-shrink-0">
+                            {item.alternatives.map(alt => (
+                              <button
+                                key={alt.product_id}
+                                title={alt.name}
+                                onClick={() => setReviewItems(prev => prev.map((r, i) =>
+                                  i === idx ? { ...r, selected: alt, approved: true } : r
+                                ))}
+                                className="text-xs px-2 py-1 rounded border border-neutral-200 text-neutral-500 hover:border-violet-300 hover:text-violet-700 truncate max-w-24"
+                              >
+                                {alt.name.split(' ').slice(0, 2).join(' ')}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {/* Approve / reject */}
+                        <button
+                          onClick={() => setReviewItems(prev => prev.map((r, i) =>
+                            i === idx ? { ...r, approved: !r.approved } : r
+                          ))}
+                          disabled={!item.selected}
+                          className={`flex-shrink-0 w-8 h-8 rounded-lg border text-sm font-medium transition-colors ${
+                            item.approved
+                              ? 'bg-green-50 border-green-200 text-green-600 hover:bg-red-50 hover:border-red-200 hover:text-red-500'
+                              : 'bg-neutral-50 border-neutral-200 text-neutral-400 hover:bg-green-50 hover:border-green-200 hover:text-green-600'
+                          }`}
+                        >
+                          {item.approved ? '✓' : '✗'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="px-5 py-3 bg-neutral-50 border-t border-neutral-100 flex justify-end gap-2">
+                    <button onClick={resetPhotoUploader} className="text-xs text-neutral-500 border border-neutral-200 rounded-lg px-3 py-2 hover:bg-neutral-100">
+                      Cancel
+                    </button>
+                    <button
+                      onClick={executePhotoUpload}
+                      disabled={approvedCount === 0}
+                      className="bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
+                    >
+                      Upload {approvedCount} photos to FreshPortal
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Phase: uploading — per-file progress */}
+            {photoPhase === 'uploading' && (
+              <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
+                <div className="px-5 py-4 border-b border-neutral-100 flex items-center gap-2">
+                  <svg className="animate-spin h-4 w-4 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                  </svg>
+                  <p className="text-sm font-medium text-neutral-700">{photoStatusMsg ?? "Uploading…"}</p>
+                </div>
+                <div className="divide-y divide-neutral-50">
+                  {uploadResults.map(r => (
+                    <div key={r.filename} className="flex items-center gap-3 px-5 py-2.5 text-sm">
+                      <span className={`w-5 text-center flex-shrink-0 ${
+                        r.status === 'ok' ? 'text-green-500' : r.status === 'error' ? 'text-red-500' : 'text-neutral-300'
+                      }`}>
+                        {r.status === 'ok' ? '✓' : r.status === 'error' ? '✗' : '·'}
+                      </span>
+                      <span className="text-neutral-700 truncate flex-1">{r.product_name}</span>
+                      <span className="text-xs text-neutral-400 truncate max-w-40">{r.filename}</span>
+                      {r.status === 'error' && r.message && (
+                        <span className="text-xs text-red-500 truncate max-w-32">{r.message}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Phase: done — summary */}
+            {photoPhase === 'done' && (() => {
+              const ok = uploadResults.filter(r => r.status === 'ok').length;
+              const err = uploadResults.filter(r => r.status === 'error').length;
+              return (
+                <div className="space-y-3">
+                  <div className={`rounded-xl px-5 py-4 border text-sm font-medium ${
+                    err === 0 ? 'bg-green-50 border-green-200 text-green-700' : 'bg-amber-50 border-amber-200 text-amber-800'
+                  }`}>
+                    {err === 0
+                      ? `✓ All ${ok} photos uploaded successfully`
+                      : `Upload complete: ${ok} succeeded, ${err} failed`}
+                  </div>
+                  <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
+                    <div className="divide-y divide-neutral-50">
+                      {uploadResults.map(r => (
+                        <div key={r.filename} className="flex items-center gap-3 px-5 py-2.5 text-sm">
+                          <span className={`w-5 text-center flex-shrink-0 font-medium ${r.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                            {r.status === 'ok' ? '✓' : '✗'}
+                          </span>
+                          <span className="text-neutral-700 truncate flex-1">{r.product_name}</span>
+                          <span className="text-xs text-neutral-400 truncate max-w-40">{r.filename}</span>
+                          {r.status === 'error' && r.message && (
+                            <span className="text-xs text-red-500 truncate max-w-32">{r.message}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <button onClick={resetPhotoUploader} className="text-sm text-violet-600 hover:text-violet-700 border border-violet-200 rounded-lg px-4 py-2">
+                    Upload more photos
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         )}
 

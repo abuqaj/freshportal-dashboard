@@ -8,9 +8,11 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 from queue import Empty, Queue
 
@@ -35,6 +37,10 @@ from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+
+# Temp directory for photo upload sessions (cleaned up after execute)
+_PHOTO_SESSIONS_DIR = Path(tempfile.gettempdir()) / "fp_photo_sessions"
+_PHOTO_SESSIONS_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="FreshPortal API", version="1.0.0")
 
@@ -470,6 +476,78 @@ async def vbn_fix_stream(req: VbnFixRequest):
     )
 
 
+@app.post("/photo-upload/analyze")
+async def photo_analyze(files: list[UploadFile] = File(...)):
+    """Accept image files, store in a temp session, return fuzzy product matches."""
+    from photo_matcher import match_photos, IMAGE_EXTENSIONS
+
+    session_id = str(uuid.uuid4())
+    session_dir = _PHOTO_SESSIONS_DIR / session_id
+    session_dir.mkdir(parents=True)
+
+    saved: list[str] = []
+    for f in files:
+        if not f.filename:
+            continue
+        if Path(f.filename).suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        dest = session_dir / f.filename
+        dest.write_bytes(await f.read())
+        saved.append(f.filename)
+
+    if not saved:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        raise HTTPException(400, "No valid image files (jpg/png/webp/gif/bmp) received")
+
+    matches = match_photos(saved)
+    return {"session_id": session_id, "total": len(saved), "matches": matches}
+
+
+@app.post("/photo-upload/execute/stream")
+def photo_execute_stream(req: PhotoExecuteRequest):
+    """Run Playwright upload for confirmed matches, stream progress via SSE."""
+    session_dir = _PHOTO_SESSIONS_DIR / req.session_id
+    if not session_dir.exists():
+        raise HTTPException(404, "Session expired or not found — re-upload your photos")
+    if not req.confirmed:
+        raise HTTPException(400, "No confirmed items")
+
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            from photo_uploader import run_from_list
+            run_from_list(
+                session_dir=str(session_dir),
+                confirmed_items=[c.model_dump() for c in req.confirmed],
+                on_progress=queue.put,
+            )
+        except Exception as e:
+            log.exception("photo execute failed")
+            queue.put({"type": "error", "message": str(e)})
+        finally:
+            shutil.rmtree(str(session_dir), ignore_errors=True)
+
+    threading.Thread(target=run, daemon=True).start()
+
+    def event_stream():
+        while True:
+            try:
+                event = queue.get(timeout=120)
+            except Empty:
+                yield "data: {\"type\":\"error\",\"message\":\"timeout\"}\n\n"
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+            if event.get("type") in ("result", "error"):
+                break
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/photo-upload")
 async def photo_upload(xlsx: UploadFile = File(...)):
     photo_dir = os.getenv("PHOTO_DIR", "./photos")
@@ -537,6 +615,17 @@ class AIAnalyzeRequest(BaseModel):
     name: str
     candidates: list[dict]
     preferred_vbn: str | None = None  # template's VBN — validate first, skip AI if valid
+
+
+class PhotoConfirmedItem(BaseModel):
+    filename: str
+    product_id: str
+    product_name: str
+
+
+class PhotoExecuteRequest(BaseModel):
+    session_id: str
+    confirmed: list[PhotoConfirmedItem]
 
 
 @app.post("/product-search")

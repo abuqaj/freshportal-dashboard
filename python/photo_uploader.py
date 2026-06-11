@@ -455,6 +455,115 @@ def run(
 
 
 # ---------------------------------------------------------------------------
+# run_from_list — upload from a confirmed session list (API use)
+# ---------------------------------------------------------------------------
+
+def run_from_list(
+    session_dir: str,
+    confirmed_items: list[dict],
+    on_progress=None,
+) -> list[dict]:
+    """Upload photos from a temp session directory to FreshPortal.
+
+    confirmed_items: [{filename, product_id, product_name}]
+    on_progress:     optional callable(event_dict) for SSE streaming.
+    Returns:         [{filename, product_id, product_name, status, message}]
+    """
+    cfg = Config()
+    photos_root = Path(session_dir)
+    total = len(confirmed_items)
+    upload_results: list[dict] = []
+
+    def _evt(d: dict) -> None:
+        if on_progress:
+            on_progress(d)
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, args=[
+            "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+            "--disable-extensions", "--disable-background-networking",
+            "--disable-sync", "--disable-translate",
+            "--metrics-recording-only", "--mute-audio",
+        ])
+        context = browser.new_context()
+        page = context.new_page()
+        page.set_default_timeout(cfg.request_timeout)
+
+        try:
+            _evt({"type": "status", "message": "Logging into FreshPortal…"})
+            _login(page, cfg)
+
+            page.goto(
+                f"{cfg.freshportal_url}/product/index/index/?1=1",
+                wait_until="load",
+                timeout=cfg.request_timeout,
+            )
+            try:
+                page.wait_for_selector("table tbody tr", timeout=10_000)
+            except Exception:
+                time.sleep(3)
+            photo_col = _detect_photo_column(page)
+
+            for idx, item in enumerate(confirmed_items, 1):
+                filename = item["filename"]
+                product_id = item["product_id"]
+                product_name = item["product_name"]
+
+                _evt({"type": "status", "message": f"[{idx}/{total}] {product_name}…"})
+
+                photo_path = photos_root / filename
+                if not photo_path.exists():
+                    result = {
+                        "filename": filename, "product_id": product_id,
+                        "product_name": product_name, "status": "error",
+                        "message": "File missing from session",
+                    }
+                    upload_results.append(result)
+                    _evt({"type": "item", **result})
+                    continue
+
+                row = find_product_row_by_id(page, cfg, product_id)
+                if not row:
+                    result = {
+                        "filename": filename, "product_id": product_id,
+                        "product_name": product_name, "status": "error",
+                        "message": "Product not found in FreshPortal",
+                    }
+                    upload_results.append(result)
+                    _evt({"type": "item", **result})
+                    continue
+
+                ok = _upload_photo_for_row(page, row, photo_col, photo_path, product_name)
+                result = {
+                    "filename": filename, "product_id": product_id,
+                    "product_name": product_name,
+                    "status": "ok" if ok else "error",
+                    "message": "" if ok else "Upload failed in FreshPortal",
+                }
+                upload_results.append(result)
+                _evt({"type": "item", **result})
+
+                _close_modal_if_open(page)
+                time.sleep(1.5)
+
+        finally:
+            context.close()
+            browser.close()
+
+    ok_count = sum(1 for r in upload_results if r["status"] == "ok")
+    _evt({
+        "type": "result",
+        "data": {
+            "results": upload_results,
+            "ok": ok_count,
+            "error": len(upload_results) - ok_count,
+            "total": len(upload_results),
+        },
+    })
+    return upload_results
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
