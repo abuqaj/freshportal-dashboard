@@ -18,10 +18,15 @@ logger = logging.getLogger(__name__)
 
 _sync_lock = threading.Lock()
 _sync_running = False
+_sync_message = ""
 
 
 def is_sync_running() -> bool:
     return _sync_running
+
+
+def get_sync_message() -> str:
+    return _sync_message
 
 
 def run_full_sync(cfg: Config, on_status=None) -> dict:
@@ -41,6 +46,8 @@ def run_full_sync(cfg: Config, on_status=None) -> dict:
     sync_id = log_sync_start()
 
     def _s(msg: str) -> None:
+        global _sync_message
+        _sync_message = msg
         logger.info("[sync] %s", msg)
         if on_status:
             on_status(msg)
@@ -113,6 +120,8 @@ def run_incremental_sync(cfg: Config, on_status=None) -> dict:
     sync_id = log_sync_start()
 
     def _s(msg: str) -> None:
+        global _sync_message
+        _sync_message = msg
         logger.info("[sync] %s", msg)
         if on_status:
             on_status(msg)

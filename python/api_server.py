@@ -31,7 +31,7 @@ from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
 from db import search_products_db, get_products_by_vbn, get_product_count, get_last_sync
-from sync import run_full_sync, run_incremental_sync, is_sync_running
+from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -248,6 +248,7 @@ def sync_status():
     last = get_last_sync()
     return {
         "running": is_sync_running(),
+        "current_message": get_sync_message() if is_sync_running() else "",
         "product_count": get_product_count(),
         "last_sync": last,
     }
