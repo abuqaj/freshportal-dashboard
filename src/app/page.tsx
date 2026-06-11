@@ -161,7 +161,7 @@ export default function Dashboard() {
   type ProductMatchItem = { product_id: string; name: string; vbn_number: string; similarity: number };
   type ReviewItem = {
     filename: string; thumbnailUrl: string; normalized_name: string;
-    selected: ProductMatchItem | null; alternatives: ProductMatchItem[]; approved: boolean;
+    selected: ProductMatchItem[]; alternatives: ProductMatchItem[]; approved: boolean;
   };
   type UploadResultItem = { filename: string; product_name: string; status: 'pending' | 'ok' | 'error'; message?: string };
 
@@ -791,7 +791,7 @@ export default function Dashboard() {
               filename: m.filename,
               thumbnailUrl: thumbMap[m.filename] ?? "",
               normalized_name: m.normalized_name,
-              selected: m.matches[0] ?? null,
+              selected: m.matches.length > 0 ? [m.matches[0]] : [],
               alternatives: m.matches.slice(1),
               approved: (m.matches[0]?.similarity ?? 0) >= 0.40,
             });
@@ -825,8 +825,8 @@ export default function Dashboard() {
   async function executePhotoUpload() {
     if (!photoSessionId || !RAILWAY) return;
     const confirmed = reviewItems
-      .filter(i => i.approved && i.selected)
-      .map(i => ({ filename: i.filename, product_id: i.selected!.product_id, product_name: i.selected!.name }));
+      .filter(i => i.approved && i.selected.length > 0)
+      .flatMap((i: ReviewItem) => i.selected.map((p: ProductMatchItem) => ({ filename: i.filename, product_id: p.product_id, product_name: p.name })));
     if (confirmed.length === 0) return;
 
     setPhotoPhase('uploading');
@@ -1757,7 +1757,11 @@ export default function Dashboard() {
 
             {/* Phase: review — confirmation table */}
             {photoPhase === 'review' && reviewItems.length > 0 && (() => {
-              const approvedCount = reviewItems.filter(i => i.approved && i.selected).length;
+              const approvedItems = reviewItems.filter(i => i.approved && i.selected.length > 0);
+              const totalAssignments = approvedItems.reduce((s: number, i: ReviewItem) => s + i.selected.length, 0);
+              const uploadLabel = totalAssignments === approvedItems.length
+                ? `Upload ${totalAssignments} photo${totalAssignments !== 1 ? 's' : ''}`
+                : `Upload ${approvedItems.length} photo${approvedItems.length !== 1 ? 's' : ''} → ${totalAssignments} products`;
               return (
                 <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
                   <div className="px-5 py-4 border-b border-neutral-100 flex items-center justify-between">
@@ -1766,75 +1770,86 @@ export default function Dashboard() {
                       <span className="ml-2 text-xs text-neutral-400">{reviewItems.length} photos</span>
                     </p>
                     <div className="flex items-center gap-3">
-                      <span className="text-xs text-neutral-500">{approvedCount} approved</span>
+                      <span className="text-xs text-neutral-500">{approvedItems.length} approved</span>
                       <button
                         onClick={executePhotoUpload}
-                        disabled={approvedCount === 0}
+                        disabled={totalAssignments === 0}
                         className="bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
                       >
-                        Upload {approvedCount} photos
+                        {uploadLabel}
                       </button>
                     </div>
                   </div>
                   <div className="divide-y divide-neutral-50">
                     {reviewItems.map((item, idx) => (
-                      <div key={item.filename} className={`flex items-center gap-3 px-4 py-3 ${!item.approved ? 'opacity-50' : ''}`}>
+                      <div key={item.filename} className={`flex items-start gap-3 px-4 py-3 ${!item.approved ? 'opacity-50' : ''}`}>
                         {/* Thumbnail */}
-                        <div className="w-10 h-10 rounded-lg overflow-hidden bg-neutral-100 flex-shrink-0">
+                        <div className="w-10 h-10 rounded-lg overflow-hidden bg-neutral-100 flex-shrink-0 mt-0.5">
                           {item.thumbnailUrl
                             ? <img src={item.thumbnailUrl} alt="" className="w-full h-full object-cover" />
                             : <span className="text-xl flex items-center justify-center h-full">🖼</span>
                           }
                         </div>
                         {/* Filename */}
-                        <div className="w-40 flex-shrink-0 min-w-0">
+                        <div className="w-36 flex-shrink-0 min-w-0 mt-1">
                           <p className="text-xs text-neutral-600 truncate" title={item.filename}>{item.filename}</p>
                           <p className="text-xs text-neutral-400 truncate">{item.normalized_name}</p>
                         </div>
-                        {/* Match */}
+                        {/* Selected products + add alternatives */}
                         <div className="flex-1 min-w-0">
-                          {item.selected ? (
-                            <>
-                              <p className="text-sm text-neutral-800 truncate">{item.selected.name}</p>
-                              <div className="flex items-center gap-2 mt-0.5">
-                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                                  item.selected.similarity >= 0.80 ? 'bg-green-50 text-green-700'
-                                  : item.selected.similarity >= 0.50 ? 'bg-amber-50 text-amber-700'
-                                  : 'bg-red-50 text-red-600'
-                                }`}>
-                                  {Math.round(item.selected.similarity * 100)}%
+                          {item.selected.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {item.selected.map((p: ProductMatchItem) => (
+                                <span key={p.product_id} className="inline-flex items-center gap-1 text-xs bg-violet-50 border border-violet-200 text-violet-700 px-2 py-0.5 rounded-full">
+                                  <span className="truncate max-w-36" title={p.name}>{p.name}</span>
+                                  <button
+                                    onClick={() => setReviewItems((prev: ReviewItem[]) => prev.map((r: ReviewItem, i: number) => i !== idx ? r : {
+                                      ...r,
+                                      selected: r.selected.filter((s: ProductMatchItem) => s.product_id !== p.product_id),
+                                      alternatives: [p, ...r.alternatives],
+                                      approved: r.selected.length > 1,
+                                    }))}
+                                    className="flex-shrink-0 leading-none hover:text-red-500 transition-colors"
+                                    title="Remove"
+                                  >×</button>
                                 </span>
-                                <span className="text-xs text-neutral-400 font-mono">{item.selected.product_id}</span>
-                              </div>
-                            </>
+                              ))}
+                            </div>
                           ) : (
-                            <p className="text-xs text-neutral-400 italic">No match found</p>
+                            <p className="text-xs text-neutral-400 italic mt-1">No match found</p>
+                          )}
+                          {/* Add alternatives */}
+                          {item.alternatives.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1.5">
+                              {item.alternatives.map((alt: ProductMatchItem) => (
+                                <button
+                                  key={alt.product_id}
+                                  title={`Add: ${alt.name}`}
+                                  onClick={() => setReviewItems((prev: ReviewItem[]) => prev.map((r: ReviewItem, i: number) => i !== idx ? r : {
+                                    ...r,
+                                    selected: [...r.selected, alt],
+                                    alternatives: r.alternatives.filter((a: ProductMatchItem) => a.product_id !== alt.product_id),
+                                    approved: true,
+                                  }))}
+                                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-dashed border-neutral-300 text-neutral-500 hover:border-violet-400 hover:text-violet-600 transition-colors"
+                                >
+                                  <span className="text-neutral-300">+</span>
+                                  <span className="truncate max-w-28">{alt.name.split(' ').slice(0, 3).join(' ')}</span>
+                                  <span className={`${alt.similarity >= 0.8 ? 'text-green-500' : alt.similarity >= 0.5 ? 'text-amber-500' : 'text-red-400'}`}>
+                                    {Math.round(alt.similarity * 100)}%
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
                           )}
                         </div>
-                        {/* Alternatives */}
-                        {item.alternatives.length > 0 && (
-                          <div className="flex gap-1 flex-shrink-0">
-                            {item.alternatives.map(alt => (
-                              <button
-                                key={alt.product_id}
-                                title={alt.name}
-                                onClick={() => setReviewItems(prev => prev.map((r, i) =>
-                                  i === idx ? { ...r, selected: alt, approved: true } : r
-                                ))}
-                                className="text-xs px-2 py-1 rounded border border-neutral-200 text-neutral-500 hover:border-violet-300 hover:text-violet-700 truncate max-w-24"
-                              >
-                                {alt.name.split(' ').slice(0, 2).join(' ')}
-                              </button>
-                            ))}
-                          </div>
-                        )}
                         {/* Approve / reject */}
                         <button
                           onClick={() => setReviewItems(prev => prev.map((r, i) =>
                             i === idx ? { ...r, approved: !r.approved } : r
                           ))}
-                          disabled={!item.selected}
-                          className={`flex-shrink-0 w-8 h-8 rounded-lg border text-sm font-medium transition-colors ${
+                          disabled={item.selected.length === 0}
+                          className={`flex-shrink-0 w-8 h-8 rounded-lg border text-sm font-medium transition-colors mt-0.5 ${
                             item.approved
                               ? 'bg-green-50 border-green-200 text-green-600 hover:bg-red-50 hover:border-red-200 hover:text-red-500'
                               : 'bg-neutral-50 border-neutral-200 text-neutral-400 hover:bg-green-50 hover:border-green-200 hover:text-green-600'
@@ -1851,10 +1866,10 @@ export default function Dashboard() {
                     </button>
                     <button
                       onClick={executePhotoUpload}
-                      disabled={approvedCount === 0}
+                      disabled={totalAssignments === 0}
                       className="bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
                     >
-                      Upload {approvedCount} photos to FreshPortal
+                      {uploadLabel} to FreshPortal
                     </button>
                   </div>
                 </div>
