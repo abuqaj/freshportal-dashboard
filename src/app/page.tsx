@@ -129,6 +129,7 @@ export default function Dashboard() {
   const [selectedTemplateWas100Pct, setSelectedTemplateWas100Pct] = useState(false);
   const [showSecondDuplicateWarning, setShowSecondDuplicateWarning] = useState(false);
   const [showAllResults, setShowAllResults] = useState(false);
+  const [nameFromTemplate, setNameFromTemplate] = useState<{ original: string; corrected: string } | null>(null);
 
   // Create form — VBN
   const [vbnForCreate, setVbnForCreate] = useState("");
@@ -571,7 +572,9 @@ export default function Dashboard() {
     const initialNumber = genProductNumber(name);
     initialFormName.current = name;
     setPendingCreate({ templateId, templateName });
-    setFinalName(name);
+    const namesMatch = name.toLowerCase() === templateName.toLowerCase();
+    setFinalName(namesMatch ? name : templateName);
+    setNameFromTemplate(namesMatch ? null : { original: name, corrected: templateName });
     setProductNumber(initialNumber);
     setCreateResult(null);
     setNumberChecking(true);
@@ -1302,6 +1305,12 @@ export default function Dashboard() {
                         className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                         autoFocus
                       />
+                      {nameFromTemplate && (
+                        <NameCorrectionHint
+                          hint={nameFromTemplate}
+                          onRevert={() => { setFinalName(nameFromTemplate.original); setNameFromTemplate(null); }}
+                        />
+                      )}
                     </div>
                     <div>
                       <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
@@ -1454,7 +1463,7 @@ export default function Dashboard() {
                       {creating ? t.create.creating : numberChecking ? t.create.checkingNumber : t.create.createBtn}
                     </button>
                     <button
-                      onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); }}
+                      onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setNameFromTemplate(null); }}
                       className="border border-neutral-200 text-neutral-500 hover:bg-neutral-50 text-sm px-4 py-2.5 rounded-lg transition-colors"
                     >
                       {t.common.cancel}
@@ -1832,6 +1841,37 @@ export default function Dashboard() {
         </div>,
         document.body
       )}
+    </div>
+  );
+}
+
+function NameCorrectionHint({ hint, onRevert }: {
+  hint: { original: string; corrected: string };
+  onRevert: () => void;
+}) {
+  const origWords = hint.original.trim().split(/\s+/);
+  const corrWords = hint.corrected.trim().split(/\s+/);
+  const maxLen = Math.max(origWords.length, corrWords.length);
+  const diffs = Array.from({ length: maxLen }, (_, i) => ({
+    orig: origWords[i] ?? "",
+    corr: corrWords[i] ?? "",
+    changed: (origWords[i] ?? "").toLowerCase() !== (corrWords[i] ?? "").toLowerCase(),
+  })).filter(d => d.changed);
+  if (diffs.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-neutral-400">
+      <span>↑ name from template ·</span>
+      {diffs.map((d, i) => (
+        <span key={i} className="flex items-center gap-1">
+          <span className="text-amber-500 line-through">{d.orig}</span>
+          <span className="text-neutral-300">→</span>
+          <span className="text-green-600 font-medium">{d.corr}</span>
+        </span>
+      ))}
+      <span>·</span>
+      <button type="button" onClick={onRevert} className="text-violet-500 hover:text-violet-700 underline">
+        use original
+      </button>
     </div>
   );
 }
