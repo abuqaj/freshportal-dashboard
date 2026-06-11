@@ -253,6 +253,49 @@ def sync_status():
     }
 
 
+@app.get("/sync/debug-page")
+def sync_debug_page(page: int = 180):
+    """Fetch a specific page of the unfiltered product list and report what's there.
+
+    Use this to diagnose why the full sync stops at ~44 K:
+      - If page 180 returns 0 products → FreshPortal has a server-side limit.
+      - If page 180 returns products → the scraper is stopping too early (bug).
+
+    Returns the row count, the final URL after navigation, and up to 5 product names.
+    """
+    from playwright.sync_api import sync_playwright
+    from scraper_fp import _launch_browser, _login, _block_resources, _goto_and_wait, _detect_columns_html, _parse_rows_html, _get_last_page_html
+    from bs4 import BeautifulSoup
+
+    cfg = Config()
+    url = f"{cfg.freshportal_url}/product/index/index/?1=1&page={page}"
+
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        context = browser.new_context()
+        fp = context.new_page()
+        _block_resources(fp)
+        try:
+            _login(fp, cfg)
+            _goto_and_wait(fp, url, cfg)
+            final_url = fp.url
+            soup = BeautifulSoup(fp.content(), "lxml")
+            col_map = _detect_columns_html(soup)
+            products = _parse_rows_html(soup, col_map)
+            last_page_detected = _get_last_page_html(soup)
+            return {
+                "page_requested": page,
+                "final_url": final_url,
+                "redirected_to_login": "login" in final_url.lower(),
+                "last_page_detected": last_page_detected,
+                "product_count_on_page": len(products),
+                "first_5_products": [p.name for p in products[:5]],
+            }
+        finally:
+            context.close()
+            browser.close()
+
+
 @app.post("/sync/run")
 def sync_run(full: bool = False):
     """Manually trigger product sync (non-blocking).
