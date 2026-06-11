@@ -106,28 +106,43 @@ class ProductMatch:
 # ── FreshPortal search ───────────────────────────────────────────────────────
 
 def _variety_search_terms(variety: str) -> list[str]:
-    """Generate FreshPortal search terms that survive single-character typos.
+    """Generate typo-resistant search terms using sliding n-gram windows.
 
-    Works by using substrings common to the mistyped and correct spelling:
-      "Atena"  → ["Atena", "Aten", "ena"]   — "ena" is in both Atena & Athena
-      "Toxic"  → ["Toxic", "Toxi", "xic"]
-      "portal" → ["portal", "porta", "tal"]
+    For a single-character typo (insertion, deletion, substitution) anywhere
+    in a word, at least one n-gram from the mistyped word will appear unchanged
+    in the correct spelling, so ILIKE will always find the product.
 
-    Strategy per word:
-      1. exact word
-      2. word[:-1]      (drop last char  — handles extra char at end)
-      3. word[n//2:]    (second half     — handles insertion/deletion in first half)
+    n-gram size by word length:
+      3-5 chars → 3-grams  e.g. "Atena" → "Ate","ten","ena"  (ena ∈ "Athena")
+      6+ chars  → 4-grams  e.g. "stelata" → "stel","tela","elat","lata"
+                                            (stel,lata ∈ "stellata")
+
+    Also adds word[:-1] and word[1:] to cover first/last-char typos that
+    n-grams of size k can miss when the error falls at the very edge.
     """
     if not variety:
         return []
-    terms = [variety]
+    terms: list[str] = [variety]
+    seen: set[str] = {variety.lower()}
+
+    def _add(s: str) -> None:
+        key = s.lower()
+        if key not in seen and len(s) >= 3:
+            seen.add(key)
+            terms.append(s)
+
     for word in variety.split():
         n = len(word)
-        if n >= 5:
-            terms.append(word[:-1])
-        if n >= 5:
-            terms.append(word[n // 2:])
-    return list(dict.fromkeys(terms))
+        if n < 3:
+            continue
+        k = 4 if n >= 6 else 3
+        for i in range(n - k + 1):
+            _add(word[i : i + k])
+        if n >= 4:
+            _add(word[:-1])
+            _add(word[1:])
+
+    return terms
 
 
 def search_products(
