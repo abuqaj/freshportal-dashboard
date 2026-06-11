@@ -743,8 +743,9 @@ export default function Dashboard() {
   async function analyzePhotos(fileList: FileList) {
     if (!RAILWAY || fileList.length === 0) return;
     setPhotoAnalyzing(true);
+    setPhotoPhase('analyzing');
     setPhotoError(null);
-    setPhotoStatusMsg("Matching photos to products…");
+    setPhotoStatusMsg(`Uploading ${fileList.length} photo${fileList.length === 1 ? '' : 's'}…`);
 
     const thumbMap: Record<string, string> = {};
     const fd = new FormData();
@@ -754,24 +755,66 @@ export default function Dashboard() {
     });
 
     try {
-      const res = await fetch(`${RAILWAY}/photo-upload/analyze`, { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? `HTTP ${res.status}`);
+      const res = await fetch(`${RAILWAY}/photo-upload/analyze/stream`, { method: "POST", body: fd });
+      if (!res.ok || !res.body) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error((errData as {detail?: string}).detail ?? `HTTP ${res.status}`);
+      }
 
-      const items = (data.matches as { filename: string; normalized_name: string; matches: { product_id: string; name: string; vbn_number: string; similarity: number }[] }[]).map(m => ({
-        filename: m.filename,
-        thumbnailUrl: thumbMap[m.filename] ?? "",
-        normalized_name: m.normalized_name,
-        selected: m.matches[0] ?? null,
-        alternatives: m.matches.slice(1),
-        approved: (m.matches[0]?.similarity ?? 0) >= 0.40,
-      }));
+      let sessionId = "";
+      let total = 0;
+      const items: ReviewItem[] = [];
+      let phaseSet = false;
 
-      setPhotoSessionId(data.session_id);
-      setReviewItems(items);
-      setPhotoPhase('review');
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split(/\r?\n/);
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let ev: Record<string, unknown>;
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (ev.type === "session") {
+            sessionId = ev.session_id as string;
+            total = ev.total as number;
+            setPhotoStatusMsg(`Matching photos… 0 / ${total}`);
+          } else if (ev.type === "match") {
+            const m = ev as { filename: string; normalized_name: string; matches: ProductMatchItem[] };
+            items.push({
+              filename: m.filename,
+              thumbnailUrl: thumbMap[m.filename] ?? "",
+              normalized_name: m.normalized_name,
+              selected: m.matches[0] ?? null,
+              alternatives: m.matches.slice(1),
+              approved: (m.matches[0]?.similarity ?? 0) >= 0.40,
+            });
+            setPhotoStatusMsg(`Matching photos… ${items.length} / ${total}`);
+          } else if (ev.type === "done") {
+            setPhotoSessionId(sessionId);
+            setReviewItems(items);
+            setPhotoPhase('review');
+            phaseSet = true;
+          } else if (ev.type === "error") {
+            throw new Error(ev.message as string);
+          }
+        }
+      }
+
+      if (!phaseSet && items.length > 0) {
+        setPhotoSessionId(sessionId);
+        setReviewItems(items);
+        setPhotoPhase('review');
+      }
     } catch (e: unknown) {
       setPhotoError(e instanceof Error ? e.message : String(e));
+      setPhotoPhase('idle');
       Object.values(thumbMap).forEach(u => URL.revokeObjectURL(u));
     } finally {
       setPhotoAnalyzing(false);

@@ -476,10 +476,18 @@ async def vbn_fix_stream(req: VbnFixRequest):
     )
 
 
-@app.post("/photo-upload/analyze")
-async def photo_analyze(files: list[UploadFile] = File(...)):
-    """Accept image files, store in a temp session, return fuzzy product matches."""
-    from photo_matcher import match_photos, IMAGE_EXTENSIONS
+@app.post("/photo-upload/analyze/stream")
+async def photo_analyze_stream(files: list[UploadFile] = File(...)):
+    """Save uploaded images then stream per-photo match results via SSE.
+
+    Events emitted:
+      {type: "session", session_id, total}          — first, after files are saved
+      {type: "match", filename, normalized_name, matches}  — one per photo
+      {type: "done"}                                 — all photos matched
+      {type: "error", message}                       — on failure
+    """
+    from photo_matcher import IMAGE_EXTENSIONS, match_single_photo, normalize_filename
+    from db import get_product_count
 
     session_id = str(uuid.uuid4())
     session_dir = _PHOTO_SESSIONS_DIR / session_id
@@ -499,8 +507,48 @@ async def photo_analyze(files: list[UploadFile] = File(...)):
         shutil.rmtree(session_dir, ignore_errors=True)
         raise HTTPException(400, "No valid image files (jpg/png/webp/gif/bmp) received")
 
-    matches = match_photos(saved)
-    return {"session_id": session_id, "total": len(saved), "matches": matches}
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            if get_product_count() == 0:
+                log.warning("DB empty — photo matching unavailable")
+                for fn in saved:
+                    queue.put({
+                        "type": "match",
+                        "filename": fn,
+                        "normalized_name": normalize_filename(fn),
+                        "matches": [],
+                    })
+            else:
+                cfg = Config()
+                for fn in saved:
+                    queue.put({"type": "match", **match_single_photo(fn, cfg)})
+        except Exception as exc:
+            log.exception("photo analyze failed")
+            queue.put({"type": "error", "message": str(exc)})
+        finally:
+            queue.put({"type": "done"})
+
+    threading.Thread(target=run, daemon=True).start()
+
+    def event_stream():
+        yield f"data: {json.dumps({'type': 'session', 'session_id': session_id, 'total': len(saved)})}\n\n"
+        while True:
+            try:
+                ev = queue.get(timeout=300)
+            except Empty:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Matching timeout after 5 min'})}\n\n"
+                break
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            if ev.get("type") in ("done", "error"):
+                break
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.post("/photo-upload/execute/stream")
