@@ -371,6 +371,8 @@ def scrape_all_products(
     on_batch=None,
     from_date: str = "",
     to_date: str = "",
+    start_page: int = 1,
+    end_page: int | None = None,
 ) -> list[FPProduct]:
     """Scrape products from FreshPortal.
 
@@ -404,7 +406,7 @@ def scrape_all_products(
     saved_cookies: list = []
     col_map: dict[str, int] | None = None
     last_page_hint: int | None = None  # for logging only
-    current_page = 1
+    current_page = start_page
     done = False
     fresh_login_pending = False  # True after an empty page forces a fresh session
 
@@ -426,6 +428,9 @@ def scrape_all_products(
 
                 pages_in_batch = 0
                 while pages_in_batch < PAGES_PER_BATCH:
+                    if end_page is not None and current_page > end_page:
+                        done = True
+                        break
                     _goto_product_page(page, url_tpl.format(page=current_page), cfg)
                     soup = BeautifulSoup(page.content(), "lxml")
 

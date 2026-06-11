@@ -55,7 +55,17 @@ def run_full_sync(cfg: Config, on_status=None) -> dict:
             total_upserted += n
             _s(f"Upserted {total_upserted} products so far…")
 
-        scrape_all_products(cfg, on_status=_s, on_batch=_on_batch)
+        # Split into two independent sessions to stay within FreshPortal's
+        # per-session page limit (~179 pages). Each half starts fresh, so
+        # Part 2 navigates directly to page 131 — exactly like the debug endpoint
+        # that confirmed pages 180-200 have data.
+        _s("Part 1/2: scraping pages 1–130…")
+        scrape_all_products(cfg, on_status=_s, on_batch=_on_batch,
+                            start_page=1, end_page=130)
+
+        _s("Part 2/2: scraping pages 131+ (fresh session)…")
+        scrape_all_products(cfg, on_status=_s, on_batch=_on_batch,
+                            start_page=131)
 
         count = get_product_count()
         log_sync_finish(sync_id, count)
