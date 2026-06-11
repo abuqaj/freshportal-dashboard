@@ -175,10 +175,9 @@ def search_products(
     for word in variety.split():
         if len(word) >= 4 and word not in variety_terms:
             variety_terms.append(word)
-    # Include genus alone so we always find same-genus products even when the
-    # variety is misspelled or absent.  Results are ranked by _similarity so
-    # unrelated varieties in the same genus will score low and stay at the bottom.
-    genus_terms = [genus] if genus and genus not in variety_terms else []
+    # Generate n-grams for the genus too so typos in the first word are caught
+    # (e.g. "Scaibosa" → n-grams "Scai","aibo","bosa" still share "osa" with "Scabiosa").
+    genus_terms = _variety_search_terms(genus) if genus else []
     phase1 = list(dict.fromkeys(filter(None, [query.strip()] + variety_terms + genus_terms)))
 
     def _collect(rows: list[dict]) -> None:
