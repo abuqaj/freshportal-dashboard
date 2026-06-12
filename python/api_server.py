@@ -271,6 +271,14 @@ def sync_status():
     }
 
 
+@app.get("/sync/history")
+def sync_history_endpoint(limit: int = 20):
+    """Last N sync runs with their full message logs."""
+    from db import get_sync_history
+    rows = get_sync_history(limit)
+    return {"history": rows}
+
+
 @app.get("/sync/debug-page")
 def sync_debug_page(page: int = 180):
     """Fetch a specific page of the unfiltered product list and report what's there.

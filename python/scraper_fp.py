@@ -443,17 +443,17 @@ def scrape_all_products(
                     if not products:
                         if fresh_login_pending:
                             # Already retried with a fresh login — real end of data.
-                            logger.info(
-                                "STOP: still empty at page=%d after fresh session — end of data",
-                                current_page,
+                            _status(
+                                f"STOP: page {current_page} still empty after fresh-session retry "
+                                f"— treating as end of data ({len(all_products)} products total)"
                             )
                             done = True
                         else:
                             # First empty page — may be silent session expiry.
                             # Close this browser and open a fresh one with new login.
-                            logger.info(
-                                "Empty page=%d (total=%d) — scheduling fresh login retry",
-                                current_page, len(all_products),
+                            _status(
+                                f"Empty page {current_page} (total={len(all_products)}) "
+                                f"— will retry with fresh login"
                             )
                             saved_cookies = []   # force full re-login next iteration
                             fresh_login_pending = True

@@ -6,6 +6,7 @@ synchronous access from Railway background threads.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -78,8 +79,12 @@ def ensure_tables() -> None:
                     finished_at   TIMESTAMPTZ,
                     product_count INT,
                     status        TEXT DEFAULT 'running',
-                    error         TEXT
+                    error         TEXT,
+                    messages      JSONB DEFAULT '[]'::jsonb
                 )
+            """)
+            cur.execute("""
+                ALTER TABLE sync_log ADD COLUMN IF NOT EXISTS messages JSONB DEFAULT '[]'::jsonb
             """)
 
 
@@ -260,6 +265,37 @@ def log_sync_start() -> int:
     except Exception as exc:
         logger.error("log_sync_start: %s", exc)
         return -1
+
+
+def append_sync_message(sync_id: int, message: str) -> None:
+    """Append a status message to sync_log.messages (non-fatal)."""
+    if sync_id < 0:
+        return
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE sync_log SET messages = messages || %s::jsonb WHERE id = %s",
+                    (json.dumps([message]), sync_id),
+                )
+    except Exception as exc:
+        logger.warning("append_sync_message: %s", exc)
+
+
+def get_sync_history(limit: int = 20) -> list[dict]:
+    """Return last N sync_log rows, newest first."""
+    try:
+        ensure_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, started_at, finished_at, product_count, status, error, messages
+                    FROM sync_log ORDER BY id DESC LIMIT %s
+                """, (limit,))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.error("get_sync_history: %s", exc)
+        return []
 
 
 def log_sync_finish(sync_id: int, product_count: int, error: str = "") -> None:

@@ -157,6 +157,12 @@ export default function Dashboard() {
   const [histLoading, setHistLoading] = useState(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
 
+  // Sync history
+  type SyncRun = { id: number; started_at: string; finished_at: string | null; product_count: number | null; status: string; error: string | null; messages: string[] };
+  const [syncHistory, setSyncHistory] = useState<SyncRun[] | null>(null);
+  const [syncHistLoading, setSyncHistLoading] = useState(false);
+  const [expandedSyncId, setExpandedSyncId] = useState<number | null>(null);
+
   // Photo uploader
   type PhotoPhase = 'idle' | 'analyzing' | 'review' | 'uploading' | 'done';
   type ProductMatchItem = { product_id: string; name: string; vbn_number: string; similarity: number };
@@ -731,6 +737,17 @@ export default function Dashboard() {
     setHistLoading(false);
   }, []);
 
+  const loadSyncHistory = useCallback(async () => {
+    if (!RAILWAY) return;
+    setSyncHistLoading(true);
+    try {
+      const res = await fetch(`${RAILWAY}/sync/history?limit=20`);
+      const data = await res.json();
+      setSyncHistory(data.history ?? []);
+    } catch { /* ignore */ }
+    setSyncHistLoading(false);
+  }, []);
+
   function resetPhotoUploader() {
     reviewItems.forEach(i => { try { URL.revokeObjectURL(i.thumbnailUrl); } catch { /* ok */ } });
     setPhotoPhase('idle');
@@ -914,7 +931,7 @@ export default function Dashboard() {
               key={item.id}
               onClick={() => {
                 setTab(item.id as typeof tab);
-                if (item.id === "history") loadHistory();
+                if (item.id === "history") { loadHistory(); loadSyncHistory(); }
               }}
               className={`w-full flex items-center gap-3 px-5 py-2.5 text-sm transition-colors ${
                 tab === item.id
@@ -1970,11 +1987,76 @@ export default function Dashboard() {
                 <p className="text-sm text-neutral-500 mt-1">{t.history.description}</p>
               </div>
               <button
-                onClick={loadHistory}
+                onClick={() => { loadHistory(); loadSyncHistory(); }}
                 className="text-sm text-violet-600 hover:text-violet-700 border border-violet-200 rounded-lg px-3 py-1.5"
               >
                 {t.history.refresh}
               </button>
+            </div>
+
+            {/* Sync run log */}
+            <div className="mb-6 bg-white border border-neutral-200 rounded-xl overflow-hidden">
+              <div className="px-5 py-3 border-b border-neutral-100 flex items-center justify-between">
+                <p className="text-sm font-medium text-neutral-800">Sync runs</p>
+                {syncHistLoading && <span className="text-xs text-neutral-400">Loading…</span>}
+              </div>
+              {!syncHistory || syncHistory.length === 0 ? (
+                <div className="p-6 text-center text-xs text-neutral-400">No sync runs recorded yet</div>
+              ) : (
+                <div className="divide-y divide-neutral-50">
+                  {(syncHistory as SyncRun[]).map((run: SyncRun) => {
+                    const isExp = expandedSyncId === run.id;
+                    const dur = run.finished_at
+                      ? Math.round((new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()) / 1000)
+                      : null;
+                    return (
+                      <>
+                        <div
+                          key={run.id}
+                          onClick={() => setExpandedSyncId(isExp ? null : run.id)}
+                          className="flex items-center gap-3 px-5 py-3 cursor-pointer hover:bg-neutral-50 transition-colors"
+                        >
+                          <span className="text-neutral-300 text-xs w-3">{isExp ? "▼" : "▶"}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium flex-shrink-0 ${
+                            run.status === "ok" ? "bg-green-50 text-green-700"
+                            : run.status === "error" ? "bg-red-50 text-red-600"
+                            : "bg-amber-50 text-amber-700"
+                          }`}>{run.status}</span>
+                          <span className="text-xs text-neutral-500 flex-shrink-0">
+                            {new Date(run.started_at).toLocaleString("pl-PL")}
+                          </span>
+                          {dur !== null && (
+                            <span className="text-xs text-neutral-400 flex-shrink-0">{dur < 60 ? `${dur}s` : `${Math.round(dur/60)}min`}</span>
+                          )}
+                          {run.product_count != null && (
+                            <span className="text-xs text-neutral-600 font-medium flex-shrink-0">{run.product_count.toLocaleString()} products</span>
+                          )}
+                          {run.error && (
+                            <span className="text-xs text-red-500 truncate flex-1" title={run.error}>{run.error}</span>
+                          )}
+                          <span className="text-xs text-neutral-300 flex-shrink-0">{(run.messages ?? []).length} msgs</span>
+                        </div>
+                        {isExp && (
+                          <div key={`${run.id}-msgs`} className="bg-neutral-50 border-t border-neutral-100 px-8 py-3 font-mono text-xs text-neutral-600 space-y-0.5 max-h-80 overflow-y-auto">
+                            {(run.messages ?? []).length === 0
+                              ? <p className="text-neutral-400 italic">No messages recorded</p>
+                              : (run.messages ?? []).map((msg: string, i: number) => (
+                                <div key={i} className={`leading-5 ${
+                                  msg.startsWith("STOP") ? "text-red-600 font-semibold"
+                                  : msg.startsWith("Empty") ? "text-amber-600"
+                                  : msg.startsWith("will retry") || msg.includes("retry") ? "text-amber-500"
+                                  : msg.includes("complete") || msg.includes("Complete") ? "text-green-600 font-medium"
+                                  : ""
+                                }`}>{msg}</div>
+                              ))
+                            }
+                          </div>
+                        )}
+                      </>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">

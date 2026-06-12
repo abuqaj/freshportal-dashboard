@@ -12,7 +12,7 @@ from dataclasses import asdict
 
 from config import Config
 from scraper_fp import scrape_all_products
-from db import upsert_products, log_sync_start, log_sync_finish, get_product_count, get_last_successful_sync_date
+from db import upsert_products, log_sync_start, log_sync_finish, append_sync_message, get_product_count, get_last_successful_sync_date
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ def run_full_sync(cfg: Config, on_status=None) -> dict:
         logger.info("[sync] %s", msg)
         if on_status:
             on_status(msg)
+        append_sync_message(sync_id, msg)
 
     try:
         _s("Starting full product sync from FreshPortal…")
@@ -125,6 +126,7 @@ def run_incremental_sync(cfg: Config, on_status=None) -> dict:
         logger.info("[sync] %s", msg)
         if on_status:
             on_status(msg)
+        append_sync_message(sync_id, msg)
 
     try:
         _s(f"Incremental sync: mutation_date_time_from={from_date} to={to_date}…")
