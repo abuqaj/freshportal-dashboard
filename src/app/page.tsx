@@ -35,6 +35,7 @@ type ProductSearchResult = {
   short_name: string;
   vbn_number: string;
   similarity: number;
+  color?: string;
 };
 
 type FixEntry = { product_id: string; name: string; old_vbn: string; new_vbn: string };
@@ -126,7 +127,8 @@ export default function Dashboard() {
   const [productNumber, setProductNumber] = useState("");
   const [numberChecking, setNumberChecking] = useState(false);
   const [numberCheckResult, setNumberCheckResult] = useState<{ changed: boolean; original: string } | null>(null);
-  const [showDuplicateWarning, setShowDuplicateWarning] = useState<{ templateId: string; templateName: string } | null>(null);
+  const [showDuplicateWarning, setShowDuplicateWarning] = useState<{ templateId: string; templateName: string; templateColor?: string } | null>(null);
+  const [templateColorName, setTemplateColorName] = useState("");
   const [selectedTemplateWas100Pct, setSelectedTemplateWas100Pct] = useState(false);
   const [showSecondDuplicateWarning, setShowSecondDuplicateWarning] = useState(false);
   const [showAllResults, setShowAllResults] = useState(false);
@@ -193,6 +195,14 @@ export default function Dashboard() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+
+  // Pre-select color from template once colorList is loaded
+  useEffect(() => {
+    if (!templateColorName || colorList.length === 0 || colorForCreate) return;
+    const match = colorList.find((c: { id: string; name: string }) => c.name.toLowerCase() === templateColorName.toLowerCase());
+    if (match) setColorForCreate(match.id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colorList, templateColorName]);
 
   // (VBN auto-fill now handled directly in handleCreateFromTemplate with fresh AI check)
 
@@ -586,11 +596,21 @@ export default function Dashboard() {
     }
   }
 
-  function handleCreateFromTemplate(templateId: string, templateName: string, templateVbn = "") {
+  function handleCreateFromTemplate(templateId: string, templateName: string, templateVbn = "", templateColor = "") {
     const name = createInput.trim();
     const initialNumber = genProductNumber(name);
     initialFormName.current = name;
     setPendingCreate({ templateId, templateName });
+
+    // Pre-select color from template (resolved immediately if colorList already loaded)
+    setColorForCreate("");
+    setColorSearch("");
+    setTemplateColorName(templateColor);
+    if (templateColor && colorList.length > 0) {
+      const colorMatch = colorList.find((c: { id: string; name: string }) => c.name.toLowerCase() === templateColor.toLowerCase());
+      if (colorMatch) setColorForCreate(colorMatch.id);
+    }
+
     const namesMatch = name.toLowerCase() === templateName.toLowerCase();
     setFinalName(namesMatch ? name : templateName);
     setNameFromTemplate(namesMatch ? null : { original: name, corrected: templateName });
@@ -1375,9 +1395,9 @@ export default function Dashboard() {
                               <button
                                 onClick={() => {
                                   if (r.similarity >= 1.0) {
-                                    setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name });
+                                    setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name, templateColor: r.color ?? "" });
                                   } else {
-                                    handleCreateFromTemplate(r.product_id, r.name, r.vbn_number);
+                                    handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "");
                                   }
                                 }}
                                 disabled={creating}
@@ -1575,7 +1595,7 @@ export default function Dashboard() {
                           </svg>
                         )}
                         {colorForCreate && (
-                          <button onClick={() => { setColorForCreate(""); setColorSearch(""); }} className="text-neutral-300 hover:text-neutral-500 text-xs">✕</button>
+                          <button onClick={() => { setColorForCreate(""); setColorSearch(""); setTemplateColorName(""); }} className="text-neutral-300 hover:text-neutral-500 text-xs">✕</button>
                         )}
                       </label>
                       <div className="relative">
@@ -1600,7 +1620,7 @@ export default function Dashboard() {
                         {colorDropdownOpen && !colorListLoading && (
                           <div className="absolute z-30 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-neutral-200 rounded-xl shadow-xl">
                             <button
-                              onMouseDown={(e) => { e.preventDefault(); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); }}
+                              onMouseDown={(e) => { e.preventDefault(); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setTemplateColorName(""); }}
                               className="w-full text-left px-3 py-2 text-xs text-neutral-400 hover:bg-neutral-50 border-b border-neutral-100"
                             >
                               — {t.create.colorNone}
@@ -1639,7 +1659,7 @@ export default function Dashboard() {
                       {creating ? t.create.creating : numberChecking ? t.create.checkingNumber : t.create.createBtn}
                     </button>
                     <button
-                      onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setNameFromTemplate(null); }}
+                      onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setNameFromTemplate(null); setTemplateColorName(""); }}
                       className="border border-neutral-200 text-neutral-500 hover:bg-neutral-50 text-sm px-4 py-2.5 rounded-lg transition-colors"
                     >
                       {t.common.cancel}
@@ -2253,7 +2273,7 @@ export default function Dashboard() {
               </button>
               <button
                 onClick={() => {
-                  handleCreateFromTemplate(showDuplicateWarning.templateId, showDuplicateWarning.templateName);
+                  handleCreateFromTemplate(showDuplicateWarning.templateId, showDuplicateWarning.templateName, "", showDuplicateWarning.templateColor ?? "");
                   setSelectedTemplateWas100Pct(true);
                   setShowDuplicateWarning(null);
                 }}

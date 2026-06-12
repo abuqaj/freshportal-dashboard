@@ -101,6 +101,7 @@ class ProductMatch:
     short_name: str
     vbn_number: str
     similarity: float
+    color: str = ""
 
 
 # ── FreshPortal search ───────────────────────────────────────────────────────
@@ -196,6 +197,7 @@ def search_products(
                     short_name=r.get("short_name", ""),
                     vbn_number=r.get("vbn_number", ""),
                     similarity=sim,
+                    color=r.get("color", ""),
                 ))
 
     def _run_phases(fetch_fn: Callable[[str], list[dict]]) -> None:

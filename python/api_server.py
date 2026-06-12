@@ -714,6 +714,7 @@ def _matches_to_results(matches) -> list[dict]:
             "short_name": m.short_name,
             "vbn_number": m.vbn_number,
             "similarity": round(m.similarity, 3),
+            "color": getattr(m, "color", ""),
         }
         for m in matches
     ]
