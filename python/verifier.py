@@ -98,6 +98,12 @@ def verify_products(
         reason = ""
         proposed = ""
 
+        if p.origin.lower() != "system":
+            results.append(VerificationResult(
+                product=p, vbn_info=vbn_data.get(p.vbn_number), status="OK", reason="", proposed_vbn=""
+            ))
+            continue
+
         if not p.vbn_number:
             results.append(VerificationResult(
                 product=p,
