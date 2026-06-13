@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import Config
 from scraper_fp import fetch_products, fix_vbn_batch, FPProduct, _debug_fetch, _debug_rendered
 from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
-from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name, get_floricode_colors
+from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name, get_floricode_colors, invalidate_colors_cache
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
@@ -349,6 +349,19 @@ def floricode_colors_endpoint():
         log.error("floricode/colors: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
     return {"colors": colors}
+
+
+@app.get("/floricode/colors/refresh")
+def floricode_colors_refresh():
+    """Clear all color + token caches and re-fetch from Floricode API."""
+    invalidate_colors_cache()
+    cfg = Config()
+    try:
+        colors = get_floricode_colors(cfg.floricode_username, cfg.floricode_password)
+    except Exception as exc:
+        log.error("floricode/colors/refresh: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"colors": colors, "refreshed": True}
 
 
 @app.post("/vbn-check")

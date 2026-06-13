@@ -563,12 +563,20 @@ export default function Dashboard() {
     return words.map(w => w.slice(0, 2)).join("").slice(0, 8) || "PROD";
   }
 
-  function loadColors() {
+  function loadColors(forceRefresh = false) {
     if (colorListLoading || !RAILWAY) return;
     setColorListLoading(true);
     setColorLoadError(null);
-    fetch(`${RAILWAY}/floricode/colors`)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    const url = forceRefresh ? `${RAILWAY}/floricode/colors/refresh` : `${RAILWAY}/floricode/colors`;
+    fetch(url)
+      .then(async r => {
+        if (!r.ok) {
+          let detail = `HTTP ${r.status}`;
+          try { detail = (await r.json()).detail ?? detail; } catch { /* ignore */ }
+          throw new Error(detail);
+        }
+        return r.json();
+      })
       .then((d: { colors: { id: string; name: string }[] }) => setColorList(d.colors ?? []))
       .catch((e: unknown) => setColorLoadError(e instanceof Error ? e.message : String(e)))
       .finally(() => setColorListLoading(false));
@@ -1609,9 +1617,12 @@ export default function Dashboard() {
                           className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400 disabled:bg-neutral-50"
                         />
                         {colorLoadError && (
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <p className="text-xs text-red-500 flex-1 truncate">{colorLoadError}</p>
-                            <button onClick={loadColors} className="text-xs text-violet-600 hover:underline shrink-0">Retry</button>
+                          <div className="flex flex-col gap-0.5 mt-0.5">
+                            <p className="text-xs text-red-500 break-all">{colorLoadError}</p>
+                            <div className="flex gap-2">
+                              <button onClick={() => loadColors(false)} className="text-xs text-violet-600 hover:underline">Retry</button>
+                              <button onClick={() => loadColors(true)} className="text-xs text-amber-600 hover:underline">Force refresh (clear cache)</button>
+                            </div>
                           </div>
                         )}
                         {!colorListLoading && !colorLoadError && colorList.length === 0 && (

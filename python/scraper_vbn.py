@@ -411,6 +411,16 @@ def invalidate_colour_table() -> None:
         COLOUR_TABLE_FILE.unlink()
 
 
+def invalidate_colors_cache() -> None:
+    """Clear in-memory and file colors cache + token cache so next call re-fetches everything."""
+    global _colors_cache
+    _colors_cache = None
+    if COLORS_CACHE_FILE.exists():
+        COLORS_CACHE_FILE.unlink()
+    if TOKEN_FILE.exists():
+        TOKEN_FILE.unlink()
+
+
 def get_floricode_colors(client_id: str, client_secret: str) -> list[dict]:
     """Return all FLC/Color entries from Floricode, using file cache.
 
