@@ -203,3 +203,81 @@ def ai_analyze_product(
     except Exception as exc:
         logger.error("ai_analyze_product failed: %s", exc)
         return None
+
+
+_CHECKER_PROMPT = """\
+You are an expert in Dutch flower auction VBN product codes.
+
+## Product being checked
+Name: "{name}"
+Current VBN code: {current_vbn}
+Current VBN official name (Dutch): "{official_name}"
+VBN product group: "{group}"
+
+## VBN context
+{vbn_context}
+
+## Task
+1. Translate "{name}" into Dutch using Floricode conventions (Spray→Tros, Large-flowered→Grootbloemig, colour names to Dutch, etc.)
+2. Check whether the current VBN "{official_name}" (code {current_vbn}) correctly matches the Dutch translation of "{name}".
+3. If wrong, determine the correct VBN code. Use the category codes from the VBN context when no specific variety code can be determined.
+
+Rules:
+- "Spray" / "Sp " in name → must use a spray/tros VBN
+- No "Spray"/"Sp" in name → must NOT use a spray/tros VBN
+- Colour treated / Painted / Absorbed / Tinted → kleurbehandeld VBN
+- Preserved / Bleached / Dried → 2712 or specific droog VBN
+- Prefer specific variety VBN over generic category code when the name matches
+
+Respond with ONLY valid JSON:
+{{
+  "is_correct": true,
+  "reason": "<one sentence>",
+  "proposed_vbn": "<VBN code string, or null if correct or unknown>"
+}}
+"""
+
+
+def ai_suggest_vbn_for_checker(
+    name: str,
+    current_vbn: str,
+    official_name: str,
+    group: str,
+    cfg: "Config",
+) -> tuple[bool, str, str]:
+    """Ask Claude to verify a VBN assignment and propose the correct code if wrong.
+
+    Returns (is_correct, reason, proposed_vbn).
+    Falls back to (True, error_msg, "") on failure so the caller treats it as non-actionable.
+    """
+    if not cfg.anthropic_api_key:
+        return True, "AI unavailable (no API key)", ""
+
+    prompt = _CHECKER_PROMPT.format(
+        name=name,
+        current_vbn=current_vbn,
+        official_name=official_name,
+        group=group,
+        vbn_context=_VBN_CONTEXT,
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
+        msg = client.messages.create(
+            model=cfg.anthropic_model,
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text.strip()
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m:
+            logger.warning("ai_suggest_vbn_for_checker: non-JSON response: %.200s", text)
+            return True, "AI response parse error", ""
+        data = json.loads(m.group())
+        is_correct = bool(data.get("is_correct", True))
+        reason = str(data.get("reason", ""))
+        proposed = str(data.get("proposed_vbn") or "")
+        return is_correct, reason, proposed
+    except Exception as exc:
+        logger.error("ai_suggest_vbn_for_checker failed: %s", exc)
+        return True, f"AI unavailable: {exc}", ""

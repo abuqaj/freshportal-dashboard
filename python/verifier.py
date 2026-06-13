@@ -5,8 +5,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-import anthropic
-
+from ai_helper import ai_suggest_vbn_for_checker
 from config import Config
 from scraper_fp import FPProduct
 from scraper_vbn import VBNInfo, find_specific_vbn, find_best_colour_vbn, search_vbn_by_name, _NOISE_WORDS
@@ -83,55 +82,6 @@ class VerificationResult:
     proposed_vbn: str = ""
 
 
-def _ask_claude(
-    product_name: str,
-    current_vbn: str,
-    vbn_official_name: str,
-    vbn_group: str,
-    client: anthropic.Anthropic,
-    model: str = "claude-haiku-4-5",
-) -> tuple[bool, str, str]:
-    """
-    Ask Claude whether the VBN assignment is correct.
-    Returns (is_correct, reason, proposed_vbn_hint).
-    """
-    prompt = f"""You are an expert in Dutch flower auction VBN codes.
-
-Product name in FreshPortal: "{product_name}"
-Current VBN code assigned: {current_vbn}
-Official VBN name for code {current_vbn}: "{vbn_official_name}"
-VBN product group: "{vbn_group}"
-
-Rules:
-- The source of truth is the FreshPortal product NAME (not group field)
-- If name contains "Spray" or "Sp " → it's a spray flower type
-- If name does NOT contain "Spray"/"Sp" → it's NOT a spray, even if group says so
-- Preserved/Bleached/Dried → should use VBN 2712 (Droogbloemen bewerkt) or more specific
-- Painted/Absorbed/Tinted/Colour treated → look for specific VBN with "kleurbehandeld" or "colour treated"
-- Always prefer SPECIFIC VBN over generic
-
-Is the VBN assignment correct? Answer with:
-LINE 1: YES or NO
-LINE 2: Brief reason (1-2 sentences)
-LINE 3: Suggested VBN code if wrong (or "N/A" if correct or unknown)
-"""
-
-    try:
-        message = client.messages.create(
-            model=cfg.anthropic_model,
-            max_tokens=256,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = message.content[0].text.strip()
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-        is_correct = lines[0].upper().startswith("YES") if lines else True
-        reason = lines[1] if len(lines) > 1 else ""
-        proposed = lines[2] if len(lines) > 2 else "N/A"
-        proposed = proposed if proposed != "N/A" else ""
-        return is_correct, reason, proposed
-    except Exception as e:
-        logger.error("Claude API error: %s", e)
-        return True, f"Claude API unavailable: {e}", ""
 
 
 def verify_products(
@@ -139,14 +89,7 @@ def verify_products(
     vbn_data: dict[str, VBNInfo],
     cfg: Config,
 ) -> list[VerificationResult]:
-    """
-    Apply verification rules to each product.
-    Falls back to Claude API when rules are ambiguous.
-    """
-    client: anthropic.Anthropic | None = None
-    if cfg.anthropic_api_key:
-        client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
-
+    """Apply verification rules to each product. Uses AI for ambiguous cases."""
     results: list[VerificationResult] = []
 
     for p in products:
@@ -154,12 +97,6 @@ def verify_products(
         status = "OK"
         reason = ""
         proposed = ""
-
-        if p.origin.lower() != "system":
-            results.append(VerificationResult(
-                product=p, vbn_info=vbn_data.get(p.vbn_number), status="OK", reason="", proposed_vbn=""
-            ))
-            continue
 
         if not p.vbn_number:
             results.append(VerificationResult(
@@ -250,15 +187,13 @@ def verify_products(
         elif _is_spray(name):
             spray_vbn_names = ("spray", "tros")
             if not any(kw in official.lower() for kw in spray_vbn_names):
-                # Could be wrong — spray product with non-spray VBN
-                if client:
-                    is_correct, ai_reason, ai_proposed = _ask_claude(
-                        name, p.vbn_number, official, group, client, cfg.anthropic_model
-                    )
-                    if not is_correct:
-                        status = "ERROR"
-                        reason = ai_reason
-                        proposed = ai_proposed
+                is_correct, ai_reason, ai_proposed = ai_suggest_vbn_for_checker(
+                    name, p.vbn_number, official, group, cfg
+                )
+                if not is_correct:
+                    status = "ERROR"
+                    reason = ai_reason
+                    proposed = ai_proposed
                 else:
                     status = "WARNING"
                     reason = (
@@ -268,30 +203,29 @@ def verify_products(
 
         # Rule 4: Non-spray name with spray VBN
         elif not _is_spray(name) and "spray" in official.lower():
-            status = "ERROR"
-            reason = (
-                f"Product name has no 'Spray'/'Sp' but VBN {p.vbn_number} ({official}) is for spray. "
-                "Use non-spray VBN."
+            is_correct, ai_reason, ai_proposed = ai_suggest_vbn_for_checker(
+                name, p.vbn_number, official, group, cfg
             )
-            proposed = ""
-            if client:
-                is_correct, ai_reason, ai_proposed = _ask_claude(
-                    name, p.vbn_number, official, group, client
+            if not is_correct:
+                status = "ERROR"
+                reason = ai_reason
+                proposed = ai_proposed
+            else:
+                status = "ERROR"
+                reason = (
+                    f"Product name has no 'Spray'/'Sp' but VBN {p.vbn_number} ({official}) is for spray. "
+                    "Use non-spray VBN."
                 )
-                if not is_correct:
-                    reason = ai_reason
-                    proposed = ai_proposed
 
-        # Rule 5: Generic ambiguous — use Claude when available
+        # Rule 5: Generic ambiguous — always ask AI
         else:
-            if client:
-                is_correct, ai_reason, ai_proposed = _ask_claude(
-                    name, p.vbn_number, official, group, client
-                )
-                if not is_correct:
-                    status = "ERROR"
-                    reason = ai_reason
-                    proposed = ai_proposed
+            is_correct, ai_reason, ai_proposed = ai_suggest_vbn_for_checker(
+                name, p.vbn_number, official, group, cfg
+            )
+            if not is_correct:
+                status = "ERROR"
+                reason = ai_reason
+                proposed = ai_proposed
 
         results.append(VerificationResult(
             product=p,
