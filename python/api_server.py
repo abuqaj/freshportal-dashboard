@@ -343,7 +343,11 @@ def sync_run(full: bool = False):
 def floricode_colors_endpoint():
     """Return all FLC/Color entries from Floricode (cached after first fetch)."""
     cfg = Config()
-    colors = get_floricode_colors(cfg.floricode_username, cfg.floricode_password)
+    try:
+        colors = get_floricode_colors(cfg.floricode_username, cfg.floricode_password)
+    except Exception as exc:
+        log.error("floricode/colors: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
     return {"colors": colors}
 
 

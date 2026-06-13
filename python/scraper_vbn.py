@@ -415,43 +415,44 @@ def get_floricode_colors(client_id: str, client_secret: str) -> list[dict]:
     """Return all FLC/Color entries from Floricode, using file cache.
 
     Each entry: {"id": str, "name": str}.
-    Returns [] when credentials are missing or the call fails.
+    Raises RuntimeError on failure so callers can propagate a meaningful error.
+    Never caches an empty result — always retries the API when the list is empty.
     """
     global _colors_cache
-    if _colors_cache is not None:
+    if _colors_cache:
         return _colors_cache
 
     if COLORS_CACHE_FILE.exists():
         try:
-            _colors_cache = json.loads(COLORS_CACHE_FILE.read_text(encoding="utf-8"))
-            logger.info("Loaded %d colors from cache", len(_colors_cache))
-            return _colors_cache
+            cached = json.loads(COLORS_CACHE_FILE.read_text(encoding="utf-8"))
+            if cached:  # only trust non-empty cache
+                _colors_cache = cached
+                logger.info("Loaded %d colors from cache", len(_colors_cache))
+                return _colors_cache
         except Exception:
             pass
 
     if not client_id or not client_secret:
-        return []
+        raise RuntimeError("FLORICODE_USERNAME / FLORICODE_PASSWORD not set")
 
-    try:
-        token = _get_token(client_id, client_secret)
-        resp = requests.get(
-            f"{API_BASE}/FLC/Color",
-            params={"$select": "id,name", "$top": "500", "$orderby": "name"},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        items = resp.json().get("value", [])
-        _colors_cache = [{"id": str(i["id"]), "name": i["name"]} for i in items]
-        COLORS_CACHE_FILE.write_text(
-            json.dumps(_colors_cache, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        logger.info("Fetched and cached %d Floricode colors", len(_colors_cache))
-        return _colors_cache
-    except Exception as exc:
-        logger.error("get_floricode_colors failed: %s", exc)
-        return []
+    token = _get_token(client_id, client_secret)
+    resp = requests.get(
+        f"{API_BASE}/FLC/Color",
+        params={"$select": "id,name", "$top": "500", "$orderby": "name"},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    items = resp.json().get("value", [])
+    if not items:
+        raise RuntimeError("Floricode /FLC/Color returned 0 items — check API access scope")
+    _colors_cache = [{"id": str(i["id"]), "name": i["name"]} for i in items]
+    COLORS_CACHE_FILE.write_text(
+        json.dumps(_colors_cache, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("Fetched and cached %d Floricode colors", len(_colors_cache))
+    return _colors_cache
 
 
 def lookup_vbn_codes(
