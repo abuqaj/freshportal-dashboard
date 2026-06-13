@@ -1626,7 +1626,7 @@ export default function Dashboard() {
                           </div>
                         )}
                         {!colorListLoading && !colorLoadError && colorList.length === 0 && (
-                          <button onClick={loadColors} className="text-xs text-violet-500 hover:underline mt-0.5">Load colors</button>
+                          <button onClick={() => loadColors()} className="text-xs text-violet-500 hover:underline mt-0.5">Load colors</button>
                         )}
                         {colorDropdownOpen && !colorListLoading && (
                           <div className="absolute z-30 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-neutral-200 rounded-xl shadow-xl">
