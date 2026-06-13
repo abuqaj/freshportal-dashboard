@@ -615,12 +615,22 @@ def copy_and_create(
                     try:
                         el = page.query_selector(color_sel)
                         if el:
-                            # fps-select uses Shadow DOM; set value on inner <select>
+                            # fps-select uses Shadow DOM; set value on inner <select>.
+                            # Try exact value match first (Floricode numeric ID), then
+                            # fall back to matching by option text label (DB color name).
                             page.evaluate(
                                 """([el, val]) => {
                                     const s = el.shadowRoot?.querySelector('select');
                                     if (!s) return;
-                                    s.value = val;
+                                    if (Array.from(s.options).some(o => o.value === val)) {
+                                        s.value = val;
+                                    } else {
+                                        const match = Array.from(s.options).find(
+                                            o => o.textContent.trim().toLowerCase() === val.toLowerCase()
+                                        );
+                                        if (match) s.value = match.value;
+                                        else return;
+                                    }
                                     s.dispatchEvent(new Event('change', {bubbles: true}));
                                 }""",
                                 [el, color_id],

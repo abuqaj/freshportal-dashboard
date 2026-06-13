@@ -395,6 +395,27 @@ def get_last_successful_sync_date() -> str | None:
         return None
 
 
+def get_distinct_colors() -> list[dict]:
+    """Return distinct non-empty color names from products table as {id, name} pairs.
+
+    Used as a fallback when the Floricode FLC/Color API is unavailable.
+    id == name so the form-fill code can match by label text.
+    """
+    try:
+        ensure_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT color FROM products
+                    WHERE color IS NOT NULL AND color != ''
+                    ORDER BY color
+                """)
+                return [{"id": row[0], "name": row[0]} for row in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_distinct_colors failed: %s", exc)
+        return []
+
+
 def get_last_sync() -> dict | None:
     try:
         with _conn() as conn:

@@ -32,7 +32,7 @@ from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colou
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
-from db import search_products_db, get_products_by_vbn, get_product_count, get_last_sync
+from db import search_products_db, get_products_by_vbn, get_product_count, get_last_sync, get_distinct_colors
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -339,29 +339,38 @@ def sync_run(full: bool = False):
     return {"ok": True, "message": "Incremental sync started in background"}
 
 
-@app.get("/floricode/colors")
-def floricode_colors_endpoint():
-    """Return all FLC/Color entries from Floricode (cached after first fetch)."""
-    cfg = Config()
+def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:
+    """Try Floricode API first; fall back to distinct colors from the products DB.
+
+    Returns (colors, source) where source is "floricode" or "db".
+    """
     try:
         colors = get_floricode_colors(cfg.floricode_username, cfg.floricode_password)
+        return colors, "floricode"
     except Exception as exc:
-        log.error("floricode/colors: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-    return {"colors": colors}
+        log.warning("Floricode FLC/Color unavailable (%s) — using DB fallback", exc)
+        return get_distinct_colors(), "db"
+
+
+@app.get("/floricode/colors")
+def floricode_colors_endpoint():
+    """Return color list from Floricode API, or DB fallback if API unavailable."""
+    cfg = Config()
+    colors, source = _colors_with_db_fallback(cfg)
+    if not colors:
+        raise HTTPException(status_code=500, detail="No colors available: Floricode API returned 401 and products DB is empty")
+    return {"colors": colors, "source": source}
 
 
 @app.get("/floricode/colors/refresh")
 def floricode_colors_refresh():
-    """Clear all color + token caches and re-fetch from Floricode API."""
+    """Clear all color + token caches and re-fetch."""
     invalidate_colors_cache()
     cfg = Config()
-    try:
-        colors = get_floricode_colors(cfg.floricode_username, cfg.floricode_password)
-    except Exception as exc:
-        log.error("floricode/colors/refresh: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-    return {"colors": colors, "refreshed": True}
+    colors, source = _colors_with_db_fallback(cfg)
+    if not colors:
+        raise HTTPException(status_code=500, detail="No colors available after refresh")
+    return {"colors": colors, "source": source, "refreshed": True}
 
 
 @app.post("/vbn-check")
