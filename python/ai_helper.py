@@ -219,8 +219,9 @@ VBN product group: "{group}"
 
 ## Task
 1. Translate "{name}" into Dutch using Floricode conventions (Spray→Tros, Large-flowered→Grootbloemig, colour names to Dutch, etc.)
-2. Check whether the current VBN "{official_name}" (code {current_vbn}) correctly matches the Dutch translation of "{name}".
-3. If wrong, determine the correct VBN code. Use the category codes from the VBN context when no specific variety code can be determined.
+2. If the current VBN official name is empty or unknown, the current VBN is invalid — always set is_correct=false and propose the correct code.
+3. If the official name is known, check whether it correctly matches the Dutch translation of "{name}".
+4. Determine the correct VBN code. Use category codes from the VBN context when no specific variety code can be determined.
 
 Rules:
 - "Spray" / "Sp " in name → must use a spray/tros VBN

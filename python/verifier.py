@@ -105,22 +105,24 @@ def verify_products(
             continue
 
         if not p.vbn_number:
+            _, _, ai_proposed = ai_suggest_vbn_for_checker(p.name, "", "", "", cfg)
             results.append(VerificationResult(
                 product=p,
                 vbn_info=None,
                 status="ERROR",
                 reason="No VBN code assigned",
-                proposed_vbn="",
+                proposed_vbn=ai_proposed,
             ))
             continue
 
         if vbn_info is None or not vbn_info.found:
+            _, _, ai_proposed = ai_suggest_vbn_for_checker(p.name, p.vbn_number, "", "", cfg)
             results.append(VerificationResult(
                 product=p,
                 vbn_info=vbn_info,
                 status="ERROR",
                 reason=f"VBN {p.vbn_number} not found in vbn.nl",
-                proposed_vbn="",
+                proposed_vbn=ai_proposed,
             ))
             continue
 
