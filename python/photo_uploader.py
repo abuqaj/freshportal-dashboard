@@ -20,6 +20,7 @@ import pandas as pd
 from playwright.sync_api import Page, TimeoutError as PWTimeoutError, sync_playwright
 
 from config import Config
+from i18n import msg as i18n_msg
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -358,12 +359,12 @@ def _is_logged_out(page: Page) -> bool:
     return "login" in page.url.lower()
 
 
-def _relogin_and_reset(page: Page, cfg: Config, on_evt=None) -> int:
+def _relogin_and_reset(page: Page, cfg: Config, on_evt=None, lang: str = "en") -> int:
     """Clear cookies, re-login, re-detect photo column. Returns new photo_col."""
-    msg = "Session expired — restarting browser session…"
-    log.warning(msg)
+    status_msg = i18n_msg(lang, "photo_session_expired")
+    log.warning(status_msg)
     if on_evt:
-        on_evt({"type": "status", "message": msg})
+        on_evt({"type": "status", "message": status_msg})
     page.context.clear_cookies()
     _login(page, cfg)
     page.goto(
@@ -491,6 +492,7 @@ def run_from_list(
     session_dir: str,
     confirmed_items: list[dict],
     on_progress=None,
+    lang: str = "en",
 ) -> list[dict]:
     """Upload photos from a temp session directory to FreshPortal.
 
@@ -519,7 +521,7 @@ def run_from_list(
         page.set_default_timeout(cfg.request_timeout)
 
         try:
-            _evt({"type": "status", "message": "Logging into FreshPortal…"})
+            _evt({"type": "status", "message": i18n_msg(lang, "photo_logging_in")})
             _login(page, cfg)
 
             page.goto(
@@ -538,14 +540,14 @@ def run_from_list(
                 product_id = item["product_id"]
                 product_name = item["product_name"]
 
-                _evt({"type": "status", "message": f"[{idx}/{total}] {product_name}…"})
+                _evt({"type": "status", "message": i18n_msg(lang, "photo_uploading", idx=idx, total=total, name=product_name)})
 
                 photo_path = photos_root / filename
                 if not photo_path.exists():
                     result = {
                         "filename": filename, "product_id": product_id,
                         "product_name": product_name, "status": "error",
-                        "message": "File missing from session",
+                        "message": i18n_msg(lang, "photo_file_missing"),
                     }
                     upload_results.append(result)
                     _evt({"type": "item", **result})
@@ -556,13 +558,13 @@ def run_from_list(
                     # Session may have expired (FreshPortal redirects to /login).
                     # Clear cookies, re-login, then retry once by product_id.
                     if _is_logged_out(page):
-                        photo_col = _relogin_and_reset(page, cfg, _evt)
+                        photo_col = _relogin_and_reset(page, cfg, _evt, lang=lang)
                         row = find_product_row_by_id(page, cfg, product_id)
                     if not row:
                         result = {
                             "filename": filename, "product_id": product_id,
                             "product_name": product_name, "status": "error",
-                            "message": "Product not found in FreshPortal",
+                            "message": i18n_msg(lang, "photo_not_found"),
                         }
                         upload_results.append(result)
                         _evt({"type": "item", **result})
@@ -573,7 +575,7 @@ def run_from_list(
                     "filename": filename, "product_id": product_id,
                     "product_name": product_name,
                     "status": "ok" if ok else "error",
-                    "message": "" if ok else "Upload failed in FreshPortal",
+                    "message": "" if ok else i18n_msg(lang, "photo_upload_failed"),
                 }
                 upload_results.append(result)
                 _evt({"type": "item", **result})

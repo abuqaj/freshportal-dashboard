@@ -228,7 +228,7 @@ export default function Dashboard() {
       const res = await fetch(`${RAILWAY}/vbn-check/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vbn: vbnInput.trim() }),
+        body: JSON.stringify({ vbn: vbnInput.trim(), lang }),
       });
 
       if (!res.ok || !res.body) {
@@ -391,7 +391,7 @@ export default function Dashboard() {
       const res = await fetch(`${RAILWAY}/vbn-fix/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fixes: fixPayload }),
+        body: JSON.stringify({ fixes: fixPayload, lang }),
       });
 
       if (!res.ok || !res.body) {
@@ -444,7 +444,7 @@ export default function Dashboard() {
         }
       }
     } catch (e: unknown) {
-      setFixMessage(`Błąd: ${e instanceof Error ? e.message : String(e)}`);
+      setFixMessage(`${t.common.error}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setFixing(false);
     }
@@ -791,7 +791,7 @@ export default function Dashboard() {
     setPhotoAnalyzing(true);
     setPhotoPhase('analyzing');
     setPhotoError(null);
-    setPhotoStatusMsg(`Uploading ${fileList.length} photo${fileList.length === 1 ? '' : 's'}…`);
+    setPhotoStatusMsg(t.photo.uploadingN(fileList.length));
 
     const thumbMap: Record<string, string> = {};
     const fd = new FormData();
@@ -830,7 +830,7 @@ export default function Dashboard() {
           if (ev.type === "session") {
             sessionId = ev.session_id as string;
             total = ev.total as number;
-            setPhotoStatusMsg(`Matching photos… 0 / ${total}`);
+            setPhotoStatusMsg(t.photo.matchingPhotos(0, total));
           } else if (ev.type === "match") {
             const m = ev as { filename: string; normalized_name: string; matches: ProductMatchItem[] };
             const perfect = m.matches.filter((x: ProductMatchItem) => x.similarity >= 0.99);
@@ -845,7 +845,7 @@ export default function Dashboard() {
               alternatives: alts,
               approved: sel.length > 0 && (sel[0]?.similarity ?? 0) >= 0.40,
             });
-            setPhotoStatusMsg(`Matching photos… ${items.length} / ${total}`);
+            setPhotoStatusMsg(t.photo.matchingPhotos(items.length, total));
           } else if (ev.type === "done") {
             setPhotoSessionId(sessionId);
             setReviewItems(items);
@@ -882,13 +882,13 @@ export default function Dashboard() {
     let localResults: UploadResultItem[] = confirmed.map((c: { filename: string; product_id: string; product_name: string }) => ({ filename: c.filename, product_name: c.product_name, status: 'pending' as const }));
     setPhotoPhase('uploading');
     setUploadResults(localResults);
-    setPhotoStatusMsg("Connecting to FreshPortal…");
+    setPhotoStatusMsg(t.photo.connectingFP);
 
     try {
       const res = await fetch(`${RAILWAY}/photo-upload/execute/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: photoSessionId, confirmed }),
+        body: JSON.stringify({ session_id: photoSessionId, confirmed, lang }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
@@ -950,9 +950,9 @@ export default function Dashboard() {
         </div>
         <nav className="flex-1 py-3">
           {[
-            { id: "vbn",     label: "VBN Checker",        icon: "🏷️" },
+            { id: "vbn",     label: t.nav.vbnChecker,     icon: "🏷️" },
             { id: "create",  label: t.nav.newProducts,    icon: "➕" },
-            { id: "photos",  label: "Photo Uploader",     icon: "🖼️" },
+            { id: "photos",  label: t.nav.photoUploader,  icon: "🖼️" },
             { id: "history", label: t.nav.history,        icon: "📋" },
           ].map((item) => (
             <button
@@ -1117,7 +1117,7 @@ export default function Dashboard() {
                               onChange={(e) => updateVbn(r.product_id, e.target.value)}
                               onBlur={() => setTimeout(() => setSuggestions(null), 150)}
                               disabled={r.excluded}
-                              placeholder="VBN lub nazwa…"
+                              placeholder={t.vbn.editPlaceholder}
                               className="border border-neutral-200 rounded px-2 py-1 text-xs w-36 focus:outline-none focus:ring-1 focus:ring-violet-300 disabled:bg-neutral-50"
                             />
                             {/* Name label for numeric codes */}
@@ -1247,13 +1247,13 @@ export default function Dashboard() {
                           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                         </svg>
                       )}
-                      {syncStatus.running ? "Syncing…" :
-                       syncStatus.product_count > 0 ? `${syncStatus.product_count.toLocaleString()} products in DB` :
-                       "DB empty"}
+                      {syncStatus.running ? t.create.syncRunning :
+                       syncStatus.product_count > 0 ? t.create.syncProducts(syncStatus.product_count) :
+                       t.create.syncEmpty}
                     </div>
                     {syncStatus.last_sync?.finished_at && !syncStatus.running && (
                       <p className="text-xs text-neutral-400">
-                        Last sync: {new Date(syncStatus.last_sync.finished_at).toLocaleString()}
+                        {t.create.syncLastSync} {new Date(syncStatus.last_sync.finished_at).toLocaleString()}
                       </p>
                     )}
                     <button
@@ -1261,11 +1261,11 @@ export default function Dashboard() {
                       disabled={syncTriggering || syncStatus.running}
                       className="text-xs text-violet-600 hover:text-violet-700 disabled:opacity-40 underline"
                     >
-                      {syncTriggering || syncStatus.running ? "Syncing…" : "Sync now"}
+                      {syncTriggering || syncStatus.running ? t.create.syncRunning : t.create.syncNow}
                     </button>
                   </div>
                 ) : (
-                  <div className="text-xs text-neutral-300">Loading DB status…</div>
+                  <div className="text-xs text-neutral-300">{t.create.syncLoading}</div>
                 )}
               </div>
             </div>
@@ -1505,7 +1505,7 @@ export default function Dashboard() {
                             }
                           }, 1000);
                         }}
-                        placeholder="Nazwa nowego produktu…"
+                        placeholder={t.create.finalNamePlaceholder}
                         className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                         autoFocus
                       />
@@ -1513,6 +1513,8 @@ export default function Dashboard() {
                         <NameCorrectionHint
                           hint={nameFromTemplate}
                           onRevert={() => { setFinalName(nameFromTemplate.original); setNameFromTemplate(null); }}
+                          fromTemplateLabel={t.create.nameFromTemplate}
+                          useOriginalLabel={t.create.useOriginal}
                         />
                       )}
                     </div>
@@ -1533,7 +1535,7 @@ export default function Dashboard() {
                         type="text"
                         value={productNumber}
                         onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8)); setNumberCheckResult(null); }}
-                        placeholder="np. ROECAT"
+                        placeholder={t.create.numberPlaceholder}
                         className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-36 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                       />
                     </div>
@@ -1620,13 +1622,13 @@ export default function Dashboard() {
                           <div className="flex flex-col gap-0.5 mt-0.5">
                             <p className="text-xs text-red-500 break-all">{colorLoadError}</p>
                             <div className="flex gap-2">
-                              <button onClick={() => loadColors(false)} className="text-xs text-violet-600 hover:underline">Retry</button>
-                              <button onClick={() => loadColors(true)} className="text-xs text-amber-600 hover:underline">Force refresh (clear cache)</button>
+                              <button onClick={() => loadColors(false)} className="text-xs text-violet-600 hover:underline">{t.common.retry}</button>
+                              <button onClick={() => loadColors(true)} className="text-xs text-amber-600 hover:underline">{t.common.forceRefresh}</button>
                             </div>
                           </div>
                         )}
                         {!colorListLoading && !colorLoadError && colorList.length === 0 && (
-                          <button onClick={() => loadColors()} className="text-xs text-violet-500 hover:underline mt-0.5">Load colors</button>
+                          <button onClick={() => loadColors()} className="text-xs text-violet-500 hover:underline mt-0.5">{t.common.loadColors}</button>
                         )}
                         {colorDropdownOpen && !colorListLoading && (
                           <div className="absolute z-30 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-neutral-200 rounded-xl shadow-xl">
@@ -1761,14 +1763,14 @@ export default function Dashboard() {
           <div className="p-8 max-w-3xl">
             <div className="mb-6 flex items-start justify-between">
               <div>
-                <h1 className="text-xl font-semibold text-neutral-900">Photo Uploader</h1>
+                <h1 className="text-xl font-semibold text-neutral-900">{t.nav.photoUploader}</h1>
                 <p className="text-sm text-neutral-500 mt-1">
-                  Drop product photos — AI matches filenames to products, you confirm before upload.
+                  {t.photo.description}
                 </p>
               </div>
               {photoPhase !== 'idle' && (
                 <button onClick={resetPhotoUploader} className="text-xs text-neutral-400 hover:text-neutral-600 border border-neutral-200 rounded-lg px-3 py-1.5">
-                  Start over
+                  {t.photo.startOver}
                 </button>
               )}
             </div>
@@ -1796,15 +1798,15 @@ export default function Dashboard() {
                   onChange={e => { if (e.target.files?.length) analyzePhotos(e.target.files); }}
                 />
                 <p className="text-4xl mb-3">📷</p>
-                <p className="text-sm font-medium text-neutral-700">Drop photos here or click to select</p>
-                <p className="text-xs text-neutral-400 mt-1">JPG, PNG, WEBP, GIF, BMP — multiple files supported</p>
+                <p className="text-sm font-medium text-neutral-700">{t.photo.dropTitle}</p>
+                <p className="text-xs text-neutral-400 mt-1">{t.photo.dropHint}</p>
                 {photoAnalyzing && (
                   <div className="mt-4 flex items-center justify-center gap-2 text-sm text-violet-600">
                     <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                     </svg>
-                    <span>{photoStatusMsg ?? "Analyzing…"}</span>
+                    <span>{photoStatusMsg ?? t.photo.analyzing}</span>
                   </div>
                 )}
               </div>
@@ -1817,7 +1819,7 @@ export default function Dashboard() {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                 </svg>
-                <p className="text-sm text-neutral-600">{photoStatusMsg ?? "Matching photos to products…"}</p>
+                <p className="text-sm text-neutral-600">{photoStatusMsg ?? t.photo.analyzing}</p>
               </div>
             )}
 
@@ -1825,18 +1827,16 @@ export default function Dashboard() {
             {photoPhase === 'review' && reviewItems.length > 0 && (() => {
               const approvedItems = reviewItems.filter(i => i.approved && i.selected.length > 0);
               const totalAssignments = approvedItems.reduce((s: number, i: ReviewItem) => s + i.selected.length, 0);
-              const uploadLabel = totalAssignments === approvedItems.length
-                ? `Upload ${totalAssignments} photo${totalAssignments !== 1 ? 's' : ''}`
-                : `Upload ${approvedItems.length} photo${approvedItems.length !== 1 ? 's' : ''} → ${totalAssignments} products`;
+              const uploadLabel = t.photo.uploadBtn(approvedItems.length, totalAssignments);
               return (
                 <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
                   <div className="px-5 py-4 border-b border-neutral-100 flex items-center justify-between">
                     <p className="text-sm font-medium text-neutral-800">
-                      Review matches
-                      <span className="ml-2 text-xs text-neutral-400">{reviewItems.length} photos</span>
+                      {t.photo.reviewTitle}
+                      <span className="ml-2 text-xs text-neutral-400">{t.photo.photosCount(reviewItems.length)}</span>
                     </p>
                     <div className="flex items-center gap-3">
-                      <span className="text-xs text-neutral-500">{approvedItems.length} approved</span>
+                      <span className="text-xs text-neutral-500">{approvedItems.length} {t.photo.approved}</span>
                       <button
                         onClick={executePhotoUpload}
                         disabled={totalAssignments === 0}
@@ -1880,7 +1880,7 @@ export default function Dashboard() {
                               ))}
                             </div>
                           ) : (
-                            <p className="text-xs text-neutral-400 italic">No match found</p>
+                            <p className="text-xs text-neutral-400 italic">{t.photo.noMatch}</p>
                           )}
                           {/* Add alternatives */}
                           {item.alternatives.length > 0 && (
@@ -1925,14 +1925,14 @@ export default function Dashboard() {
                   </div>
                   <div className="px-5 py-3 bg-neutral-50 border-t border-neutral-100 flex justify-end gap-2">
                     <button onClick={resetPhotoUploader} className="text-xs text-neutral-500 border border-neutral-200 rounded-lg px-3 py-2 hover:bg-neutral-100">
-                      Cancel
+                      {t.photo.cancelUpload}
                     </button>
                     <button
                       onClick={executePhotoUpload}
                       disabled={totalAssignments === 0}
                       className="bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
                     >
-                      {uploadLabel} to FreshPortal
+                      {uploadLabel} {t.photo.uploadToFP}
                     </button>
                   </div>
                 </div>
@@ -1947,7 +1947,7 @@ export default function Dashboard() {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                   </svg>
-                  <p className="text-sm font-medium text-neutral-700">{photoStatusMsg ?? "Uploading…"}</p>
+                  <p className="text-sm font-medium text-neutral-700">{photoStatusMsg ?? t.photo.uploadingStatus}</p>
                 </div>
                 <div className="divide-y divide-neutral-50">
                   {uploadResults.map(r => (
@@ -1978,8 +1978,8 @@ export default function Dashboard() {
                     err === 0 ? 'bg-green-50 border-green-200 text-green-700' : 'bg-amber-50 border-amber-200 text-amber-800'
                   }`}>
                     {err === 0
-                      ? `✓ All ${ok} photos uploaded successfully`
-                      : `Upload complete: ${ok} succeeded, ${err} failed`}
+                      ? t.photo.allOk(ok)
+                      : t.photo.uploadDone(ok, err)}
                   </div>
                   <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
                     <div className="divide-y divide-neutral-50">
@@ -1998,7 +1998,7 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <button onClick={resetPhotoUploader} className="text-sm text-violet-600 hover:text-violet-700 border border-violet-200 rounded-lg px-4 py-2">
-                    Upload more photos
+                    {t.photo.uploadMore}
                   </button>
                 </div>
               );
@@ -2025,11 +2025,11 @@ export default function Dashboard() {
             {/* Sync run log */}
             <div className="mb-6 bg-white border border-neutral-200 rounded-xl overflow-hidden">
               <div className="px-5 py-3 border-b border-neutral-100 flex items-center justify-between">
-                <p className="text-sm font-medium text-neutral-800">Sync runs</p>
-                {syncHistLoading && <span className="text-xs text-neutral-400">Loading…</span>}
+                <p className="text-sm font-medium text-neutral-800">{t.history.syncRuns}</p>
+                {syncHistLoading && <span className="text-xs text-neutral-400">{t.history.syncLoading}</span>}
               </div>
               {!syncHistory || syncHistory.length === 0 ? (
-                <div className="p-6 text-center text-xs text-neutral-400">No sync runs recorded yet</div>
+                <div className="p-6 text-center text-xs text-neutral-400">{t.history.noSyncRuns}</div>
               ) : (
                 <div className="divide-y divide-neutral-50">
                   {(syncHistory as SyncRun[]).map((run: SyncRun) => {
@@ -2057,17 +2057,17 @@ export default function Dashboard() {
                             <span className="text-xs text-neutral-400 flex-shrink-0">{dur < 60 ? `${dur}s` : `${Math.round(dur/60)}min`}</span>
                           )}
                           {run.product_count != null && (
-                            <span className="text-xs text-neutral-600 font-medium flex-shrink-0">{run.product_count.toLocaleString()} products</span>
+                            <span className="text-xs text-neutral-600 font-medium flex-shrink-0">{run.product_count.toLocaleString()} {t.history.products}</span>
                           )}
                           {run.error && (
                             <span className="text-xs text-red-500 truncate flex-1" title={run.error}>{run.error}</span>
                           )}
-                          <span className="text-xs text-neutral-300 flex-shrink-0">{(run.messages ?? []).length} msgs</span>
+                          <span className="text-xs text-neutral-300 flex-shrink-0">{(run.messages ?? []).length} {t.history.msgs}</span>
                         </div>
                         {isExp && (
                           <div key={`${run.id}-msgs`} className="bg-neutral-50 border-t border-neutral-100 px-8 py-3 font-mono text-xs text-neutral-600 space-y-0.5 max-h-80 overflow-y-auto">
                             {(run.messages ?? []).length === 0
-                              ? <p className="text-neutral-400 italic">No messages recorded</p>
+                              ? <p className="text-neutral-400 italic">{t.history.noMessages}</p>
                               : (run.messages ?? []).map((msg: string, i: number) => (
                                 <div key={i} className={`leading-5 ${
                                   msg.startsWith("STOP") ? "text-red-600 font-semibold"
@@ -2223,9 +2223,9 @@ export default function Dashboard() {
                                 <table className="w-full text-xs">
                                   <thead>
                                     <tr className="text-neutral-400 uppercase tracking-wide">
-                                      <th className="text-left pb-1 font-medium">File</th>
-                                      <th className="text-left pb-1 font-medium">Product</th>
-                                      <th className="text-left pb-1 font-medium">Status</th>
+                                      <th className="text-left pb-1 font-medium">{t.history.fileCol}</th>
+                                      <th className="text-left pb-1 font-medium">{t.history.expandProduct}</th>
+                                      <th className="text-left pb-1 font-medium">{t.history.statusCol}</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -2354,9 +2354,11 @@ export default function Dashboard() {
   );
 }
 
-function NameCorrectionHint({ hint, onRevert }: {
+function NameCorrectionHint({ hint, onRevert, fromTemplateLabel, useOriginalLabel }: {
   hint: { original: string; corrected: string };
   onRevert: () => void;
+  fromTemplateLabel: string;
+  useOriginalLabel: string;
 }) {
   const origWords = hint.original.trim().split(/\s+/);
   const corrWords = hint.corrected.trim().split(/\s+/);
@@ -2369,7 +2371,7 @@ function NameCorrectionHint({ hint, onRevert }: {
   if (diffs.length === 0) return null;
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-neutral-400">
-      <span>↑ name from template ·</span>
+      <span>{fromTemplateLabel}</span>
       {diffs.map((d, i) => (
         <span key={i} className="flex items-center gap-1">
           <span className="text-amber-500 line-through">{d.orig}</span>
@@ -2379,7 +2381,7 @@ function NameCorrectionHint({ hint, onRevert }: {
       ))}
       <span>·</span>
       <button type="button" onClick={onRevert} className="text-violet-500 hover:text-violet-700 underline">
-        use original
+        {useOriginalLabel}
       </button>
     </div>
   );

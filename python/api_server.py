@@ -26,6 +26,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
+from i18n import msg as i18n_msg
 from scraper_fp import fetch_products, fix_vbn_batch, FPProduct, _debug_fetch, _debug_rendered
 from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name, get_floricode_colors, invalidate_colors_cache
@@ -52,6 +53,7 @@ class PhotoConfirmedItem(BaseModel):
 class PhotoExecuteRequest(BaseModel):
     session_id: str
     confirmed: list[PhotoConfirmedItem]
+    lang: str = "en"
 
 app = FastAPI(title="FreshPortal API", version="1.0.0")
 
@@ -99,6 +101,7 @@ app.add_middleware(
 
 class VbnCheckRequest(BaseModel):
     vbn: str
+    lang: str = "en"
 
 
 class FixItem(BaseModel):
@@ -108,6 +111,7 @@ class FixItem(BaseModel):
 
 class VbnFixRequest(BaseModel):
     fixes: list[FixItem]
+    lang: str = "en"
 
 
 # ---------------------------------------------------------------------------
@@ -148,18 +152,18 @@ def _db_row_to_fp(row: dict) -> FPProduct:
     )
 
 
-def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None) -> list:
+def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None, lang: str = "en") -> list:
     """Fetch products for all VBN codes — DB first, Playwright fallback."""
     if get_product_count() > 0:
         if on_status:
-            on_status("Szukanie produktów w bazie danych…")
+            on_status(i18n_msg(lang, "vbn_searching_db"))
         rows = get_products_by_vbn(vbn_codes)
         if rows:
             if on_status:
-                on_status(f"Znaleziono {len(rows)} produktów w bazie danych")
+                on_status(i18n_msg(lang, "vbn_found_in_db", count=len(rows)))
             return [_db_row_to_fp(r) for r in rows]
         if on_status:
-            on_status("Brak wyników w DB — szukanie przez FreshPortal…")
+            on_status(i18n_msg(lang, "vbn_db_empty_fallback"))
 
     # Fallback: Playwright scrape (DB empty or VBN not found)
     all_products = []
@@ -167,7 +171,7 @@ def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None) -> li
     total = len(vbn_codes)
     for i, code in enumerate(vbn_codes, 1):
         if on_status and total > 1:
-            on_status(f"Pobieranie VBN {code} ({i}/{total})…")
+            on_status(i18n_msg(lang, "vbn_fetching_code", code=code, i=i, total=total))
         products = fetch_products(code, cfg, on_status=on_status if total == 1 else None)
         for p in products:
             if p.product_id not in seen_ids:
@@ -176,17 +180,17 @@ def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None) -> li
     return all_products
 
 
-def _build_result(products, cfg: Config, queue: Queue | None = None) -> dict:
+def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str = "en") -> dict:
     """Run VBN lookup + verification and return result dict."""
-    def _status(msg: str) -> None:
+    def _status(message: str) -> None:
         if queue:
-            queue.put({"type": "status", "message": msg})
+            queue.put({"type": "status", "message": message})
 
     if not products:
         return {"results": [], "stats": {"total": 0, "errors": 0, "warnings": 0, "ok": 0}}
 
     unique_vbns = sorted({p.vbn_number for p in products if p.vbn_number})
-    _status(f"Weryfikacja {len(unique_vbns)} kodów VBN w Floricode…")
+    _status(i18n_msg(lang, "vbn_verifying", count=len(unique_vbns)))
 
     vbn_data = lookup_vbn_codes(
         unique_vbns,
@@ -195,7 +199,7 @@ def _build_result(products, cfg: Config, queue: Queue | None = None) -> dict:
         floricode_password=cfg.floricode_password,
     )
 
-    _status("Analiza wyników…")
+    _status(i18n_msg(lang, "vbn_analyzing"))
     results = verify_products(products, vbn_data, cfg)
 
     # Fetch names for proposed VBN codes not already in vbn_data
@@ -204,7 +208,7 @@ def _build_result(products, cfg: Config, queue: Queue | None = None) -> dict:
         if r.proposed_vbn and r.proposed_vbn not in vbn_data
     }
     if proposed_codes:
-        _status("Pobieranie nazw proponowanych kodów VBN…")
+        _status(i18n_msg(lang, "vbn_fetching_proposed"))
         extra = lookup_vbn_codes(
             list(proposed_codes),
             request_timeout=cfg.request_timeout,
@@ -384,7 +388,7 @@ def vbn_check(req: VbnCheckRequest):
         raise HTTPException(status_code=400, detail=str(e))
     try:
         products = fetch_products(req.vbn, cfg)
-        return _build_result(products, cfg)
+        return _build_result(products, cfg, lang=req.lang)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -405,11 +409,11 @@ async def vbn_check_stream(req: VbnCheckRequest):
 
     def run() -> None:
         try:
-            def on_status(msg: str) -> None:
-                queue.put({"type": "status", "message": msg})
+            def on_status(message: str) -> None:
+                queue.put({"type": "status", "message": message})
 
-            products = _fetch_all_products(vbn_codes, cfg, on_status=on_status)
-            data = _build_result(products, cfg, queue)
+            products = _fetch_all_products(vbn_codes, cfg, on_status=on_status, lang=req.lang)
+            data = _build_result(products, cfg, queue, lang=req.lang)
             queue.put({"type": "result", "data": data})
         except Exception as e:
             log.exception("vbn-check/stream failed")
@@ -614,6 +618,7 @@ def photo_execute_stream(req: PhotoExecuteRequest):
                 session_dir=str(session_dir),
                 confirmed_items=[c.model_dump() for c in req.confirmed],
                 on_progress=queue.put,
+                lang=req.lang,
             )
         except Exception as e:
             log.exception("photo execute failed")
