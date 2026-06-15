@@ -13,6 +13,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+import unicodedata
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ _ORIGIN_TOKENS = {"ec", "col", "co", "ke", "ken", "nl", "et", "zim", "sa", "tz",
 def normalize_filename(filename: str) -> str:
     """'Rosa_Spray_Be-Amazing.jpg' → 'Rosa Spray Be Amazing'"""
     stem = Path(filename).stem
+    stem = unicodedata.normalize('NFC', stem)  # ensure ñ (NFD) → ñ (NFC) etc.
     name = re.sub(r'[_\-\.]+', ' ', stem)
     return ' '.join(name.split()).strip()
 
@@ -56,11 +58,22 @@ def _photo_similarity(normalized: str, product_name: str) -> float:
 
     char_sim = difflib.SequenceMatcher(None, variety_a, variety_b).ratio()
 
-    # Word-level Jaccard on meaningful tokens (≥3 chars)
+    # Word-level Jaccard with fuzzy tolerance (≥3 chars per word).
+    # Two words count as matching when char similarity ≥ 0.75 so minor typos
+    # like "chillis"/"chilis" (sim=0.92) don't zero out the score.
     words_a = {w for w in variety_a.split() if len(w) >= 3}
     words_b = {w for w in variety_b.split() if len(w) >= 3}
     union = words_a | words_b
-    word_jaccard = len(words_a & words_b) / len(union) if union else 0.0
+    if not union:
+        word_jaccard = 0.0
+    else:
+        matched: set[str] = set()
+        for wa in words_a:
+            for wb in words_b:
+                if difflib.SequenceMatcher(None, wa, wb).ratio() >= 0.75:
+                    matched.add(wa)
+                    matched.add(wb)
+        word_jaccard = len(matched) / len(union)
 
     return char_sim * 0.55 + word_jaccard * 0.45
 
@@ -96,6 +109,19 @@ def _fast_candidates(normalized: str, limit: int = 300) -> list[dict]:
                     params + [limit],
                 )
                 rows = [dict(r) for r in cur.fetchall()]
+
+                # Prefix fallback: use first 4 chars of each variety word.
+                # Handles typos ("chillis"→"chilis") and unicode variants
+                # ("españa" NFD/NFC). More lenient than AND but still specific.
+                if not rows and variety_words:
+                    prefixes = [genus] + [t[:4] for t in variety_words]
+                    prefix_conds = " AND ".join("name ILIKE %s" for _ in prefixes)
+                    cur.execute(
+                        f"SELECT product_id, name, short_name, vbn_number "
+                        f"FROM products WHERE {prefix_conds} ORDER BY name LIMIT %s",
+                        [f"%{p}%" for p in prefixes] + [limit],
+                    )
+                    rows = [dict(r) for r in cur.fetchall()]
     except Exception as exc:
         logger.error("Fast candidate query failed: %s", exc)
         rows = []
