@@ -350,6 +350,35 @@ def _close_modal_if_open(page: Page) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Session health helpers
+# ---------------------------------------------------------------------------
+
+def _is_logged_out(page: Page) -> bool:
+    """True when FreshPortal has redirected us to the login page."""
+    return "login" in page.url.lower()
+
+
+def _relogin_and_reset(page: Page, cfg: Config, on_evt=None) -> int:
+    """Clear cookies, re-login, re-detect photo column. Returns new photo_col."""
+    msg = "Session expired — restarting browser session…"
+    log.warning(msg)
+    if on_evt:
+        on_evt({"type": "status", "message": msg})
+    page.context.clear_cookies()
+    _login(page, cfg)
+    page.goto(
+        f"{cfg.freshportal_url}/product/index/index/?1=1",
+        wait_until="load",
+        timeout=cfg.request_timeout,
+    )
+    try:
+        page.wait_for_selector("table tbody tr", timeout=10_000)
+    except Exception:
+        time.sleep(3)
+    return _detect_photo_column(page)
+
+
+# ---------------------------------------------------------------------------
 # Main orchestration
 # ---------------------------------------------------------------------------
 
@@ -524,14 +553,20 @@ def run_from_list(
 
                 row = find_product_row_by_id(page, cfg, product_id)
                 if not row:
-                    result = {
-                        "filename": filename, "product_id": product_id,
-                        "product_name": product_name, "status": "error",
-                        "message": "Product not found in FreshPortal",
-                    }
-                    upload_results.append(result)
-                    _evt({"type": "item", **result})
-                    continue
+                    # Session may have expired (FreshPortal redirects to /login).
+                    # Clear cookies, re-login, then retry once by product_id.
+                    if _is_logged_out(page):
+                        photo_col = _relogin_and_reset(page, cfg, _evt)
+                        row = find_product_row_by_id(page, cfg, product_id)
+                    if not row:
+                        result = {
+                            "filename": filename, "product_id": product_id,
+                            "product_name": product_name, "status": "error",
+                            "message": "Product not found in FreshPortal",
+                        }
+                        upload_results.append(result)
+                        _evt({"type": "item", **result})
+                        continue
 
                 ok = _upload_photo_for_row(page, row, photo_col, photo_path, product_name)
                 result = {
