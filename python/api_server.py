@@ -148,8 +148,37 @@ async def _on_startup() -> None:
 
     # Restore auto VBN scheduler state from DB
     if get_setting("vbn_auto_enabled") == "1":
-        _scheduler.add_job(_auto_vbn_check, "interval", hours=1, id=_AUTO_VBN_JOB_ID)
-        log.info("Auto VBN check scheduler restored — runs every hour")
+        now = datetime.datetime.now(datetime.timezone.utc)
+        last_check_str = get_setting("vbn_auto_last_check")
+        enabled_at_str = get_setting("vbn_auto_enabled_at")
+
+        # Use last successful run as reference; fall back to when it was first enabled
+        if last_check_str:
+            try:
+                reference_dt = datetime.datetime.fromisoformat(last_check_str)
+            except ValueError:
+                reference_dt = now
+        elif enabled_at_str:
+            try:
+                reference_dt = datetime.datetime.fromisoformat(enabled_at_str)
+            except ValueError:
+                reference_dt = now
+        else:
+            reference_dt = now
+
+        elapsed = (now - reference_dt).total_seconds()
+
+        if elapsed >= 55 * 60:
+            # Run was overdue (missed during downtime) — catch up within 60 s
+            next_run = now + datetime.timedelta(seconds=60)
+            log.info("Auto VBN: overdue by %.0f min — catch-up run in 60 s", elapsed / 60)
+        else:
+            # Not yet due — keep original schedule (reference + 1 h)
+            next_run = reference_dt + datetime.timedelta(hours=1)
+            log.info("Auto VBN: %.0f min since reference — next run at %s", elapsed / 60, next_run.isoformat())
+
+        _scheduler.add_job(_auto_vbn_check, "interval", hours=1, id=_AUTO_VBN_JOB_ID, next_run_time=next_run)
+        log.info("Auto VBN check scheduler restored")
 
     _scheduler.start()
     log.info("APScheduler started — first product sync in 60 s, then every hour")
@@ -414,9 +443,12 @@ class VbnAutoToggleRequest(BaseModel):
 @app.post("/vbn-auto/toggle")
 def vbn_auto_toggle(req: VbnAutoToggleRequest):
     """Enable or disable the hourly auto VBN check."""
+    import datetime as _dt
     set_setting("vbn_auto_enabled", "1" if req.enabled else "0")
     if req.enabled:
         if not _scheduler.get_job(_AUTO_VBN_JOB_ID):
+            now = _dt.datetime.now(_dt.timezone.utc)
+            set_setting("vbn_auto_enabled_at", now.isoformat())
             _scheduler.add_job(_auto_vbn_check, "interval", hours=1, id=_AUTO_VBN_JOB_ID)
     else:
         job = _scheduler.get_job(_AUTO_VBN_JOB_ID)
