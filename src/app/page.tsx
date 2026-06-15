@@ -1856,18 +1856,16 @@ export default function Dashboard() {
                             : <span className="text-xl flex items-center justify-center h-full">🖼</span>
                           }
                         </div>
-                        {/* Filename */}
-                        <div className="w-36 flex-shrink-0 min-w-0 mt-1">
-                          <p className="text-xs text-neutral-600 truncate" title={item.filename}>{item.filename}</p>
-                          <p className="text-xs text-neutral-400 truncate">{item.normalized_name}</p>
-                        </div>
-                        {/* Selected products + add alternatives */}
+                        {/* Filename + chips stacked */}
                         <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-neutral-700 leading-snug">{item.filename.replace(/\.[^.]+$/, '')}</p>
+                          <p className="text-xs text-neutral-400 mb-1.5">{item.normalized_name}</p>
+                          {/* Selected products */}
                           {item.selected.length > 0 ? (
                             <div className="flex flex-wrap gap-1">
                               {item.selected.map((p: ProductMatchItem) => (
                                 <span key={p.product_id} className="inline-flex items-center gap-1 text-xs bg-violet-50 border border-violet-200 text-violet-700 px-2 py-0.5 rounded-full">
-                                  <span className="truncate max-w-36" title={p.name}>{p.name}</span>
+                                  <span>{p.name}</span>
                                   <button
                                     onClick={() => setReviewItems((prev: ReviewItem[]) => prev.map((r: ReviewItem, i: number) => i !== idx ? r : {
                                       ...r,
@@ -1882,7 +1880,7 @@ export default function Dashboard() {
                               ))}
                             </div>
                           ) : (
-                            <p className="text-xs text-neutral-400 italic mt-1">No match found</p>
+                            <p className="text-xs text-neutral-400 italic">No match found</p>
                           )}
                           {/* Add alternatives */}
                           {item.alternatives.length > 0 && (
@@ -1890,7 +1888,6 @@ export default function Dashboard() {
                               {item.alternatives.map((alt: ProductMatchItem) => (
                                 <button
                                   key={alt.product_id}
-                                  title={`Add: ${alt.name}`}
                                   onClick={() => setReviewItems((prev: ReviewItem[]) => prev.map((r: ReviewItem, i: number) => i !== idx ? r : {
                                     ...r,
                                     selected: [...r.selected, alt],
@@ -1900,7 +1897,7 @@ export default function Dashboard() {
                                   className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-dashed border-neutral-300 text-neutral-500 hover:border-violet-400 hover:text-violet-600 transition-colors"
                                 >
                                   <span className="text-neutral-300">+</span>
-                                  <span className="truncate max-w-28">{alt.name.split(' ').slice(0, 3).join(' ')}</span>
+                                  <span>{alt.name}</span>
                                   <span className={`${alt.similarity >= 0.8 ? 'text-green-500' : alt.similarity >= 0.5 ? 'text-amber-500' : 'text-red-400'}`}>
                                     {Math.round(alt.similarity * 100)}%
                                   </span>
