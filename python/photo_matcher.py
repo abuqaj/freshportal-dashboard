@@ -77,9 +77,9 @@ def _fast_candidates(normalized: str, limit: int = 300) -> list[dict]:
     from db import _conn, ensure_tables, search_products_ilike_term
 
     tokens = normalized.lower().split()
-    # Keep genus (first token) + variety words ≥4 chars excluding origin tokens
+    # Keep genus (first token) + variety words ≥3 chars excluding origin tokens
     genus = tokens[0] if tokens else ""
-    variety_words = [t for t in tokens[1:] if t not in _ORIGIN_TOKENS and len(t) >= 4]
+    variety_words = [t for t in tokens[1:] if t not in _ORIGIN_TOKENS and len(t) >= 3]
     search_words = ([genus] + variety_words) if genus else variety_words
     if not search_words:
         return []
