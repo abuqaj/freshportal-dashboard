@@ -39,6 +39,10 @@ MSGS: dict[str, dict[str, str]] = {
         "photo_not_found":       "Product not found in FreshPortal",
         "photo_upload_failed":   "Upload failed in FreshPortal",
         "photo_uploading":       "[{idx}/{total}] {name}…",
+        "auto_vbn_no_products":  "No recently created products to check",
+        "auto_vbn_checking":     "Checking VBN codes of {count} recently created products…",
+        "auto_vbn_fixing":       "Fixing {count} incorrect VBN codes…",
+        "auto_vbn_done":         "Done: checked {checked}, fixed {fixed}",
     },
     "nl": {
         "logging_in":          "Inloggen bij FreshPortal…",
@@ -75,6 +79,10 @@ MSGS: dict[str, dict[str, str]] = {
         "photo_not_found":       "Product niet gevonden in FreshPortal",
         "photo_upload_failed":   "Upload mislukt in FreshPortal",
         "photo_uploading":       "[{idx}/{total}] {name}…",
+        "auto_vbn_no_products":  "Geen recent aangemaakte producten om te controleren",
+        "auto_vbn_checking":     "VBN-codes van {count} recent aangemaakte producten controleren…",
+        "auto_vbn_fixing":       "{count} onjuiste VBN-codes corrigeren…",
+        "auto_vbn_done":         "Klaar: gecontroleerd {checked}, gecorrigeerd {fixed}",
     },
     "pl": {
         "logging_in":          "Logowanie do FreshPortal…",
@@ -111,6 +119,10 @@ MSGS: dict[str, dict[str, str]] = {
         "photo_not_found":       "Produkt nie znaleziony w FreshPortal",
         "photo_upload_failed":   "Upload nieudany w FreshPortal",
         "photo_uploading":       "[{idx}/{total}] {name}…",
+        "auto_vbn_no_products":  "Brak nowo utworzonych produktów do sprawdzenia",
+        "auto_vbn_checking":     "Sprawdzam kody VBN {count} nowo utworzonych produktów…",
+        "auto_vbn_fixing":       "Poprawiam {count} błędnych kodów VBN…",
+        "auto_vbn_done":         "Gotowe: sprawdzono {checked}, poprawiono {fixed}",
     },
     "es": {
         "logging_in":          "Iniciando sesión en FreshPortal…",
@@ -147,6 +159,10 @@ MSGS: dict[str, dict[str, str]] = {
         "photo_not_found":       "Producto no encontrado en FreshPortal",
         "photo_upload_failed":   "Subida fallida en FreshPortal",
         "photo_uploading":       "[{idx}/{total}] {name}…",
+        "auto_vbn_no_products":  "No hay productos creados recientemente para comprobar",
+        "auto_vbn_checking":     "Comprobando códigos VBN de {count} productos creados recientemente…",
+        "auto_vbn_fixing":       "Corrigiendo {count} códigos VBN incorrectos…",
+        "auto_vbn_done":         "Listo: comprobados {checked}, corregidos {fixed}",
     },
 }
 

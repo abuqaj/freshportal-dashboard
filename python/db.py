@@ -86,6 +86,24 @@ def ensure_tables() -> None:
             cur.execute("""
                 ALTER TABLE sync_log ADD COLUMN IF NOT EXISTS messages JSONB DEFAULT '[]'::jsonb
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS vbn_auto_log (
+                    id            SERIAL PRIMARY KEY,
+                    started_at    TIMESTAMPTZ DEFAULT NOW(),
+                    finished_at   TIMESTAMPTZ,
+                    checked_count INT,
+                    fixed_count   INT,
+                    status        TEXT DEFAULT 'running',
+                    error         TEXT,
+                    fixes         JSONB DEFAULT '[]'::jsonb
+                )
+            """)
 
 
 # ---------------------------------------------------------------------------
@@ -282,16 +300,16 @@ def append_sync_message(sync_id: int, message: str) -> None:
         logger.warning("append_sync_message: %s", exc)
 
 
-def get_sync_history(limit: int = 20) -> list[dict]:
-    """Return last N sync_log rows, newest first."""
+def get_sync_history(limit: int = 20, offset: int = 0) -> list[dict]:
+    """Return last N sync_log rows, newest first, with optional offset."""
     try:
         ensure_tables()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
                     SELECT id, started_at, finished_at, product_count, status, error, messages
-                    FROM sync_log ORDER BY id DESC LIMIT %s
-                """, (limit,))
+                    FROM sync_log ORDER BY id DESC LIMIT %s OFFSET %s
+                """, (limit, offset))
                 return [dict(r) for r in cur.fetchall()]
     except Exception as exc:
         logger.error("get_sync_history: %s", exc)
@@ -435,3 +453,115 @@ def get_last_sync() -> dict | None:
                 return d
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Settings (key-value store)
+# ---------------------------------------------------------------------------
+
+def get_setting(key: str, default: str = "") -> str:
+    try:
+        ensure_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM settings WHERE key = %s", (key,))
+                row = cur.fetchone()
+                return row[0] if row else default
+    except Exception:
+        return default
+
+
+def set_setting(key: str, value: str) -> None:
+    try:
+        ensure_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO settings (key, value) VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                """, (key, value))
+    except Exception as exc:
+        logger.error("set_setting: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# VBN auto-check log
+# ---------------------------------------------------------------------------
+
+def get_recent_created_products(since_iso: str, limit: int = 2000) -> list[dict]:
+    """Products with a VBN created after since_iso (TEXT comparison works for ISO dates)."""
+    try:
+        ensure_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT product_id, product_number, name, short_name,
+                           vbn_number, color, product_gtin, product_group_code,
+                           product_group, application, vat_rate, cbs_group_code,
+                           main_group, origin, creation_moment, change_moment
+                    FROM products
+                    WHERE creation_moment > %s AND vbn_number IS NOT NULL AND vbn_number != ''
+                    ORDER BY creation_moment DESC
+                    LIMIT %s
+                """, (since_iso, limit))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_recent_created_products failed: %s", exc)
+        return []
+
+
+def log_vbn_auto_start() -> int:
+    try:
+        ensure_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO vbn_auto_log (started_at, status) VALUES (NOW(), 'running') RETURNING id"
+                )
+                return cur.fetchone()[0]
+    except Exception as exc:
+        logger.error("log_vbn_auto_start: %s", exc)
+        return -1
+
+
+def log_vbn_auto_finish(run_id: int, checked: int, fixed: int, fixes: list, error: str = "") -> None:
+    if run_id < 0:
+        return
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE vbn_auto_log
+                    SET finished_at   = NOW(),
+                        checked_count = %s,
+                        fixed_count   = %s,
+                        fixes         = %s::jsonb,
+                        status        = %s,
+                        error         = %s
+                    WHERE id = %s
+                """, (checked, fixed, json.dumps(fixes), "error" if error else "ok", error or None, run_id))
+    except Exception as exc:
+        logger.error("log_vbn_auto_finish: %s", exc)
+
+
+def get_vbn_auto_history(limit: int = 10, offset: int = 0) -> list[dict]:
+    try:
+        ensure_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, started_at, finished_at, checked_count, fixed_count,
+                           status, error, fixes
+                    FROM vbn_auto_log ORDER BY id DESC LIMIT %s OFFSET %s
+                """, (limit, offset))
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(r)
+                    for k in ("started_at", "finished_at"):
+                        if d.get(k) and hasattr(d[k], "isoformat"):
+                            d[k] = d[k].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.error("get_vbn_auto_history: %s", exc)
+        return []

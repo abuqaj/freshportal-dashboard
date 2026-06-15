@@ -33,7 +33,9 @@ from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colou
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
-from db import search_products_db, get_products_by_vbn, get_product_count, get_last_sync, get_distinct_colors
+from db import (search_products_db, get_products_by_vbn, get_product_count, get_last_sync,
+               get_distinct_colors, get_setting, set_setting, get_recent_created_products,
+               log_vbn_auto_start, log_vbn_auto_finish, get_vbn_auto_history)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -59,6 +61,7 @@ app = FastAPI(title="FreshPortal API", version="1.0.0")
 
 
 _scheduler = BackgroundScheduler(timezone="UTC")
+_AUTO_VBN_JOB_ID = "auto_vbn_check"
 
 
 def _hourly_sync() -> None:
@@ -66,6 +69,65 @@ def _hourly_sync() -> None:
     log.info("Hourly sync started")
     result = run_incremental_sync(cfg)
     log.info("Hourly sync finished: %s", result)
+
+
+def _auto_vbn_check() -> None:
+    """Background task: verify VBN codes of recently created products and auto-fix errors."""
+    import datetime
+    log.info("Auto VBN check started")
+    run_id = log_vbn_auto_start()
+    try:
+        cfg = Config()
+
+        last_check = get_setting("vbn_auto_last_check")
+        if last_check:
+            since = last_check
+        else:
+            since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).isoformat()
+
+        product_rows = get_recent_created_products(since)
+        if not product_rows:
+            log.info("Auto VBN check: no recently created products — nothing to do")
+            log_vbn_auto_finish(run_id, 0, 0, [])
+            set_setting("vbn_auto_last_check", datetime.datetime.now(datetime.timezone.utc).isoformat())
+            return
+
+        products = [_db_row_to_fp(r) for r in product_rows]
+        data = _build_result(products, cfg)
+
+        to_fix = [
+            (r["product_id"], r["proposed_vbn"])
+            for r in data["results"]
+            if r["status"] in ("ERROR", "WARNING") and r.get("proposed_vbn")
+        ]
+
+        fixes_log: list[dict] = []
+        fixed_count = 0
+
+        if to_fix:
+            log.info("Auto VBN check: fixing %d products", len(to_fix))
+            fix_results = fix_vbn_batch(to_fix, cfg)
+            result_map = {r["product_id"]: r for r in data["results"]}
+            for product_id, new_vbn in to_fix:
+                ok = fix_results.get(product_id, False)
+                if ok:
+                    fixed_count += 1
+                orig = result_map.get(product_id, {})
+                fixes_log.append({
+                    "product_id": product_id,
+                    "name": orig.get("name", ""),
+                    "old_vbn": orig.get("current_vbn", ""),
+                    "new_vbn": new_vbn,
+                    "ok": ok,
+                })
+
+        log_vbn_auto_finish(run_id, len(products), fixed_count, fixes_log)
+        set_setting("vbn_auto_last_check", datetime.datetime.now(datetime.timezone.utc).isoformat())
+        log.info("Auto VBN check finished: checked=%d fixed=%d", len(products), fixed_count)
+
+    except Exception as exc:
+        log.exception("Auto VBN check failed")
+        log_vbn_auto_finish(run_id, 0, 0, [], str(exc))
 
 
 @app.on_event("startup")
@@ -79,11 +141,16 @@ async def _on_startup() -> None:
             log.info("Colour VBN table ready: %d genera", len(table))
     threading.Thread(target=_warm, daemon=True).start()
 
-    # First sync: 60 s after startup (lets Railway finish booting)
     import datetime
     first_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=60)
     _scheduler.add_job(_hourly_sync, "date", run_date=first_run, id="initial_sync")
     _scheduler.add_job(_hourly_sync, "interval", hours=1, id="hourly_sync")
+
+    # Restore auto VBN scheduler state from DB
+    if get_setting("vbn_auto_enabled") == "1":
+        _scheduler.add_job(_auto_vbn_check, "interval", hours=1, id=_AUTO_VBN_JOB_ID)
+        log.info("Auto VBN check scheduler restored — runs every hour")
+
     _scheduler.start()
     log.info("APScheduler started — first product sync in 60 s, then every hour")
 
@@ -276,11 +343,12 @@ def sync_status():
 
 
 @app.get("/sync/history")
-def sync_history_endpoint(limit: int = 20):
-    """Last N sync runs with their full message logs."""
+def sync_history_endpoint(limit: int = 10, offset: int = 0):
+    """Last N sync runs with their full message logs, with pagination."""
     from db import get_sync_history
-    rows = get_sync_history(limit)
-    return {"history": rows}
+    rows = get_sync_history(limit + 1, offset)
+    has_more = len(rows) > limit
+    return {"history": rows[:limit], "hasMore": has_more}
 
 
 @app.get("/sync/debug-page")
@@ -324,6 +392,44 @@ def sync_debug_page(page: int = 180):
         finally:
             context.close()
             browser.close()
+
+
+@app.get("/vbn-auto/status")
+def vbn_auto_status():
+    """Return auto-VBN-check enabled flag + last run info."""
+    enabled = get_setting("vbn_auto_enabled") == "1"
+    last = get_vbn_auto_history(1, 0)
+    next_run = None
+    if enabled:
+        job = _scheduler.get_job(_AUTO_VBN_JOB_ID)
+        if job and job.next_run_time:
+            next_run = job.next_run_time.isoformat()
+    return {"enabled": enabled, "lastRun": last[0] if last else None, "nextRun": next_run}
+
+
+class VbnAutoToggleRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/vbn-auto/toggle")
+def vbn_auto_toggle(req: VbnAutoToggleRequest):
+    """Enable or disable the hourly auto VBN check."""
+    set_setting("vbn_auto_enabled", "1" if req.enabled else "0")
+    if req.enabled:
+        if not _scheduler.get_job(_AUTO_VBN_JOB_ID):
+            _scheduler.add_job(_auto_vbn_check, "interval", hours=1, id=_AUTO_VBN_JOB_ID)
+    else:
+        job = _scheduler.get_job(_AUTO_VBN_JOB_ID)
+        if job:
+            _scheduler.remove_job(_AUTO_VBN_JOB_ID)
+    return {"enabled": req.enabled}
+
+
+@app.get("/vbn-auto/history")
+def vbn_auto_history_endpoint(limit: int = 10, offset: int = 0):
+    rows = get_vbn_auto_history(limit + 1, offset)
+    has_more = len(rows) > limit
+    return {"history": rows[:limit], "hasMore": has_more}
 
 
 @app.post("/sync/run")

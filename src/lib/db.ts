@@ -31,14 +31,14 @@ export async function logOperation(
   }
 }
 
-export async function getHistory(limit = 50) {
+export async function getHistory(limit = 50, offset = 0) {
   try {
     await ensureTables();
     const { rows } = await sql`
       SELECT id, type, vbn_filter, stats, details, created_at
       FROM operations
       ORDER BY created_at DESC
-      LIMIT ${limit}
+      LIMIT ${limit} OFFSET ${offset}
     `;
     return rows;
   } catch {
