@@ -5,10 +5,11 @@ Dashboard do zarządzania produktami w FreshPortal — weryfikacja VBN, tworzeni
 ## Funkcje
 
 - **VBN Checker** — wpisz numer VBN, sprawdź poprawność kodów wszystkich produktów, edytuj i zatwierdź poprawki inline (streaming SSE). AI (Claude Haiku) automatycznie sugeruje poprawny kod VBN dla każdego błędu — w tym dla kodów nieznalezionych w Floricode, bez VBN, z błędnym typem (spray vs. non-spray), kolorowych i preserved.
+- **Auto VBN Check** — przełącznik w zakładce VBN Checker, który włącza automatyczne sprawdzanie kodów VBN nowo dodanych produktów co godzinę w tle (APScheduler na Railway). Błędne kody są automatycznie poprawiane. Wyniki każdego uruchomienia widoczne w zakładce Historia → Auto VBN.
 - **Nowe produkty** — wpisz nazwę produktu, system znajdzie podobne w lokalnej DB (fuzzy search, próg 80%). AI wykrywa duplikaty i sugeruje właściwy kod VBN z tłumaczeniem na holenderski. Numer produktu weryfikowany przed kliknięciem "Utwórz". Kolor pre-selectowany z produktu-szablonu.
 - **Photo Uploader** — wrzuć zdjęcia, system dopasuje je do produktów w DB (AND-ILIKE matching), możesz przypisać jedno zdjęcie do wielu produktów jednocześnie (chipy + alternatywy). Matches ≥99% auto-selectowane.
 - **Synchronizacja** — pełna synchronizacja katalogu FreshPortal (~44 tys. produktów) do lokalnej Postgres DB. Split na dwie sesje po 130 stron każda, unika limitu sesji FreshPortal. Inkrementalna synchronizacja tylko zmienionych produktów.
-- **Historia** — logi operacji VBN fix, tworzenia produktów, photo upload i synchronizacji z rozwijalnymi szczegółami.
+- **Historia** — logi operacji VBN fix, tworzenia produktów, photo upload, synchronizacji i Auto VBN z rozwijalnymi szczegółami. Paginacja (10 wpisów + "Załaduj więcej") w każdej podzakładce.
 - **Wielojęzyczność** — UI i komunikaty backendu w 4 językach: angielski, holenderski, polski, hiszpański.
 
 ## Architektura
@@ -16,19 +17,22 @@ Dashboard do zarządzania produktami w FreshPortal — weryfikacja VBN, tworzeni
 ```
 Vercel (Next.js)          Railway (FastAPI + Playwright)       Neon (Postgres)
 ─────────────────         ──────────────────────────────       ───────────────
-page.tsx  ──SSE──────────▶  /vbn-check/stream                 products
-          ──SSE──────────▶  /vbn-fix/stream                   sync_log
-          ──SSE──────────▶  /product-search/stream
-          ──SSE──────────▶  /product-create/stream
-          ──SSE──────────▶  /photo-upload/analyze/stream
-          ──POST─────────▶  /photo-upload/execute
-          ──POST─────────▶  /product-ai-analyze
-          ──GET──────────▶  /vbn-name/:code
-          ──GET──────────▶  /vbn-search?q=...
-          ──GET──────────▶  /floricode/colors
-          ──POST─────────▶  /sync/run
-          ──GET──────────▶  /sync/status
-          ──GET──────────▶  /sync/history
+components  ──SSE────────▶  /vbn-check/stream                 products
+            ──SSE────────▶  /vbn-fix/stream                   sync_log
+            ──SSE────────▶  /product-search/stream            history
+            ──SSE────────▶  /product-create/stream            settings
+            ──SSE────────▶  /photo-upload/analyze/stream      vbn_auto_log
+            ──POST───────▶  /photo-upload/execute
+            ──POST───────▶  /product-ai-analyze
+            ──GET────────▶  /vbn-name/:code
+            ──GET────────▶  /vbn-search?q=...
+            ──GET────────▶  /floricode/colors
+            ──POST───────▶  /sync/run
+            ──GET────────▶  /sync/status
+            ──GET────────▶  /sync/history
+            ──GET────────▶  /vbn-auto/status
+            ──POST───────▶  /vbn-auto/toggle
+            ──GET────────▶  /vbn-auto/history
 
 /api/history  ◀──────────▶  Vercel Postgres (historia operacji)
 ```
@@ -38,13 +42,24 @@ Przeglądarka łączy się **bezpośrednio z Railway** (`NEXT_PUBLIC_RAILWAY_API
 ## Struktura projektu
 
 ```
-src/app/
-  page.tsx                        — główny UI (VBN, Nowe produkty, Photo, Historia)
-  api/
-    history/route.ts              — zapis i odczyt historii z Vercel Postgres
+src/
+  app/
+    page.tsx                      — thin shell: nawigacja, language switcher, routing zakładek
+    api/
+      history/route.ts            — zapis i odczyt historii z Vercel Postgres
+  components/
+    VbnChecker.tsx                — VBN Checker: sprawdzanie, naprawa inline, Auto VBN toggle
+    ProductCreator.tsx            — Nowe produkty: search, AI analiza, formularz, synchronizacja
+    PhotoUploader.tsx             — Photo Uploader: drop zone, review, upload do FreshPortal
+    HistoryTab.tsx                — Historia: podzakładki Operacje / Sync runs / Auto VBN + paginacja
+    LanguageSwitcher.tsx          — przełącznik języka (EN/NL/PL/ES)
+  lib/
+    types.ts                      — wspólne typy TypeScript (VbnResult, HistoryRow, SyncRun, …)
+    i18n.ts                       — tłumaczenia UI we wszystkich 4 językach
+    db.ts                         — klient Vercel Postgres (getHistory, logOperation)
 
 python/
-  api_server.py                   — FastAPI: wszystkie endpointy HTTP + SSE
+  api_server.py                   — FastAPI: wszystkie endpointy HTTP + SSE + APScheduler (Auto VBN)
   scraper_fp.py                   — Playwright: logowanie FreshPortal, pobieranie/edycja produktów
   scraper_vbn.py                  — Floricode API: weryfikacja VBN, wyszukiwanie, lista kolorów
   verifier.py                     — reguły weryfikacji VBN + AI sugestie przez ai_helper
@@ -53,7 +68,7 @@ python/
   photo_matcher.py                — dopasowywanie zdjęć do produktów (AND-ILIKE na DB)
   photo_uploader.py               — upload zdjęć do FreshPortal przez Playwright
   sync.py                         — pełna i inkrementalna synchronizacja katalogu
-  db.py                           — Postgres: upsert produktów, search, sync log, historia
+  db.py                           — Postgres: upsert produktów, search, sync log, historia, settings
   i18n.py                         — tłumaczenia komunikatów backendowych (EN/NL/PL/ES)
   config.py                       — konfiguracja z env vars
   requirements.txt
@@ -136,6 +151,9 @@ Ustaw `NEXT_PUBLIC_RAILWAY_API_URL=http://localhost:8000` w `.env.local`.
 | `/sync/run` | POST | Uruchom pełną synchronizację katalogu |
 | `/sync/status` | GET | Status bieżącej synchronizacji |
 | `/sync/history` | GET | Historia ostatnich synchronizacji z logami |
+| `/vbn-auto/status` | GET | Status Auto VBN (enabled, lastRun, nextRun) |
+| `/vbn-auto/toggle` | POST | Włącz/wyłącz Auto VBN (`{ enabled: bool }`) |
+| `/vbn-auto/history` | GET | Historia uruchomień Auto VBN (`?limit&offset`) |
 | `/debug/fp` | GET | Diagnostyka połączenia z FreshPortal |
 | `/debug/colour-table` | GET | Podgląd tabeli kolorów VBN z Floricode |
 
