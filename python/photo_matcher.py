@@ -10,6 +10,7 @@ multi-word AND ILIKE query (~10-15x fewer DB round-trips).
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from pathlib import Path
@@ -27,6 +28,41 @@ def normalize_filename(filename: str) -> str:
     stem = Path(filename).stem
     name = re.sub(r'[_\-\.]+', ' ', stem)
     return ' '.join(name.split()).strip()
+
+
+def _photo_similarity(normalized: str, product_name: str) -> float:
+    """Similarity score tuned for photo-to-product matching.
+
+    Unlike _similarity() from product_creator (which boosts products in the same
+    named series to aid template search), this function uses word overlap + character
+    similarity with NO series floor-boost. This prevents generic shared words like
+    "Garden" or "Spray" from inflating scores when the variety names are different.
+
+    Score = 0.55 * char_sim + 0.45 * word_jaccard
+    """
+    from product_creator import _extract_parts
+
+    genus_a, variety_a = _extract_parts(normalized)
+    genus_b, variety_b = _extract_parts(product_name)
+
+    if genus_a and genus_b and genus_a != genus_b:
+        if difflib.SequenceMatcher(None, genus_a, genus_b).ratio() < 0.85:
+            return 0.0
+
+    if not variety_a and not variety_b:
+        return 1.0 if genus_a == genus_b else 0.5
+    if not variety_a or not variety_b:
+        return 0.3
+
+    char_sim = difflib.SequenceMatcher(None, variety_a, variety_b).ratio()
+
+    # Word-level Jaccard on meaningful tokens (≥3 chars)
+    words_a = {w for w in variety_a.split() if len(w) >= 3}
+    words_b = {w for w in variety_b.split() if len(w) >= 3}
+    union = words_a | words_b
+    word_jaccard = len(words_a & words_b) / len(union) if union else 0.0
+
+    return char_sim * 0.55 + word_jaccard * 0.45
 
 
 def _fast_candidates(normalized: str, limit: int = 300) -> list[dict]:
@@ -79,8 +115,6 @@ def match_single_photo(filename: str, cfg=None, top_k: int = 5) -> dict:  # noqa
 
     Returns {filename, normalized_name, matches: [{product_id, name, vbn_number, similarity}]}
     """
-    from product_creator import _similarity
-
     normalized = normalize_filename(filename)
     try:
         rows = _fast_candidates(normalized)
@@ -90,7 +124,7 @@ def match_single_photo(filename: str, cfg=None, top_k: int = 5) -> dict:  # noqa
                     "product_id": r["product_id"],
                     "name": r["name"],
                     "vbn_number": r.get("vbn_number") or "",
-                    "similarity": round(_similarity(normalized, r["name"]), 3),
+                    "similarity": round(_photo_similarity(normalized, r["name"]), 3),
                 }
                 for r in rows
             ),
