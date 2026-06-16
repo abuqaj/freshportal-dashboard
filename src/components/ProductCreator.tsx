@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { flushSync } from "react-dom";
@@ -32,11 +32,11 @@ function NameCorrectionHint({ hint, onRevert, fromTemplateLabel, useOriginalLabe
       {diffs.map((d, i) => (
         <span key={i} className="flex items-center gap-1">
           <span className="text-amber-500 line-through">{d.orig}</span>
-          <span className="text-neutral-300">→</span>
+          <span className="text-neutral-300">â†’</span>
           <span className="text-green-600 font-medium">{d.corr}</span>
         </span>
       ))}
-      <span>·</span>
+      <span>Â·</span>
       <button type="button" onClick={onRevert} className="text-emerald hover:text-emerald-dark underline">
         {useOriginalLabel}
       </button>
@@ -408,539 +408,519 @@ export default function ProductCreator({ lang }: Props) {
     }
   }
 
-  return (
-    <div>
-      <div className="p-6">
+  // Derived step from existing state
+  const step = creating ? "creating"
+    : createResult !== null ? "done"
+    : pendingCreate !== null ? "confirm"
+    : searching ? "loading"
+    : searchResults !== null ? "results"
+    : "search";
 
-      {/* Module title */}
-      <div className="card-enter mb-6 flex items-end justify-between gap-4" style={{ animationDelay: "0ms" }}>
-        <div>
-          <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.newProducts}</h2>
-          <p className="text-sm text-ink-3 mt-1">{t.create.description}</p>
-        </div>
-        {/* Sync pill */}
-        {syncStatus && (
-          <div className="flex-shrink-0 flex items-center gap-2">
-            <div className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg font-medium ${
-              syncStatus.running ? "bg-ember-light text-ember border border-ember/30"
-              : syncStatus.product_count > 0 ? "bg-emerald-light text-emerald border border-emerald/30"
-              : "bg-muted text-ink-3 border border-border"
-            }`}>
-              {syncStatus.running && (
-                <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-              )}
-              {syncStatus.running ? t.create.syncRunning
-                : syncStatus.product_count > 0 ? t.create.syncProducts(syncStatus.product_count)
-                : t.create.syncEmpty}
-            </div>
-            <button
-              onClick={triggerSync}
-              disabled={syncTriggering || syncStatus.running}
-              className="text-[11px] text-ember hover:text-ember-dark disabled:opacity-40 underline"
-            >
-              {syncTriggering || syncStatus.running ? t.create.syncRunning : t.create.syncNow}
-            </button>
-          </div>
-        )}
-      </div>
+  function resetToSearch() {
+    setSearchResults(null);
+    setAiAnalysis(null);
+    setAiLoading(false);
+    setSearchError(null);
+    setSearchStatus(null);
+  }
 
-      {/* Search bar */}
-      <div className="card-enter bg-surface border border-border rounded-2xl p-5 mb-4 shadow-sm" style={{ animationDelay: "60ms" }}>
-        <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">{t.create.nameLabel}</label>
-        <div className="flex gap-3">
-          <input
-            type="text"
-            value={createInput}
-            onChange={(e) => setCreateInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleProductSearch()}
-            placeholder={t.create.namePlaceholder}
-            className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60"
-          />
-          <button
-            onClick={handleProductSearch}
-            disabled={searching || !createInput.trim()}
-            className="bg-ember hover:bg-ember-dark disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
-          >
-            {searching ? t.create.searching : t.create.searchBtn}
-          </button>
-        </div>
-        {searching && searchStatus && (
-          <div className="mt-3 flex items-center gap-3 text-sm text-emerald bg-emerald-light border border-emerald/30 rounded-lg px-4 py-3">
-            <svg className="animate-spin h-4 w-4 flex-shrink-0 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            <span>{searchStatus}</span>
-          </div>
-        )}
-        {searchError && (
-          <p className="mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">⚠️ {searchError}</p>
-        )}
-      </div>
+  function resetAll() {
+    setCreateResult(null);
+    setSearchResults(null);
+    setAiAnalysis(null);
+    setAiLoading(false);
+    setPendingCreate(null);
+    setCreateInput("");
+    setSearchError(null);
+    setVbnForCreate("");
+    setVbnForCreateInfo(null);
+    setColorForCreate("");
+    setColorSearch("");
+    setColorDropdownOpen(false);
+    setNameFromTemplate(null);
+    setTemplateColorName("");
+  }
 
-      {createResult && (
-        <div className={`mb-5 rounded-xl px-5 py-4 border text-sm ${createResult.ok ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-600"}`}>
-          <p className="font-medium">{createResult.ok ? "✓ " : "⚠ "}{createResult.message}</p>
-          {createResult.ok && createResult.url && <p className="text-xs mt-1 opacity-70">URL: {createResult.url}</p>}
-        </div>
-      )}
+  const highMatches = searchResults ? searchResults.filter(r => r.similarity >= 0.80).slice(0, 10) : [];
+  const isFallback = highMatches.length === 0 && (searchResults?.length ?? 0) > 0;
+  const allDisplayResults = isFallback ? (searchResults ?? []).slice(0, 1) : highMatches;
+  const displayResults = showAllResults ? allDisplayResults : allDisplayResults.slice(0, 6);
 
-      {creating && createStatus && (
-        <div className="mb-5 flex items-center gap-3 text-sm text-emerald bg-emerald-light border border-emerald/30 rounded-xl px-5 py-3">
-          <svg className="animate-spin h-4 w-4 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-          <span>{createStatus}</span>
-        </div>
-      )}
+  const SpinnerSm = () => (
+    <svg className="animate-spin h-3.5 w-3.5 text-emerald flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+    </svg>
+  );
 
-      {/* Search results */}
-      {searchResults !== null && (() => {
-        const highMatches = searchResults.filter(r => r.similarity >= 0.80).slice(0, 10);
-        const isFallback = highMatches.length === 0 && searchResults.length > 0;
-        const allDisplayResults = isFallback ? searchResults.slice(0, 1) : highMatches;
-        const displayResults = showAllResults ? allDisplayResults : allDisplayResults.slice(0, 5);
-        const hasMore = allDisplayResults.length > 5 && !showAllResults;
-        return (
-          <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-neutral-100">
-              <p className="text-sm font-medium text-neutral-800">
-                {t.create.similarTitle}
-                {highMatches.length > 0 && <span className="ml-2 text-xs text-neutral-400">{t.create.resultsCount(highMatches.length)}</span>}
-              </p>
-            </div>
-            {searchResults.length === 0 ? (
-              <div className="px-5 py-6 text-sm text-neutral-500 text-center">
-                {t.create.noResults}
-                <br />
-                <span className="text-xs text-neutral-400 mt-1 block">{t.create.noResultsHint}</span>
-              </div>
-            ) : (
-              <>
-                {highMatches.length > 0 && (
-                  <div className="px-5 py-3 bg-amber-50 border-b border-amber-100 text-xs text-amber-700">{t.create.warning}</div>
-                )}
-                {isFallback && (
-                  <div className="px-5 py-3 bg-neutral-50 border-b border-neutral-100 text-xs text-neutral-500">{t.create.fallback}</div>
-                )}
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-neutral-100 text-xs text-neutral-400 uppercase tracking-wide">
-                      <th className="text-left px-5 py-3 font-medium">{t.create.tableProduct}</th>
-                      <th className="text-left px-3 py-3 font-medium">{t.create.tableVbn}</th>
-                      <th className="text-left px-3 py-3 font-medium">{t.create.tableSim}</th>
-                      <th className="px-3 py-3 font-medium">{t.create.tableAction}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayResults.map((r) => (
-                      <tr key={r.product_id} className="border-b border-neutral-50 hover:bg-neutral-50">
-                        <td className="px-5 py-3">
-                          <p className="font-medium text-neutral-800">{r.name}</p>
-                          <p className="text-xs text-neutral-400">{r.short_name}</p>
-                        </td>
-                        <td className="px-3 py-3 text-xs font-mono text-neutral-500">{r.vbn_number || "—"}</td>
-                        <td className="px-3 py-3">
-                          <span className={`text-xs px-2 py-0.5 rounded font-medium ${
-                            r.similarity >= 1.0 ? "bg-green-50 text-green-700"
-                            : r.similarity >= 0.80 ? "bg-amber-50 text-amber-700"
-                            : "bg-neutral-100 text-neutral-500"
-                          }`}>
-                            {Math.round(r.similarity * 100)}%
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          <button
-                            onClick={() => {
-                              if (r.similarity >= 1.0) {
-                                setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name, templateColor: r.color ?? "" });
-                              } else {
-                                handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "");
-                              }
-                            }}
-                            disabled={creating}
-                            className="text-xs px-3 py-1.5 bg-ember hover:bg-ember-dark disabled:opacity-50 text-white rounded-lg transition-colors"
-                          >
-                            {t.create.useAsTemplate}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {hasMore && (
-                  <div className="px-5 py-3 border-t border-neutral-100 text-center">
-                    <button onClick={() => setShowAllResults(true)} className="text-xs text-emerald hover:text-emerald-dark font-medium">
-                      {t.create.showMore(allDisplayResults.length - 5)}
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        );
-      })()}
-
-      {/* Confirmation form */}
-      {pendingCreate && (
-        <div className="mt-4 bg-surface border-2 border-emerald/40 rounded-xl p-5">
-          <p className="text-sm font-semibold text-neutral-800 mb-1">{t.create.confirmTitle}</p>
-          <p className="text-xs text-neutral-500 mb-3">
-            {t.create.templateLabel} <span className="font-medium text-neutral-700">{pendingCreate.templateName}</span>
-            <span className="ml-2 text-neutral-400">(ID: {pendingCreate.templateId})</span>
-          </p>
-          <div className="flex flex-col gap-3">
-            <div className="flex gap-3">
-              <div className="flex-1">
-                <label className="block text-xs text-neutral-400 mb-1">{t.create.nameLabel}</label>
-                <input
-                  type="text"
-                  value={finalName}
-                  onChange={(e) => {
-                    const newName = e.target.value;
-                    setFinalName(newName);
-                    setNumberCheckResult(null);
-                    if (nameChangeDebounce.current) clearTimeout(nameChangeDebounce.current);
-                    nameChangeDebounce.current = setTimeout(() => {
-                      const trimmed = newName.trim();
-                      const sim = wordJaccard(initialFormName.current, trimmed);
-                      if (sim < 0.60) {
-                        const newBase = genProductNumber(trimmed);
-                        setProductNumber(newBase);
-                        setNumberChecking(true);
-                        fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(newBase)}&name=${encodeURIComponent(trimmed)}`)
-                          .then((r) => r.json())
-                          .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
-                            if (data.available_number) {
-                              setProductNumber(data.available_number);
-                              setNumberCheckResult({ changed: data.changed, original: data.original_number });
-                            }
-                          })
-                          .catch(() => {})
-                          .finally(() => setNumberChecking(false));
-                      }
-                      if (trimmed && RAILWAY && searchResults && searchResults.length > 0) {
-                        setVbnForCreateChecking(true);
-                        setVbnForCreateInfo(null);
-                        fetch(`${RAILWAY}/product-ai-analyze`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ name: trimmed, candidates: searchResults.slice(0, 6), preferred_vbn: vbnForCreate || null }),
-                        })
-                          .then(r => r.json())
-                          .then((data: AIAnalysis) => {
-                            const code = data?.vbn?.code ?? null;
-                            if (code) {
-                              setVbnForCreate(code);
-                              setVbnForCreateInfo(null);
-                              fetch(`${RAILWAY}/vbn-name/${code}`)
-                                .then(r => r.json())
-                                .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
-                                .catch(() => {})
-                                .finally(() => setVbnForCreateChecking(false));
-                            } else {
-                              setVbnForCreate("");
-                              setVbnForCreateInfo(null);
-                              setVbnForCreateChecking(false);
-                            }
-                          })
-                          .catch(() => setVbnForCreateChecking(false));
-                      }
-                    }, 1000);
-                  }}
-                  placeholder={t.create.finalNamePlaceholder}
-                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60"
-                  autoFocus
-                />
-                {nameFromTemplate && (
-                  <NameCorrectionHint
-                    hint={nameFromTemplate}
-                    onRevert={() => { setFinalName(nameFromTemplate.original); setNameFromTemplate(null); }}
-                    fromTemplateLabel={t.create.nameFromTemplate}
-                    useOriginalLabel={t.create.useOriginal}
-                  />
-                )}
-              </div>
-              <div>
-                <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
-                  {t.create.numberLabel}
-                  {numberChecking && (
-                    <svg className="animate-spin h-3 w-3 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                  )}
-                  {!numberChecking && numberCheckResult && !numberCheckResult.changed && (
-                    <span className="text-green-600 text-xs">{t.create.numberFree}</span>
-                  )}
-                </label>
-                <input
-                  type="text"
-                  value={productNumber}
-                  onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8)); setNumberCheckResult(null); }}
-                  placeholder={t.create.numberPlaceholder}
-                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-36 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60"
-                />
-              </div>
-            </div>
-            {numberCheckResult?.changed && (
-              <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                <span>⚠</span>
-                <span>{t.create.numberTaken(numberCheckResult.original, productNumber)}</span>
-              </div>
-            )}
-
-            <div className="flex gap-3">
-              {/* VBN input */}
-              <div className="flex-1">
-                <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
-                  {t.create.vbnLabel}
-                  {vbnForCreateChecking && (
-                    <svg className="animate-spin h-3 w-3 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                  )}
-                  {!vbnForCreateChecking && vbnForCreateInfo && (
-                    <span className={vbnForCreateInfo.found ? "text-green-600" : "text-red-500"}>
-                      {vbnForCreateInfo.found ? "✓" : "✗"}
-                    </span>
-                  )}
-                </label>
-                <input
-                  type="text"
-                  value={vbnForCreate}
-                  onChange={(e) => {
-                    const code = e.target.value.replace(/\D/g, "").slice(0, 6);
-                    setVbnForCreate(code);
-                    setVbnForCreateInfo(null);
-                    if (vbnForCreateDebounce.current) clearTimeout(vbnForCreateDebounce.current);
-                    if (code.length >= 3 && RAILWAY) {
-                      vbnForCreateDebounce.current = setTimeout(() => {
-                        setVbnForCreateChecking(true);
-                        fetch(`${RAILWAY}/vbn-name/${code}`)
-                          .then(r => r.json())
-                          .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
-                          .catch(() => {})
-                          .finally(() => setVbnForCreateChecking(false));
-                      }, 500);
-                    }
-                  }}
-                  placeholder={t.create.vbnPlaceholder}
-                  className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60"
-                />
-                {!vbnForCreateChecking && vbnForCreateInfo && (
-                  <p className={`text-xs mt-0.5 truncate ${vbnForCreateInfo.found ? "text-green-600" : "text-red-500"}`}>
-                    {vbnForCreateInfo.found ? vbnForCreateInfo.name : t.create.vbnNotFound}
-                  </p>
-                )}
-              </div>
-
-              {/* Color dropdown */}
-              <div className="flex-1" ref={colorDropdownRef}>
-                <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
-                  {t.create.colorLabel}
-                  {colorListLoading && (
-                    <svg className="animate-spin h-3 w-3 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                  )}
-                  {colorForCreate && (
-                    <button onClick={() => { setColorForCreate(""); setColorSearch(""); setTemplateColorName(""); }} className="text-neutral-300 hover:text-neutral-500 text-xs">✕</button>
-                  )}
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={colorSearch !== "" ? colorSearch : (colorList.find(c => c.id === colorForCreate)?.name ?? "")}
-                    onChange={(e) => { setColorSearch(e.target.value); setColorDropdownOpen(true); }}
-                    onFocus={() => { setColorSearch(""); setColorDropdownOpen(true); }}
-                    placeholder={colorListLoading ? t.create.colorLoading : colorForCreate ? "" : t.create.colorPlaceholder}
-                    disabled={colorListLoading}
-                    className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 disabled:bg-neutral-50"
-                  />
-                  {colorLoadError && (
-                    <div className="flex flex-col gap-0.5 mt-0.5">
-                      <p className="text-xs text-red-500 break-all">{colorLoadError}</p>
-                      <div className="flex gap-2">
-                        <button onClick={() => loadColors(false)} className="text-xs text-emerald hover:underline">{t.common.retry}</button>
-                        <button onClick={() => loadColors(true)} className="text-xs text-amber-600 hover:underline">{t.common.forceRefresh}</button>
-                      </div>
-                    </div>
-                  )}
-                  {!colorListLoading && !colorLoadError && colorList.length === 0 && (
-                    <button onClick={() => loadColors()} className="text-xs text-emerald hover:underline mt-0.5">{t.common.loadColors}</button>
-                  )}
-                  {colorDropdownOpen && !colorListLoading && (
-                    <div className="absolute z-30 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-neutral-200 rounded-xl shadow-xl">
-                      <button
-                        onMouseDown={(e) => { e.preventDefault(); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setTemplateColorName(""); }}
-                        className="w-full text-left px-3 py-2 text-xs text-neutral-400 hover:bg-neutral-50 border-b border-neutral-100"
-                      >
-                        — {t.create.colorNone}
-                      </button>
-                      {colorList
-                        .filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase()))
-                        .slice(0, 80)
-                        .map(c => (
-                          <button
-                            key={c.id}
-                            onMouseDown={(e) => { e.preventDefault(); setColorForCreate(c.id); setColorSearch(""); setColorDropdownOpen(false); }}
-                            className={`w-full text-left px-3 py-2 text-xs hover:bg-emerald-light flex justify-between items-center ${colorForCreate === c.id ? "bg-emerald-light text-emerald font-medium" : "text-neutral-700"}`}
-                          >
-                            <span>{c.name}</span>
-                            <span className="text-neutral-300 font-mono text-xs ml-2">{c.id}</span>
-                          </button>
-                        ))
-                      }
-                      {colorList.filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase())).length === 0 && (
-                        <p className="px-3 py-2 text-xs text-neutral-400 text-center">—</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex gap-3">
+  const AiPanel = () => (
+    <div className="w-64 flex-shrink-0 p-5 bg-ground space-y-3 overflow-y-auto">
+      <p className="text-[11px] font-semibold text-ink-3 uppercase tracking-widest">{t.create.aiTitle}</p>
+      {aiLoading ? (
+        <div className="flex items-center gap-2 text-xs text-ink-3"><SpinnerSm /><span>{t.create.aiChecking}</span></div>
+      ) : aiAnalysis ? (
+        <>
+          {aiAnalysis.duplicate.found && aiAnalysis.duplicate.product_id ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1">
+              <p className="text-xs font-semibold text-amber-800">{t.create.aiDuplicate}</p>
+              <p className="text-xs text-amber-700">{t.create.aiDuplicateAs} <strong>{aiAnalysis.duplicate.product_name}</strong></p>
+              {aiAnalysis.duplicate.confidence && <p className="text-[11px] text-amber-600">{t.create.confidence} {aiAnalysis.duplicate.confidence}</p>}
+              {aiAnalysis.duplicate.reason && <p className="text-[11px] text-amber-600">{aiAnalysis.duplicate.reason}</p>}
               <button
-                onClick={() => handleConfirmCreate()}
-                disabled={creating || numberChecking || !finalName.trim() || !productNumber.trim()}
-                className="bg-ember hover:bg-ember-dark disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
-              >
-                {creating ? t.create.creating : numberChecking ? t.create.checkingNumber : t.create.createBtn}
-              </button>
-              <button
-                onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setNameFromTemplate(null); setTemplateColorName(""); }}
-                className="border border-neutral-200 text-neutral-500 hover:bg-neutral-50 text-sm px-4 py-2.5 rounded-lg transition-colors"
-              >
-                {t.common.cancel}
-              </button>
+                onClick={() => handleCreateFromTemplate(aiAnalysis!.duplicate.product_id!, aiAnalysis!.duplicate.product_name ?? "")}
+                className="mt-1 text-[11px] px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg transition-colors"
+              >{t.create.useAsTemplate}</button>
             </div>
-            <p className="text-xs text-neutral-400">{t.create.numberHint}</p>
-          </div>
-        </div>
-      )}
-
-      {/* AI Analysis */}
-      {searchResults !== null && (aiLoading || aiAnalysis) && (
-        <div className="mt-4 bg-white border border-neutral-200 rounded-xl overflow-hidden">
-          <div className="px-5 py-3 border-b border-neutral-100 flex items-center gap-2">
-            <span className="text-xs font-medium text-neutral-500 uppercase tracking-wide">{t.create.aiTitle}</span>
-            {aiLoading && (
-              <svg className="animate-spin h-3 w-3 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            )}
-          </div>
-          {aiLoading ? (
-            <p className="px-5 py-4 text-sm text-neutral-400">{t.create.aiChecking}</p>
-          ) : aiAnalysis && (
-            <div className="p-5 flex flex-col gap-3">
-              {aiAnalysis.duplicate.found && aiAnalysis.duplicate.product_id ? (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-                  <p className="text-sm font-semibold text-amber-800">{t.create.aiDuplicate}</p>
-                  <p className="text-sm text-amber-700 mt-0.5">
-                    {t.create.aiDuplicateAs}{" "}
-                    <strong>{aiAnalysis.duplicate.product_name}</strong>
-                    {aiAnalysis.duplicate.confidence && (
-                      <span className="ml-2 text-xs font-medium px-1.5 py-0.5 rounded bg-amber-100">
-                        {t.create.confidence} {aiAnalysis.duplicate.confidence}
-                      </span>
-                    )}
-                  </p>
-                  {aiAnalysis.duplicate.reason && <p className="text-xs text-amber-600 mt-1">{aiAnalysis.duplicate.reason}</p>}
-                  <button
-                    onClick={() => handleCreateFromTemplate(aiAnalysis!.duplicate.product_id!, aiAnalysis!.duplicate.product_name ?? "")}
-                    disabled={creating}
-                    className="mt-2 text-xs px-3 py-1.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-lg transition-colors"
-                  >
-                    {t.create.useAsTemplate}
-                  </button>
-                </div>
-              ) : (
-                <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3">
-                  <p className="text-sm text-green-700">{t.create.aiNoDuplicate}</p>
-                </div>
-              )}
-              {aiAnalysis.vbn.code && (
-                <div className="bg-emerald-light border border-emerald/30 rounded-lg px-4 py-3">
-                  <p className="text-xs font-medium text-emerald uppercase tracking-wide mb-1">{t.create.aiVbnTitle}</p>
-                  <p className="text-sm font-semibold text-emerald-dark">
-                    <span className="font-mono">{aiAnalysis.vbn.code}</span>
-                    {aiAnalysis.vbn.name && <span className="font-normal"> — {aiAnalysis.vbn.name}</span>}
-                    {aiAnalysis.vbn.confidence && (
-                      <span className="ml-2 text-xs font-medium px-1.5 py-0.5 rounded bg-emerald-light text-emerald">
-                        {aiAnalysis.vbn.confidence}
-                      </span>
-                    )}
-                  </p>
-                  {aiAnalysis.vbn.explanation && <p className="text-xs text-emerald mt-1">{aiAnalysis.vbn.explanation}</p>}
-                </div>
-              )}
+          ) : (
+            <div className="bg-emerald-light border border-emerald/30 rounded-xl p-3">
+              <p className="text-xs text-emerald">{t.create.aiNoDuplicate}</p>
             </div>
           )}
-        </div>
-      )}
+          {aiAnalysis.vbn.code && (
+            <div className="bg-surface border border-border rounded-xl p-3 space-y-0.5">
+              <p className="text-[11px] font-medium text-ink-3 uppercase tracking-wide">{t.create.aiVbnTitle}</p>
+              <p className="text-sm font-bold text-emerald font-mono">{aiAnalysis.vbn.code}</p>
+              {aiAnalysis.vbn.name && <p className="text-xs text-ink-3">{aiAnalysis.vbn.name}</p>}
+              {aiAnalysis.vbn.confidence && <p className="text-[11px] text-emerald">{t.create.confidence} {aiAnalysis.vbn.confidence}</p>}
+              {aiAnalysis.vbn.explanation && <p className="text-[11px] text-ink-3 mt-1">{aiAnalysis.vbn.explanation}</p>}
+            </div>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
 
-      {/* Duplicate warning modal — step 1 */}
+  const BackChevron = () => (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+
+  return (
+    <div>
+      {/* Duplicate warning modal â€” step 1 */}
       {showDuplicateWarning && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
+          <div className="bg-surface rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
             <div className="flex items-start gap-4 mb-5">
-              <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0 text-2xl">⚠️</div>
+              <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 text-ember text-lg font-bold border border-ember/30">!</div>
               <div>
-                <p className="text-lg font-semibold text-neutral-900">{t.create.dupWarn1Title}</p>
-                <p className="text-sm text-neutral-600 mt-1">{t.create.dupWarn1Text(showDuplicateWarning.templateName)}</p>
+                <p className="text-base font-semibold text-ink">{t.create.dupWarn1Title}</p>
+                <p className="text-sm text-ink-3 mt-1">{t.create.dupWarn1Text(showDuplicateWarning.templateName)}</p>
               </div>
             </div>
             <div className="flex gap-3 justify-end">
-              <button onClick={() => setShowDuplicateWarning(null)} className="px-4 py-2 text-sm border border-neutral-200 rounded-lg text-neutral-600 hover:bg-neutral-50 transition-colors">
-                {t.common.cancel}
-              </button>
+              <button onClick={() => setShowDuplicateWarning(null)} className="px-4 py-2 text-sm border border-border rounded-xl text-ink-3 hover:bg-ground transition-colors">{t.common.cancel}</button>
               <button
-                onClick={() => {
-                  handleCreateFromTemplate(showDuplicateWarning.templateId, showDuplicateWarning.templateName, "", showDuplicateWarning.templateColor ?? "");
-                  setSelectedTemplateWas100Pct(true);
-                  setShowDuplicateWarning(null);
-                }}
-                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
-              >
-                {t.create.dupWarn1Confirm}
-              </button>
+                onClick={() => { handleCreateFromTemplate(showDuplicateWarning.templateId, showDuplicateWarning.templateName, "", showDuplicateWarning.templateColor ?? ""); setSelectedTemplateWas100Pct(true); setShowDuplicateWarning(null); }}
+                className="px-4 py-2 text-sm bg-ember hover:bg-ember-dark text-white rounded-xl font-medium transition-colors"
+              >{t.create.dupWarn1Confirm}</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Duplicate warning modal — step 2 */}
+      {/* Duplicate warning modal â€” step 2 */}
       {showSecondDuplicateWarning && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
+          <div className="bg-surface rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
             <div className="flex items-start gap-4 mb-5">
-              <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center flex-shrink-0 text-2xl">⚠️</div>
+              <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 text-ember text-lg font-bold border border-ember/30">!</div>
               <div>
-                <p className="text-lg font-semibold text-neutral-900">{t.create.dupWarn2Title}</p>
-                <p className="text-sm text-neutral-600 mt-1">{t.create.dupWarn2Text(finalName)}</p>
+                <p className="text-base font-semibold text-ink">{t.create.dupWarn2Title}</p>
+                <p className="text-sm text-ink-3 mt-1">{t.create.dupWarn2Text(finalName)}</p>
               </div>
             </div>
             <div className="flex gap-3 justify-end">
-              <button onClick={() => setShowSecondDuplicateWarning(false)} className="px-4 py-2 text-sm border border-neutral-200 rounded-lg text-neutral-600 hover:bg-neutral-50 transition-colors">
-                {t.create.dupWarn2Cancel}
-              </button>
-              <button onClick={() => handleConfirmCreate(true)} className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors">
-                {t.create.dupWarn2Confirm}
-              </button>
+              <button onClick={() => setShowSecondDuplicateWarning(false)} className="px-4 py-2 text-sm border border-border rounded-xl text-ink-3 hover:bg-ground transition-colors">{t.create.dupWarn2Cancel}</button>
+              <button onClick={() => handleConfirmCreate(true)} className="px-4 py-2 text-sm bg-ember hover:bg-ember-dark text-white rounded-xl font-medium transition-colors">{t.create.dupWarn2Confirm}</button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Step container â€” key triggers card-enter re-animation on step change */}
+      <div key={step} className="card-enter">
+
+        {/* â”€â”€ STEP 1: SEARCH â”€â”€ */}
+        {step === "search" && (
+          <div className="p-10 flex flex-col items-center gap-8 min-h-72">
+            <div className="text-center">
+              <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.newProducts}</h2>
+              <p className="text-sm text-ink-3 mt-2 max-w-md">{t.create.description}</p>
+            </div>
+            <div className="w-full max-w-md">
+              <div className="flex gap-2.5">
+                <input
+                  type="text"
+                  value={createInput}
+                  onChange={(e) => setCreateInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleProductSearch()}
+                  placeholder={t.create.namePlaceholder}
+                  className="flex-1 border border-border rounded-xl px-4 py-3 text-sm bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
+                  autoFocus
+                />
+                <button
+                  onClick={handleProductSearch}
+                  disabled={!createInput.trim()}
+                  className="bg-ember hover:bg-ember-dark disabled:opacity-40 text-white text-sm font-semibold px-5 py-3 rounded-xl transition-colors"
+                >{t.create.searchBtn}</button>
+              </div>
+              {searchError && <p className="mt-3 text-sm text-ember bg-ember-light border border-ember/30 rounded-xl px-4 py-3">âš  {searchError}</p>}
+            </div>
+            {syncStatus && (
+              <div className="flex items-center gap-3 text-xs">
+                <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-medium border ${syncStatus.running ? "bg-ember-light text-ember border-ember/30" : syncStatus.product_count > 0 ? "bg-emerald-light text-emerald border-emerald/30" : "bg-muted text-ink-3 border-border"}`}>
+                  {syncStatus.running && <SpinnerSm />}
+                  {syncStatus.running ? t.create.syncRunning : syncStatus.product_count > 0 ? t.create.syncProducts(syncStatus.product_count) : t.create.syncEmpty}
+                </span>
+                <button onClick={triggerSync} disabled={syncTriggering || syncStatus.running} className="text-ember hover:text-ember-dark disabled:opacity-40 underline">
+                  {syncTriggering || syncStatus.running ? t.create.syncRunning : t.create.syncNow}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* â”€â”€ STEP 2: LOADING â”€â”€ */}
+        {step === "loading" && (
+          <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
+            <svg className="animate-spin w-14 h-14 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-15" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
+              <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            <div>
+              <p className="text-xs text-ink-3 uppercase tracking-widest mb-2">{t.create.searching}</p>
+              <p className="text-xl font-bold text-ink">&ldquo;{createInput}&rdquo;</p>
+            </div>
+            {searchStatus && (
+              <p className="text-xs text-ink-3 animate-pulse border-t border-border pt-4 w-full max-w-xs">{searchStatus}</p>
+            )}
+          </div>
+        )}
+
+        {/* â”€â”€ STEP 3: RESULTS â”€â”€ */}
+        {step === "results" && searchResults !== null && (
+          <div className="flex flex-col">
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-4 flex-shrink-0">
+              <div>
+                <h2 className="font-semibold text-ink">{t.create.similarTitle}</h2>
+                <p className="text-xs text-ink-3 mt-0.5">
+                  &ldquo;{createInput}&rdquo;
+                  {highMatches.length > 0 && <span className="ml-2 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded text-[11px] font-medium">{t.create.resultsCount(highMatches.length)}</span>}
+                </p>
+              </div>
+              <button onClick={resetToSearch} className="flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink transition-colors shrink-0">
+                <BackChevron />{t.hub.back}
+              </button>
+            </div>
+            <div className="flex divide-x divide-border" style={{ minHeight: "320px" }}>
+              {/* Results list */}
+              <div className="flex-1 p-4 space-y-2 overflow-y-auto">
+                {searchResults.length === 0 ? (
+                  <div className="py-10 text-center text-sm text-ink-3">
+                    <p className="font-medium">{t.create.noResults}</p>
+                    <p className="text-xs mt-1 opacity-60">{t.create.noResultsHint}</p>
+                  </div>
+                ) : (
+                  <>
+                    {highMatches.length > 0 && <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">{t.create.warning}</div>}
+                    {isFallback && <div className="px-3 py-2 bg-muted border border-border rounded-xl text-xs text-ink-3">{t.create.fallback}</div>}
+                    {displayResults.map((r) => (
+                      <button
+                        key={r.product_id}
+                        onClick={() => {
+                          if (r.similarity >= 1.0) {
+                            setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name, templateColor: r.color ?? "" });
+                          } else {
+                            handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "");
+                          }
+                        }}
+                        className={`w-full text-left px-4 py-3 rounded-xl border transition-all hover:shadow-sm group ${r.similarity >= 1.0 ? "border-ember/40 bg-ember-light/30 hover:bg-ember-light/50" : r.similarity >= 0.80 ? "border-amber-200 bg-amber-50/60 hover:bg-amber-50" : "border-border bg-surface hover:bg-ground"}`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-medium text-sm text-ink truncate">{r.name}</p>
+                            {r.short_name && <p className="text-xs text-ink-3 truncate mt-0.5">{r.short_name}</p>}
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {r.vbn_number && <span className="text-[11px] font-mono text-ink-3">{r.vbn_number}</span>}
+                            <span className={`text-[11px] px-2 py-0.5 rounded-md font-bold ${r.similarity >= 1.0 ? "bg-ember text-white" : r.similarity >= 0.80 ? "bg-amber-500 text-white" : "bg-ink/10 text-ink-3"}`}>
+                              {Math.round(r.similarity * 100)}%
+                            </span>
+                            <span className="text-xs text-emerald opacity-0 group-hover:opacity-100 transition-opacity font-medium whitespace-nowrap">
+                              {t.create.useAsTemplate} â†’
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                    {!showAllResults && allDisplayResults.length > 6 && (
+                      <button onClick={() => setShowAllResults(true)} className="w-full text-xs text-emerald hover:text-emerald-dark font-medium py-2 text-center">
+                        {t.create.showMore(allDisplayResults.length - 6)}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+              {/* AI panel */}
+              <AiPanel />
+            </div>
+          </div>
+        )}
+
+        {/* â”€â”€ STEP 4: CONFIRM â”€â”€ */}
+        {step === "confirm" && pendingCreate && (
+          <div className="flex flex-col">
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-4 flex-shrink-0">
+              <div>
+                <h2 className="font-semibold text-ink">{t.create.confirmTitle}</h2>
+                <p className="text-xs text-ink-3 mt-0.5">
+                  {t.create.templateLabel} <span className="font-medium text-ink">{pendingCreate.templateName}</span>
+                  <span className="ml-1.5 opacity-40">#{pendingCreate.templateId}</span>
+                </p>
+              </div>
+              <button
+                onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setNameFromTemplate(null); setTemplateColorName(""); }}
+                className="flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink transition-colors shrink-0"
+              ><BackChevron />{t.hub.back}</button>
+            </div>
+            <div className="flex divide-x divide-border">
+              {/* Form */}
+              <div className="flex-1 p-6 space-y-4">
+                {/* Name */}
+                <div>
+                  <label className="block text-xs font-medium text-ink-3 mb-1.5">{t.create.nameLabel}</label>
+                  <input
+                    type="text"
+                    value={finalName}
+                    onChange={(e) => {
+                      const newName = e.target.value;
+                      setFinalName(newName);
+                      setNumberCheckResult(null);
+                      if (nameChangeDebounce.current) clearTimeout(nameChangeDebounce.current);
+                      nameChangeDebounce.current = setTimeout(() => {
+                        const trimmed = newName.trim();
+                        const sim = wordJaccard(initialFormName.current, trimmed);
+                        if (sim < 0.60) {
+                          const newBase = genProductNumber(trimmed);
+                          setProductNumber(newBase);
+                          setNumberChecking(true);
+                          fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(newBase)}&name=${encodeURIComponent(trimmed)}`)
+                            .then((r) => r.json())
+                            .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
+                              if (data.available_number) { setProductNumber(data.available_number); setNumberCheckResult({ changed: data.changed, original: data.original_number }); }
+                            })
+                            .catch(() => {})
+                            .finally(() => setNumberChecking(false));
+                        }
+                        if (trimmed && RAILWAY && searchResults && searchResults.length > 0) {
+                          setVbnForCreateChecking(true);
+                          setVbnForCreateInfo(null);
+                          fetch(`${RAILWAY}/product-ai-analyze`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ name: trimmed, candidates: searchResults.slice(0, 6), preferred_vbn: vbnForCreate || null }),
+                          })
+                            .then(r => r.json())
+                            .then((data: AIAnalysis) => {
+                              const code = data?.vbn?.code ?? null;
+                              if (code) {
+                                setVbnForCreate(code);
+                                setVbnForCreateInfo(null);
+                                fetch(`${RAILWAY}/vbn-name/${code}`)
+                                  .then(r => r.json())
+                                  .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+                                  .catch(() => {})
+                                  .finally(() => setVbnForCreateChecking(false));
+                              } else {
+                                setVbnForCreate(""); setVbnForCreateInfo(null); setVbnForCreateChecking(false);
+                              }
+                            })
+                            .catch(() => setVbnForCreateChecking(false));
+                        }
+                      }, 1000);
+                    }}
+                    placeholder={t.create.finalNamePlaceholder}
+                    className="w-full border border-border rounded-xl px-4 py-2.5 text-sm bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
+                    autoFocus
+                  />
+                  {nameFromTemplate && (
+                    <NameCorrectionHint
+                      hint={nameFromTemplate}
+                      onRevert={() => { setFinalName(nameFromTemplate.original); setNameFromTemplate(null); }}
+                      fromTemplateLabel={t.create.nameFromTemplate}
+                      useOriginalLabel={t.create.useOriginal}
+                    />
+                  )}
+                </div>
+
+                {/* Number */}
+                <div>
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-ink-3 mb-1.5">
+                    {t.create.numberLabel}
+                    {numberChecking && <SpinnerSm />}
+                    {!numberChecking && numberCheckResult && !numberCheckResult.changed && <span className="text-emerald">{t.create.numberFree}</span>}
+                  </label>
+                  <input
+                    type="text"
+                    value={productNumber}
+                    onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8)); setNumberCheckResult(null); }}
+                    placeholder={t.create.numberPlaceholder}
+                    className="w-full border border-border rounded-xl px-4 py-2.5 text-sm font-mono uppercase bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
+                  />
+                  {numberCheckResult?.changed && (
+                    <p className="mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">âš  {t.create.numberTaken(numberCheckResult.original, productNumber)}</p>
+                  )}
+                  <p className="mt-1 text-[11px] text-ink-3/50">{t.create.numberHint}</p>
+                </div>
+
+                {/* VBN + Color */}
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <label className="flex items-center gap-1.5 text-xs font-medium text-ink-3 mb-1.5">
+                      {t.create.vbnLabel}
+                      {vbnForCreateChecking && <SpinnerSm />}
+                      {!vbnForCreateChecking && vbnForCreateInfo && (
+                        <span className={vbnForCreateInfo.found ? "text-emerald" : "text-ember"}>{vbnForCreateInfo.found ? "âœ“" : "âœ—"}</span>
+                      )}
+                    </label>
+                    <input
+                      type="text"
+                      value={vbnForCreate}
+                      onChange={(e) => {
+                        const code = e.target.value.replace(/\D/g, "").slice(0, 6);
+                        setVbnForCreate(code);
+                        setVbnForCreateInfo(null);
+                        if (vbnForCreateDebounce.current) clearTimeout(vbnForCreateDebounce.current);
+                        if (code.length >= 3 && RAILWAY) {
+                          vbnForCreateDebounce.current = setTimeout(() => {
+                            setVbnForCreateChecking(true);
+                            fetch(`${RAILWAY}/vbn-name/${code}`)
+                              .then(r => r.json())
+                              .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+                              .catch(() => {})
+                              .finally(() => setVbnForCreateChecking(false));
+                          }, 500);
+                        }
+                      }}
+                      placeholder={t.create.vbnPlaceholder}
+                      className="w-full border border-border rounded-xl px-3 py-2.5 text-sm font-mono bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
+                    />
+                    {!vbnForCreateChecking && vbnForCreateInfo && (
+                      <p className={`text-[11px] mt-1 truncate ${vbnForCreateInfo.found ? "text-emerald" : "text-ember"}`}>
+                        {vbnForCreateInfo.found ? vbnForCreateInfo.name : t.create.vbnNotFound}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex-1" ref={colorDropdownRef}>
+                    <label className="flex items-center gap-1.5 text-xs font-medium text-ink-3 mb-1.5">
+                      {t.create.colorLabel}
+                      {colorListLoading && <SpinnerSm />}
+                      {colorForCreate && (
+                        <button onClick={() => { setColorForCreate(""); setColorSearch(""); setTemplateColorName(""); }} className="text-ink-3/40 hover:text-ink-3 text-xs ml-auto">âœ•</button>
+                      )}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={colorSearch !== "" ? colorSearch : (colorList.find(c => c.id === colorForCreate)?.name ?? "")}
+                        onChange={(e) => { setColorSearch(e.target.value); setColorDropdownOpen(true); }}
+                        onFocus={() => { setColorSearch(""); setColorDropdownOpen(true); }}
+                        placeholder={colorListLoading ? t.create.colorLoading : colorForCreate ? "" : t.create.colorPlaceholder}
+                        disabled={colorListLoading}
+                        className="w-full border border-border rounded-xl px-3 py-2.5 text-sm bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors disabled:opacity-50"
+                      />
+                      {colorLoadError && (
+                        <div className="mt-1 space-y-0.5">
+                          <p className="text-[11px] text-ember break-all">{colorLoadError}</p>
+                          <div className="flex gap-2">
+                            <button onClick={() => loadColors(false)} className="text-[11px] text-emerald hover:underline">{t.common.retry}</button>
+                            <button onClick={() => loadColors(true)} className="text-[11px] text-amber-600 hover:underline">{t.common.forceRefresh}</button>
+                          </div>
+                        </div>
+                      )}
+                      {colorDropdownOpen && !colorListLoading && (
+                        <div className="absolute z-30 left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-surface border border-border rounded-xl shadow-xl">
+                          <button
+                            onMouseDown={(e) => { e.preventDefault(); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setTemplateColorName(""); }}
+                            className="w-full text-left px-3 py-2 text-xs text-ink-3 hover:bg-ground border-b border-border"
+                          >â€” {t.create.colorNone}</button>
+                          {colorList
+                            .filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase()))
+                            .slice(0, 80)
+                            .map(c => (
+                              <button
+                                key={c.id}
+                                onMouseDown={(e) => { e.preventDefault(); setColorForCreate(c.id); setColorSearch(""); setColorDropdownOpen(false); }}
+                                className={`w-full text-left px-3 py-2 text-xs hover:bg-emerald-light flex justify-between items-center ${colorForCreate === c.id ? "bg-emerald-light text-emerald font-medium" : "text-ink"}`}
+                              >
+                                <span>{c.name}</span>
+                                <span className="text-ink-3 font-mono text-[10px] ml-2">{c.id}</span>
+                              </button>
+                            ))
+                          }
+                          {colorList.filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase())).length === 0 && (
+                            <p className="px-3 py-2 text-xs text-ink-3 text-center">â€”</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Create button */}
+                <div className="pt-1">
+                  <button
+                    onClick={() => handleConfirmCreate()}
+                    disabled={creating || numberChecking || !finalName.trim() || !productNumber.trim()}
+                    className="w-full bg-emerald hover:bg-emerald-dark disabled:opacity-40 text-white text-sm font-semibold py-3 rounded-xl transition-colors"
+                  >{numberChecking ? t.create.checkingNumber : t.create.createBtn}</button>
+                </div>
+              </div>
+
+              {/* AI panel */}
+              <AiPanel />
+            </div>
+          </div>
+        )}
+
+        {/* â”€â”€ STEP 5: CREATING â”€â”€ */}
+        {step === "creating" && (
+          <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
+            <svg className="animate-spin w-14 h-14 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-15" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
+              <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            <div>
+              <p className="text-xs text-ink-3 uppercase tracking-widest mb-2">{t.create.creating}</p>
+              <p className="text-xl font-bold text-ink">&ldquo;{finalName}&rdquo;</p>
+            </div>
+            {createStatus && (
+              <p className="text-xs text-ink-3 animate-pulse border-t border-border pt-4 w-full max-w-xs">{createStatus}</p>
+            )}
+          </div>
+        )}
+
+        {/* â”€â”€ STEP 6: DONE â”€â”€ */}
+        {step === "done" && createResult && (
+          <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold border-2 ${createResult.ok ? "bg-emerald-light text-emerald border-emerald/30" : "bg-ember-light text-ember border-ember/30"}`}>
+              {createResult.ok ? "âœ“" : "âœ—"}
+            </div>
+            <div>
+              <p className="text-lg font-bold text-ink">{createResult.message}</p>
+              {createResult.ok && createResult.url && (
+                <p className="text-xs text-ink-3 mt-1.5 font-mono break-all">{createResult.url}</p>
+              )}
+            </div>
+            <button
+              onClick={resetAll}
+              className="px-6 py-2.5 bg-ink hover:bg-ink/80 text-white text-sm font-medium rounded-xl transition-colors"
+            >{t.create.createAnother}</button>
+          </div>
+        )}
+
       </div>
     </div>
   );

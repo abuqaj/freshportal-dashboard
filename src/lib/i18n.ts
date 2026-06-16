@@ -131,6 +131,7 @@ const en = {
     syncLastSync:       "Last sync:",
     syncNow:            "Sync now",
     syncLoading:        "Loading DB status…",
+    createAnother:      "Create another product",
   },
   photo: {
     description:     "Drop product photos — AI matches filenames to products, you confirm before upload.",
@@ -336,6 +337,7 @@ const nl: typeof en = {
     syncLastSync:        "Laatste sync:",
     syncNow:             "Nu synchroniseren",
     syncLoading:         "DB-status laden…",
+    createAnother:       "Nieuw product aanmaken",
   },
   photo: {
     description:     "Gooi productfoto's neer — AI koppelt bestandsnamen aan producten, bevestig vóór upload.",
@@ -541,6 +543,7 @@ const pl: typeof en = {
     syncLastSync:        "Ostatni sync:",
     syncNow:             "Synchronizuj teraz",
     syncLoading:         "Ładuję status DB…",
+    createAnother:       "Utwórz kolejny produkt",
   },
   photo: {
     description:     "Wrzuć zdjęcia produktów — AI dopasuje nazwy plików do produktów, potwierdzasz przed uploadem.",
@@ -746,6 +749,7 @@ const es: typeof en = {
     syncLastSync:        "Última sync:",
     syncNow:             "Sincronizar ahora",
     syncLoading:         "Cargando estado BD…",
+    createAnother:       "Crear otro producto",
   },
   photo: {
     description:     "Arrastra fotos de producto — la IA vincula los nombres de archivo a los productos, confirmas antes de subir.",
