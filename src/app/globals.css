@@ -1,77 +1,127 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bark:        #0e1a17;
-  --color-bark-light:  #162820;
-  --color-bark-hover:  #1d3329;
-  --color-bark-border: #2a3d35;
-  --color-sage:        #7a9e82;
-  --color-sage-light:  #c2d4bc;
-  --color-cream:       #faf9f6;
-  --color-cream-dark:  #ede9e3;
-  --color-cream-card:  #ffffff;
-  --color-petal:       #e05a4e;
-  --color-petal-dark:  #c94438;
-  --color-petal-muted: #fdf3f2;
-  --color-petal-border:#f5c5c1;
-  --color-leaf:        #2d7a4f;
-  --color-leaf-light:  #d1f0e0;
-  --color-amber:       #c47b1a;
-  --color-amber-light: #fef3d4;
+  /* Brand */
+  --color-emerald:       #1A7D45;
+  --color-emerald-dark:  #0F5C32;
+  --color-emerald-light: #E8F5EE;
+  --color-ember:         #EC4328;
+  --color-ember-dark:    #C73318;
+  --color-ember-light:   #FEF0ED;
+
+  /* Surface */
+  --color-surface:       #FFFFFF;
+  --color-ground:        #F4F6F4;
+  --color-muted:         #E8EBE8;
+  --color-border:        #D8DDD8;
+
+  /* Text */
+  --color-ink:           #111A14;
+  --color-ink-2:         #3D4D42;
+  --color-ink-3:         #728070;
+
+  /* Legacy tile gradients (used as bg in tiles) */
+  --color-tile-a-from:   #1A7D45;
+  --color-tile-a-to:     #0D5430;
+  --color-tile-b-from:   #EC4328;
+  --color-tile-b-to:     #B83220;
+  --color-tile-c-from:   #145E35;
+  --color-tile-c-to:     #0A3D21;
+  --color-tile-d-from:   #C43320;
+  --color-tile-d-to:     #8B2016;
 }
 
-html, body {
-  height: 100%;
-  margin: 0;
+html, body { height: 100%; margin: 0; }
+
+/* ─── Tile entrance (staggered via inline delay) ─── */
+@keyframes tile-enter {
+  0%   { opacity: 0; transform: translateY(60px) scale(0.88); filter: blur(8px); }
+  60%  { filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.tile-enter {
+  animation: tile-enter 0.55s cubic-bezier(0.34, 1.45, 0.64, 1) both;
 }
 
-/* Smooth transitions for interactive elements */
-* {
-  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #d1cdc8;
-  border-radius: 2px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #b8b4af;
-}
-
-/* Pulsing dot animation for Auto VBN active */
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: 0.6; transform: scale(0.85); }
-}
-.pulse-dot {
-  animation: pulse-dot 2s ease-in-out infinite;
-}
-
-/* Skeleton shimmer */
-@keyframes shimmer {
-  0%   { background-position: -400px 0; }
-  100% { background-position: 400px 0; }
-}
-.skeleton {
-  background: linear-gradient(90deg, #f0ece6 25%, #e8e4de 50%, #f0ece6 75%);
-  background-size: 400px 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
-  border-radius: 6px;
-}
-
-/* Status row fade-in */
-@keyframes fade-in {
-  from { opacity: 0; transform: translateY(6px); }
+/* ─── Module slide in from bottom ─── */
+@keyframes module-enter {
+  from { opacity: 0; transform: translateY(28px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.fade-in {
-  animation: fade-in 0.25s ease-out forwards;
+.module-enter { animation: module-enter 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94) both; }
+
+/* ─── Hub fade-in ─── */
+@keyframes hub-enter {
+  from { opacity: 0; transform: scale(0.98); }
+  to   { opacity: 1; transform: scale(1); }
 }
+.hub-enter { animation: hub-enter 0.4s ease both; }
+
+/* ─── Icon float ─── */
+@keyframes float-y {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-7px); }
+}
+.float-icon { animation: float-y 3s ease-in-out infinite; }
+
+/* ─── Subtle spin for decorative bg elements ─── */
+@keyframes slow-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.slow-spin { animation: slow-spin 40s linear infinite; }
+
+/* ─── Pulse ring (Auto VBN active) ─── */
+@keyframes pulse-ring {
+  0%   { transform: scale(1);   opacity: 0.8; }
+  80%  { transform: scale(1.8); opacity: 0; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+.pulse-ring::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: #1A7D45;
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+/* ─── Number count-up shimmer ─── */
+@keyframes shimmer-text {
+  from { background-position: -200% center; }
+  to   { background-position: 200% center; }
+}
+.shimmer-text {
+  background: linear-gradient(90deg, #1A7D45 0%, #4aba7a 40%, #1A7D45 80%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: shimmer-text 2.5s linear infinite;
+}
+
+/* ─── Tile shine sweep on hover ─── */
+@keyframes shine-sweep {
+  from { transform: translateX(-100%) skewX(-20deg); }
+  to   { transform: translateX(300%) skewX(-20deg); }
+}
+.tile-shine::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.18) 50%, transparent 100%);
+  transform: translateX(-100%) skewX(-20deg);
+  pointer-events: none;
+  border-radius: inherit;
+}
+.tile-shine:hover::after {
+  animation: shine-sweep 0.7s ease;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #D8DDD8; border-radius: 2px; }
+
+/* ─── Smooth default transitions ─── */
+*, *::before, *::after { box-sizing: border-box; }

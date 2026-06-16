@@ -37,7 +37,7 @@ function NameCorrectionHint({ hint, onRevert, fromTemplateLabel, useOriginalLabe
         </span>
       ))}
       <span>·</span>
-      <button type="button" onClick={onRevert} className="text-violet-500 hover:text-violet-700 underline">
+      <button type="button" onClick={onRevert} className="text-emerald hover:text-emerald-dark underline">
         {useOriginalLabel}
       </button>
     </div>
@@ -409,55 +409,50 @@ export default function ProductCreator({ lang }: Props) {
   }
 
   return (
-    <div className="min-h-screen bg-cream">
-      {/* Header */}
-      <div className="bg-bark px-8 pt-8 pb-6 flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-semibold text-sage-light tracking-tight">{t.nav.newProducts}</h1>
-          <p className="text-sm text-sage mt-1 opacity-80">{t.create.description}</p>
-        </div>
-        {/* Sync status badge */}
-        <div className="flex-shrink-0 text-right mb-1">
-          {syncStatus ? (
-            <div className="flex flex-col items-end gap-1">
-              <div className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg font-medium ${
-                syncStatus.running ? "bg-petal/20 text-petal border border-petal/30"
-                : syncStatus.product_count > 0 ? "bg-leaf/20 text-leaf border border-leaf/30"
-                : "bg-bark-hover text-sage border border-bark-border"
-              }`}>
-                {syncStatus.running && (
-                  <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                  </svg>
-                )}
-                {syncStatus.running ? t.create.syncRunning
-                  : syncStatus.product_count > 0 ? t.create.syncProducts(syncStatus.product_count)
-                  : t.create.syncEmpty}
-              </div>
+    <div className="min-h-full bg-ground">
+      <div className="px-8 py-6 max-w-3xl">
+
+      {/* Sync status strip */}
+      <div className="flex items-center justify-between mb-5 gap-4">
+        {syncStatus ? (
+          <>
+            <div className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg font-medium ${
+              syncStatus.running ? "bg-ember-light text-ember border border-ember/30"
+              : syncStatus.product_count > 0 ? "bg-emerald-light text-emerald border border-emerald/30"
+              : "bg-muted text-ink-3 border border-border"
+            }`}>
+              {syncStatus.running && (
+                <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+              )}
+              {syncStatus.running ? t.create.syncRunning
+                : syncStatus.product_count > 0 ? t.create.syncProducts(syncStatus.product_count)
+                : t.create.syncEmpty}
+            </div>
+            <div className="flex items-center gap-3 text-right">
               {syncStatus.last_sync?.finished_at && !syncStatus.running && (
-                <p className="text-[10px] text-sage opacity-60">
+                <p className="text-[10px] text-ink-3 opacity-60">
                   {t.create.syncLastSync} {new Date(syncStatus.last_sync.finished_at).toLocaleString()}
                 </p>
               )}
               <button
                 onClick={triggerSync}
                 disabled={syncTriggering || syncStatus.running}
-                className="text-[11px] text-petal hover:text-petal-dark disabled:opacity-40 underline"
+                className="text-[11px] text-ember hover:text-ember-dark disabled:opacity-40 underline"
               >
                 {syncTriggering || syncStatus.running ? t.create.syncRunning : t.create.syncNow}
               </button>
             </div>
-          ) : (
-            <div className="text-xs text-sage opacity-40">{t.create.syncLoading}</div>
-          )}
-        </div>
+          </>
+        ) : (
+          <div className="text-xs text-ink-3 opacity-40">{t.create.syncLoading}</div>
+        )}
       </div>
 
-      <div className="px-8 py-6 max-w-3xl">
-
       {/* Search bar */}
-      <div className="bg-white border border-cream-dark rounded-2xl p-5 mb-4 shadow-sm">
+      <div className="bg-surface border border-border rounded-2xl p-5 mb-4 shadow-sm">
         <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">{t.create.nameLabel}</label>
         <div className="flex gap-3">
           <input
@@ -466,19 +461,19 @@ export default function ProductCreator({ lang }: Props) {
             onChange={(e) => setCreateInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleProductSearch()}
             placeholder={t.create.namePlaceholder}
-            className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60"
+            className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60"
           />
           <button
             onClick={handleProductSearch}
             disabled={searching || !createInput.trim()}
-            className="bg-petal hover:bg-petal-dark disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+            className="bg-ember hover:bg-ember-dark disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
           >
             {searching ? t.create.searching : t.create.searchBtn}
           </button>
         </div>
         {searching && searchStatus && (
-          <div className="mt-3 flex items-center gap-3 text-sm text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-4 py-3">
-            <svg className="animate-spin h-4 w-4 flex-shrink-0 text-violet-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <div className="mt-3 flex items-center gap-3 text-sm text-emerald bg-emerald-light border border-emerald/30 rounded-lg px-4 py-3">
+            <svg className="animate-spin h-4 w-4 flex-shrink-0 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
@@ -498,7 +493,7 @@ export default function ProductCreator({ lang }: Props) {
       )}
 
       {creating && createStatus && (
-        <div className="mb-5 flex items-center gap-3 text-sm text-violet-700 bg-violet-50 border border-violet-200 rounded-xl px-5 py-3">
+        <div className="mb-5 flex items-center gap-3 text-sm text-emerald bg-emerald-light border border-emerald/30 rounded-xl px-5 py-3">
           <svg className="animate-spin h-4 w-4 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -572,7 +567,7 @@ export default function ProductCreator({ lang }: Props) {
                               }
                             }}
                             disabled={creating}
-                            className="text-xs px-3 py-1.5 bg-petal hover:bg-petal-dark disabled:opacity-50 text-white rounded-lg transition-colors"
+                            className="text-xs px-3 py-1.5 bg-ember hover:bg-ember-dark disabled:opacity-50 text-white rounded-lg transition-colors"
                           >
                             {t.create.useAsTemplate}
                           </button>
@@ -583,7 +578,7 @@ export default function ProductCreator({ lang }: Props) {
                 </table>
                 {hasMore && (
                   <div className="px-5 py-3 border-t border-neutral-100 text-center">
-                    <button onClick={() => setShowAllResults(true)} className="text-xs text-violet-600 hover:text-violet-700 font-medium">
+                    <button onClick={() => setShowAllResults(true)} className="text-xs text-emerald hover:text-emerald-dark font-medium">
                       {t.create.showMore(allDisplayResults.length - 5)}
                     </button>
                   </div>
@@ -596,7 +591,7 @@ export default function ProductCreator({ lang }: Props) {
 
       {/* Confirmation form */}
       {pendingCreate && (
-        <div className="mt-4 bg-white border-2 border-violet-300 rounded-xl p-5">
+        <div className="mt-4 bg-surface border-2 border-emerald/40 rounded-xl p-5">
           <p className="text-sm font-semibold text-neutral-800 mb-1">{t.create.confirmTitle}</p>
           <p className="text-xs text-neutral-500 mb-3">
             {t.create.templateLabel} <span className="font-medium text-neutral-700">{pendingCreate.templateName}</span>
@@ -662,7 +657,7 @@ export default function ProductCreator({ lang }: Props) {
                     }, 1000);
                   }}
                   placeholder={t.create.finalNamePlaceholder}
-                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60"
+                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60"
                   autoFocus
                 />
                 {nameFromTemplate && (
@@ -678,7 +673,7 @@ export default function ProductCreator({ lang }: Props) {
                 <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
                   {t.create.numberLabel}
                   {numberChecking && (
-                    <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <svg className="animate-spin h-3 w-3 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
@@ -692,7 +687,7 @@ export default function ProductCreator({ lang }: Props) {
                   value={productNumber}
                   onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8)); setNumberCheckResult(null); }}
                   placeholder={t.create.numberPlaceholder}
-                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-36 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60"
+                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-36 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60"
                 />
               </div>
             </div>
@@ -709,7 +704,7 @@ export default function ProductCreator({ lang }: Props) {
                 <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
                   {t.create.vbnLabel}
                   {vbnForCreateChecking && (
-                    <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <svg className="animate-spin h-3 w-3 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
@@ -740,7 +735,7 @@ export default function ProductCreator({ lang }: Props) {
                     }
                   }}
                   placeholder={t.create.vbnPlaceholder}
-                  className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60"
+                  className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60"
                 />
                 {!vbnForCreateChecking && vbnForCreateInfo && (
                   <p className={`text-xs mt-0.5 truncate ${vbnForCreateInfo.found ? "text-green-600" : "text-red-500"}`}>
@@ -754,7 +749,7 @@ export default function ProductCreator({ lang }: Props) {
                 <label className="block text-xs text-neutral-400 mb-1 flex items-center gap-1.5">
                   {t.create.colorLabel}
                   {colorListLoading && (
-                    <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <svg className="animate-spin h-3 w-3 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
@@ -771,19 +766,19 @@ export default function ProductCreator({ lang }: Props) {
                     onFocus={() => { setColorSearch(""); setColorDropdownOpen(true); }}
                     placeholder={colorListLoading ? t.create.colorLoading : colorForCreate ? "" : t.create.colorPlaceholder}
                     disabled={colorListLoading}
-                    className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60 disabled:bg-neutral-50"
+                    className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 disabled:bg-neutral-50"
                   />
                   {colorLoadError && (
                     <div className="flex flex-col gap-0.5 mt-0.5">
                       <p className="text-xs text-red-500 break-all">{colorLoadError}</p>
                       <div className="flex gap-2">
-                        <button onClick={() => loadColors(false)} className="text-xs text-violet-600 hover:underline">{t.common.retry}</button>
+                        <button onClick={() => loadColors(false)} className="text-xs text-emerald hover:underline">{t.common.retry}</button>
                         <button onClick={() => loadColors(true)} className="text-xs text-amber-600 hover:underline">{t.common.forceRefresh}</button>
                       </div>
                     </div>
                   )}
                   {!colorListLoading && !colorLoadError && colorList.length === 0 && (
-                    <button onClick={() => loadColors()} className="text-xs text-violet-500 hover:underline mt-0.5">{t.common.loadColors}</button>
+                    <button onClick={() => loadColors()} className="text-xs text-emerald hover:underline mt-0.5">{t.common.loadColors}</button>
                   )}
                   {colorDropdownOpen && !colorListLoading && (
                     <div className="absolute z-30 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-neutral-200 rounded-xl shadow-xl">
@@ -800,7 +795,7 @@ export default function ProductCreator({ lang }: Props) {
                           <button
                             key={c.id}
                             onMouseDown={(e) => { e.preventDefault(); setColorForCreate(c.id); setColorSearch(""); setColorDropdownOpen(false); }}
-                            className={`w-full text-left px-3 py-2 text-xs hover:bg-violet-50 flex justify-between items-center ${colorForCreate === c.id ? "bg-violet-50 text-violet-700 font-medium" : "text-neutral-700"}`}
+                            className={`w-full text-left px-3 py-2 text-xs hover:bg-emerald-light flex justify-between items-center ${colorForCreate === c.id ? "bg-emerald-light text-emerald font-medium" : "text-neutral-700"}`}
                           >
                             <span>{c.name}</span>
                             <span className="text-neutral-300 font-mono text-xs ml-2">{c.id}</span>
@@ -820,7 +815,7 @@ export default function ProductCreator({ lang }: Props) {
               <button
                 onClick={() => handleConfirmCreate()}
                 disabled={creating || numberChecking || !finalName.trim() || !productNumber.trim()}
-                className="bg-petal hover:bg-petal-dark disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+                className="bg-ember hover:bg-ember-dark disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
               >
                 {creating ? t.create.creating : numberChecking ? t.create.checkingNumber : t.create.createBtn}
               </button>
@@ -842,7 +837,7 @@ export default function ProductCreator({ lang }: Props) {
           <div className="px-5 py-3 border-b border-neutral-100 flex items-center gap-2">
             <span className="text-xs font-medium text-neutral-500 uppercase tracking-wide">{t.create.aiTitle}</span>
             {aiLoading && (
-              <svg className="animate-spin h-3 w-3 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <svg className="animate-spin h-3 w-3 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
@@ -879,18 +874,18 @@ export default function ProductCreator({ lang }: Props) {
                 </div>
               )}
               {aiAnalysis.vbn.code && (
-                <div className="bg-violet-50 border border-violet-200 rounded-lg px-4 py-3">
-                  <p className="text-xs font-medium text-violet-500 uppercase tracking-wide mb-1">{t.create.aiVbnTitle}</p>
-                  <p className="text-sm font-semibold text-violet-800">
+                <div className="bg-emerald-light border border-emerald/30 rounded-lg px-4 py-3">
+                  <p className="text-xs font-medium text-emerald uppercase tracking-wide mb-1">{t.create.aiVbnTitle}</p>
+                  <p className="text-sm font-semibold text-emerald-dark">
                     <span className="font-mono">{aiAnalysis.vbn.code}</span>
                     {aiAnalysis.vbn.name && <span className="font-normal"> — {aiAnalysis.vbn.name}</span>}
                     {aiAnalysis.vbn.confidence && (
-                      <span className="ml-2 text-xs font-medium px-1.5 py-0.5 rounded bg-violet-100 text-violet-600">
+                      <span className="ml-2 text-xs font-medium px-1.5 py-0.5 rounded bg-emerald-light text-emerald">
                         {aiAnalysis.vbn.confidence}
                       </span>
                     )}
                   </p>
-                  {aiAnalysis.vbn.explanation && <p className="text-xs text-violet-600 mt-1">{aiAnalysis.vbn.explanation}</p>}
+                  {aiAnalysis.vbn.explanation && <p className="text-xs text-emerald mt-1">{aiAnalysis.vbn.explanation}</p>}
                 </div>
               )}
             </div>

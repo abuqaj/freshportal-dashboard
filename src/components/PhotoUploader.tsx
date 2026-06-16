@@ -197,21 +197,15 @@ export default function PhotoUploader({ lang }: Props) {
   }
 
   return (
-    <div className="min-h-screen bg-cream">
-      {/* Header */}
-      <div className="bg-bark px-8 pt-8 pb-6 flex items-end justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-sage-light tracking-tight">{t.nav.photoUploader}</h1>
-          <p className="text-sm text-sage mt-1 opacity-80">{t.photo.description}</p>
-        </div>
-        {photoPhase !== "idle" && (
-          <button onClick={resetPhotoUploader} className="text-xs text-sage hover:text-sage-light border border-bark-border rounded-lg px-3 py-1.5 bg-bark-hover transition-colors mb-1">
+    <div className="min-h-full bg-ground">
+      <div className="px-8 py-6 max-w-3xl">
+      {photoPhase !== "idle" && (
+        <div className="flex justify-end mb-4">
+          <button onClick={resetPhotoUploader} className="text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-3 py-1.5 bg-surface hover:bg-muted transition-colors">
             {t.photo.startOver}
           </button>
-        )}
-      </div>
-
-      <div className="px-8 py-6 max-w-3xl">
+        </div>
+      )}
 
       {photoError && (
         <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
@@ -222,7 +216,7 @@ export default function PhotoUploader({ lang }: Props) {
       {/* idle — drop zone */}
       {photoPhase === "idle" && (
         <div
-          className="bg-white border-2 border-dashed border-neutral-200 rounded-xl p-12 text-center hover:border-violet-300 transition-colors cursor-pointer"
+          className="bg-white border-2 border-dashed border-neutral-200 rounded-xl p-12 text-center hover:border-emerald transition-colors cursor-pointer"
           onDragOver={e => e.preventDefault()}
           onDrop={e => { e.preventDefault(); if (e.dataTransfer.files.length) analyzePhotos(e.dataTransfer.files); }}
           onClick={() => document.getElementById("photo-file-input")?.click()}
@@ -239,7 +233,7 @@ export default function PhotoUploader({ lang }: Props) {
           <p className="text-sm font-medium text-neutral-700">{t.photo.dropTitle}</p>
           <p className="text-xs text-neutral-400 mt-1">{t.photo.dropHint}</p>
           {photoAnalyzing && (
-            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-violet-600">
+            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-emerald">
               <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
@@ -253,7 +247,7 @@ export default function PhotoUploader({ lang }: Props) {
       {/* analyzing — spinner */}
       {photoPhase === "analyzing" && (
         <div className="bg-white border border-neutral-200 rounded-xl p-12 text-center">
-          <svg className="animate-spin h-8 w-8 mx-auto text-violet-500 mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <svg className="animate-spin h-8 w-8 mx-auto text-emerald mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
           </svg>
@@ -278,7 +272,7 @@ export default function PhotoUploader({ lang }: Props) {
                 <button
                   onClick={executePhotoUpload}
                   disabled={totalAssignments === 0}
-                  className="bg-petal hover:bg-petal-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
+                  className="bg-ember hover:bg-ember-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
                 >
                   {uploadLabel}
                 </button>
@@ -299,7 +293,7 @@ export default function PhotoUploader({ lang }: Props) {
                     {item.selected.length > 0 ? (
                       <div className="flex flex-wrap gap-1">
                         {item.selected.map((p: ProductMatchItem) => (
-                          <span key={p.product_id} className="inline-flex items-center gap-1 text-xs bg-violet-50 border border-violet-200 text-violet-700 px-2 py-0.5 rounded-full">
+                          <span key={p.product_id} className="inline-flex items-center gap-1 text-xs bg-emerald-light border border-emerald/30 text-emerald px-2 py-0.5 rounded-full">
                             <span>{p.name}</span>
                             <button
                               onClick={() => setReviewItems((prev: ReviewItem[]) => prev.map((r: ReviewItem, i: number) => i !== idx ? r : {
@@ -328,7 +322,7 @@ export default function PhotoUploader({ lang }: Props) {
                               alternatives: r.alternatives.filter((a: ProductMatchItem) => a.product_id !== alt.product_id),
                               approved: true,
                             }))}
-                            className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-dashed border-neutral-300 text-neutral-500 hover:border-violet-400 hover:text-violet-600 transition-colors"
+                            className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-dashed border-neutral-300 text-neutral-500 hover:border-emerald hover:text-emerald transition-colors"
                           >
                             <span className="text-neutral-300">+</span>
                             <span>{alt.name}</span>
@@ -361,7 +355,7 @@ export default function PhotoUploader({ lang }: Props) {
               <button
                 onClick={executePhotoUpload}
                 disabled={totalAssignments === 0}
-                className="bg-petal hover:bg-petal-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
+                className="bg-ember hover:bg-ember-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
               >
                 {uploadLabel} {t.photo.uploadToFP}
               </button>
@@ -374,7 +368,7 @@ export default function PhotoUploader({ lang }: Props) {
       {photoPhase === "uploading" && (
         <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-neutral-100 flex items-center gap-2">
-            <svg className="animate-spin h-4 w-4 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <svg className="animate-spin h-4 w-4 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
             </svg>
@@ -422,7 +416,7 @@ export default function PhotoUploader({ lang }: Props) {
                 ))}
               </div>
             </div>
-            <button onClick={resetPhotoUploader} className="text-sm text-petal hover:text-petal-dark border border-petal/30 rounded-xl px-4 py-2 bg-petal-muted hover:bg-petal/10 transition-colors">
+            <button onClick={resetPhotoUploader} className="text-sm text-ember hover:text-ember-dark border border-ember/30 rounded-xl px-4 py-2 bg-ember-light hover:bg-ember/10 transition-colors">
               {t.photo.uploadMore}
             </button>
           </div>

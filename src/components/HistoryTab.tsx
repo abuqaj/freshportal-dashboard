@@ -120,24 +120,18 @@ export default function HistoryTab({ lang }: Props) {
   }
 
   return (
-    <div className="min-h-screen bg-cream">
-      {/* Header */}
-      <div className="bg-bark px-8 pt-8 pb-6">
-        <h1 className="text-lg font-semibold text-sage-light tracking-tight">{t.history.title}</h1>
-        <p className="text-sm text-sage mt-1 opacity-80">{t.history.description}</p>
-      </div>
-
+    <div className="min-h-full bg-ground">
       <div className="px-8 py-6 max-w-4xl">
       <div className="mb-5 flex items-center justify-between">
-        <div className="flex gap-1 bg-white border border-cream-dark rounded-xl p-1 shadow-sm">
+        <div className="flex gap-1 bg-surface border border-border rounded-xl p-1 shadow-sm">
           {(["ops", "sync", "auto"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => handleTabSwitch(tab)}
               className={`text-xs px-4 py-1.5 rounded-lg font-medium transition-colors ${
                 historySubTab === tab
-                  ? "bg-bark text-sage-light shadow-sm"
-                  : "text-neutral-400 hover:text-neutral-700"
+                  ? "bg-ink text-white shadow-sm"
+                  : "text-ink-3 hover:text-ink"
               }`}
             >
               {tab === "ops" ? t.history.subTabOps : tab === "sync" ? t.history.subTabSync : t.history.subTabAutoVbn}
@@ -146,7 +140,7 @@ export default function HistoryTab({ lang }: Props) {
         </div>
         <button
           onClick={handleRefresh}
-          className="text-xs text-petal hover:text-petal-dark border border-petal/30 rounded-lg px-3 py-1.5 bg-petal-muted hover:bg-petal/10 transition-colors"
+          className="text-xs text-ember hover:text-ember-dark border border-ember/30 rounded-lg px-3 py-1.5 bg-ember-light hover:bg-ember/10 transition-colors"
         >
           {t.history.refresh}
         </button>
@@ -154,7 +148,7 @@ export default function HistoryTab({ lang }: Props) {
 
       {/* Sync sub-tab */}
       {historySubTab === "sync" && (
-        <div className="bg-white border border-cream-dark rounded-2xl overflow-hidden shadow-sm">
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden shadow-sm">
           {syncHistLoading && syncHistory === null ? (
             <div className="p-8 text-center text-sm text-neutral-400">{t.history.syncLoading}</div>
           ) : !syncHistory || syncHistory.length === 0 ? (
@@ -215,11 +209,11 @@ export default function HistoryTab({ lang }: Props) {
                 })}
               </div>
               {histSyncHasMore && (
-                <div className="px-5 py-3 border-t border-cream-dark text-center">
+                <div className="px-5 py-3 border-t border-border text-center">
                   <button
                     onClick={() => loadSyncHistory(true)}
                     disabled={syncHistLoading}
-                    className="text-xs text-petal hover:text-petal-dark disabled:opacity-40 font-medium"
+                    className="text-xs text-ember hover:text-ember-dark disabled:opacity-40 font-medium"
                   >
                     {syncHistLoading ? t.history.syncLoading : t.history.loadMore}
                   </button>
@@ -232,7 +226,7 @@ export default function HistoryTab({ lang }: Props) {
 
       {/* Operations sub-tab */}
       {historySubTab === "ops" && (
-        <div className="bg-white border border-cream-dark rounded-2xl overflow-hidden shadow-sm">
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden shadow-sm">
           {histLoading && history === null ? (
             <div className="p-8 text-center text-sm text-neutral-400">{t.history.loading}</div>
           ) : !history || history.length === 0 ? (
@@ -376,11 +370,11 @@ export default function HistoryTab({ lang }: Props) {
                 </tbody>
               </table>
               {histOpsHasMore && (
-                <div className="px-5 py-3 border-t border-cream-dark text-center">
+                <div className="px-5 py-3 border-t border-border text-center">
                   <button
                     onClick={() => loadHistory(true)}
                     disabled={histLoading}
-                    className="text-xs text-petal hover:text-petal-dark disabled:opacity-40 font-medium"
+                    className="text-xs text-ember hover:text-ember-dark disabled:opacity-40 font-medium"
                   >
                     {histLoading ? t.history.loading : t.history.loadMore}
                   </button>
@@ -393,7 +387,7 @@ export default function HistoryTab({ lang }: Props) {
 
       {/* Auto VBN sub-tab */}
       {historySubTab === "auto" && (
-        <div className="bg-white border border-cream-dark rounded-2xl overflow-hidden shadow-sm">
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden shadow-sm">
           {autoVbnHistLoading && autoVbnHistory === null ? (
             <div className="p-8 text-center text-sm text-neutral-400">{t.history.loading}</div>
           ) : !autoVbnHistory || autoVbnHistory.length === 0 ? (
@@ -495,11 +489,11 @@ export default function HistoryTab({ lang }: Props) {
                 })}
               </div>
               {histAutoHasMore && (
-                <div className="px-5 py-3 border-t border-cream-dark text-center">
+                <div className="px-5 py-3 border-t border-border text-center">
                   <button
                     onClick={() => loadAutoVbnHistory(true)}
                     disabled={autoVbnHistLoading}
-                    className="text-xs text-petal hover:text-petal-dark disabled:opacity-40 font-medium"
+                    className="text-xs text-ember hover:text-ember-dark disabled:opacity-40 font-medium"
                   >
                     {autoVbnHistLoading ? t.history.loading : t.history.loadMore}
                   </button>
