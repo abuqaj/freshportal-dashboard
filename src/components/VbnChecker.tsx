@@ -9,9 +9,19 @@ const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
 interface Props {
   lang: Lang;
+  onAutoVbnChange?: (enabled: boolean, nextRun: string | null) => void;
 }
 
-export default function VbnChecker({ lang }: Props) {
+function Spinner({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={`animate-spin ${className}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
+  );
+}
+
+export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
   const t = translations[lang];
 
   const [vbnInput, setVbnInput] = useState("");
@@ -46,12 +56,10 @@ export default function VbnChecker({ lang }: Props) {
       setVbnAutoEnabled(data.enabled ?? false);
       setVbnAutoLastRun(data.lastRun ?? null);
       setVbnAutoNextRun(data.nextRun ?? null);
+      onAutoVbnChange?.(data.enabled ?? false, data.nextRun ?? null);
     } catch { /* ignore */ }
-  }, []);
+  }, [onAutoVbnChange]);
 
-  // Expose for parent to call on tab entry
-  // (called via useEffect in page.tsx — pass as ref if needed, or just call here)
-  // We call it on mount
   useState(() => { loadVbnAutoStatus(); });
 
   const toggleVbnAuto = useCallback(async (enabled: boolean) => {
@@ -260,254 +268,296 @@ export default function VbnChecker({ lang }: Props) {
   }
 
   return (
-    <div className="p-8 max-w-5xl">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-neutral-900">VBN Checker</h1>
-        <p className="text-sm text-neutral-500 mt-1">{t.vbn.description}</p>
+    <div className="min-h-screen bg-cream">
+      {/* ── Page header ── */}
+      <div className="bg-bark px-8 pt-8 pb-6">
+        <h1 className="text-lg font-semibold text-sage-light tracking-tight">VBN Checker</h1>
+        <p className="text-sm text-sage mt-1 opacity-80">{t.vbn.description}</p>
       </div>
 
-      {/* Auto VBN check toggle */}
-      <div className="mb-5 bg-white border border-neutral-200 rounded-xl p-5 flex items-start gap-5">
-        <div className="flex-1">
-          <p className="text-sm font-medium text-neutral-800">{t.vbn.autoCheckTitle}</p>
-          <p className="text-xs text-neutral-500 mt-0.5">{t.vbn.autoCheckDesc}</p>
-          {vbnAutoLastRun && (
-            <p className="text-xs text-neutral-400 mt-2">
-              {t.vbn.autoCheckLastRun}: {new Date(vbnAutoLastRun.started_at).toLocaleString(localeStr)}
-              {vbnAutoLastRun.checked_count != null && (
-                <span className="ml-2 text-neutral-500">
-                  — {vbnAutoLastRun.checked_count} {t.vbn.autoCheckChecked}, {vbnAutoLastRun.fixed_count ?? 0} {t.vbn.autoCheckFixed}
-                </span>
-              )}
-            </p>
-          )}
-          {!vbnAutoLastRun && <p className="text-xs text-neutral-400 mt-2">{t.vbn.autoCheckNeverRun}</p>}
-          {vbnAutoEnabled && vbnAutoNextRun && (
-            <p className="text-xs text-neutral-400 mt-0.5">
-              {t.vbn.autoCheckNextRun}: {new Date(vbnAutoNextRun).toLocaleString(localeStr)}
-            </p>
-          )}
-        </div>
-        <div className="flex items-center gap-3 flex-shrink-0">
-          <button
-            onClick={runVbnAutoNow}
-            disabled={vbnAutoRunNowLoading}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-violet-200 text-violet-700 bg-violet-50 hover:bg-violet-100 disabled:opacity-50 transition-colors"
-          >
-            {vbnAutoRunNowLoading ? t.vbn.autoCheckRunning : t.vbn.autoCheckRunNow}
-          </button>
-          <button
-            onClick={() => toggleVbnAuto(!vbnAutoEnabled)}
-            disabled={vbnAutoTogglingLoading}
-            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50 ${vbnAutoEnabled ? "bg-violet-600" : "bg-neutral-200"}`}
-            aria-label={t.vbn.autoCheckTitle}
-          >
-            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${vbnAutoEnabled ? "translate-x-6" : "translate-x-1"}`} />
-          </button>
-        </div>
-      </div>
+      <div className="px-8 py-6 max-w-5xl space-y-4">
 
-      {/* Fix success banner */}
-      {fixSuccess && (
-        <div className="mb-5 flex items-center gap-3 text-sm text-green-700 bg-green-50 border border-green-200 rounded-xl px-5 py-3">
-          <span className="text-base">✓</span>
-          <span>{fixSuccess}</span>
-        </div>
-      )}
-
-      {/* Search bar */}
-      <div className="bg-white border border-neutral-200 rounded-xl p-5 mb-5">
-        <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">{t.vbn.codesLabel}</label>
-        <div className="flex gap-3">
-          <input
-            type="text"
-            value={vbnInput}
-            onChange={(e) => setVbnInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleCheck()}
-            placeholder={t.vbn.placeholder}
-            className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-64 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
-          />
-          <button
-            onClick={handleCheck}
-            disabled={loading || !vbnInput.trim()}
-            className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
-          >
-            {loading ? t.vbn.checking : t.vbn.checkBtn}
-          </button>
-        </div>
-        {loading && statusMessage && (
-          <div className="mt-3 flex items-center gap-3 text-sm text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-4 py-3">
-            <svg className="animate-spin h-4 w-4 flex-shrink-0 text-violet-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            <span>{statusMessage}</span>
-          </div>
-        )}
-        {checkError && (
-          <p className="mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">⚠️ {checkError}</p>
-        )}
-      </div>
-
-      {/* Stats */}
-      {stats && (
-        <div className="grid grid-cols-4 gap-3 mb-5">
-          {[
-            { label: t.vbn.statTotal,    value: stats.total,    color: "text-neutral-800" },
-            { label: t.vbn.statErrors,   value: stats.errors,   color: "text-red-600" },
-            { label: t.vbn.statWarnings, value: stats.warnings, color: "text-amber-600" },
-            { label: t.vbn.statOk,       value: stats.ok,       color: "text-green-600" },
-          ].map((s) => (
-            <div key={s.label} className="bg-white border border-neutral-200 rounded-xl p-4">
-              <p className="text-xs text-neutral-400 mb-1">{s.label}</p>
-              <p className={`text-2xl font-semibold ${s.color}`}>{s.value}</p>
+        {/* ── Auto VBN card ── */}
+        <div className="bg-bark rounded-2xl overflow-hidden">
+          <div className="px-5 py-4 flex items-start gap-4">
+            {/* Status indicator */}
+            <div className="flex-shrink-0 mt-0.5">
+              <span className={`flex w-8 h-8 items-center justify-center rounded-xl ${vbnAutoEnabled ? "bg-leaf/20" : "bg-bark-hover"}`}>
+                <span className={`w-2.5 h-2.5 rounded-full ${vbnAutoEnabled ? "bg-leaf pulse-dot" : "bg-sage opacity-40"}`} />
+              </span>
             </div>
-          ))}
-        </div>
-      )}
 
-      {/* Results table */}
-      {results && results.length > 0 && (
-        <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden mb-4">
-          <div className="px-5 py-4 border-b border-neutral-100 flex justify-between items-center">
-            <p className="text-sm font-medium text-neutral-800">
-              {t.vbn.errorsTitle}
-              <span className="ml-2 text-xs text-neutral-400">({errorResults.length} {t.vbn.toFix})</span>
-            </p>
+            {/* Info */}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-sage-light">{t.vbn.autoCheckTitle}</p>
+              <p className="text-xs text-sage mt-0.5 leading-relaxed">{t.vbn.autoCheckDesc}</p>
+              <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-sage">
+                {vbnAutoLastRun ? (
+                  <span>
+                    {t.vbn.autoCheckLastRun}: <span className="text-sage-light">{new Date(vbnAutoLastRun.started_at).toLocaleString(localeStr)}</span>
+                    {vbnAutoLastRun.checked_count != null && (
+                      <span className="ml-2 opacity-70">— {vbnAutoLastRun.checked_count} {t.vbn.autoCheckChecked}, {vbnAutoLastRun.fixed_count ?? 0} {t.vbn.autoCheckFixed}</span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="opacity-50">{t.vbn.autoCheckNeverRun}</span>
+                )}
+                {vbnAutoEnabled && vbnAutoNextRun && (
+                  <span className="text-leaf">{t.vbn.autoCheckNextRun}: {new Date(vbnAutoNextRun).toLocaleString(localeStr)}</span>
+                )}
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div className="flex items-center gap-2.5 flex-shrink-0">
+              <button
+                onClick={runVbnAutoNow}
+                disabled={vbnAutoRunNowLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg border border-petal/40 text-petal bg-petal/10 hover:bg-petal/20 disabled:opacity-40 transition-colors"
+              >
+                {vbnAutoRunNowLoading ? <><Spinner className="h-3 w-3" />{t.vbn.autoCheckRunning}</> : t.vbn.autoCheckRunNow}
+              </button>
+              <button
+                onClick={() => toggleVbnAuto(!vbnAutoEnabled)}
+                disabled={vbnAutoTogglingLoading}
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-40 ${vbnAutoEnabled ? "bg-petal" : "bg-bark-border"}`}
+                aria-label={t.vbn.autoCheckTitle}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${vbnAutoEnabled ? "translate-x-6" : "translate-x-1"}`} />
+              </button>
+            </div>
           </div>
-          {errorResults.length === 0 ? (
-            <div className="px-5 py-8 text-center text-sm text-green-600">{t.vbn.allOk}</div>
-          ) : (
-            <table className="w-full text-sm">
+        </div>
+
+        {/* ── Fix success banner ── */}
+        {fixSuccess && (
+          <div className="fade-in flex items-center gap-3 text-sm text-leaf bg-leaf-light border border-leaf/20 rounded-xl px-5 py-3">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8l4 4 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            {fixSuccess}
+          </div>
+        )}
+
+        {/* ── Search card ── */}
+        <div className="bg-white rounded-2xl border border-cream-dark p-5 shadow-sm">
+          <label className="block text-[10px] font-semibold text-sage uppercase tracking-widest mb-3">{t.vbn.codesLabel}</label>
+          <div className="flex gap-3">
+            <input
+              type="text"
+              value={vbnInput}
+              onChange={(e) => setVbnInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleCheck()}
+              placeholder={t.vbn.placeholder}
+              className="border border-cream-dark rounded-xl px-4 py-2.5 text-sm flex-1 max-w-64 focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60 bg-cream placeholder:text-neutral-300 transition-all"
+            />
+            <button
+              onClick={handleCheck}
+              disabled={loading || !vbnInput.trim()}
+              className="flex items-center gap-2 bg-petal hover:bg-petal-dark disabled:opacity-40 text-white text-sm font-medium px-6 py-2.5 rounded-xl transition-colors shadow-sm"
+            >
+              {loading && <Spinner className="h-4 w-4" />}
+              {loading ? t.vbn.checking : t.vbn.checkBtn}
+            </button>
+          </div>
+
+          {loading && statusMessage && (
+            <div className="mt-3 flex items-center gap-2.5 text-sm text-petal bg-petal-muted border border-petal-border rounded-lg px-4 py-2.5">
+              <Spinner className="h-3.5 w-3.5 flex-shrink-0" />
+              {statusMessage}
+            </div>
+          )}
+          {checkError && (
+            <div className="mt-3 flex items-center gap-2 text-sm text-petal-dark bg-petal-muted border border-petal-border rounded-lg px-4 py-2.5">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6.5" stroke="currentColor" strokeWidth="1.2"/><path d="M7 4v3.5M7 10h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+              {checkError}
+            </div>
+          )}
+        </div>
+
+        {/* ── Stats row ── */}
+        {stats && (
+          <div className="grid grid-cols-4 gap-3 fade-in">
+            {[
+              { label: t.vbn.statTotal,    value: stats.total,    bg: "bg-white",           val: "text-[#1a1a18]",  border: "border-cream-dark" },
+              { label: t.vbn.statErrors,   value: stats.errors,   bg: "bg-petal-muted",     val: "text-petal-dark", border: "border-petal-border" },
+              { label: t.vbn.statWarnings, value: stats.warnings, bg: "bg-amber-light",     val: "text-amber",      border: "border-amber/20" },
+              { label: t.vbn.statOk,       value: stats.ok,       bg: "bg-leaf-light",      val: "text-leaf",       border: "border-leaf/20" },
+            ].map((s) => (
+              <div key={s.label} className={`${s.bg} border ${s.border} rounded-2xl px-4 py-3 shadow-sm`}>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-neutral-400 mb-1">{s.label}</p>
+                <p className={`text-3xl font-bold ${s.val} leading-none`}>{s.value}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Results table ── */}
+        {results && results.length > 0 && (
+          <div className="bg-white border border-cream-dark rounded-2xl overflow-hidden shadow-sm fade-in">
+            <div className="px-5 py-3.5 border-b border-cream-dark flex justify-between items-center">
+              <div>
+                <span className="text-sm font-semibold text-[#1a1a18]">{t.vbn.errorsTitle}</span>
+                <span className="ml-2 text-xs text-neutral-400">({errorResults.length} {t.vbn.toFix})</span>
+              </div>
+            </div>
+
+            {errorResults.length === 0 ? (
+              <div className="px-5 py-10 text-center">
+                <div className="w-10 h-10 bg-leaf-light rounded-full flex items-center justify-center mx-auto mb-3">
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 9l5 5 7-8" stroke="#2d7a4f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                </div>
+                <p className="text-sm text-leaf font-medium">{t.vbn.allOk}</p>
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-cream border-b border-cream-dark text-[10px] text-neutral-400 uppercase tracking-widest">
+                    <th className="text-left px-5 py-3 font-semibold">{t.vbn.tableProduct}</th>
+                    <th className="text-left px-3 py-3 font-semibold">{t.vbn.tableCurrent}</th>
+                    <th className="text-left px-3 py-3 font-semibold">{t.vbn.tableReason}</th>
+                    <th className="text-left px-3 py-3 font-semibold">{t.vbn.tableProposed}</th>
+                    <th className="px-3 py-3 font-semibold">{t.vbn.tableAction}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-cream-dark">
+                  {errorResults.map((r) => (
+                    <tr key={r.product_id} className={`hover:bg-cream/60 transition-colors ${r.excluded ? "opacity-35" : ""}`}>
+                      <td className="px-5 py-3">
+                        <p className="font-medium text-[#1a1a18] text-sm leading-snug">{r.name}</p>
+                        {r.short_name && <p className="text-xs text-neutral-400 mt-0.5">{r.short_name}</p>}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className={`inline-block px-2 py-0.5 rounded-md text-xs font-mono font-medium ${r.status === "ERROR" ? "bg-petal-muted text-petal-dark" : "bg-amber-light text-amber"}`}>
+                          {r.current_vbn}
+                        </span>
+                        {r.official_name && <p className="text-[11px] text-neutral-400 mt-0.5 max-w-[120px] truncate">{r.official_name}</p>}
+                      </td>
+                      <td className="px-3 py-3 max-w-xs">
+                        <p className="text-xs text-neutral-500 leading-relaxed">{r.reason || "—"}</p>
+                      </td>
+                      <td className="px-3 py-3 min-w-[160px]">
+                        <input
+                          ref={(el) => { inputRefs.current[r.product_id] = el; }}
+                          type="text"
+                          value={r.edited_vbn ?? ""}
+                          onChange={(e) => updateVbn(r.product_id, e.target.value)}
+                          onBlur={() => setTimeout(() => setSuggestions(null), 150)}
+                          disabled={r.excluded}
+                          placeholder={t.vbn.editPlaceholder}
+                          className="border border-cream-dark rounded-lg px-2.5 py-1.5 text-xs w-36 focus:outline-none focus:ring-1 focus:ring-petal/40 focus:border-petal/60 disabled:bg-cream bg-white transition-all font-mono"
+                        />
+                        {r.edited_vbn?.trim() && /^\d+$/.test(r.edited_vbn.trim()) && (
+                          <p className={`text-[10px] mt-0.5 leading-snug break-words ${
+                            vbnNameCache[r.edited_vbn.trim()]?.startsWith("⚠") ? "text-petal" :
+                            vbnNameCache[r.edited_vbn.trim()] === "…" ? "text-neutral-300 italic" :
+                            "text-neutral-400"
+                          }`}>
+                            {vbnNameCache[r.edited_vbn.trim()] ?? ""}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-center">
+                        <button
+                          onClick={() => toggleExclude(r.product_id)}
+                          className={`text-xs px-2.5 py-1 rounded-lg border font-medium transition-colors ${
+                            r.excluded
+                              ? "border-leaf/30 text-leaf bg-leaf-light hover:bg-leaf/20"
+                              : "border-cream-dark text-neutral-400 hover:border-petal/30 hover:text-petal hover:bg-petal-muted"
+                          }`}
+                        >
+                          {r.excluded ? t.vbn.restore : t.vbn.skip}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {errorResults.length > 0 && (
+              <div className="px-5 py-3.5 bg-cream border-t border-cream-dark flex items-center justify-between">
+                <p className="text-xs text-neutral-400">
+                  <span className="font-semibold text-[#1a1a18]">{errorResults.filter((r) => !r.excluded && r.edited_vbn?.trim()).length}</span>
+                  {" "}{t.vbn.willBeUpdated}
+                </p>
+                <div className="flex gap-2.5 items-center">
+                  {fixMessage && (
+                    <span className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg ${
+                      fixMessage.startsWith("✓") ? "bg-leaf-light text-leaf" :
+                      fixing ? "bg-petal-muted text-petal" :
+                      "bg-petal-muted text-petal-dark"
+                    }`}>
+                      {fixing && <Spinner className="h-3 w-3" />}
+                      {fixMessage}
+                    </span>
+                  )}
+                  <button
+                    onClick={handleFix}
+                    disabled={fixing}
+                    className="flex items-center gap-1.5 bg-petal hover:bg-petal-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors shadow-sm"
+                  >
+                    {fixing && <Spinner className="h-3 w-3" />}
+                    {fixing ? t.vbn.fixing : t.vbn.fixBtn}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── OK products (collapsed) ── */}
+        {results && stats && stats.ok > 0 && (
+          <details className="bg-white border border-cream-dark rounded-2xl overflow-hidden shadow-sm group">
+            <summary className="px-5 py-3 text-sm text-neutral-500 cursor-pointer select-none hover:bg-cream transition-colors flex items-center gap-2">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="transition-transform group-open:rotate-90 flex-shrink-0">
+                <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <span className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 text-leaf text-xs font-medium">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  {stats.ok}
+                </span>
+                {t.vbn.okExpand(stats.ok).replace(String(stats.ok), "").trim()}
+              </span>
+            </summary>
+            <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-neutral-100 text-xs text-neutral-400 uppercase tracking-wide">
-                  <th className="text-left px-5 py-3 font-medium">{t.vbn.tableProduct}</th>
-                  <th className="text-left px-3 py-3 font-medium">{t.vbn.tableCurrent}</th>
-                  <th className="text-left px-3 py-3 font-medium">{t.vbn.tableReason}</th>
-                  <th className="text-left px-3 py-3 font-medium">{t.vbn.tableProposed}</th>
-                  <th className="px-3 py-3 font-medium">{t.vbn.tableAction}</th>
+                <tr className="bg-cream border-b border-cream-dark text-[10px] uppercase tracking-widest text-neutral-400">
+                  <th className="text-left px-5 py-2.5 font-semibold">{t.vbn.okName}</th>
+                  <th className="text-left px-3 py-2.5 font-semibold">{t.vbn.okVbn}</th>
+                  <th className="text-left px-3 py-2.5 font-semibold">{t.vbn.okOfficial}</th>
                 </tr>
               </thead>
-              <tbody>
-                {errorResults.map((r) => (
-                  <tr key={r.product_id} className={`border-b border-neutral-50 hover:bg-neutral-50 transition-colors ${r.excluded ? "opacity-40" : ""}`}>
-                    <td className="px-5 py-3">
-                      <p className="font-medium text-neutral-800">{r.name}</p>
-                      <p className="text-xs text-neutral-400">{r.short_name}</p>
-                    </td>
-                    <td className="px-3 py-3">
-                      <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${r.status === "ERROR" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700"}`}>
-                        {r.current_vbn}
-                      </span>
-                      {r.official_name && <p className="text-xs text-neutral-400 mt-0.5 max-w-32 truncate">{r.official_name}</p>}
-                    </td>
-                    <td className="px-3 py-3 max-w-xs">
-                      <p className="text-xs text-neutral-500 leading-snug">{r.reason || "—"}</p>
-                    </td>
-                    <td className="px-3 py-3 min-w-44">
-                      <input
-                        ref={(el) => { inputRefs.current[r.product_id] = el; }}
-                        type="text"
-                        value={r.edited_vbn ?? ""}
-                        onChange={(e) => updateVbn(r.product_id, e.target.value)}
-                        onBlur={() => setTimeout(() => setSuggestions(null), 150)}
-                        disabled={r.excluded}
-                        placeholder={t.vbn.editPlaceholder}
-                        className="border border-neutral-200 rounded px-2 py-1 text-xs w-36 focus:outline-none focus:ring-1 focus:ring-violet-300 disabled:bg-neutral-50"
-                      />
-                      {r.edited_vbn?.trim() && /^\d+$/.test(r.edited_vbn.trim()) && (
-                        <p className={`text-xs mt-0.5 break-words leading-snug ${vbnNameCache[r.edited_vbn.trim()]?.startsWith("⚠") ? "text-red-400" : vbnNameCache[r.edited_vbn.trim()] === "…" ? "text-neutral-300 italic" : "text-neutral-400"}`}>
-                          {vbnNameCache[r.edited_vbn.trim()] ?? ""}
-                        </p>
-                      )}
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <button
-                        onClick={() => toggleExclude(r.product_id)}
-                        className={`text-xs px-2.5 py-1 rounded border transition-colors ${r.excluded ? "border-green-200 text-green-600 hover:bg-green-50" : "border-neutral-200 text-neutral-400 hover:border-red-200 hover:text-red-500"}`}
-                      >
-                        {r.excluded ? t.vbn.restore : t.vbn.skip}
-                      </button>
-                    </td>
+              <tbody className="divide-y divide-cream-dark">
+                {results.filter((r) => r.status === "OK").map((r) => (
+                  <tr key={r.product_id} className="hover:bg-cream/60 transition-colors">
+                    <td className="px-5 py-2.5 text-[#1a1a18]">{r.name}</td>
+                    <td className="px-3 py-2.5"><span className="bg-leaf-light text-leaf px-2 py-0.5 rounded-md font-mono text-xs">{r.current_vbn}</span></td>
+                    <td className="px-3 py-2.5 text-neutral-400">{r.official_name}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
-          {errorResults.length > 0 && (
-            <div className="px-5 py-4 bg-neutral-50 border-t border-neutral-100 flex items-center justify-between">
-              <p className="text-xs text-neutral-500">
-                {errorResults.filter((r) => !r.excluded && r.edited_vbn?.trim()).length} {t.vbn.willBeUpdated}
-              </p>
-              <div className="flex gap-2 items-center">
-                {fixMessage && (
-                  <span className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg ${fixMessage.startsWith("✓") ? "bg-green-50 text-green-700" : fixMessage.startsWith("Błąd") ? "bg-red-50 text-red-600" : "bg-violet-50 text-violet-700"}`}>
-                    {fixing && (
-                      <svg className="animate-spin h-3 w-3 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                    )}
-                    {fixMessage}
-                  </span>
-                )}
-                <button
-                  onClick={handleFix}
-                  disabled={fixing}
-                  className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
-                >
-                  {fixing ? t.vbn.fixing : t.vbn.fixBtn}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+          </details>
+        )}
+      </div>
 
-      {/* OK products collapsed */}
-      {results && stats && stats.ok > 0 && (
-        <details className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
-          <summary className="px-5 py-3 text-sm text-neutral-500 cursor-pointer hover:bg-neutral-50">
-            {t.vbn.okExpand(stats.ok)}
-          </summary>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-neutral-100 text-neutral-400">
-                <th className="text-left px-5 py-2">{t.vbn.okName}</th>
-                <th className="text-left px-3 py-2">{t.vbn.okVbn}</th>
-                <th className="text-left px-3 py-2">{t.vbn.okOfficial}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {results.filter((r) => r.status === "OK").map((r) => (
-                <tr key={r.product_id} className="border-b border-neutral-50">
-                  <td className="px-5 py-2 text-neutral-700">{r.name}</td>
-                  <td className="px-3 py-2"><span className="bg-green-50 text-green-700 px-2 py-0.5 rounded text-xs">{r.current_vbn}</span></td>
-                  <td className="px-3 py-2 text-neutral-400">{r.official_name}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </details>
-      )}
-
-      {/* Portal dropdown for VBN name autocomplete */}
+      {/* ── VBN autocomplete dropdown portal ── */}
       {suggestions && dropdownAnchor && typeof document !== "undefined" && createPortal(
         <div
           style={{ position: "fixed", top: dropdownAnchor.top, left: dropdownAnchor.left, width: 320, zIndex: 9999 }}
-          className="bg-white border border-neutral-200 rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto"
+          className="bg-white border border-cream-dark rounded-xl shadow-xl overflow-hidden max-h-64 overflow-y-auto"
         >
           {suggestions.items.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-neutral-400">{t.vbn.noFloricode}</p>
+            <p className="px-4 py-3 text-xs text-neutral-400 italic">{t.vbn.noFloricode}</p>
           ) : (
             suggestions.items.map((s) => (
               <button
                 key={s.id}
                 onMouseDown={() => applySuggestion(suggestions.product_id, s.id, s.name)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-violet-50 border-b border-neutral-50 last:border-0 transition-colors"
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-left text-xs hover:bg-petal-muted border-b border-cream-dark last:border-0 transition-colors"
               >
-                <span className="font-mono text-violet-600 shrink-0">{s.id}</span>
-                <span className="text-neutral-700 leading-snug">{s.name}</span>
+                <span className="font-mono text-petal font-medium shrink-0 w-12">{s.id}</span>
+                <span className="text-[#1a1a18] leading-snug">{s.name}</span>
               </button>
             ))
           )}

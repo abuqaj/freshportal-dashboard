@@ -409,20 +409,21 @@ export default function ProductCreator({ lang }: Props) {
   }
 
   return (
-    <div className="p-8 max-w-3xl">
-      <div className="mb-6 flex items-start justify-between gap-4">
+    <div className="min-h-screen bg-cream">
+      {/* Header */}
+      <div className="bg-bark px-8 pt-8 pb-6 flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-neutral-900">{t.nav.newProducts}</h1>
-          <p className="text-sm text-neutral-500 mt-1">{t.create.description}</p>
+          <h1 className="text-lg font-semibold text-sage-light tracking-tight">{t.nav.newProducts}</h1>
+          <p className="text-sm text-sage mt-1 opacity-80">{t.create.description}</p>
         </div>
         {/* Sync status badge */}
-        <div className="flex-shrink-0 text-right">
+        <div className="flex-shrink-0 text-right mb-1">
           {syncStatus ? (
             <div className="flex flex-col items-end gap-1">
-              <div className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${
-                syncStatus.running ? "bg-violet-50 text-violet-700"
-                : syncStatus.product_count > 0 ? "bg-green-50 text-green-700"
-                : "bg-neutral-100 text-neutral-500"
+              <div className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg font-medium ${
+                syncStatus.running ? "bg-petal/20 text-petal border border-petal/30"
+                : syncStatus.product_count > 0 ? "bg-leaf/20 text-leaf border border-leaf/30"
+                : "bg-bark-hover text-sage border border-bark-border"
               }`}>
                 {syncStatus.running && (
                   <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -435,26 +436,28 @@ export default function ProductCreator({ lang }: Props) {
                   : t.create.syncEmpty}
               </div>
               {syncStatus.last_sync?.finished_at && !syncStatus.running && (
-                <p className="text-xs text-neutral-400">
+                <p className="text-[10px] text-sage opacity-60">
                   {t.create.syncLastSync} {new Date(syncStatus.last_sync.finished_at).toLocaleString()}
                 </p>
               )}
               <button
                 onClick={triggerSync}
                 disabled={syncTriggering || syncStatus.running}
-                className="text-xs text-violet-600 hover:text-violet-700 disabled:opacity-40 underline"
+                className="text-[11px] text-petal hover:text-petal-dark disabled:opacity-40 underline"
               >
                 {syncTriggering || syncStatus.running ? t.create.syncRunning : t.create.syncNow}
               </button>
             </div>
           ) : (
-            <div className="text-xs text-neutral-300">{t.create.syncLoading}</div>
+            <div className="text-xs text-sage opacity-40">{t.create.syncLoading}</div>
           )}
         </div>
       </div>
 
+      <div className="px-8 py-6 max-w-3xl">
+
       {/* Search bar */}
-      <div className="bg-white border border-neutral-200 rounded-xl p-5 mb-5">
+      <div className="bg-white border border-cream-dark rounded-2xl p-5 mb-4 shadow-sm">
         <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">{t.create.nameLabel}</label>
         <div className="flex gap-3">
           <input
@@ -463,12 +466,12 @@ export default function ProductCreator({ lang }: Props) {
             onChange={(e) => setCreateInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleProductSearch()}
             placeholder={t.create.namePlaceholder}
-            className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+            className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60"
           />
           <button
             onClick={handleProductSearch}
             disabled={searching || !createInput.trim()}
-            className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+            className="bg-petal hover:bg-petal-dark disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
           >
             {searching ? t.create.searching : t.create.searchBtn}
           </button>
@@ -569,7 +572,7 @@ export default function ProductCreator({ lang }: Props) {
                               }
                             }}
                             disabled={creating}
-                            className="text-xs px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+                            className="text-xs px-3 py-1.5 bg-petal hover:bg-petal-dark disabled:opacity-50 text-white rounded-lg transition-colors"
                           >
                             {t.create.useAsTemplate}
                           </button>
@@ -659,7 +662,7 @@ export default function ProductCreator({ lang }: Props) {
                     }, 1000);
                   }}
                   placeholder={t.create.finalNamePlaceholder}
-                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60"
                   autoFocus
                 />
                 {nameFromTemplate && (
@@ -689,7 +692,7 @@ export default function ProductCreator({ lang }: Props) {
                   value={productNumber}
                   onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8)); setNumberCheckResult(null); }}
                   placeholder={t.create.numberPlaceholder}
-                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-36 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                  className="border border-neutral-200 rounded-lg px-4 py-2.5 text-sm w-36 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60"
                 />
               </div>
             </div>
@@ -737,7 +740,7 @@ export default function ProductCreator({ lang }: Props) {
                     }
                   }}
                   placeholder={t.create.vbnPlaceholder}
-                  className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                  className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full font-mono focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60"
                 />
                 {!vbnForCreateChecking && vbnForCreateInfo && (
                   <p className={`text-xs mt-0.5 truncate ${vbnForCreateInfo.found ? "text-green-600" : "text-red-500"}`}>
@@ -768,7 +771,7 @@ export default function ProductCreator({ lang }: Props) {
                     onFocus={() => { setColorSearch(""); setColorDropdownOpen(true); }}
                     placeholder={colorListLoading ? t.create.colorLoading : colorForCreate ? "" : t.create.colorPlaceholder}
                     disabled={colorListLoading}
-                    className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400 disabled:bg-neutral-50"
+                    className="border border-neutral-200 rounded-lg px-3 py-2.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-petal/30 focus:border-petal/60 disabled:bg-neutral-50"
                   />
                   {colorLoadError && (
                     <div className="flex flex-col gap-0.5 mt-0.5">
@@ -817,7 +820,7 @@ export default function ProductCreator({ lang }: Props) {
               <button
                 onClick={() => handleConfirmCreate()}
                 disabled={creating || numberChecking || !finalName.trim() || !productNumber.trim()}
-                className="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+                className="bg-petal hover:bg-petal-dark disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
               >
                 {creating ? t.create.creating : numberChecking ? t.create.checkingNumber : t.create.createBtn}
               </button>
@@ -947,6 +950,7 @@ export default function ProductCreator({ lang }: Props) {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

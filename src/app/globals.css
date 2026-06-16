@@ -1,6 +1,77 @@
 @import "tailwindcss";
 
+@theme {
+  --color-bark:        #0e1a17;
+  --color-bark-light:  #162820;
+  --color-bark-hover:  #1d3329;
+  --color-bark-border: #2a3d35;
+  --color-sage:        #7a9e82;
+  --color-sage-light:  #c2d4bc;
+  --color-cream:       #faf9f6;
+  --color-cream-dark:  #ede9e3;
+  --color-cream-card:  #ffffff;
+  --color-petal:       #e05a4e;
+  --color-petal-dark:  #c94438;
+  --color-petal-muted: #fdf3f2;
+  --color-petal-border:#f5c5c1;
+  --color-leaf:        #2d7a4f;
+  --color-leaf-light:  #d1f0e0;
+  --color-amber:       #c47b1a;
+  --color-amber-light: #fef3d4;
+}
+
 html, body {
   height: 100%;
   margin: 0;
+}
+
+/* Smooth transitions for interactive elements */
+* {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1cdc8;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b8b4af;
+}
+
+/* Pulsing dot animation for Auto VBN active */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.6; transform: scale(0.85); }
+}
+.pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Skeleton shimmer */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #f0ece6 25%, #e8e4de 50%, #f0ece6 75%);
+  background-size: 400px 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* Status row fade-in */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in {
+  animation: fade-in 0.25s ease-out forwards;
 }

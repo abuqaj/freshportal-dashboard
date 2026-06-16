@@ -197,18 +197,21 @@ export default function PhotoUploader({ lang }: Props) {
   }
 
   return (
-    <div className="p-8 max-w-3xl">
-      <div className="mb-6 flex items-start justify-between">
+    <div className="min-h-screen bg-cream">
+      {/* Header */}
+      <div className="bg-bark px-8 pt-8 pb-6 flex items-end justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-neutral-900">{t.nav.photoUploader}</h1>
-          <p className="text-sm text-neutral-500 mt-1">{t.photo.description}</p>
+          <h1 className="text-lg font-semibold text-sage-light tracking-tight">{t.nav.photoUploader}</h1>
+          <p className="text-sm text-sage mt-1 opacity-80">{t.photo.description}</p>
         </div>
         {photoPhase !== "idle" && (
-          <button onClick={resetPhotoUploader} className="text-xs text-neutral-400 hover:text-neutral-600 border border-neutral-200 rounded-lg px-3 py-1.5">
+          <button onClick={resetPhotoUploader} className="text-xs text-sage hover:text-sage-light border border-bark-border rounded-lg px-3 py-1.5 bg-bark-hover transition-colors mb-1">
             {t.photo.startOver}
           </button>
         )}
       </div>
+
+      <div className="px-8 py-6 max-w-3xl">
 
       {photoError && (
         <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
@@ -275,7 +278,7 @@ export default function PhotoUploader({ lang }: Props) {
                 <button
                   onClick={executePhotoUpload}
                   disabled={totalAssignments === 0}
-                  className="bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
+                  className="bg-petal hover:bg-petal-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
                 >
                   {uploadLabel}
                 </button>
@@ -358,7 +361,7 @@ export default function PhotoUploader({ lang }: Props) {
               <button
                 onClick={executePhotoUpload}
                 disabled={totalAssignments === 0}
-                className="bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
+                className="bg-petal hover:bg-petal-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
               >
                 {uploadLabel} {t.photo.uploadToFP}
               </button>
@@ -419,12 +422,13 @@ export default function PhotoUploader({ lang }: Props) {
                 ))}
               </div>
             </div>
-            <button onClick={resetPhotoUploader} className="text-sm text-violet-600 hover:text-violet-700 border border-violet-200 rounded-lg px-4 py-2">
+            <button onClick={resetPhotoUploader} className="text-sm text-petal hover:text-petal-dark border border-petal/30 rounded-xl px-4 py-2 bg-petal-muted hover:bg-petal/10 transition-colors">
               {t.photo.uploadMore}
             </button>
           </div>
         );
       })()}
+      </div>
     </div>
   );
 }
