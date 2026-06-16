@@ -82,6 +82,7 @@ export type AutoVbnRun = {
   status: string;
   error: string | null;
   fixes: { product_id: string; name: string; old_vbn: string; new_vbn: string; ok: boolean }[];
+  messages: string[];
 };
 
 export type SyncStatus = {

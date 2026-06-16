@@ -101,8 +101,12 @@ def ensure_tables() -> None:
                     fixed_count   INT,
                     status        TEXT DEFAULT 'running',
                     error         TEXT,
-                    fixes         JSONB DEFAULT '[]'::jsonb
+                    fixes         JSONB DEFAULT '[]'::jsonb,
+                    messages      JSONB DEFAULT '[]'::jsonb
                 )
+            """)
+            cur.execute("""
+                ALTER TABLE vbn_auto_log ADD COLUMN IF NOT EXISTS messages JSONB DEFAULT '[]'::jsonb
             """)
 
 
@@ -527,7 +531,7 @@ def log_vbn_auto_start() -> int:
         return -1
 
 
-def log_vbn_auto_finish(run_id: int, checked: int, fixed: int, fixes: list, error: str = "") -> None:
+def log_vbn_auto_finish(run_id: int, checked: int, fixed: int, fixes: list, error: str = "", messages: list | None = None) -> None:
     if run_id < 0:
         return
     try:
@@ -539,10 +543,11 @@ def log_vbn_auto_finish(run_id: int, checked: int, fixed: int, fixes: list, erro
                         checked_count = %s,
                         fixed_count   = %s,
                         fixes         = %s::jsonb,
+                        messages      = %s::jsonb,
                         status        = %s,
                         error         = %s
                     WHERE id = %s
-                """, (checked, fixed, json.dumps(fixes), "error" if error else "ok", error or None, run_id))
+                """, (checked, fixed, json.dumps(fixes), json.dumps(messages or []), "error" if error else "ok", error or None, run_id))
     except Exception as exc:
         logger.error("log_vbn_auto_finish: %s", exc)
 
@@ -554,7 +559,7 @@ def get_vbn_auto_history(limit: int = 10, offset: int = 0) -> list[dict]:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
                     SELECT id, started_at, finished_at, checked_count, fixed_count,
-                           status, error, fixes
+                           status, error, fixes, messages
                     FROM vbn_auto_log ORDER BY id DESC LIMIT %s OFFSET %s
                 """, (limit, offset))
                 rows = []

@@ -76,18 +76,38 @@ def _auto_vbn_check() -> None:
     import datetime
     log.info("Auto VBN check started")
     run_id = log_vbn_auto_start()
+    messages: list[str] = []
     try:
         cfg = Config()
 
         product_rows = get_recent_created_products()
         if not product_rows:
-            log.info("Auto VBN check: no recently created products — nothing to do")
-            log_vbn_auto_finish(run_id, 0, 0, [])
+            log.info("Auto VBN check: no products created today — nothing to do")
+            messages.append("No products created today — nothing to check")
+            log_vbn_auto_finish(run_id, 0, 0, [], messages=messages)
             set_setting("vbn_auto_last_check", datetime.datetime.now(datetime.timezone.utc).isoformat())
             return
 
+        messages.append(f"Found {len(product_rows)} products created today")
         products = [_db_row_to_fp(r) for r in product_rows]
         data = _build_result(products, cfg, auto_mode=True)
+
+        # Log per-product verification result
+        for r in data["results"]:
+            name = r.get("name") or r.get("product_id", "?")
+            vbn = r.get("current_vbn", "")
+            status = r.get("status", "")
+            if status == "OK":
+                messages.append(f"OK — {name} (VBN {vbn})")
+            else:
+                reason = r.get("reason", "")
+                proposed = r.get("proposed_vbn", "")
+                proposed_name = r.get("proposed_vbn_name", "")
+                msg = f"{status} — {name} (VBN {vbn}): {reason}"
+                if proposed:
+                    pname = f" ({proposed_name})" if proposed_name else ""
+                    msg += f" → propose VBN {proposed}{pname}"
+                messages.append(msg)
 
         to_fix = [
             (r["product_id"], r["proposed_vbn"])
@@ -107,21 +127,27 @@ def _auto_vbn_check() -> None:
                 if ok:
                     fixed_count += 1
                 orig = result_map.get(product_id, {})
+                old_vbn = orig.get("current_vbn", "")
+                name = orig.get("name", product_id)
                 fixes_log.append({
                     "product_id": product_id,
-                    "name": orig.get("name", ""),
-                    "old_vbn": orig.get("current_vbn", ""),
+                    "name": name,
+                    "old_vbn": old_vbn,
                     "new_vbn": new_vbn,
                     "ok": ok,
                 })
+                fix_label = "fixed" if ok else "FAILED"
+                messages.append(f"Fix {fix_label} — {name}: VBN {old_vbn} → {new_vbn}")
 
-        log_vbn_auto_finish(run_id, len(products), fixed_count, fixes_log)
+        messages.append(f"Done: {len(products)} checked, {fixed_count} fixed")
+        log_vbn_auto_finish(run_id, len(products), fixed_count, fixes_log, messages=messages)
         set_setting("vbn_auto_last_check", datetime.datetime.now(datetime.timezone.utc).isoformat())
         log.info("Auto VBN check finished: checked=%d fixed=%d", len(products), fixed_count)
 
     except Exception as exc:
         log.exception("Auto VBN check failed")
-        log_vbn_auto_finish(run_id, 0, 0, [], str(exc))
+        messages.append(f"ERROR: {exc}")
+        log_vbn_auto_finish(run_id, 0, 0, [], str(exc), messages=messages)
 
 
 @app.on_event("startup")

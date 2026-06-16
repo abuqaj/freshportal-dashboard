@@ -405,6 +405,8 @@ export default function HistoryTab({ lang }: Props) {
                   const dur = run.finished_at
                     ? Math.round((new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()) / 1000)
                     : null;
+                  const msgCount = (run.messages ?? []).length;
+                  const fixCount = (run.fixes ?? []).length;
                   return (
                     <>
                       <div
@@ -433,36 +435,58 @@ export default function HistoryTab({ lang }: Props) {
                         {run.error && (
                           <span className="text-xs text-red-500 truncate flex-1" title={run.error}>{run.error}</span>
                         )}
+                        <span className="text-xs text-neutral-300 flex-shrink-0 ml-auto">{msgCount} {t.history.msgs}</span>
                       </div>
-                      {isExp && (run.fixes ?? []).length > 0 && (
-                        <div key={`${run.id}-fixes`} className="bg-neutral-50 border-t border-neutral-100 px-8 py-3">
-                          <table className="w-full text-xs">
-                            <thead>
-                              <tr className="text-neutral-400 uppercase tracking-wide">
-                                <th className="text-left pb-1 font-medium">{t.history.expandProduct}</th>
-                                <th className="text-left pb-1 font-medium">{t.history.expandOldVbn}</th>
-                                <th className="text-left pb-1 font-medium"></th>
-                                <th className="text-left pb-1 font-medium">{t.history.expandNewVbn}</th>
-                                <th className="text-left pb-1 font-medium">{t.history.statusCol}</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(run.fixes ?? []).map((f, i) => (
-                                <tr key={i} className="border-t border-neutral-100">
-                                  <td className="py-1.5 pr-4 text-neutral-700">{f.name || f.product_id}</td>
-                                  <td className="py-1.5 pr-2"><span className="bg-red-50 text-red-700 px-1.5 py-0.5 rounded font-mono">{f.old_vbn}</span></td>
-                                  <td className="py-1.5 px-2 text-neutral-300">→</td>
-                                  <td className="py-1.5 pr-4"><span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-mono">{f.new_vbn}</span></td>
-                                  <td className="py-1.5">
-                                    {f.ok
-                                      ? <span className="bg-green-50 text-green-700 px-1.5 py-0.5 rounded">ok</span>
-                                      : <span className="bg-red-50 text-red-600 px-1.5 py-0.5 rounded">failed</span>
-                                    }
-                                  </td>
-                                </tr>
+                      {isExp && (
+                        <div key={`${run.id}-detail`} className="border-t border-neutral-100">
+                          {msgCount > 0 && (
+                            <div className="bg-neutral-50 px-8 py-3 font-mono text-xs text-neutral-600 space-y-0.5 max-h-80 overflow-y-auto">
+                              {(run.messages ?? []).map((msg, i) => (
+                                <div key={i} className={`leading-5 ${
+                                  msg.startsWith("Fix FAILED") || msg.startsWith("ERROR") ? "text-red-600 font-semibold"
+                                  : msg.startsWith("Fix fixed") ? "text-green-600 font-medium"
+                                  : msg.startsWith("ERROR —") || msg.startsWith("WARNING —") ? "text-amber-700"
+                                  : msg.startsWith("OK —") ? "text-neutral-400"
+                                  : msg.startsWith("Done:") ? "text-green-700 font-medium"
+                                  : ""
+                                }`}>{msg}</div>
                               ))}
-                            </tbody>
-                          </table>
+                            </div>
+                          )}
+                          {fixCount > 0 && (
+                            <div className="bg-green-50/40 px-8 py-3">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-neutral-400 uppercase tracking-wide">
+                                    <th className="text-left pb-1 font-medium">{t.history.expandProduct}</th>
+                                    <th className="text-left pb-1 font-medium">{t.history.expandOldVbn}</th>
+                                    <th className="text-left pb-1 font-medium"></th>
+                                    <th className="text-left pb-1 font-medium">{t.history.expandNewVbn}</th>
+                                    <th className="text-left pb-1 font-medium">{t.history.statusCol}</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(run.fixes ?? []).map((f, i) => (
+                                    <tr key={i} className="border-t border-green-100">
+                                      <td className="py-1.5 pr-4 text-neutral-700">{f.name || f.product_id}</td>
+                                      <td className="py-1.5 pr-2"><span className="bg-red-50 text-red-700 px-1.5 py-0.5 rounded font-mono">{f.old_vbn}</span></td>
+                                      <td className="py-1.5 px-2 text-neutral-300">→</td>
+                                      <td className="py-1.5 pr-4"><span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-mono">{f.new_vbn}</span></td>
+                                      <td className="py-1.5">
+                                        {f.ok
+                                          ? <span className="bg-green-50 text-green-700 px-1.5 py-0.5 rounded">ok</span>
+                                          : <span className="bg-red-50 text-red-600 px-1.5 py-0.5 rounded">failed</span>
+                                        }
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                          {msgCount === 0 && fixCount === 0 && (
+                            <div className="bg-neutral-50 px-8 py-3 text-xs text-neutral-400 italic">{t.history.noMessages}</div>
+                          )}
                         </div>
                       )}
                     </>
