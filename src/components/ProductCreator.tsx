@@ -11,6 +11,31 @@ interface Props {
   lang: Lang;
 }
 
+function lcsWordDiff(
+  origWords: string[],
+  corrWords: string[],
+): Array<{ type: "same" | "deleted" | "inserted"; word: string }> {
+  const m = origWords.length, n = corrWords.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = origWords[i - 1].toLowerCase() === corrWords[j - 1].toLowerCase()
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1]);
+  const result: Array<{ type: "same" | "deleted" | "inserted"; word: string }> = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && origWords[i - 1].toLowerCase() === corrWords[j - 1].toLowerCase()) {
+      result.unshift({ type: "same", word: corrWords[j - 1] }); i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      result.unshift({ type: "inserted", word: corrWords[j - 1] }); j--;
+    } else {
+      result.unshift({ type: "deleted", word: origWords[i - 1] }); i--;
+    }
+  }
+  return result;
+}
+
 function NameCorrectionHint({ hint, onRevert, fromTemplateLabel, useOriginalLabel }: {
   hint: { original: string; corrected: string };
   onRevert: () => void;
@@ -19,25 +44,23 @@ function NameCorrectionHint({ hint, onRevert, fromTemplateLabel, useOriginalLabe
 }) {
   const origWords = hint.original.trim().split(/\s+/);
   const corrWords = hint.corrected.trim().split(/\s+/);
-  const maxLen = Math.max(origWords.length, corrWords.length);
-  const diffs = Array.from({ length: maxLen }, (_, i) => ({
-    orig: origWords[i] ?? "",
-    corr: corrWords[i] ?? "",
-    changed: (origWords[i] ?? "").toLowerCase() !== (corrWords[i] ?? "").toLowerCase(),
-  })).filter(d => d.changed);
-  if (diffs.length === 0) return null;
+  const diff = lcsWordDiff(origWords, corrWords);
+  if (!diff.some(d => d.type !== "same")) return null;
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-neutral-400">
-      <span>{fromTemplateLabel}</span>
-      {diffs.map((d, i) => (
-        <span key={i} className="flex items-center gap-1">
-          <span className="text-amber-500 line-through">{d.orig}</span>
-          <span className="text-neutral-300">→</span>
-          <span className="text-green-600 font-medium">{d.corr}</span>
-        </span>
-      ))}
-      <span>·</span>
-      <button type="button" onClick={onRevert} className="text-emerald hover:text-emerald-dark underline">
+    <div className="mt-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 space-y-1.5">
+      <p className="text-[11px] font-semibold text-amber-700 uppercase tracking-wide">{fromTemplateLabel}</p>
+      <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5 text-sm leading-snug">
+        {diff.map((token, i) =>
+          token.type === "same" ? (
+            <span key={i} className="text-ink-3">{token.word}</span>
+          ) : token.type === "deleted" ? (
+            <span key={i} className="text-amber-700 line-through opacity-80">{token.word}</span>
+          ) : (
+            <span key={i} className="text-emerald font-semibold bg-emerald/10 px-0.5 rounded">{token.word}</span>
+          )
+        )}
+      </div>
+      <button type="button" onClick={onRevert} className="text-xs text-amber-700 hover:text-amber-900 underline transition-colors">
         {useOriginalLabel}
       </button>
     </div>
@@ -458,7 +481,7 @@ export default function ProductCreator({ lang }: Props) {
   );
 
   const AiPanel = () => (
-    <div className="w-64 flex-shrink-0 p-5 bg-ground space-y-3 overflow-y-auto">
+    <div className="w-64 flex-shrink-0 p-5 bg-ground space-y-3 overflow-y-auto min-h-0">
       <p className="text-[11px] font-semibold text-ink-3 uppercase tracking-widest">{t.create.aiTitle}</p>
       {aiLoading ? (
         <div className="flex items-center gap-2 text-xs text-ink-3"><SpinnerSm /><span>{t.create.aiChecking}</span></div>
@@ -678,9 +701,9 @@ export default function ProductCreator({ lang }: Props) {
                 >&#8592; {t.create.backToResults}</button>
               </p>
             </div>
-            <div className="flex divide-x divide-border">
+            <div className="flex divide-x divide-border max-h-[68vh] min-h-0">
               {/* Form */}
-              <div className="flex-1 p-6 space-y-4">
+              <div className="flex-1 p-6 space-y-4 overflow-y-auto min-h-0">
                 {/* Name */}
                 <div>
                   <label className="block text-xs font-medium text-ink-3 mb-1.5">{t.create.nameLabel}</label>
@@ -735,7 +758,7 @@ export default function ProductCreator({ lang }: Props) {
                       }, 1000);
                     }}
                     placeholder={t.create.finalNamePlaceholder}
-                    className="w-full border border-border rounded-xl px-4 py-2.5 text-sm bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
+                    className={`w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 transition-colors ${nameFromTemplate ? "border-amber-300 bg-amber-50/40 focus:ring-amber-300/50 focus:border-amber-400" : "border-border bg-ground focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface"}`}
                     autoFocus
                   />
                   {nameFromTemplate && (
