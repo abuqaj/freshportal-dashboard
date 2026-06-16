@@ -409,13 +409,18 @@ export default function ProductCreator({ lang }: Props) {
   }
 
   return (
-    <div className="min-h-full bg-ground">
-      <div className="px-8 py-6 max-w-3xl">
+    <div className="min-h-full bg-ground py-10 px-4">
+      <div className="w-full max-w-3xl mx-auto">
 
-      {/* Sync status strip */}
-      <div className="flex items-center justify-between mb-5 gap-4">
-        {syncStatus ? (
-          <>
+      {/* Module title */}
+      <div className="card-enter mb-6 flex items-end justify-between gap-4" style={{ animationDelay: "0ms" }}>
+        <div>
+          <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.newProducts}</h2>
+          <p className="text-sm text-ink-3 mt-1">{t.create.description}</p>
+        </div>
+        {/* Sync pill */}
+        {syncStatus && (
+          <div className="flex-shrink-0 flex items-center gap-2">
             <div className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg font-medium ${
               syncStatus.running ? "bg-ember-light text-ember border border-ember/30"
               : syncStatus.product_count > 0 ? "bg-emerald-light text-emerald border border-emerald/30"
@@ -431,28 +436,19 @@ export default function ProductCreator({ lang }: Props) {
                 : syncStatus.product_count > 0 ? t.create.syncProducts(syncStatus.product_count)
                 : t.create.syncEmpty}
             </div>
-            <div className="flex items-center gap-3 text-right">
-              {syncStatus.last_sync?.finished_at && !syncStatus.running && (
-                <p className="text-[10px] text-ink-3 opacity-60">
-                  {t.create.syncLastSync} {new Date(syncStatus.last_sync.finished_at).toLocaleString()}
-                </p>
-              )}
-              <button
-                onClick={triggerSync}
-                disabled={syncTriggering || syncStatus.running}
-                className="text-[11px] text-ember hover:text-ember-dark disabled:opacity-40 underline"
-              >
-                {syncTriggering || syncStatus.running ? t.create.syncRunning : t.create.syncNow}
-              </button>
-            </div>
-          </>
-        ) : (
-          <div className="text-xs text-ink-3 opacity-40">{t.create.syncLoading}</div>
+            <button
+              onClick={triggerSync}
+              disabled={syncTriggering || syncStatus.running}
+              className="text-[11px] text-ember hover:text-ember-dark disabled:opacity-40 underline"
+            >
+              {syncTriggering || syncStatus.running ? t.create.syncRunning : t.create.syncNow}
+            </button>
+          </div>
         )}
       </div>
 
       {/* Search bar */}
-      <div className="bg-surface border border-border rounded-2xl p-5 mb-4 shadow-sm">
+      <div className="card-enter bg-surface border border-border rounded-2xl p-5 mb-4 shadow-sm" style={{ animationDelay: "60ms" }}>
         <label className="block text-xs font-medium text-neutral-500 mb-2 uppercase tracking-wide">{t.create.nameLabel}</label>
         <div className="flex gap-3">
           <input

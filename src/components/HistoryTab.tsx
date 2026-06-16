@@ -120,9 +120,13 @@ export default function HistoryTab({ lang }: Props) {
   }
 
   return (
-    <div className="min-h-full bg-ground">
-      <div className="px-8 py-6 max-w-4xl">
-      <div className="mb-5 flex items-center justify-between">
+    <div className="min-h-full bg-ground py-10 px-4">
+      <div className="w-full max-w-4xl mx-auto">
+      <div className="card-enter mb-6" style={{ animationDelay: "0ms" }}>
+        <h2 className="text-2xl font-bold text-ink tracking-tight">{t.history.title}</h2>
+        <p className="text-sm text-ink-3 mt-1">{t.history.description}</p>
+      </div>
+      <div className="card-enter mb-5 flex items-center justify-between" style={{ animationDelay: "60ms" }}>
         <div className="flex gap-1 bg-surface border border-border rounded-xl p-1 shadow-sm">
           {(["ops", "sync", "auto"] as const).map((tab) => (
             <button

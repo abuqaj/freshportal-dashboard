@@ -197,15 +197,19 @@ export default function PhotoUploader({ lang }: Props) {
   }
 
   return (
-    <div className="min-h-full bg-ground">
-      <div className="px-8 py-6 max-w-3xl">
-      {photoPhase !== "idle" && (
-        <div className="flex justify-end mb-4">
-          <button onClick={resetPhotoUploader} className="text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-3 py-1.5 bg-surface hover:bg-muted transition-colors">
+    <div className="min-h-full bg-ground py-10 px-4">
+      <div className="w-full max-w-2xl mx-auto">
+      <div className="card-enter mb-6 flex items-end justify-between" style={{ animationDelay: "0ms" }}>
+        <div>
+          <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.photoUploader}</h2>
+          <p className="text-sm text-ink-3 mt-1">{t.photo.description}</p>
+        </div>
+        {photoPhase !== "idle" && (
+          <button onClick={resetPhotoUploader} className="text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-3 py-1.5 bg-surface hover:bg-muted transition-colors flex-shrink-0">
             {t.photo.startOver}
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {photoError && (
         <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
@@ -216,7 +220,8 @@ export default function PhotoUploader({ lang }: Props) {
       {/* idle — drop zone */}
       {photoPhase === "idle" && (
         <div
-          className="bg-white border-2 border-dashed border-neutral-200 rounded-xl p-12 text-center hover:border-emerald transition-colors cursor-pointer"
+          className="card-enter bg-surface border-2 border-dashed border-border rounded-2xl p-16 text-center hover:border-emerald hover:bg-emerald-light/30 transition-all cursor-pointer"
+          style={{ animationDelay: "60ms" }}
           onDragOver={e => e.preventDefault()}
           onDrop={e => { e.preventDefault(); if (e.dataTransfer.files.length) analyzePhotos(e.dataTransfer.files); }}
           onClick={() => document.getElementById("photo-file-input")?.click()}

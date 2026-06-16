@@ -268,11 +268,17 @@ export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
   }
 
   return (
-    <div className="min-h-full bg-ground">
-      <div className="px-8 py-6 max-w-5xl space-y-4">
+    <div className="min-h-full bg-ground py-10 px-4">
+      <div className="w-full max-w-4xl mx-auto space-y-4">
+
+        {/* ── Module title ── */}
+        <div className="card-enter" style={{ animationDelay: "0ms" }}>
+          <h2 className="text-2xl font-bold text-ink tracking-tight">VBN Checker</h2>
+          <p className="text-sm text-ink-3 mt-1">{t.vbn.description}</p>
+        </div>
 
         {/* ── Auto VBN card ── */}
-        <div className="bg-surface rounded-2xl border border-border overflow-hidden shadow-sm">
+        <div className="card-enter bg-surface rounded-2xl border border-border overflow-hidden shadow-sm" style={{ animationDelay: "60ms" }}>
           <div className="px-5 py-4 flex items-start gap-4">
             {/* Status indicator */}
             <div className="flex-shrink-0 mt-0.5">
@@ -325,14 +331,14 @@ export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
 
         {/* ── Fix success banner ── */}
         {fixSuccess && (
-          <div className="fade-in flex items-center gap-3 text-sm text-emerald bg-emerald-light border border-emerald/20 rounded-xl px-5 py-3">
+          <div className="card-enter flex items-center gap-3 text-sm text-emerald bg-emerald-light border border-emerald/20 rounded-xl px-5 py-3">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8l4 4 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             {fixSuccess}
           </div>
         )}
 
         {/* ── Search card ── */}
-        <div className="bg-surface rounded-2xl border border-border p-5 shadow-sm">
+        <div className="card-enter bg-surface rounded-2xl border border-border p-5 shadow-sm" style={{ animationDelay: "120ms" }}>
           <label className="block text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-3">{t.vbn.codesLabel}</label>
           <div className="flex gap-3">
             <input
