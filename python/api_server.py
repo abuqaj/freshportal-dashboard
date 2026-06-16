@@ -72,20 +72,14 @@ def _hourly_sync() -> None:
 
 
 def _auto_vbn_check() -> None:
-    """Background task: verify VBN codes of recently created products and auto-fix errors."""
+    """Background task: verify VBN codes of products created today and auto-fix deterministic errors."""
     import datetime
     log.info("Auto VBN check started")
     run_id = log_vbn_auto_start()
     try:
         cfg = Config()
 
-        last_check = get_setting("vbn_auto_last_check")
-        if last_check:
-            since = last_check
-        else:
-            since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).isoformat()
-
-        product_rows = get_recent_created_products(since)
+        product_rows = get_recent_created_products()
         if not product_rows:
             log.info("Auto VBN check: no recently created products — nothing to do")
             log_vbn_auto_finish(run_id, 0, 0, [])
@@ -93,7 +87,7 @@ def _auto_vbn_check() -> None:
             return
 
         products = [_db_row_to_fp(r) for r in product_rows]
-        data = _build_result(products, cfg)
+        data = _build_result(products, cfg, auto_mode=True)
 
         to_fix = [
             (r["product_id"], r["proposed_vbn"])
@@ -168,17 +162,17 @@ async def _on_startup() -> None:
 
         elapsed = (now - reference_dt).total_seconds()
 
-        if elapsed >= 55 * 60:
+        if elapsed >= 23 * 3600:
             # Run was overdue (missed during downtime) — catch up within 60 s
             next_run = now + datetime.timedelta(seconds=60)
-            log.info("Auto VBN: overdue by %.0f min — catch-up run in 60 s", elapsed / 60)
+            log.info("Auto VBN: overdue by %.1f h — catch-up run in 60 s", elapsed / 3600)
         else:
-            # Not yet due — keep original schedule (reference + 1 h)
-            next_run = reference_dt + datetime.timedelta(hours=1)
-            log.info("Auto VBN: %.0f min since reference — next run at %s", elapsed / 60, next_run.isoformat())
+            # Not yet due — keep original daily schedule (reference + 1 day)
+            next_run = reference_dt + datetime.timedelta(days=1)
+            log.info("Auto VBN: %.1f h since reference — next run at %s", elapsed / 3600, next_run.isoformat())
 
-        _scheduler.add_job(_auto_vbn_check, "interval", hours=1, id=_AUTO_VBN_JOB_ID, next_run_time=next_run)
-        log.info("Auto VBN check scheduler restored")
+        _scheduler.add_job(_auto_vbn_check, "interval", days=1, id=_AUTO_VBN_JOB_ID, next_run_time=next_run)
+        log.info("Auto VBN check scheduler restored (daily)")
 
     _scheduler.start()
     log.info("APScheduler started — first product sync in 60 s, then every hour")
@@ -276,7 +270,7 @@ def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None, lang:
     return all_products
 
 
-def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str = "en") -> dict:
+def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str = "en", auto_mode: bool = False) -> dict:
     """Run VBN lookup + verification and return result dict."""
     def _status(message: str) -> None:
         if queue:
@@ -296,7 +290,7 @@ def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str =
     )
 
     _status(i18n_msg(lang, "vbn_analyzing"))
-    results = verify_products(products, vbn_data, cfg)
+    results = verify_products(products, vbn_data, cfg, auto_mode=auto_mode)
 
     # Fetch names for proposed VBN codes not already in vbn_data
     proposed_codes = {
@@ -449,7 +443,7 @@ def vbn_auto_toggle(req: VbnAutoToggleRequest):
         if not _scheduler.get_job(_AUTO_VBN_JOB_ID):
             now = _dt.datetime.now(_dt.timezone.utc)
             set_setting("vbn_auto_enabled_at", now.isoformat())
-            _scheduler.add_job(_auto_vbn_check, "interval", hours=1, id=_AUTO_VBN_JOB_ID)
+            _scheduler.add_job(_auto_vbn_check, "interval", days=1, id=_AUTO_VBN_JOB_ID)
     else:
         job = _scheduler.get_job(_AUTO_VBN_JOB_ID)
         if job:
@@ -462,6 +456,14 @@ def vbn_auto_history_endpoint(limit: int = 10, offset: int = 0):
     rows = get_vbn_auto_history(limit + 1, offset)
     has_more = len(rows) > limit
     return {"history": rows[:limit], "hasMore": has_more}
+
+
+@app.post("/vbn-auto/run-now")
+def vbn_auto_run_now():
+    """Manually trigger an immediate Auto VBN check in a background thread."""
+    thread = threading.Thread(target=_auto_vbn_check, daemon=True)
+    thread.start()
+    return {"ok": True}
 
 
 @app.post("/sync/run")

@@ -34,6 +34,7 @@ export default function VbnChecker({ lang }: Props) {
   const [vbnAutoLastRun, setVbnAutoLastRun] = useState<AutoVbnRun | null>(null);
   const [vbnAutoNextRun, setVbnAutoNextRun] = useState<string | null>(null);
   const [vbnAutoTogglingLoading, setVbnAutoTogglingLoading] = useState(false);
+  const [vbnAutoRunNowLoading, setVbnAutoRunNowLoading] = useState(false);
 
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
 
@@ -65,6 +66,17 @@ export default function VbnChecker({ lang }: Props) {
       await loadVbnAutoStatus();
     } catch { /* ignore */ }
     setVbnAutoTogglingLoading(false);
+  }, [loadVbnAutoStatus]);
+
+  const runVbnAutoNow = useCallback(async () => {
+    if (!RAILWAY) return;
+    setVbnAutoRunNowLoading(true);
+    try {
+      await fetch(`${RAILWAY}/vbn-auto/run-now`, { method: "POST" });
+      await new Promise((r) => setTimeout(r, 3000));
+      await loadVbnAutoStatus();
+    } catch { /* ignore */ }
+    setVbnAutoRunNowLoading(false);
   }, [loadVbnAutoStatus]);
 
   const errorResults = results?.filter((r) => !r.excluded && r.status !== "OK") ?? [];
@@ -276,14 +288,23 @@ export default function VbnChecker({ lang }: Props) {
             </p>
           )}
         </div>
-        <button
-          onClick={() => toggleVbnAuto(!vbnAutoEnabled)}
-          disabled={vbnAutoTogglingLoading}
-          className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50 ${vbnAutoEnabled ? "bg-violet-600" : "bg-neutral-200"}`}
-          aria-label={t.vbn.autoCheckTitle}
-        >
-          <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${vbnAutoEnabled ? "translate-x-6" : "translate-x-1"}`} />
-        </button>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <button
+            onClick={runVbnAutoNow}
+            disabled={vbnAutoRunNowLoading}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-violet-200 text-violet-700 bg-violet-50 hover:bg-violet-100 disabled:opacity-50 transition-colors"
+          >
+            {vbnAutoRunNowLoading ? t.vbn.autoCheckRunning : t.vbn.autoCheckRunNow}
+          </button>
+          <button
+            onClick={() => toggleVbnAuto(!vbnAutoEnabled)}
+            disabled={vbnAutoTogglingLoading}
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50 ${vbnAutoEnabled ? "bg-violet-600" : "bg-neutral-200"}`}
+            aria-label={t.vbn.autoCheckTitle}
+          >
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${vbnAutoEnabled ? "translate-x-6" : "translate-x-1"}`} />
+          </button>
+        </div>
       </div>
 
       {/* Fix success banner */}

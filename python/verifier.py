@@ -88,8 +88,10 @@ def verify_products(
     products: list[FPProduct],
     vbn_data: dict[str, VBNInfo],
     cfg: Config,
+    auto_mode: bool = False,
 ) -> list[VerificationResult]:
-    """Apply verification rules to each product. Uses AI for ambiguous cases."""
+    """Apply verification rules to each product. Uses AI for ambiguous cases.
+    auto_mode=True skips Rule 5 (AI-only generic check) to prevent hallucinations in automated runs."""
     results: list[VerificationResult] = []
 
     for p in products:
@@ -225,8 +227,8 @@ def verify_products(
                     "Use non-spray VBN."
                 )
 
-        # Rule 5: Generic ambiguous — always ask AI
-        else:
+        # Rule 5: Generic ambiguous — ask AI (skipped in auto_mode to prevent hallucinations)
+        elif not auto_mode:
             is_correct, ai_reason, ai_proposed = ai_suggest_vbn_for_checker(
                 name, p.vbn_number, official, group, cfg
             )

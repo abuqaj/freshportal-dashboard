@@ -488,10 +488,12 @@ def set_setting(key: str, value: str) -> None:
 # VBN auto-check log
 # ---------------------------------------------------------------------------
 
-def get_recent_created_products(since_iso: str, limit: int = 2000) -> list[dict]:
-    """Products with a VBN created after since_iso (TEXT comparison works for ISO dates)."""
+def get_recent_created_products(limit: int = 250) -> list[dict]:
+    """Products with a VBN created today. creation_moment stored as TEXT in 'DD-MM-YYYY' format."""
+    import datetime
     try:
         ensure_tables()
+        today = datetime.date.today()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
@@ -500,10 +502,11 @@ def get_recent_created_products(since_iso: str, limit: int = 2000) -> list[dict]
                            product_group, application, vat_rate, cbs_group_code,
                            main_group, origin, creation_moment, change_moment
                     FROM products
-                    WHERE creation_moment > %s AND vbn_number IS NOT NULL AND vbn_number != ''
+                    WHERE TO_DATE(SPLIT_PART(creation_moment, ' ', 1), 'DD-MM-YYYY') = %s
+                      AND vbn_number IS NOT NULL AND vbn_number != ''
                     ORDER BY creation_moment DESC
                     LIMIT %s
-                """, (since_iso, limit))
+                """, (today, limit))
                 return [dict(r) for r in cur.fetchall()]
     except Exception as exc:
         logger.warning("get_recent_created_products failed: %s", exc)
