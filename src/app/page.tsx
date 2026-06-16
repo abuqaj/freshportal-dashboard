@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { translations, Lang } from "@/lib/i18n";
+import { SyncStatus } from "@/lib/types";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import VbnChecker from "@/components/VbnChecker";
 import ProductCreator from "@/components/ProductCreator";
@@ -136,9 +137,10 @@ function LogoMark({ size = 28 }: { size?: number }) {
 }
 
 /* ─── Persistent top bar ─── */
-function TopBar({ lang, setLang, tab, t }: {
+function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline }: {
   lang: Lang; setLang: (l: Lang) => void;
   tab: Tab | null; t: (typeof translations)[Lang];
+  syncStatus: SyncStatus | null; railwayOnline: boolean | null;
 }) {
   return (
     <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-surface flex-shrink-0">
@@ -158,6 +160,41 @@ function TopBar({ lang, setLang, tab, t }: {
         )}
       </div>
       <div className="flex items-center gap-3">
+        {/* Sync running spinner */}
+        {syncStatus?.running && (
+          <span className="flex items-center gap-1.5 text-[11px] text-ink-3">
+            <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/>
+              <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            Sync
+          </span>
+        )}
+        {/* DB count pill */}
+        {syncStatus != null && syncStatus.product_count > 0 && (
+          <span className="text-[11px] text-ink-3 bg-muted border border-border px-2 py-0.5 rounded-full font-medium tabular-nums">
+            {t.hub.topbarDb(syncStatus.product_count)}
+          </span>
+        )}
+        {/* VBN online / offline dot */}
+        {railwayOnline !== null && (
+          <span className="flex items-center gap-1.5 text-[11px]">
+            {railwayOnline ? (
+              <>
+                <span className="relative w-1.5 h-1.5 flex-shrink-0">
+                  <span className="absolute inset-0 rounded-full bg-emerald pulse-ring"/>
+                  <span className="relative w-1.5 h-1.5 rounded-full bg-emerald block"/>
+                </span>
+                <span className="text-emerald font-semibold">VBN</span>
+              </>
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-ink-3/40 block"/>
+                <span className="text-ink-3/50 font-medium">VBN</span>
+              </>
+            )}
+          </span>
+        )}
         <LanguageSwitcher lang={lang} setLang={setLang}/>
       </div>
     </div>
@@ -332,6 +369,8 @@ export default function Dashboard() {
   const [autoEnabled, setAutoEnabled] = useState(false);
   const [autoNextRun, setAutoNextRun] = useState<string | null>(null);
   const [productCount, setProductCount] = useState<number | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [railwayOnline, setRailwayOnline] = useState<boolean | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("fp_lang") as Lang | null;
@@ -342,11 +381,11 @@ export default function Dashboard() {
     if (!RAILWAY) return;
     fetch(`${RAILWAY}/vbn-auto/status`)
       .then(r => r.json())
-      .then(d => { setAutoEnabled(d.enabled ?? false); setAutoNextRun(d.nextRun ?? null); })
-      .catch(() => {});
+      .then(d => { setAutoEnabled(d.enabled ?? false); setAutoNextRun(d.nextRun ?? null); setRailwayOnline(true); })
+      .catch(() => { setRailwayOnline(false); });
     fetch(`${RAILWAY}/sync/status`)
       .then(r => r.json())
-      .then(d => { if (d.product_count != null) setProductCount(d.product_count); })
+      .then(d => { if (d.product_count != null) setProductCount(d.product_count); setSyncStatus(d as SyncStatus); })
       .catch(() => {});
   }, []);
 
@@ -364,7 +403,7 @@ export default function Dashboard() {
   return (
     <div className="h-screen bg-surface flex flex-col overflow-hidden font-sans antialiased">
       {/* Persistent top bar — always visible */}
-      <TopBar lang={lang} setLang={setLang} tab={tab} t={t}/>
+      <TopBar lang={lang} setLang={setLang} tab={tab} t={t} syncStatus={syncStatus} railwayOnline={railwayOnline}/>
 
       {/* Main content */}
       <div className="flex-1 overflow-hidden flex flex-col">

@@ -132,6 +132,8 @@ const en = {
     syncNow:            "Sync now",
     syncLoading:        "Loading DB status…",
     createAnother:      "Create another product",
+    backToSearch:       "Back to search",
+    backToResults:      "Back to results",
   },
   photo: {
     description:     "Drop product photos — AI matches filenames to products, you confirm before upload.",
@@ -176,6 +178,7 @@ const en = {
     photosStat:       "Drop photos to assign",
     historyStat:      "VBN · Sync · Auto VBN",
     moduleAutoOff:    "Auto VBN off",
+    topbarDb:         (n: number) => `${n.toLocaleString()} in DB`,
   },
   history: {
     title:         "Operation history",
@@ -338,6 +341,8 @@ const nl: typeof en = {
     syncNow:             "Nu synchroniseren",
     syncLoading:         "DB-status laden…",
     createAnother:       "Nieuw product aanmaken",
+    backToSearch:        "Terug naar zoeken",
+    backToResults:       "Terug naar resultaten",
   },
   photo: {
     description:     "Gooi productfoto's neer — AI koppelt bestandsnamen aan producten, bevestig vóór upload.",
@@ -382,6 +387,7 @@ const nl: typeof en = {
     photosStat:       "Sleep foto's om te koppelen",
     historyStat:      "VBN · Sync · Auto VBN",
     moduleAutoOff:    "Auto VBN uit",
+    topbarDb:         (n: number) => `${n.toLocaleString()} in DB`,
   },
   history: {
     title:         "Operatiegeschiedenis",
@@ -544,6 +550,8 @@ const pl: typeof en = {
     syncNow:             "Synchronizuj teraz",
     syncLoading:         "Ładuję status DB…",
     createAnother:       "Utwórz kolejny produkt",
+    backToSearch:        "Wróć do wyszukiwania",
+    backToResults:       "Wróć do wyników",
   },
   photo: {
     description:     "Wrzuć zdjęcia produktów — AI dopasuje nazwy plików do produktów, potwierdzasz przed uploadem.",
@@ -588,6 +596,7 @@ const pl: typeof en = {
     photosStat:       "Upuść zdjęcia, aby przypisać",
     historyStat:      "VBN · Sync · Auto VBN",
     moduleAutoOff:    "Auto VBN wyłączony",
+    topbarDb:         (n: number) => `${n.toLocaleString()} w BD`,
   },
   history: {
     title:         "Historia operacji",
@@ -750,6 +759,8 @@ const es: typeof en = {
     syncNow:             "Sincronizar ahora",
     syncLoading:         "Cargando estado BD…",
     createAnother:       "Crear otro producto",
+    backToSearch:        "Volver a búsqueda",
+    backToResults:       "Volver a resultados",
   },
   photo: {
     description:     "Arrastra fotos de producto — la IA vincula los nombres de archivo a los productos, confirmas antes de subir.",
@@ -794,6 +805,7 @@ const es: typeof en = {
     photosStat:       "Suelta fotos para asignar",
     historyStat:      "VBN · Sync · Auto VBN",
     moduleAutoOff:    "Auto VBN desactivado",
+    topbarDb:         (n: number) => `${n.toLocaleString()} en BD`,
   },
   history: {
     title:         "Historial de operaciones",

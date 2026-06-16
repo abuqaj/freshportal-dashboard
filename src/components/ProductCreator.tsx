@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { flushSync } from "react-dom";
@@ -32,11 +32,11 @@ function NameCorrectionHint({ hint, onRevert, fromTemplateLabel, useOriginalLabe
       {diffs.map((d, i) => (
         <span key={i} className="flex items-center gap-1">
           <span className="text-amber-500 line-through">{d.orig}</span>
-          <span className="text-neutral-300">â†’</span>
+          <span className="text-neutral-300">→</span>
           <span className="text-green-600 font-medium">{d.corr}</span>
         </span>
       ))}
-      <span>Â·</span>
+      <span>·</span>
       <button type="button" onClick={onRevert} className="text-emerald hover:text-emerald-dark underline">
         {useOriginalLabel}
       </button>
@@ -190,6 +190,10 @@ export default function ProductCreator({ lang }: Props) {
     return totalSim / maxWords;
   }
 
+  function toTitleCase(s: string): string {
+    return s.trim().replace(/\b\w/g, c => c.toUpperCase());
+  }
+
   function genProductNumber(name: string): string {
     const words = name.replace(/[^A-Za-z0-9\s]/g, "").toUpperCase().split(/\s+/).filter(Boolean);
     return words.map(w => w.slice(0, 2)).join("").slice(0, 8) || "PROD";
@@ -266,7 +270,7 @@ export default function ProductCreator({ lang }: Props) {
   }
 
   const handleCreateFromTemplate = useCallback((templateId: string, templateName: string, templateVbn = "", templateColor = "") => {
-    const name = createInput.trim();
+    const name = toTitleCase(createInput);
     const initialNumber = genProductNumber(name);
     initialFormName.current = name;
     setPendingCreate({ templateId, templateName });
@@ -498,7 +502,7 @@ export default function ProductCreator({ lang }: Props) {
 
   return (
     <div>
-      {/* Duplicate warning modal â€” step 1 */}
+      {/* Duplicate warning modal — step 1 */}
       {showDuplicateWarning && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-surface rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
@@ -520,7 +524,7 @@ export default function ProductCreator({ lang }: Props) {
         </div>
       )}
 
-      {/* Duplicate warning modal â€” step 2 */}
+      {/* Duplicate warning modal — step 2 */}
       {showSecondDuplicateWarning && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-surface rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
@@ -539,10 +543,10 @@ export default function ProductCreator({ lang }: Props) {
         </div>
       )}
 
-      {/* Step container â€” key triggers card-enter re-animation on step change */}
+      {/* Step container — key triggers card-enter re-animation on step change */}
       <div key={step} className="card-enter">
 
-        {/* â”€â”€ STEP 1: SEARCH â”€â”€ */}
+        {/* ── STEP 1: SEARCH ── */}
         {step === "search" && (
           <div className="p-10 flex flex-col items-center gap-8 min-h-72">
             <div className="text-center">
@@ -566,23 +570,17 @@ export default function ProductCreator({ lang }: Props) {
                   className="bg-ember hover:bg-ember-dark disabled:opacity-40 text-white text-sm font-semibold px-5 py-3 rounded-xl transition-colors"
                 >{t.create.searchBtn}</button>
               </div>
-              {searchError && <p className="mt-3 text-sm text-ember bg-ember-light border border-ember/30 rounded-xl px-4 py-3">âš  {searchError}</p>}
+              {searchError && <p className="mt-3 text-sm text-ember bg-ember-light border border-ember/30 rounded-xl px-4 py-3">⚠ {searchError}</p>}
             </div>
-            {syncStatus && (
-              <div className="flex items-center gap-3 text-xs">
-                <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-medium border ${syncStatus.running ? "bg-ember-light text-ember border-ember/30" : syncStatus.product_count > 0 ? "bg-emerald-light text-emerald border-emerald/30" : "bg-muted text-ink-3 border-border"}`}>
-                  {syncStatus.running && <SpinnerSm />}
-                  {syncStatus.running ? t.create.syncRunning : syncStatus.product_count > 0 ? t.create.syncProducts(syncStatus.product_count) : t.create.syncEmpty}
-                </span>
-                <button onClick={triggerSync} disabled={syncTriggering || syncStatus.running} className="text-ember hover:text-ember-dark disabled:opacity-40 underline">
-                  {syncTriggering || syncStatus.running ? t.create.syncRunning : t.create.syncNow}
-                </button>
+            {syncStatus?.running && (
+              <div className="flex items-center gap-2 text-xs text-emerald">
+                <SpinnerSm /><span>{t.create.syncRunning}</span>
               </div>
             )}
           </div>
         )}
 
-        {/* â”€â”€ STEP 2: LOADING â”€â”€ */}
+        {/* ── STEP 2: LOADING ── */}
         {step === "loading" && (
           <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
             <svg className="animate-spin w-14 h-14 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -599,91 +597,86 @@ export default function ProductCreator({ lang }: Props) {
           </div>
         )}
 
-        {/* â”€â”€ STEP 3: RESULTS â”€â”€ */}
+        {/* ── STEP 3: RESULTS ── */}
         {step === "results" && searchResults !== null && (
           <div className="flex flex-col">
-            <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-4 flex-shrink-0">
-              <div>
-                <h2 className="font-semibold text-ink">{t.create.similarTitle}</h2>
-                <p className="text-xs text-ink-3 mt-0.5">
-                  &ldquo;{createInput}&rdquo;
-                  {highMatches.length > 0 && <span className="ml-2 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded text-[11px] font-medium">{t.create.resultsCount(highMatches.length)}</span>}
-                </p>
-              </div>
-              <button onClick={resetToSearch} className="flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink transition-colors shrink-0">
-                <BackChevron />{t.hub.back}
-              </button>
+            <div className="px-6 py-4 border-b border-border flex-shrink-0">
+              <h2 className="font-semibold text-ink">{t.create.similarTitle}</h2>
+              <p className="text-xs text-ink-3 mt-0.5">
+                &ldquo;{createInput}&rdquo;
+                {highMatches.length > 0 && <span className="ml-2 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded text-[11px] font-medium">{t.create.resultsCount(highMatches.length)}</span>}
+              </p>
             </div>
-            <div className="flex divide-x divide-border" style={{ minHeight: "320px" }}>
-              {/* Results list */}
-              <div className="flex-1 p-4 space-y-2 overflow-y-auto">
-                {searchResults.length === 0 ? (
-                  <div className="py-10 text-center text-sm text-ink-3">
-                    <p className="font-medium">{t.create.noResults}</p>
-                    <p className="text-xs mt-1 opacity-60">{t.create.noResultsHint}</p>
-                  </div>
-                ) : (
-                  <>
-                    {highMatches.length > 0 && <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">{t.create.warning}</div>}
-                    {isFallback && <div className="px-3 py-2 bg-muted border border-border rounded-xl text-xs text-ink-3">{t.create.fallback}</div>}
-                    {displayResults.map((r) => (
-                      <button
-                        key={r.product_id}
-                        onClick={() => {
-                          if (r.similarity >= 1.0) {
-                            setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name, templateColor: r.color ?? "" });
-                          } else {
-                            handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "");
-                          }
-                        }}
-                        className={`w-full text-left px-4 py-3 rounded-xl border transition-all hover:shadow-sm group ${r.similarity >= 1.0 ? "border-ember/40 bg-ember-light/30 hover:bg-ember-light/50" : r.similarity >= 0.80 ? "border-amber-200 bg-amber-50/60 hover:bg-amber-50" : "border-border bg-surface hover:bg-ground"}`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="font-medium text-sm text-ink truncate">{r.name}</p>
-                            {r.short_name && <p className="text-xs text-ink-3 truncate mt-0.5">{r.short_name}</p>}
-                          </div>
-                          <div className="flex items-center gap-2 flex-shrink-0">
-                            {r.vbn_number && <span className="text-[11px] font-mono text-ink-3">{r.vbn_number}</span>}
-                            <span className={`text-[11px] px-2 py-0.5 rounded-md font-bold ${r.similarity >= 1.0 ? "bg-ember text-white" : r.similarity >= 0.80 ? "bg-amber-500 text-white" : "bg-ink/10 text-ink-3"}`}>
-                              {Math.round(r.similarity * 100)}%
-                            </span>
-                            <span className="text-xs text-emerald opacity-0 group-hover:opacity-100 transition-opacity font-medium whitespace-nowrap">
-                              {t.create.useAsTemplate} â†’
-                            </span>
-                          </div>
+            <div className="p-4 space-y-2 overflow-y-auto">
+              {searchResults.length === 0 ? (
+                <div className="py-10 text-center text-sm text-ink-3">
+                  <p className="font-medium">{t.create.noResults}</p>
+                  <p className="text-xs mt-1 opacity-60">{t.create.noResultsHint}</p>
+                  <button onClick={resetToSearch} className="mt-4 text-xs text-ink-3 hover:text-ink underline">{t.create.backToSearch}</button>
+                </div>
+              ) : (
+                <>
+                  {highMatches.length > 0 && <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">{t.create.warning}</div>}
+                  {isFallback && <div className="px-3 py-2 bg-muted border border-border rounded-xl text-xs text-ink-3">{t.create.fallback}</div>}
+                  {displayResults.map((r) => (
+                    <button
+                      key={r.product_id}
+                      onClick={() => {
+                        if (r.similarity >= 1.0) {
+                          setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name, templateColor: r.color ?? "" });
+                        } else {
+                          handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "");
+                        }
+                      }}
+                      className={`w-full text-left px-4 py-3 rounded-xl border transition-all hover:shadow-sm group ${r.similarity >= 1.0 ? "border-ember/40 bg-ember-light/30 hover:bg-ember-light/50" : r.similarity >= 0.80 ? "border-amber-200 bg-amber-50/60 hover:bg-amber-50" : "border-border bg-surface hover:bg-ground"}`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-medium text-sm text-ink truncate">{r.name}</p>
+                          {r.short_name && <p className="text-xs text-ink-3 truncate mt-0.5">{r.short_name}</p>}
                         </div>
-                      </button>
-                    ))}
-                    {!showAllResults && allDisplayResults.length > 6 && (
-                      <button onClick={() => setShowAllResults(true)} className="w-full text-xs text-emerald hover:text-emerald-dark font-medium py-2 text-center">
-                        {t.create.showMore(allDisplayResults.length - 6)}
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-              {/* AI panel */}
-              <AiPanel />
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {r.vbn_number && <span className="text-[11px] font-mono text-ink-3">{r.vbn_number}</span>}
+                          <span className={`text-[11px] px-2 py-0.5 rounded-md font-bold ${r.similarity >= 1.0 ? "bg-ember text-white" : r.similarity >= 0.80 ? "bg-amber-500 text-white" : "bg-ink/10 text-ink-3"}`}>
+                            {Math.round(r.similarity * 100)}%
+                          </span>
+                          <span className={`text-xs font-semibold px-3 py-1 rounded-lg border transition-colors whitespace-nowrap ${r.similarity >= 1.0 ? "bg-ember-light text-ember border-ember/30 group-hover:bg-ember group-hover:text-white" : "bg-emerald-light text-emerald border-emerald/30 group-hover:bg-emerald group-hover:text-white"}`}>
+                            {t.create.useAsTemplate}
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                  {!showAllResults && allDisplayResults.length > 6 && (
+                    <button onClick={() => setShowAllResults(true)} className="w-full text-xs text-emerald hover:text-emerald-dark font-medium py-2 text-center">
+                      {t.create.showMore(allDisplayResults.length - 6)}
+                    </button>
+                  )}
+                  <div className="pt-2 border-t border-border mt-2">
+                    <button onClick={resetToSearch} className="text-xs text-ink-3 hover:text-ink transition-colors">
+                      &#8592; {t.create.backToSearch}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
 
-        {/* â”€â”€ STEP 4: CONFIRM â”€â”€ */}
+        {/* ── STEP 4: CONFIRM ── */}
         {step === "confirm" && pendingCreate && (
           <div className="flex flex-col">
-            <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-4 flex-shrink-0">
-              <div>
-                <h2 className="font-semibold text-ink">{t.create.confirmTitle}</h2>
-                <p className="text-xs text-ink-3 mt-0.5">
-                  {t.create.templateLabel} <span className="font-medium text-ink">{pendingCreate.templateName}</span>
-                  <span className="ml-1.5 opacity-40">#{pendingCreate.templateId}</span>
-                </p>
-              </div>
-              <button
-                onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setNameFromTemplate(null); setTemplateColorName(""); }}
-                className="flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink transition-colors shrink-0"
-              ><BackChevron />{t.hub.back}</button>
+            <div className="px-6 py-4 border-b border-border flex-shrink-0">
+              <h2 className="font-semibold text-ink">{t.create.confirmTitle}</h2>
+              <p className="text-xs text-ink-3 mt-0.5">
+                {t.create.templateLabel} <span className="font-medium text-ink">{pendingCreate.templateName}</span>
+                <span className="ml-1.5 opacity-40">#{pendingCreate.templateId}</span>
+                <span className="mx-1.5 opacity-30">·</span>
+                <button
+                  onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setNameFromTemplate(null); setTemplateColorName(""); }}
+                  className="text-emerald hover:text-emerald-dark hover:underline transition-colors"
+                >&#8592; {t.create.backToResults}</button>
+              </p>
             </div>
             <div className="flex divide-x divide-border">
               {/* Form */}
@@ -770,7 +763,7 @@ export default function ProductCreator({ lang }: Props) {
                     className="w-full border border-border rounded-xl px-4 py-2.5 text-sm font-mono uppercase bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
                   />
                   {numberCheckResult?.changed && (
-                    <p className="mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">âš  {t.create.numberTaken(numberCheckResult.original, productNumber)}</p>
+                    <p className="mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">⚠ {t.create.numberTaken(numberCheckResult.original, productNumber)}</p>
                   )}
                   <p className="mt-1 text-[11px] text-ink-3/50">{t.create.numberHint}</p>
                 </div>
@@ -782,7 +775,7 @@ export default function ProductCreator({ lang }: Props) {
                       {t.create.vbnLabel}
                       {vbnForCreateChecking && <SpinnerSm />}
                       {!vbnForCreateChecking && vbnForCreateInfo && (
-                        <span className={vbnForCreateInfo.found ? "text-emerald" : "text-ember"}>{vbnForCreateInfo.found ? "âœ“" : "âœ—"}</span>
+                        <span className={vbnForCreateInfo.found ? "text-emerald" : "text-ember"}>{vbnForCreateInfo.found ? "✓" : "✗"}</span>
                       )}
                     </label>
                     <input
@@ -818,7 +811,7 @@ export default function ProductCreator({ lang }: Props) {
                       {t.create.colorLabel}
                       {colorListLoading && <SpinnerSm />}
                       {colorForCreate && (
-                        <button onClick={() => { setColorForCreate(""); setColorSearch(""); setTemplateColorName(""); }} className="text-ink-3/40 hover:text-ink-3 text-xs ml-auto">âœ•</button>
+                        <button onClick={() => { setColorForCreate(""); setColorSearch(""); setTemplateColorName(""); }} className="text-ink-3/40 hover:text-ink-3 text-xs ml-auto">✕</button>
                       )}
                     </label>
                     <div className="relative">
@@ -845,7 +838,7 @@ export default function ProductCreator({ lang }: Props) {
                           <button
                             onMouseDown={(e) => { e.preventDefault(); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setTemplateColorName(""); }}
                             className="w-full text-left px-3 py-2 text-xs text-ink-3 hover:bg-ground border-b border-border"
-                          >â€” {t.create.colorNone}</button>
+                          >— {t.create.colorNone}</button>
                           {colorList
                             .filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase()))
                             .slice(0, 80)
@@ -861,7 +854,7 @@ export default function ProductCreator({ lang }: Props) {
                             ))
                           }
                           {colorList.filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase())).length === 0 && (
-                            <p className="px-3 py-2 text-xs text-ink-3 text-center">â€”</p>
+                            <p className="px-3 py-2 text-xs text-ink-3 text-center">—</p>
                           )}
                         </div>
                       )}
@@ -885,7 +878,7 @@ export default function ProductCreator({ lang }: Props) {
           </div>
         )}
 
-        {/* â”€â”€ STEP 5: CREATING â”€â”€ */}
+        {/* ── STEP 5: CREATING ── */}
         {step === "creating" && (
           <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
             <svg className="animate-spin w-14 h-14 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -902,11 +895,11 @@ export default function ProductCreator({ lang }: Props) {
           </div>
         )}
 
-        {/* â”€â”€ STEP 6: DONE â”€â”€ */}
+        {/* ── STEP 6: DONE ── */}
         {step === "done" && createResult && (
           <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
             <div className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold border-2 ${createResult.ok ? "bg-emerald-light text-emerald border-emerald/30" : "bg-ember-light text-ember border-ember/30"}`}>
-              {createResult.ok ? "âœ“" : "âœ—"}
+              {createResult.ok ? "✓" : "✗"}
             </div>
             <div>
               <p className="text-lg font-bold text-ink">{createResult.message}</p>
