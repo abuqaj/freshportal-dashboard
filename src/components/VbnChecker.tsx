@@ -268,12 +268,12 @@ export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
   }
 
   return (
-    <div className="min-h-full bg-ground py-10 px-4">
-      <div className="w-full max-w-4xl mx-auto space-y-4">
+    <div>
+      <div className="p-6 space-y-4">
 
         {/* ── Module title ── */}
         <div className="card-enter" style={{ animationDelay: "0ms" }}>
-          <h2 className="text-2xl font-bold text-ink tracking-tight">VBN Checker</h2>
+          <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.vbnChecker}</h2>
           <p className="text-sm text-ink-3 mt-1">{t.vbn.description}</p>
         </div>
 

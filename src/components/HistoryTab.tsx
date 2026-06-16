@@ -120,8 +120,8 @@ export default function HistoryTab({ lang }: Props) {
   }
 
   return (
-    <div className="min-h-full bg-ground py-10 px-4">
-      <div className="w-full max-w-4xl mx-auto">
+    <div>
+      <div className="p-6">
       <div className="card-enter mb-6" style={{ animationDelay: "0ms" }}>
         <h2 className="text-2xl font-bold text-ink tracking-tight">{t.history.title}</h2>
         <p className="text-sm text-ink-3 mt-1">{t.history.description}</p>

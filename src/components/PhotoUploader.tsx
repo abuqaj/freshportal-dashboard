@@ -197,8 +197,8 @@ export default function PhotoUploader({ lang }: Props) {
   }
 
   return (
-    <div className="min-h-full bg-ground py-10 px-4">
-      <div className="w-full max-w-2xl mx-auto">
+    <div>
+      <div className="p-6">
       <div className="card-enter mb-6 flex items-end justify-between" style={{ animationDelay: "0ms" }}>
         <div>
           <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.photoUploader}</h2>

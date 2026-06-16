@@ -409,8 +409,8 @@ export default function ProductCreator({ lang }: Props) {
   }
 
   return (
-    <div className="min-h-full bg-ground py-10 px-4">
-      <div className="w-full max-w-3xl mx-auto">
+    <div>
+      <div className="p-6">
 
       {/* Module title */}
       <div className="card-enter mb-6 flex items-end justify-between gap-4" style={{ animationDelay: "0ms" }}>

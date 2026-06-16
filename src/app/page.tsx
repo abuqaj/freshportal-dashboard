@@ -40,7 +40,7 @@ function useTilt(strength = 10) {
   return { ref, onMouseMove, onMouseLeave };
 }
 
-/* ─── Decorative tile background SVGs ─── */
+/* ─── Decorative SVG bg inside hub tiles ─── */
 function DecoBg({ type }: { type: Tab }) {
   if (type === "vbn") return (
     <svg className="absolute -right-8 -top-8 w-52 h-52 opacity-10 slow-spin" viewBox="0 0 200 200" fill="white">
@@ -78,7 +78,7 @@ function DecoBg({ type }: { type: Tab }) {
   );
 }
 
-/* ─── Single tile ─── */
+/* ─── Hub tile ─── */
 function Tile({
   id, label, desc, gradient, icon, stat, statColor = "text-white/60",
   index, onClick,
@@ -97,15 +97,9 @@ function Tile({
       style={{ animationDelay: `${index * 90}ms` }}
       className={`tile-enter tile-shine relative overflow-hidden rounded-3xl cursor-pointer ${gradient} group`}
     >
-      {/* Decorative bg */}
       <DecoBg type={id} />
-
-      {/* Gradient overlay on hover */}
       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/8 transition-colors duration-300 rounded-3xl" />
-
-      {/* Content */}
       <div className="relative z-10 flex flex-col h-full p-7 min-h-[220px]">
-        {/* Icon */}
         <div className="mb-auto">
           <div className="w-12 h-12 rounded-2xl bg-white/15 flex items-center justify-center group-hover:bg-white/25 transition-colors duration-300 mb-5 group-hover:scale-110 transition-transform">
             {icon}
@@ -113,8 +107,6 @@ function Tile({
           <h2 className="text-xl font-bold text-white tracking-tight leading-tight">{label}</h2>
           <p className="text-sm text-white/65 mt-1.5 leading-relaxed">{desc}</p>
         </div>
-
-        {/* Bottom */}
         <div className="flex items-end justify-between mt-6">
           {stat && <span className={`text-xs font-medium ${statColor}`}>{stat}</span>}
           <div className="ml-auto w-8 h-8 rounded-full bg-white/20 flex items-center justify-center
@@ -129,7 +121,7 @@ function Tile({
   );
 }
 
-/* ─── Petal logo mark ─── */
+/* ─── Logo mark ─── */
 function LogoMark({ size = 28 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 28 28" fill="none">
@@ -143,59 +135,96 @@ function LogoMark({ size = 28 }: { size?: number }) {
   );
 }
 
-/* ─── Module top bar (when a tab is active) ─── */
-const MODULE_META: Record<Tab, { label: string; color: string; textColor: string }> = {
-  vbn:     { label: "VBN Checker",   color: "bg-emerald",  textColor: "text-white" },
-  create:  { label: "New Products",  color: "bg-ember",    textColor: "text-white" },
-  photos:  { label: "Photo Upload",  color: "bg-[#145E35]",textColor: "text-white" },
-  history: { label: "History",       color: "bg-[#C43320]",textColor: "text-white" },
+/* ─── Persistent top bar ─── */
+function TopBar({ lang, setLang, tab, t }: {
+  lang: Lang; setLang: (l: Lang) => void;
+  tab: Tab | null; t: (typeof translations)[Lang];
+}) {
+  return (
+    <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-surface flex-shrink-0">
+      <div className="flex items-center gap-3">
+        <LogoMark size={24}/>
+        <span className="text-sm font-bold text-ink">FreshPortal</span>
+        {tab && (
+          <>
+            <span className="text-border text-sm select-none">/</span>
+            <span className="text-sm font-medium text-ink-3">
+              {tab === "vbn"     ? t.nav.vbnChecker
+               : tab === "create" ? t.nav.newProducts
+               : tab === "photos" ? t.nav.photoUploader
+               : t.nav.history}
+            </span>
+          </>
+        )}
+      </div>
+      <div className="flex items-center gap-3">
+        <LanguageSwitcher lang={lang} setLang={setLang}/>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Module card wrapper ─── */
+const MODULE_WIDTH: Record<Tab, string> = {
+  vbn:     "max-w-4xl",
+  history: "max-w-4xl",
+  create:  "max-w-3xl",
+  photos:  "max-w-2xl",
 };
 
-function ModuleBar({
-  tab, onBack, lang, autoEnabled, autoNextRun,
-}: {
-  tab: Tab; onBack: () => void; lang: Lang;
-  autoEnabled: boolean; autoNextRun: string | null;
+function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }: {
+  tab: Tab; onBack: () => void; autoEnabled: boolean; autoNextRun: string | null;
+  lang: Lang; t: (typeof translations)[Lang]; children: React.ReactNode;
 }) {
-  const meta = MODULE_META[tab];
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
+  const w = MODULE_WIDTH[tab];
   return (
-    <div className={`${meta.color} flex items-center gap-4 px-5 py-3 flex-shrink-0`}>
-      <button
-        onClick={onBack}
-        className="flex items-center gap-1.5 text-white/80 hover:text-white transition-colors text-sm font-medium group"
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
-          className="group-hover:-translate-x-0.5 transition-transform">
-          <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        Hub
-      </button>
-      <div className="w-px h-4 bg-white/25"/>
-      <span className={`text-sm font-semibold ${meta.textColor}`}>{meta.label}</span>
-      {tab === "vbn" && (
-        <div className="ml-auto flex items-center gap-2">
-          {autoEnabled ? (
-            <span className="flex items-center gap-1.5 text-xs text-white/80 bg-white/15 px-2.5 py-1 rounded-full">
-              <span className="relative w-2 h-2 flex-shrink-0">
-                <span className="absolute inset-0 rounded-full bg-white pulse-ring"/>
-                <span className="relative w-2 h-2 rounded-full bg-white block"/>
+    <div className="module-enter w-full flex-1 flex flex-col items-center overflow-y-auto py-6 px-4 bg-ground">
+      {/* Back + optional auto VBN badge */}
+      <div className={`w-full ${w} flex items-center justify-between mb-4`}>
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink transition-colors group"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+            className="group-hover:-translate-x-0.5 transition-transform">
+            <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          {t.hub.back}
+        </button>
+
+        {tab === "vbn" && (
+          autoEnabled ? (
+            <span className="flex items-center gap-1.5 text-xs text-emerald bg-emerald-light border border-emerald/20 px-2.5 py-1 rounded-full">
+              <span className="relative w-1.5 h-1.5 flex-shrink-0">
+                <span className="absolute inset-0 rounded-full bg-emerald pulse-ring"/>
+                <span className="relative w-1.5 h-1.5 rounded-full bg-emerald block"/>
               </span>
-              Auto VBN{autoNextRun ? ` · ${new Date(autoNextRun).toLocaleString(localeStr, {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}` : ""}
+              {t.hub.autoVbnActive}
+              {autoNextRun && (
+                <span className="text-emerald/70 ml-1">
+                  · {new Date(autoNextRun).toLocaleString(localeStr, {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
+                </span>
+              )}
             </span>
           ) : (
-            <span className="text-xs text-white/50">Auto VBN off</span>
-          )}
-        </div>
-      )}
+            <span className="text-xs text-ink-3 bg-muted px-2.5 py-1 rounded-full border border-border">
+              {t.hub.moduleAutoOff}
+            </span>
+          )
+        )}
+      </div>
+
+      {/* Content */}
+      <div className={`w-full ${w} bg-surface rounded-3xl border border-border shadow-sm overflow-hidden mb-8`}>
+        {children}
+      </div>
     </div>
   );
 }
 
 /* ─── Hub home screen ─── */
-function Hub({
-  lang, setLang, t, autoEnabled, productCount, onSelect,
-}: {
+function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect }: {
   lang: Lang; setLang: (l: Lang) => void; t: (typeof translations)[Lang];
   autoEnabled: boolean; productCount: number | null; onSelect: (tab: Tab) => void;
 }) {
@@ -203,9 +232,9 @@ function Hub({
     {
       id: "vbn" as Tab,
       label: t.nav.vbnChecker,
-      desc: "Verify & auto-fix VBN codes",
+      desc: t.hub.vbnDesc,
       gradient: "bg-gradient-to-br from-emerald to-[#0D5430]",
-      stat: autoEnabled ? "● Auto active · daily" : "Auto VBN off",
+      stat: autoEnabled ? t.hub.vbnStatOn : t.hub.vbnStatOff,
       statColor: autoEnabled ? "text-white/80" : "text-white/40",
       icon: (
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -218,9 +247,9 @@ function Hub({
     {
       id: "create" as Tab,
       label: t.nav.newProducts,
-      desc: "Add products with AI suggestions",
+      desc: t.hub.createDesc,
       gradient: "bg-gradient-to-br from-ember to-[#B83220]",
-      stat: productCount != null ? `${productCount.toLocaleString()} in catalogue` : "Loading…",
+      stat: productCount != null ? t.hub.catalogueStat(productCount) : t.hub.catalogueLoading,
       statColor: "text-white/70",
       icon: (
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -232,9 +261,9 @@ function Hub({
     {
       id: "photos" as Tab,
       label: t.nav.photoUploader,
-      desc: "Upload & assign product photos",
+      desc: t.hub.photosDesc,
       gradient: "bg-gradient-to-br from-[#145E35] to-[#073D22]",
-      stat: "Drop photos to assign",
+      stat: t.hub.photosStat,
       statColor: "text-white/60",
       icon: (
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -248,9 +277,9 @@ function Hub({
     {
       id: "history" as Tab,
       label: t.nav.history,
-      desc: "Browse operation logs & runs",
+      desc: t.hub.historyDesc,
       gradient: "bg-gradient-to-br from-[#C43320] to-[#8B1E14]",
-      stat: "VBN · Sync · Auto VBN",
+      stat: t.hub.historyStat,
       statColor: "text-white/60",
       icon: (
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -262,57 +291,35 @@ function Hub({
   ];
 
   return (
-    <div className="hub-enter flex flex-col h-full">
-      {/* Top bar */}
-      <div className="flex items-center justify-between px-8 py-4 border-b border-border bg-surface flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <LogoMark size={28}/>
-          <div>
-            <p className="text-sm font-bold text-ink leading-none">FreshPortal</p>
-            <p className="text-[10px] text-ink-3 mt-0.5">DFG Stamgegevens</p>
-          </div>
-        </div>
-        <LanguageSwitcher lang={lang} setLang={setLang}/>
-      </div>
-
-      {/* Tile grid */}
-      <div className="flex-1 flex flex-col items-center justify-center px-8 py-10 bg-ground">
-        <div className="w-full max-w-3xl">
-          <h1 className="text-3xl font-bold text-ink mb-2 tracking-tight">
-            What are you working on?
-          </h1>
-          <p className="text-sm text-ink-3 mb-10">Select a module to get started.</p>
-
-          <div className="grid grid-cols-2 gap-5">
-            {tiles.map((tile, i) => (
-              <Tile
-                key={tile.id}
-                index={i}
-                id={tile.id}
-                label={tile.label}
-                desc={tile.desc}
-                gradient={tile.gradient}
-                icon={tile.icon}
-                stat={tile.stat}
-                statColor={tile.statColor}
-                onClick={() => onSelect(tile.id)}
-              />
-            ))}
-          </div>
+    <div className="hub-enter flex-1 flex flex-col items-center justify-center px-8 py-10 bg-ground overflow-y-auto">
+      <div className="w-full max-w-3xl">
+        <h1 className="text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.title}</h1>
+        <p className="text-sm text-ink-3 mb-10">{t.hub.subtitle}</p>
+        <div className="grid grid-cols-2 gap-5">
+          {tiles.map((tile, i) => (
+            <Tile
+              key={tile.id}
+              index={i}
+              id={tile.id}
+              label={tile.label}
+              desc={tile.desc}
+              gradient={tile.gradient}
+              icon={tile.icon}
+              stat={tile.stat}
+              statColor={tile.statColor}
+              onClick={() => onSelect(tile.id)}
+            />
+          ))}
         </div>
       </div>
 
-      {/* Bottom strip */}
-      <div className="flex items-center justify-between px-8 py-2.5 border-t border-border bg-surface flex-shrink-0">
-        <span className="text-[10px] text-ink-3 font-mono">
-          FreshPortal Product Management · {new Date().getFullYear()}
-        </span>
-        <div className="flex items-center gap-1.5">
+      <div className="mt-10 flex items-center gap-3 text-[10px] text-ink-3">
+        <span>{t.hub.footer} · {new Date().getFullYear()}</span>
+        <span className="w-px h-3 bg-border"/>
+        <span className="flex items-center gap-1">
           <span className={`w-1.5 h-1.5 rounded-full ${autoEnabled ? "bg-emerald" : "bg-muted"}`}/>
-          <span className="text-[10px] text-ink-3">
-            Auto VBN {autoEnabled ? "active" : "disabled"}
-          </span>
-        </div>
+          {autoEnabled ? t.hub.autoVbnActive : t.hub.autoVbnDisabled}
+        </span>
       </div>
     </div>
   );
@@ -347,7 +354,6 @@ export default function Dashboard() {
 
   const t = translations[lang];
 
-  /* Back to hub */
   function goBack() { setTab(null); }
 
   const handleAutoVbnChange = useCallback((enabled: boolean, nextRun: string | null) => {
@@ -357,19 +363,11 @@ export default function Dashboard() {
 
   return (
     <div className="h-screen bg-surface flex flex-col overflow-hidden font-sans antialiased">
-      {/* Module top bar (only when tab is open) */}
-      {tab && (
-        <ModuleBar
-          tab={tab}
-          onBack={goBack}
-          lang={lang}
-          autoEnabled={autoEnabled}
-          autoNextRun={autoNextRun}
-        />
-      )}
+      {/* Persistent top bar — always visible */}
+      <TopBar lang={lang} setLang={setLang} tab={tab} t={t}/>
 
-      {/* Content */}
-      <div className="flex-1 overflow-hidden">
+      {/* Main content */}
+      <div className="flex-1 overflow-hidden flex flex-col">
         {!tab ? (
           <Hub
             lang={lang}
@@ -380,12 +378,19 @@ export default function Dashboard() {
             onSelect={(t) => setTab(t)}
           />
         ) : (
-          <div className="module-enter h-full overflow-y-auto bg-ground">
+          <ModuleCard
+            tab={tab}
+            onBack={goBack}
+            autoEnabled={autoEnabled}
+            autoNextRun={autoNextRun}
+            lang={lang}
+            t={t}
+          >
             {tab === "vbn"     && <VbnChecker     lang={lang} onAutoVbnChange={handleAutoVbnChange}/>}
             {tab === "create"  && <ProductCreator lang={lang}/>}
             {tab === "photos"  && <PhotoUploader  lang={lang}/>}
             {tab === "history" && <HistoryTab     lang={lang}/>}
-          </div>
+          </ModuleCard>
         )}
       </div>
     </div>
