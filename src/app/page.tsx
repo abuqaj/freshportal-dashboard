@@ -196,7 +196,7 @@ function ModuleBar({
 function Hub({
   lang, setLang, t, autoEnabled, productCount, onSelect,
 }: {
-  lang: Lang; setLang: (l: Lang) => void; t: ReturnType<typeof translations[Lang]>;
+  lang: Lang; setLang: (l: Lang) => void; t: (typeof translations)[Lang];
   autoEnabled: boolean; productCount: number | null; onSelect: (tab: Tab) => void;
 }) {
   const tiles = [
