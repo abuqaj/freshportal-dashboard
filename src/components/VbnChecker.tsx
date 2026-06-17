@@ -58,15 +58,6 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
 
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
 
-  useEffect(() => {
-    if (step === "results") {
-      requestAnimationFrame(() => {
-        const el = scrollBodyRef.current;
-        if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 40);
-      });
-    }
-  }, [step]);
-
   const loadVbnAutoStatus = useCallback(async () => {
     if (!RAILWAY) return;
     try {
@@ -111,6 +102,15 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
     : fixResult !== null ? "done"
     : results !== null ? "results"
     : "search";
+
+  useEffect(() => {
+    if (step === "results") {
+      requestAnimationFrame(() => {
+        const el = scrollBodyRef.current;
+        if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 40);
+      });
+    }
+  }, [step]);
 
   function resetAll() {
     setResults(null); setStats(null); setVbnInput(""); setVbnNameCache({});

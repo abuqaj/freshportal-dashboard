@@ -4,13 +4,14 @@ Dashboard do zarządzania produktami w FreshPortal — weryfikacja VBN, tworzeni
 
 ## Funkcje
 
-- **VBN Checker** — wpisz numer VBN, sprawdź poprawność kodów wszystkich produktów, edytuj i zatwierdź poprawki inline (streaming SSE). AI (Claude Haiku) automatycznie sugeruje poprawny kod VBN dla każdego błędu — w tym dla kodów nieznalezionych w Floricode, bez VBN, z błędnym typem (spray vs. non-spray), kolorowych i preserved.
-- **Auto VBN Check** — przełącznik w zakładce VBN Checker, który włącza automatyczne sprawdzanie kodów VBN nowo dodanych produktów co godzinę w tle (APScheduler na Railway). Błędne kody są automatycznie poprawiane. Wyniki każdego uruchomienia widoczne w zakładce Historia → Auto VBN.
-- **Nowe produkty** — wpisz nazwę produktu, system znajdzie podobne w lokalnej DB (fuzzy search, próg 80%). AI wykrywa duplikaty i sugeruje właściwy kod VBN z tłumaczeniem na holenderski. Numer produktu weryfikowany przed kliknięciem "Utwórz". Kolor pre-selectowany z produktu-szablonu.
-- **Photo Uploader** — wrzuć zdjęcia, system dopasuje je do produktów w DB (AND-ILIKE matching), możesz przypisać jedno zdjęcie do wielu produktów jednocześnie (chipy + alternatywy). Matches ≥99% auto-selectowane.
-- **Synchronizacja** — pełna synchronizacja katalogu FreshPortal (~44 tys. produktów) do lokalnej Postgres DB. Split na dwie sesje po 130 stron każda, unika limitu sesji FreshPortal. Inkrementalna synchronizacja tylko zmienionych produktów.
-- **Historia** — logi operacji VBN fix, tworzenia produktów, photo upload, synchronizacji i Auto VBN z rozwijalnymi szczegółami. Paginacja (10 wpisów + "Załaduj więcej") w każdej podzakładce.
-- **Wielojęzyczność** — UI i komunikaty backendu w 4 językach: angielski, holenderski, polski, hiszpański.
+- **VBN Checker** — przepływ kart: Szukaj → Wyniki → Poprawianie → Gotowe. Wpisz numer VBN, sprawdź poprawność kodów wszystkich produktów, edytuj i zatwierdź poprawki inline (streaming SSE). Pasek postępu z rzeczywistym procentem (0–100) na podstawie etapów pipeline. AI (Claude Haiku) sugeruje poprawny kod VBN — nie proponuje kodu identycznego z obecnym; "overig" traktowany jako poprawny gdy brak konkretnej alternatywy.
+- **Auto VBN Check** — przełącznik w VBN Checker, automatycznie sprawdza kody VBN nowo dodanych produktów co godzinę (APScheduler na Railway). Błędne kody automatycznie poprawiane. Skeleton ładowania blokuje interakcję do czasu załadowania statusu; potwierdzenie przed wyłączeniem.
+- **Nowe produkty** — wpisz nazwę, system znajdzie podobne w DB (fuzzy search ≥80%). AI wykrywa duplikaty i sugeruje VBN. Podgląd różnicy nazwy (algorytm LCS) w bursztynowym boxie. Numer produktu weryfikowany przed kliknięciem "Utwórz". Kolor pre-selectowany z szablonu. Historia operacji zapisywana zawsze — także dla nieudanych prób (badge "failed").
+- **Photo Uploader** — wrzuć zdjęcia, system dopasuje je do produktów (AND-ILIKE matching), przypisz jedno zdjęcie do wielu produktów (chipy + alternatywy). Matches ≥99% auto-selectowane.
+- **Synchronizacja** — pełna synchronizacja katalogu (~44 tys. produktów) do Postgres. Split na dwie sesje Playwright po 130 stron, unika limitu sesji FreshPortal. Inkrementalna synchronizacja tylko zmienionych produktów.
+- **TopBar** — live status: liczba produktów w DB, wskaźnik czy Railway jest online (zielona/szara kropka), spinner synchronizacji.
+- **Historia** — logi operacji VBN fix, tworzenia produktów, photo upload, synchronizacji i Auto VBN z rozwijalnymi szczegółami. Paginacja (10 wpisów + "Załaduj więcej").
+- **Wielojęzyczność** — UI i komunikaty backendu (w tym status fix VBN) w 4 językach: EN / NL / PL / ES.
 
 ## Architektura
 
@@ -159,7 +160,7 @@ Ustaw `NEXT_PUBLIC_RAILWAY_API_URL=http://localhost:8000` w `.env.local`.
 
 ## VBN Checker — jak działa AI
 
-Weryfikacja każdego produktu przebiega przez reguły deterministyczne, a AI (`ai_suggest_vbn_for_checker`) jest wywoływane dla wszystkich przypadków wymagających sugestii:
+Weryfikacja każdego produktu przebiega przez reguły deterministyczne, a AI (`ai_suggest_vbn_for_checker`) wywoływane jest dla przypadków wymagających sugestii:
 
 1. **Brak VBN** — AI sugeruje właściwy kod na podstawie nazwy produktu
 2. **VBN nie znaleziony w Floricode** — AI sugeruje zastępczy kod
@@ -168,7 +169,24 @@ Weryfikacja każdego produktu przebiega przez reguły deterministyczne, a AI (`a
 5. **Spray/Non-spray mismatch** — AI weryfikuje i sugeruje właściwy typ
 6. **Ambiguity** — AI porównuje holenderskie tłumaczenie nazwy z oficjalną nazwą VBN
 
-AI używa tego samego kontekstu (`_VBN_CONTEXT`) co flow tworzenia produktów: tłumaczenie EN→NL (Spray→Tros, Large-flowered→Grootbloemig), kody kategorii (580, 595, 2712, 15126, 16128), reguły origin prefix (Ec/Col/Ke = kraj, nie część nazwy odmiany).
+Reguły ochronne:
+- AI musi zwrócić konkretny `proposed_vbn` żeby oznaczenie ERROR było aktywne (zasada "overig") — brak lepszego kodu = produktd traktowany jako poprawny
+- Proponowany VBN nigdy nie jest identyczny z obecnym (guard w `verifier.py`)
+
+AI używa kontekstu `_VBN_CONTEXT`: tłumaczenie EN→NL (Spray→Tros, Large-flowered→Grootbloemig), kody kategorii (580, 595, 2712, 15126, 16128), reguły origin prefix (Ec/Col/Ke = kraj, nie część nazwy odmiany).
+
+## Pasek postępu VBN Check
+
+Pipeline `/vbn-check/stream` emituje `{ type: "status", message, progress }` gdzie `progress` (0–100) odzwierciedla rzeczywisty etap:
+
+| Etap | Progress |
+|------|----------|
+| Logowanie / inicjalizacja | 5% |
+| Wynik z DB (cache hit) | 15% |
+| Pobieranie VBN (i/N produktów) | 10–72% |
+| Weryfikacja w Floricode | 75% |
+| Analiza reguł + AI | 88% |
+| Pobieranie nazw proponowanych kodów | 93% |
 
 ## Tworzenie nowego produktu — flow
 
