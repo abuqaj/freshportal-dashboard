@@ -341,7 +341,7 @@ export default function PhotoUploader({ lang }: Props) {
             </div>
 
             {/* Scrollable list + scroll hint */}
-            <div className="relative flex-1 overflow-hidden">
+            <div className="relative flex-1 min-h-0">
               <div
                 ref={scrollBodyRef}
                 className="divide-y divide-border overflow-y-auto h-full scroll-pb-4"
