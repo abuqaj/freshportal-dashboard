@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { translations, Lang } from "@/lib/i18n";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
@@ -28,28 +29,47 @@ function Spinner({ className = "" }: { className?: string }) {
   );
 }
 
+function CheckIcon() {
+  return <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+}
+
 export default function PhotoUploader({ lang }: Props) {
   const t = translations[lang];
 
-  const [photoPhase, setPhotoPhase]       = useState<PhotoPhase>("idle");
+  const [photoPhase, setPhotoPhase]         = useState<PhotoPhase>("idle");
   const [photoSessionId, setPhotoSessionId] = useState<string | null>(null);
-  const [reviewItems, setReviewItems]     = useState<ReviewItem[]>([]);
-  const [uploadResults, setUploadResults] = useState<UploadResultItem[]>([]);
+  const [reviewItems, setReviewItems]       = useState<ReviewItem[]>([]);
+  const [uploadResults, setUploadResults]   = useState<UploadResultItem[]>([]);
   const [photoAnalyzing, setPhotoAnalyzing] = useState(false);
-  const [photoError, setPhotoError]       = useState<string | null>(null);
+  const [photoError, setPhotoError]         = useState<string | null>(null);
   const [photoStatusMsg, setPhotoStatusMsg] = useState<string | null>(null);
+  const [mounted, setMounted]               = useState(false);
 
-  // Hover preview
+  // Scroll hint
+  const scrollBodyRef  = useRef<HTMLDivElement>(null);
+  const [showScrollHint, setShowScrollHint] = useState(false);
+
+  // Hover preview — portal-rendered to avoid transform-containment bug
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [previewUrl, setPreviewUrl]   = useState<string | null>(null);
-  const [previewPos, setPreviewPos]   = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewPos, setPreviewPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  useEffect(() => { setMounted(true); }, []);
+
+  // Update scroll hint whenever review items change
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      const el = scrollBodyRef.current;
+      if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 40);
+    });
+  }, [reviewItems]);
 
   function handleThumbnailEnter(url: string, e: React.MouseEvent<HTMLElement>) {
     if (!url) return;
     const rect = e.currentTarget.getBoundingClientRect();
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
     hoverTimer.current = setTimeout(() => {
-      const W = 192, H = 192;
+      const W = 200, H = 200;
       let x = rect.right + 12;
       let y = rect.top + rect.height / 2 - H / 2;
       if (x + W > window.innerWidth - 16) x = rect.left - W - 12;
@@ -74,6 +94,7 @@ export default function PhotoUploader({ lang }: Props) {
     setPhotoError(null);
     setPhotoStatusMsg(null);
     setPreviewUrl(null);
+    setShowScrollHint(false);
   }
 
   async function analyzePhotos(fileList: FileList) {
@@ -166,7 +187,7 @@ export default function PhotoUploader({ lang }: Props) {
     if (!photoSessionId || !RAILWAY) return;
     const confirmed = reviewItems
       .filter(i => i.approved && i.selected.length > 0)
-      .flatMap((i: ReviewItem) => i.selected.map((p: ProductMatchItem) => ({ filename: i.filename, product_id: p.product_id, product_name: p.name })));
+      .flatMap(i => i.selected.map(p => ({ filename: i.filename, product_id: p.product_id, product_name: p.name })));
     if (confirmed.length === 0) return;
 
     let localResults: UploadResultItem[] = confirmed.map(c => ({ filename: c.filename, product_name: c.product_name, status: "pending" as const }));
@@ -230,24 +251,23 @@ export default function PhotoUploader({ lang }: Props) {
     }
   }
 
-  /* ─── derived ─── */
-  const approvedItems      = reviewItems.filter(i => i.approved && i.selected.length > 0);
-  const totalAssignments   = approvedItems.reduce((s, i) => s + i.selected.length, 0);
-  const uploadLabel        = photoPhase === "review" ? t.photo.uploadBtn(approvedItems.length, totalAssignments) : "";
+  const approvedItems    = reviewItems.filter(i => i.approved && i.selected.length > 0);
+  const totalAssignments = approvedItems.reduce((s, i) => s + i.selected.length, 0);
+  const uploadLabel      = photoPhase === "review" ? t.photo.uploadBtn(approvedItems.length, totalAssignments) : "";
 
   return (
     <div className="bg-surface rounded-2xl border border-border overflow-hidden shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] card-enter">
 
       {/* ── Header ── */}
-      <div className="px-6 py-5 border-b border-border flex items-center justify-between">
-        <div>
+      <div className="px-6 py-5 border-b border-border flex items-start justify-between gap-4">
+        <div className="min-w-0">
           <h2 className="text-base font-semibold text-ink">{t.nav.photoUploader}</h2>
           <p className="text-xs text-ink-3 mt-0.5">{t.photo.description}</p>
         </div>
         {photoPhase !== "idle" && (
           <button
             onClick={resetPhotoUploader}
-            className="text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-3 py-1.5 bg-surface hover:bg-muted transition-colors"
+            className="flex-shrink-0 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-3 py-1.5 bg-surface hover:bg-muted transition-colors"
           >
             {t.photo.startOver}
           </button>
@@ -257,14 +277,13 @@ export default function PhotoUploader({ lang }: Props) {
       {/* ── Body ── */}
       <div className="p-5 space-y-4">
 
-        {/* Error */}
         {photoError && (
-          <div className="text-xs text-ember bg-ember-light border border-ember/20 rounded-xl px-4 py-3 card-enter">
+          <div className="text-xs text-ember bg-ember-light border border-ember/20 rounded-xl px-4 py-3">
             {photoError}
           </div>
         )}
 
-        {/* ── IDLE — drop zone ── */}
+        {/* ── IDLE ── */}
         {photoPhase === "idle" && (
           <div
             className="border-2 border-dashed border-border rounded-2xl p-14 text-center hover:border-emerald hover:bg-emerald-light/20 transition-all cursor-pointer group"
@@ -274,7 +293,6 @@ export default function PhotoUploader({ lang }: Props) {
           >
             <input id="photo-file-input" type="file" accept="image/*" multiple className="hidden"
               onChange={e => { if (e.target.files?.length) analyzePhotos(e.target.files); }} />
-
             <div className="w-12 h-12 bg-ground border border-border rounded-2xl flex items-center justify-center mx-auto mb-4 group-hover:border-emerald/40 group-hover:bg-emerald-light/40 transition-all">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" className="text-ink-3 group-hover:text-emerald transition-colors">
                 <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/>
@@ -282,10 +300,8 @@ export default function PhotoUploader({ lang }: Props) {
                 <path d="M3 15l5-5 4 4 3-3 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
             </div>
-
             <p className="text-sm font-medium text-ink">{t.photo.dropTitle}</p>
             <p className="text-xs text-ink-3 mt-1">{t.photo.dropHint}</p>
-
             {photoAnalyzing && (
               <div className="mt-5 flex items-center justify-center gap-2 text-xs text-emerald">
                 <Spinner className="h-3.5 w-3.5" />
@@ -297,7 +313,7 @@ export default function PhotoUploader({ lang }: Props) {
 
         {/* ── ANALYZING ── */}
         {photoPhase === "analyzing" && (
-          <div className="flex flex-col items-center justify-center gap-4 py-14 card-enter">
+          <div className="flex flex-col items-center justify-center gap-4 py-14">
             <Spinner className="h-7 w-7 text-emerald" />
             <p className="text-sm text-ink-3">{photoStatusMsg ?? t.photo.analyzing}</p>
           </div>
@@ -325,97 +341,122 @@ export default function PhotoUploader({ lang }: Props) {
               </div>
             </div>
 
-            {/* Scrollable list */}
-            <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-320px)]">
-              {reviewItems.map((item, idx) => (
-                <div
-                  key={item.filename}
-                  className={`flex items-start gap-4 px-5 py-3.5 transition-colors hover:bg-ground/40 card-enter ${!item.approved ? "opacity-45" : ""}`}
-                  style={{ animationDelay: `${Math.min(idx * 25, 400)}ms` }}
-                >
-                  {/* Thumbnail */}
+            {/* Scrollable list + scroll hint */}
+            <div className="relative">
+              <div
+                ref={scrollBodyRef}
+                className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-320px)] pb-3"
+                onScroll={() => {
+                  const el = scrollBodyRef.current;
+                  if (!el) return;
+                  setShowScrollHint(el.scrollHeight - el.scrollTop - el.clientHeight > 40);
+                }}
+              >
+                {reviewItems.map((item, idx) => (
                   <div
-                    className="w-11 h-11 rounded-xl overflow-hidden bg-muted flex-shrink-0 cursor-zoom-in ring-1 ring-border"
-                    onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
-                    onMouseLeave={handleThumbnailLeave}
+                    key={item.filename}
+                    className={`flex items-start gap-3 px-5 py-4 transition-colors hover:bg-ground/30 card-enter ${!item.approved ? "opacity-50" : ""}`}
+                    style={{ animationDelay: `${Math.min(idx * 25, 400)}ms` }}
                   >
-                    {item.thumbnailUrl
-                      ? <img src={item.thumbnailUrl} alt="" className="w-full h-full object-cover" />
-                      : <div className="w-full h-full flex items-center justify-center text-ink-3">
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/><path d="M3 15l5-5 4 4 3-3 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        </div>
-                    }
-                  </div>
+                    {/* Row number */}
+                    <span className="text-[10px] font-semibold text-ink-3 tabular-nums flex-shrink-0 w-4 text-right mt-3">{idx + 1}</span>
 
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-ink leading-snug mb-2 truncate">{item.normalized_name}</p>
+                    {/* Thumbnail */}
+                    <div
+                      className="w-12 h-12 rounded-xl overflow-hidden bg-muted flex-shrink-0 cursor-zoom-in ring-1 ring-border"
+                      onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
+                      onMouseLeave={handleThumbnailLeave}
+                    >
+                      {item.thumbnailUrl
+                        ? <img src={item.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+                        : <div className="w-full h-full flex items-center justify-center text-ink-3">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/><path d="M3 15l5-5 4 4 3-3 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          </div>
+                      }
+                    </div>
 
-                    {/* Selected chips */}
-                    {item.selected.length > 0 ? (
-                      <div className="flex flex-wrap gap-1.5 mb-1.5">
-                        {item.selected.map((p: ProductMatchItem) => (
-                          <span key={p.product_id} className="inline-flex items-center gap-1.5 text-xs bg-emerald-light border border-emerald/25 text-emerald-dark px-2.5 py-1 rounded-lg font-medium">
-                            {p.name}
-                            <button
-                              onClick={() => setReviewItems(prev => prev.map((r, i) => i !== idx ? r : {
-                                ...r,
-                                selected: r.selected.filter(s => s.product_id !== p.product_id),
-                                alternatives: [p, ...r.alternatives],
-                                approved: r.selected.length > 1,
-                              }))}
-                              className="opacity-50 hover:opacity-100 hover:text-ember transition-opacity leading-none"
+                    {/* Content */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-ink mb-2 truncate">{item.normalized_name}</p>
+
+                      {/* Selected products — compact list rows */}
+                      {item.selected.length > 0 ? (
+                        <div className="rounded-lg border border-emerald/25 bg-emerald-light/25 overflow-hidden mb-2">
+                          {item.selected.map((p, pi) => (
+                            <div
+                              key={p.product_id}
+                              className={`flex items-center gap-2 px-2.5 py-1.5 group ${pi > 0 ? "border-t border-emerald/15" : ""}`}
                             >
-                              <svg width="8" height="8" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                              <span className="text-[9px] font-bold text-emerald/50 w-3 text-center flex-shrink-0 tabular-nums">{pi + 1}</span>
+                              <span className="text-xs font-medium text-emerald-dark flex-1 truncate">{p.name}</span>
+                              <button
+                                onClick={() => setReviewItems(prev => prev.map((r, ri) => ri !== idx ? r : {
+                                  ...r,
+                                  selected: r.selected.filter(s => s.product_id !== p.product_id),
+                                  alternatives: [p, ...r.alternatives],
+                                  approved: r.selected.length > 1,
+                                }))}
+                                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-ink-3 hover:text-ember"
+                              >
+                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-ink-3 italic mb-2">{t.photo.noMatch}</p>
+                      )}
+
+                      {/* Alternative suggestions */}
+                      {item.alternatives.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 items-center">
+                          <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className="text-ink-3 flex-shrink-0"><path d="M4 1v6M1 4h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                          {item.alternatives.map(alt => (
+                            <button
+                              key={alt.product_id}
+                              onClick={() => setReviewItems(prev => prev.map((r, ri) => ri !== idx ? r : {
+                                ...r,
+                                selected: [...r.selected, alt],
+                                alternatives: r.alternatives.filter(a => a.product_id !== alt.product_id),
+                                approved: true,
+                              }))}
+                              className="flex items-center gap-1.5 text-[11px] text-ink-3 hover:text-ink bg-ground hover:bg-muted border border-border rounded-md px-2 py-1 transition-colors"
+                            >
+                              <span className="truncate max-w-[160px]">{alt.name}</span>
+                              <span className={`text-[10px] font-semibold flex-shrink-0 ${
+                                alt.similarity >= 0.8 ? "text-emerald" : alt.similarity >= 0.5 ? "text-amber-500" : "text-ember"
+                              }`}>{Math.round(alt.similarity * 100)}%</span>
                             </button>
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-ink-3 italic mb-1.5">{t.photo.noMatch}</p>
-                    )}
+                          ))}
+                        </div>
+                      )}
+                    </div>
 
-                    {/* Alternative chips */}
-                    {item.alternatives.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {item.alternatives.map((alt: ProductMatchItem) => (
-                          <button
-                            key={alt.product_id}
-                            onClick={() => setReviewItems(prev => prev.map((r, i) => i !== idx ? r : {
-                              ...r,
-                              selected: [...r.selected, alt],
-                              alternatives: r.alternatives.filter(a => a.product_id !== alt.product_id),
-                              approved: true,
-                            }))}
-                            className="inline-flex items-center gap-1.5 text-xs border border-dashed border-border text-ink-3 hover:border-emerald/60 hover:text-emerald hover:bg-emerald-light/40 px-2.5 py-1 rounded-lg transition-colors"
-                          >
-                            <svg width="8" height="8" viewBox="0 0 8 8" fill="none"><path d="M4 1v6M1 4h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                            {alt.name}
-                            <span className={`text-[10px] font-medium ${alt.similarity >= 0.8 ? "text-emerald" : alt.similarity >= 0.5 ? "text-amber-500" : "text-ember"}`}>
-                              {Math.round(alt.similarity * 100)}%
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    {/* Approve toggle */}
+                    <button
+                      onClick={() => setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r))}
+                      disabled={item.selected.length === 0}
+                      className={`flex-shrink-0 w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all mt-2 ${
+                        item.approved
+                          ? "bg-emerald border-emerald text-white"
+                          : "border-border text-transparent hover:border-emerald/50 disabled:opacity-30"
+                      }`}
+                    >
+                      <CheckIcon />
+                    </button>
                   </div>
+                ))}
+              </div>
 
-                  {/* Approve toggle */}
-                  <button
-                    onClick={() => setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r))}
-                    disabled={item.selected.length === 0}
-                    className={`flex-shrink-0 w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
-                      item.approved
-                        ? "bg-emerald border-emerald text-white"
-                        : "border-border text-transparent hover:border-emerald/50 disabled:opacity-30"
-                    }`}
-                  >
-                    <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                      <path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </button>
+              {/* Scroll hint */}
+              {showScrollHint && (
+                <div className="pointer-events-none absolute bottom-0 inset-x-0 h-16 flex flex-col items-center justify-end pb-2 bg-gradient-to-t from-surface/90 to-transparent z-10">
+                  <span className="flex items-center gap-1.5 bg-ink/80 text-white text-[11px] font-semibold px-3 py-1 rounded-full shadow-sm">
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 3.5L5 6.5L8 3.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    scroll
+                  </span>
                 </div>
-              ))}
+              )}
             </div>
 
             {/* Review footer */}
@@ -441,10 +482,10 @@ export default function PhotoUploader({ lang }: Props) {
               <Spinner className="h-4 w-4 text-emerald flex-shrink-0" />
               <p className="text-sm font-medium text-ink">{photoStatusMsg ?? t.photo.uploadingStatus}</p>
             </div>
-            <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-320px)]">
+            <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-320px)] pb-3">
               {uploadResults.map(r => (
-                <div key={`${r.filename}-${r.product_name}`} className="flex items-center gap-3 px-5 py-3 text-sm">
-                  <span className={`w-5 flex-shrink-0 ${r.status === "ok" ? "text-emerald" : r.status === "error" ? "text-ember" : "text-border"}`}>
+                <div key={`${r.filename}-${r.product_name}`} className="flex items-center gap-3 px-5 py-3">
+                  <span className={`w-4 flex-shrink-0 ${r.status === "ok" ? "text-emerald" : r.status === "error" ? "text-ember" : "text-border"}`}>
                     {r.status === "ok"
                       ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l4 4 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       : r.status === "error"
@@ -452,7 +493,7 @@ export default function PhotoUploader({ lang }: Props) {
                       : <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="2" fill="currentColor"/></svg>
                     }
                   </span>
-                  <span className="text-ink truncate flex-1 text-xs">{r.product_name}</span>
+                  <span className="text-xs text-ink truncate flex-1">{r.product_name}</span>
                   <span className="text-[11px] text-ink-3 truncate max-w-40">{r.filename}</span>
                   {r.status === "error" && r.message && (
                     <span className="text-[11px] text-ember truncate max-w-32">{r.message}</span>
@@ -473,10 +514,10 @@ export default function PhotoUploader({ lang }: Props) {
                 {err === 0 ? t.photo.allOk(ok) : t.photo.uploadDone(ok, err)}
               </div>
               <div className="border border-border rounded-2xl overflow-hidden">
-                <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-360px)]">
+                <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-360px)] pb-3">
                   {uploadResults.map(r => (
                     <div key={`${r.filename}-${r.product_name}`} className="flex items-center gap-3 px-5 py-3">
-                      <span className={`w-5 flex-shrink-0 ${r.status === "ok" ? "text-emerald" : "text-ember"}`}>
+                      <span className={`w-4 flex-shrink-0 ${r.status === "ok" ? "text-emerald" : "text-ember"}`}>
                         {r.status === "ok"
                           ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l4 4 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                           : <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3L3 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
@@ -503,14 +544,15 @@ export default function PhotoUploader({ lang }: Props) {
 
       </div>
 
-      {/* ── Hover preview (fixed layer) ── */}
-      {previewUrl && (
+      {/* ── Hover preview — rendered via portal to escape transform containment ── */}
+      {mounted && previewUrl && createPortal(
         <div
-          className="fixed z-50 rounded-2xl overflow-hidden border border-border bg-surface shadow-2xl pointer-events-none"
-          style={{ left: previewPos.x, top: previewPos.y, width: 192, height: 192 }}
+          className="fixed z-[9999] rounded-2xl overflow-hidden border border-border bg-surface shadow-2xl pointer-events-none"
+          style={{ left: previewPos.x, top: previewPos.y, width: 200, height: 200 }}
         >
           <img src={previewUrl} alt="" className="w-full h-full object-contain" />
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
