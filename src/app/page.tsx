@@ -425,7 +425,7 @@ export default function Dashboard() {
             lang={lang}
             t={t}
           >
-            {tab === "vbn"     && <VbnChecker     lang={lang} onAutoVbnChange={handleAutoVbnChange}/>}
+            {tab === "vbn"     && <VbnChecker     lang={lang} onAutoVbnChange={handleAutoVbnChange} initialAutoEnabled={autoEnabled} initialAutoNextRun={autoNextRun}/>}
             {tab === "create"  && <ProductCreator lang={lang}/>}
             {tab === "photos"  && <PhotoUploader  lang={lang}/>}
             {tab === "history" && <HistoryTab     lang={lang}/>}

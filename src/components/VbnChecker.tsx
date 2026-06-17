@@ -10,6 +10,8 @@ const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 interface Props {
   lang: Lang;
   onAutoVbnChange?: (enabled: boolean, nextRun: string | null) => void;
+  initialAutoEnabled?: boolean;
+  initialAutoNextRun?: string | null;
 }
 
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {
@@ -21,7 +23,7 @@ function Spinner({ className = "h-4 w-4" }: { className?: string }) {
   );
 }
 
-export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
+export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, initialAutoNextRun }: Props) {
   const t = translations[lang];
 
   const [vbnInput, setVbnInput] = useState("");
@@ -39,12 +41,15 @@ export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
   const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number } | null>(null);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // Auto VBN
-  const [vbnAutoEnabled, setVbnAutoEnabled] = useState(false);
+  // Auto VBN — initialise from parent's already-fetched value to avoid the loading flash
+  const [vbnAutoEnabled, setVbnAutoEnabled] = useState(initialAutoEnabled ?? false);
   const [vbnAutoLastRun, setVbnAutoLastRun] = useState<AutoVbnRun | null>(null);
-  const [vbnAutoNextRun, setVbnAutoNextRun] = useState<string | null>(null);
+  const [vbnAutoNextRun, setVbnAutoNextRun] = useState<string | null>(initialAutoNextRun ?? null);
   const [vbnAutoTogglingLoading, setVbnAutoTogglingLoading] = useState(false);
   const [vbnAutoRunNowLoading, setVbnAutoRunNowLoading] = useState(false);
+  // true once the fresh fetch from Railway has resolved; false while pending
+  const [autoStatusLoaded, setAutoStatusLoaded] = useState(initialAutoEnabled !== undefined);
+  const [showDisableConfirm, setShowDisableConfirm] = useState(false);
 
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
 
@@ -58,6 +63,7 @@ export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
       setVbnAutoNextRun(data.nextRun ?? null);
       onAutoVbnChange?.(data.enabled ?? false, data.nextRun ?? null);
     } catch { /* ignore */ }
+    finally { setAutoStatusLoaded(true); }
   }, [onAutoVbnChange]);
 
   useState(() => { loadVbnAutoStatus(); });
@@ -269,6 +275,36 @@ export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
 
   return (
     <div>
+      {/* Disable auto VBN confirmation */}
+      {showDisableConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-surface rounded-2xl shadow-2xl max-w-sm w-full mx-4 p-6">
+            <div className="flex items-start gap-4 mb-5">
+              <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 border border-ember/30">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <path d="M9 3v6M9 13h.01" stroke="#EC4328" strokeWidth="2" strokeLinecap="round"/>
+                  <circle cx="9" cy="9" r="8" stroke="#EC4328" strokeWidth="1.5"/>
+                </svg>
+              </div>
+              <div>
+                <p className="text-base font-semibold text-ink">{t.vbn.autoCheckDisableTitle}</p>
+                <p className="text-sm text-ink-3 mt-1">{t.vbn.autoCheckDisableDesc}</p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowDisableConfirm(false)}
+                className="px-4 py-2 text-sm border border-border rounded-xl text-ink-3 hover:bg-ground transition-colors"
+              >{t.common.cancel}</button>
+              <button
+                onClick={() => { setShowDisableConfirm(false); toggleVbnAuto(false); }}
+                className="px-4 py-2 text-sm bg-ember hover:bg-ember-dark text-white rounded-xl font-medium transition-colors"
+              >{t.vbn.autoCheckDisableConfirm}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="p-6 space-y-4">
 
         {/* ── Module title ── */}
@@ -278,7 +314,12 @@ export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
         </div>
 
         {/* ── Auto VBN card ── */}
-        <div className="card-enter bg-surface rounded-2xl border border-border overflow-hidden shadow-sm" style={{ animationDelay: "60ms" }}>
+        <div className={`card-enter bg-surface rounded-2xl border border-border overflow-hidden shadow-sm relative transition-opacity ${!autoStatusLoaded ? "opacity-60" : ""}`} style={{ animationDelay: "60ms" }}>
+          {!autoStatusLoaded && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface/40 rounded-2xl">
+              <Spinner className="h-4 w-4 text-ink-3" />
+            </div>
+          )}
           <div className="px-5 py-4 flex items-start gap-4">
             {/* Status indicator */}
             <div className="flex-shrink-0 mt-0.5">
@@ -318,8 +359,14 @@ export default function VbnChecker({ lang, onAutoVbnChange }: Props) {
                 {vbnAutoRunNowLoading ? <><Spinner className="h-3 w-3" />{t.vbn.autoCheckRunning}</> : t.vbn.autoCheckRunNow}
               </button>
               <button
-                onClick={() => toggleVbnAuto(!vbnAutoEnabled)}
-                disabled={vbnAutoTogglingLoading}
+                onClick={() => {
+                  if (vbnAutoEnabled) {
+                    setShowDisableConfirm(true);
+                  } else {
+                    toggleVbnAuto(true);
+                  }
+                }}
+                disabled={vbnAutoTogglingLoading || !autoStatusLoaded}
                 className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-40 ${vbnAutoEnabled ? "bg-emerald" : "bg-border"}`}
                 aria-label={t.vbn.autoCheckTitle}
               >
