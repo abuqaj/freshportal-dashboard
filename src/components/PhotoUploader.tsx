@@ -54,11 +54,11 @@ export default function PhotoUploader({ lang }: Props) {
     if (photoPhase !== "review" || reviewItems.length === 0) return;
     const check = () => {
       const el = scrollBodyRef.current;
-      if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 40);
+      if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 20);
     };
     check();
-    const t = setTimeout(check, 80);
-    return () => clearTimeout(t);
+    const timer = setTimeout(check, 80);
+    return () => clearTimeout(timer);
   }, [photoPhase, reviewItems]);
 
   function handleThumbnailEnter(url: string, e: React.MouseEvent<HTMLElement>) {
@@ -320,10 +320,10 @@ export default function PhotoUploader({ lang }: Props) {
 
         {/* ── REVIEW ── */}
         {photoPhase === "review" && reviewItems.length > 0 && (
-          <div className="border border-border rounded-2xl overflow-hidden card-enter">
+          <div className="border border-border rounded-2xl overflow-hidden card-enter flex flex-col max-h-[calc(100vh-240px)]">
 
             {/* Review header */}
-            <div className="px-5 py-3.5 border-b border-border flex items-center justify-between bg-ground/60">
+            <div className="flex-shrink-0 px-5 py-3.5 border-b border-border flex items-center justify-between bg-ground/60">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold text-ink">{t.photo.reviewTitle}</span>
                 <span className="text-xs text-ink-3 bg-muted px-2 py-0.5 rounded-full">{reviewItems.length}</span>
@@ -341,10 +341,10 @@ export default function PhotoUploader({ lang }: Props) {
             </div>
 
             {/* Scrollable list + scroll hint */}
-            <div className="relative">
+            <div className="relative flex-1 overflow-hidden">
               <div
                 ref={scrollBodyRef}
-                className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-360px)] scroll-pb-4"
+                className="divide-y divide-border overflow-y-auto h-full scroll-pb-4"
                 onScroll={() => {
                   const el = scrollBodyRef.current;
                   if (!el) return;
@@ -466,7 +466,7 @@ export default function PhotoUploader({ lang }: Props) {
             </div>
 
             {/* Review footer */}
-            <div className="px-5 py-3.5 border-t border-border bg-ground/60 flex justify-end gap-2">
+            <div className="flex-shrink-0 px-5 py-3.5 border-t border-border bg-ground/60 flex justify-end gap-2">
               <button onClick={resetPhotoUploader} className="text-xs text-ink-3 border border-border rounded-lg px-3 py-2 hover:bg-muted transition-colors">
                 {t.photo.cancelUpload}
               </button>
