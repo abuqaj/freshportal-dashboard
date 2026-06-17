@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { translations, Lang } from "@/lib/i18n";
 
@@ -29,10 +29,6 @@ function Spinner({ className = "" }: { className?: string }) {
   );
 }
 
-function CheckIcon() {
-  return <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-}
-
 export default function PhotoUploader({ lang }: Props) {
   const t = translations[lang];
 
@@ -44,35 +40,36 @@ export default function PhotoUploader({ lang }: Props) {
   const [photoError, setPhotoError]         = useState<string | null>(null);
   const [photoStatusMsg, setPhotoStatusMsg] = useState<string | null>(null);
   const [mounted, setMounted]               = useState(false);
-
-  // Scroll hint
-  const scrollBodyRef  = useRef<HTMLDivElement>(null);
   const [showScrollHint, setShowScrollHint] = useState(false);
 
-  // Hover preview — portal-rendered to avoid transform-containment bug
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollBodyRef = useRef<HTMLDivElement>(null);
+  const hoverTimer    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewPos, setPreviewPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   useEffect(() => { setMounted(true); }, []);
 
-  // Update scroll hint whenever review items change
-  useEffect(() => {
-    requestAnimationFrame(() => {
+  // Run after DOM paints to get accurate scroll measurements
+  useLayoutEffect(() => {
+    if (photoPhase !== "review" || reviewItems.length === 0) return;
+    const check = () => {
       const el = scrollBodyRef.current;
       if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 40);
-    });
-  }, [reviewItems]);
+    };
+    check();
+    const t = setTimeout(check, 80);
+    return () => clearTimeout(t);
+  }, [photoPhase, reviewItems]);
 
   function handleThumbnailEnter(url: string, e: React.MouseEvent<HTMLElement>) {
     if (!url) return;
     const rect = e.currentTarget.getBoundingClientRect();
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
     hoverTimer.current = setTimeout(() => {
-      const W = 200, H = 200;
-      let x = rect.right + 12;
+      const W = 340, H = 340;
+      let x = rect.right + 14;
       let y = rect.top + rect.height / 2 - H / 2;
-      if (x + W > window.innerWidth - 16) x = rect.left - W - 12;
+      if (x + W > window.innerWidth - 16) x = rect.left - W - 14;
       if (y < 8) y = 8;
       if (y + H > window.innerHeight - 8) y = window.innerHeight - H - 8;
       setPreviewUrl(url);
@@ -144,8 +141,8 @@ export default function PhotoUploader({ lang }: Props) {
             setPhotoStatusMsg(t.photo.matchingPhotos(0, total));
           } else if (ev.type === "match") {
             const m = ev as { filename: string; normalized_name: string; matches: ProductMatchItem[] };
-            const perfect = m.matches.filter((x: ProductMatchItem) => x.similarity >= 0.99);
-            const rest    = m.matches.filter((x: ProductMatchItem) => x.similarity < 0.99);
+            const perfect = m.matches.filter(x => x.similarity >= 0.99);
+            const rest    = m.matches.filter(x => x.similarity < 0.99);
             const sel: ProductMatchItem[]  = perfect.length > 0 ? perfect : (m.matches.length > 0 ? [m.matches[0]] : []);
             const alts: ProductMatchItem[] = perfect.length > 0 ? rest.slice(0, 2) : m.matches.slice(1, 3);
             items.push({
@@ -262,12 +259,14 @@ export default function PhotoUploader({ lang }: Props) {
       <div className="px-6 py-5 border-b border-border flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-ink">{t.nav.photoUploader}</h2>
-          <p className="text-xs text-ink-3 mt-0.5">{t.photo.description}</p>
+          <p className="text-xs text-ink-3 mt-0.5">
+            {photoPhase === "review" ? t.photo.reviewInstruction : t.photo.description}
+          </p>
         </div>
         {photoPhase !== "idle" && (
           <button
             onClick={resetPhotoUploader}
-            className="flex-shrink-0 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-3 py-1.5 bg-surface hover:bg-muted transition-colors"
+            className="flex-shrink-0 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-3 py-1.5 bg-surface hover:bg-muted transition-colors whitespace-nowrap"
           >
             {t.photo.startOver}
           </button>
@@ -345,7 +344,7 @@ export default function PhotoUploader({ lang }: Props) {
             <div className="relative">
               <div
                 ref={scrollBodyRef}
-                className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-320px)] pb-3"
+                className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-360px)]"
                 onScroll={() => {
                   const el = scrollBodyRef.current;
                   if (!el) return;
@@ -353,99 +352,108 @@ export default function PhotoUploader({ lang }: Props) {
                 }}
               >
                 {reviewItems.map((item, idx) => (
-                  <div
-                    key={item.filename}
-                    className={`flex items-start gap-3 px-5 py-4 transition-colors hover:bg-ground/30 card-enter ${!item.approved ? "opacity-50" : ""}`}
-                    style={{ animationDelay: `${Math.min(idx * 25, 400)}ms` }}
-                  >
-                    {/* Row number */}
-                    <span className="text-[10px] font-semibold text-ink-3 tabular-nums flex-shrink-0 w-4 text-right mt-3">{idx + 1}</span>
+                  /* Outer wrapper gets the animation so it doesn't conflict with opacity */
+                  <div key={item.filename} className="card-enter divide-y divide-border" style={{ animationDelay: `${Math.min(idx * 25, 400)}ms` }}>
+                    <div className={`px-5 py-4 transition-opacity ${!item.approved ? "opacity-40" : ""}`}>
 
-                    {/* Thumbnail */}
-                    <div
-                      className="w-12 h-12 rounded-xl overflow-hidden bg-muted flex-shrink-0 cursor-zoom-in ring-1 ring-border"
-                      onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
-                      onMouseLeave={handleThumbnailLeave}
-                    >
-                      {item.thumbnailUrl
-                        ? <img src={item.thumbnailUrl} alt="" className="w-full h-full object-cover" />
-                        : <div className="w-full h-full flex items-center justify-center text-ink-3">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/><path d="M3 15l5-5 4 4 3-3 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                          </div>
-                      }
-                    </div>
+                      {/* Top: number + name + checkbox */}
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-[10px] font-semibold text-ink-3 tabular-nums w-5 text-right flex-shrink-0">{idx + 1}</span>
+                        <p className="text-xs font-semibold text-ink flex-1 truncate">{item.normalized_name}</p>
+                        <button
+                          onClick={() => setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r))}
+                          disabled={item.selected.length === 0}
+                          className={`flex-shrink-0 w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
+                            item.approved
+                              ? "bg-emerald border-emerald text-white"
+                              : "border-border text-transparent hover:border-emerald/50 disabled:opacity-30"
+                          }`}
+                        >
+                          <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        </button>
+                      </div>
 
-                    {/* Content */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold text-ink mb-2 truncate">{item.normalized_name}</p>
+                      {/* Body: photo + matches side by side */}
+                      <div className="flex gap-3 pl-7">
+                        {/* Thumbnail — no zoom cursor */}
+                        <div
+                          className="w-14 h-14 rounded-xl overflow-hidden bg-muted flex-shrink-0 ring-1 ring-border"
+                          onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
+                          onMouseLeave={handleThumbnailLeave}
+                        >
+                          {item.thumbnailUrl
+                            ? <img src={item.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+                            : <div className="w-full h-full flex items-center justify-center text-ink-3">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/><path d="M3 15l5-5 4 4 3-3 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                              </div>
+                          }
+                        </div>
 
-                      {/* Selected products — compact list rows */}
-                      {item.selected.length > 0 ? (
-                        <div className="rounded-lg border border-emerald/25 bg-emerald-light/25 overflow-hidden mb-2">
-                          {item.selected.map((p, pi) => (
-                            <div
-                              key={p.product_id}
-                              className={`flex items-center gap-2 px-2.5 py-1.5 group ${pi > 0 ? "border-t border-emerald/15" : ""}`}
-                            >
-                              <span className="text-[9px] font-bold text-emerald/50 w-3 text-center flex-shrink-0 tabular-nums">{pi + 1}</span>
-                              <span className="text-xs font-medium text-emerald-dark flex-1 truncate">{p.name}</span>
-                              <button
-                                onClick={() => setReviewItems(prev => prev.map((r, ri) => ri !== idx ? r : {
-                                  ...r,
-                                  selected: r.selected.filter(s => s.product_id !== p.product_id),
-                                  alternatives: [p, ...r.alternatives],
-                                  approved: r.selected.length > 1,
-                                }))}
-                                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-ink-3 hover:text-ember"
-                              >
-                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                              </button>
+                        {/* Matches section */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-1.5">{t.photo.foundMatches}</p>
+
+                          {/* Selected products list */}
+                          {item.selected.length > 0 ? (
+                            <div className="rounded-lg border border-emerald/25 bg-emerald-light/20 overflow-hidden mb-2">
+                              {item.selected.map((p, pi) => (
+                                <div
+                                  key={p.product_id}
+                                  className={`flex items-center gap-2 px-2.5 py-1.5 group ${pi > 0 ? "border-t border-emerald/15" : ""}`}
+                                >
+                                  <span className="text-[9px] font-bold text-emerald/50 w-3 text-center flex-shrink-0 tabular-nums">{pi + 1}</span>
+                                  <span className="text-xs font-medium text-emerald-dark flex-1 truncate">{p.name}</span>
+                                  <span className={`text-[10px] font-semibold flex-shrink-0 mr-1 ${
+                                    p.similarity >= 0.9 ? "text-emerald/70" : p.similarity >= 0.6 ? "text-amber-500/80" : "text-ember/70"
+                                  }`}>{Math.round(p.similarity * 100)}%</span>
+                                  <button
+                                    onClick={() => setReviewItems(prev => prev.map((r, ri) => ri !== idx ? r : {
+                                      ...r,
+                                      selected: r.selected.filter(s => s.product_id !== p.product_id),
+                                      alternatives: [p, ...r.alternatives],
+                                      approved: r.selected.length > 1,
+                                    }))}
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-ink-3 hover:text-ember"
+                                  >
+                                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                                  </button>
+                                </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-ink-3 italic mb-2">{t.photo.noMatch}</p>
-                      )}
+                          ) : (
+                            <p className="text-xs text-ink-3 italic mb-2">{t.photo.noMatch}</p>
+                          )}
 
-                      {/* Alternative suggestions */}
-                      {item.alternatives.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 items-center">
-                          <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className="text-ink-3 flex-shrink-0"><path d="M4 1v6M1 4h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                          {item.alternatives.map(alt => (
-                            <button
-                              key={alt.product_id}
-                              onClick={() => setReviewItems(prev => prev.map((r, ri) => ri !== idx ? r : {
-                                ...r,
-                                selected: [...r.selected, alt],
-                                alternatives: r.alternatives.filter(a => a.product_id !== alt.product_id),
-                                approved: true,
-                              }))}
-                              className="flex items-center gap-1.5 text-[11px] text-ink-3 hover:text-ink bg-ground hover:bg-muted border border-border rounded-md px-2 py-1 transition-colors"
-                            >
-                              <span className="truncate max-w-[160px]">{alt.name}</span>
-                              <span className={`text-[10px] font-semibold flex-shrink-0 ${
-                                alt.similarity >= 0.8 ? "text-emerald" : alt.similarity >= 0.5 ? "text-amber-500" : "text-ember"
-                              }`}>{Math.round(alt.similarity * 100)}%</span>
-                            </button>
-                          ))}
+                          {/* Alternatives */}
+                          {item.alternatives.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 items-center">
+                              <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className="text-ink-3 flex-shrink-0"><path d="M4 1v6M1 4h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                              {item.alternatives.map(alt => (
+                                <button
+                                  key={alt.product_id}
+                                  onClick={() => setReviewItems(prev => prev.map((r, ri) => ri !== idx ? r : {
+                                    ...r,
+                                    selected: [...r.selected, alt],
+                                    alternatives: r.alternatives.filter(a => a.product_id !== alt.product_id),
+                                    approved: true,
+                                  }))}
+                                  className="flex items-center gap-1.5 text-[11px] text-ink-3 hover:text-ink bg-ground hover:bg-muted border border-border rounded-md px-2 py-1 transition-colors"
+                                >
+                                  <span className="truncate max-w-[160px]">{alt.name}</span>
+                                  <span className={`text-[10px] font-semibold flex-shrink-0 ${
+                                    alt.similarity >= 0.8 ? "text-emerald" : alt.similarity >= 0.5 ? "text-amber-500" : "text-ember"
+                                  }`}>{Math.round(alt.similarity * 100)}%</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      )}
+                      </div>
                     </div>
-
-                    {/* Approve toggle */}
-                    <button
-                      onClick={() => setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r))}
-                      disabled={item.selected.length === 0}
-                      className={`flex-shrink-0 w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all mt-2 ${
-                        item.approved
-                          ? "bg-emerald border-emerald text-white"
-                          : "border-border text-transparent hover:border-emerald/50 disabled:opacity-30"
-                      }`}
-                    >
-                      <CheckIcon />
-                    </button>
                   </div>
                 ))}
+                {/* Bottom padding so the last item isn't clipped by border-radius */}
+                <div className="h-4" />
               </div>
 
               {/* Scroll hint */}
@@ -482,7 +490,7 @@ export default function PhotoUploader({ lang }: Props) {
               <Spinner className="h-4 w-4 text-emerald flex-shrink-0" />
               <p className="text-sm font-medium text-ink">{photoStatusMsg ?? t.photo.uploadingStatus}</p>
             </div>
-            <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-320px)] pb-3">
+            <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-320px)]">
               {uploadResults.map(r => (
                 <div key={`${r.filename}-${r.product_name}`} className="flex items-center gap-3 px-5 py-3">
                   <span className={`w-4 flex-shrink-0 ${r.status === "ok" ? "text-emerald" : r.status === "error" ? "text-ember" : "text-border"}`}>
@@ -500,6 +508,7 @@ export default function PhotoUploader({ lang }: Props) {
                   )}
                 </div>
               ))}
+              <div className="h-3" />
             </div>
           </div>
         )}
@@ -514,7 +523,7 @@ export default function PhotoUploader({ lang }: Props) {
                 {err === 0 ? t.photo.allOk(ok) : t.photo.uploadDone(ok, err)}
               </div>
               <div className="border border-border rounded-2xl overflow-hidden">
-                <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-360px)] pb-3">
+                <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-360px)]">
                   {uploadResults.map(r => (
                     <div key={`${r.filename}-${r.product_name}`} className="flex items-center gap-3 px-5 py-3">
                       <span className={`w-4 flex-shrink-0 ${r.status === "ok" ? "text-emerald" : "text-ember"}`}>
@@ -530,6 +539,7 @@ export default function PhotoUploader({ lang }: Props) {
                       )}
                     </div>
                   ))}
+                  <div className="h-3" />
                 </div>
               </div>
               <button
@@ -544,11 +554,11 @@ export default function PhotoUploader({ lang }: Props) {
 
       </div>
 
-      {/* ── Hover preview — rendered via portal to escape transform containment ── */}
+      {/* ── Hover preview via portal — avoids CSS transform containment ── */}
       {mounted && previewUrl && createPortal(
         <div
           className="fixed z-[9999] rounded-2xl overflow-hidden border border-border bg-surface shadow-2xl pointer-events-none"
-          style={{ left: previewPos.x, top: previewPos.y, width: 200, height: 200 }}
+          style={{ left: previewPos.x, top: previewPos.y, width: 340, height: 340 }}
         >
           <img src={previewUrl} alt="" className="w-full h-full object-contain" />
         </div>,
