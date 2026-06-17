@@ -58,6 +58,8 @@ export type HistoryRow = {
     name?: string;
     product_number?: string;
     template_name?: string;
+    template_id?: string;
+    success?: boolean;
     items?: PhotoUploadItem[];
   } | null;
   created_at: string;
