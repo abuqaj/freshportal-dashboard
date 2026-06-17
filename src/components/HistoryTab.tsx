@@ -41,7 +41,7 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold ${cls}`}>{status}</span>;
 }
 
-function TypeBadge({ type, t }: { type: string; t: ReturnType<typeof translations[Lang]> }) {
+function TypeBadge({ type, t }: { type: string; t: (typeof translations)[Lang] }) {
   const map: Record<string, { label: string; cls: string }> = {
     vbn_check:      { label: t.history.vbnCheck,      cls: "bg-ground text-ink-3 border border-border" },
     vbn_fix:        { label: t.history.vbnFix,        cls: "bg-emerald-light text-emerald" },
