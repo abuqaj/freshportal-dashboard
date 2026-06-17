@@ -11,6 +11,30 @@ interface Props {
   lang: Lang;
 }
 
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (j === 0 ? i : 0))
+  );
+  for (let j = 1; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+  return dp[m][n];
+}
+
+// Returns true only when two words differ by ≤2 character edits AND those edits
+// are ≤40% of the longer word — i.e. a plausible typo, not a different word.
+function isTypo(w1: string, w2: string): boolean {
+  const a = w1.toLowerCase(), b = w2.toLowerCase();
+  if (a === b) return true;
+  const maxLen = Math.max(a.length, b.length);
+  const dist = levenshtein(a, b);
+  return dist <= 2 && dist <= maxLen * 0.4;
+}
+
 function lcsWordDiff(
   origWords: string[],
   corrWords: string[],
@@ -307,8 +331,21 @@ export default function ProductCreator({ lang }: Props) {
     }
 
     const namesMatch = name.toLowerCase() === templateName.toLowerCase();
-    setFinalName(namesMatch ? name : templateName);
-    setNameFromTemplate(namesMatch ? null : { original: name, corrected: templateName });
+    let showCorrection = false;
+    if (!namesMatch) {
+      // Show the correction hint only when every changed word is a plausible typo.
+      // If the user typed "Britney" and the template has "Miley", those are different
+      // variety names — don't overwrite with the template word.
+      const origWords = name.trim().split(/\s+/);
+      const corrWords = templateName.trim().split(/\s+/);
+      const diff = lcsWordDiff(origWords, corrWords);
+      const deleted = diff.filter(d => d.type === "deleted").map(d => d.word);
+      const inserted = diff.filter(d => d.type === "inserted").map(d => d.word);
+      showCorrection = deleted.length === inserted.length &&
+        deleted.every((w, i) => isTypo(w, inserted[i]));
+    }
+    setFinalName(showCorrection ? templateName : name);
+    setNameFromTemplate(showCorrection ? { original: name, corrected: templateName } : null);
     setProductNumber(initialNumber);
     setCreateResult(null);
     setNumberChecking(true);
