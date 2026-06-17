@@ -515,18 +515,23 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
             >
               {/* Stats */}
               {stats && (
-                <div className="grid grid-cols-4 gap-3">
-                  {[
-                    { label: t.vbn.statTotal,    value: stats.total,    bg: "bg-surface",       val: "text-ink",        border: "border-border" },
-                    { label: t.vbn.statErrors,   value: stats.errors,   bg: "bg-ember-light",   val: "text-ember-dark", border: "border-ember/30" },
-                    { label: t.vbn.statWarnings, value: stats.warnings, bg: "bg-amber-50",      val: "text-amber-700",  border: "border-amber-200" },
-                    { label: t.vbn.statOk,       value: stats.ok,       bg: "bg-emerald-light", val: "text-emerald",    border: "border-emerald/20" },
-                  ].map((s) => (
-                    <div key={s.label} className={`${s.bg} border ${s.border} rounded-2xl px-4 py-3 shadow-sm`}>
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-neutral-400 mb-1">{s.label}</p>
-                      <p className={`text-3xl font-bold ${s.val} leading-none`}>{s.value}</p>
-                    </div>
-                  ))}
+                <div className="flex items-stretch divide-x divide-border bg-surface border border-border rounded-2xl overflow-hidden shadow-sm">
+                  <div className="flex flex-col items-center px-4 py-3 flex-1">
+                    <span className="text-2xl font-bold text-ink leading-none">{stats.total}</span>
+                    <span className="text-[9px] font-semibold uppercase tracking-widest text-ink-3 mt-1.5">{t.vbn.statTotal}</span>
+                  </div>
+                  <div className="flex flex-col items-center px-4 py-3 flex-1 bg-ember-light/50">
+                    <span className="text-2xl font-bold text-ember leading-none">{stats.errors}</span>
+                    <span className="text-[9px] font-semibold uppercase tracking-widest text-ember/60 mt-1.5">{t.vbn.statErrors}</span>
+                  </div>
+                  <div className="flex flex-col items-center px-4 py-3 flex-1 bg-amber-50/50">
+                    <span className="text-2xl font-bold text-amber-600 leading-none">{stats.warnings}</span>
+                    <span className="text-[9px] font-semibold uppercase tracking-widest text-amber-600/60 mt-1.5">{t.vbn.statWarnings}</span>
+                  </div>
+                  <div className="flex flex-col items-center px-4 py-3 flex-1 bg-emerald-light/50">
+                    <span className="text-2xl font-bold text-emerald leading-none">{stats.ok}</span>
+                    <span className="text-[9px] font-semibold uppercase tracking-widest text-emerald/60 mt-1.5">{t.vbn.statOk}</span>
+                  </div>
                 </div>
               )}
 
@@ -547,17 +552,17 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
                   <>
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="bg-ground border-b border-border text-[10px] text-neutral-400 uppercase tracking-widest">
-                          <th className="text-left px-5 py-3 font-semibold">{t.vbn.tableProduct}</th>
-                          <th className="text-left px-3 py-3 font-semibold">{t.vbn.tableCurrent}</th>
-                          <th className="text-left px-3 py-3 font-semibold">{t.vbn.tableReason}</th>
-                          <th className="text-left px-3 py-3 font-semibold">{t.vbn.tableProposed}</th>
-                          <th className="px-3 py-3 font-semibold">{t.vbn.tableAction}</th>
+                        <tr className="border-b border-border">
+                          <th className="text-left px-5 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableProduct}</th>
+                          <th className="text-left px-3 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableCurrent}</th>
+                          <th className="text-left px-3 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableReason}</th>
+                          <th className="text-left px-3 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableProposed}</th>
+                          <th className="px-3 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableAction}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
                         {errorResults.map((r) => (
-                          <tr key={r.product_id} className={`hover:bg-ground/60 transition-colors ${r.excluded ? "opacity-35" : ""}`}>
+                          <tr key={r.product_id} className={`hover:bg-ground/50 transition-colors border-l-2 ${r.status === "ERROR" ? "border-l-ember/50" : "border-l-amber-400/60"} ${r.excluded ? "opacity-35" : ""}`}>
                             <td className="px-5 py-3">
                               <p className="font-medium text-ink text-sm leading-snug">{r.name}</p>
                               {r.short_name && <p className="text-xs text-ink-3 mt-0.5">{r.short_name}</p>}

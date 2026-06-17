@@ -64,8 +64,8 @@ def _is_treated(name: str) -> bool:
 
 def _contains_colour_treated(name: str) -> bool:
     n = name.lower()
-    colour_kws = ("painted", "absorbed", "tinted", "colour treated", "kleurbehandeld")
-    return any(kw in n for kw in colour_kws)
+    colour_kws = ("painted", "absorbed", "tinted", "colour treated", "kleurbehandeld", "colores")
+    return any(kw in n for kw in colour_kws) or bool(re.search(r"\bdye[sd]?\b", n))
 
 
 def _contains_preserved(name: str) -> bool:
