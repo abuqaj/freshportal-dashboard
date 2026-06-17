@@ -89,12 +89,16 @@ def verify_products(
     vbn_data: dict[str, VBNInfo],
     cfg: Config,
     auto_mode: bool = False,
+    on_progress=None,
 ) -> list[VerificationResult]:
     """Apply verification rules to each product. Uses AI for ambiguous cases.
     auto_mode=True skips Rule 5 (AI-only generic check) to prevent hallucinations in automated runs."""
     results: list[VerificationResult] = []
 
-    for p in products:
+    total = len(products)
+    for idx, p in enumerate(products, 1):
+        if on_progress:
+            on_progress(idx, total)
         vbn_info = vbn_data.get(p.vbn_number)
         status = "OK"
         reason = ""

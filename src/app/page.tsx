@@ -210,7 +210,7 @@ const MODULE_WIDTH: Record<Tab, string> = {
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }: {
-  tab: Tab; onBack: () => void; autoEnabled: boolean; autoNextRun: string | null;
+  tab: Tab; onBack: () => void; autoEnabled: boolean | null; autoNextRun: string | null;
   lang: Lang; t: (typeof translations)[Lang]; children: React.ReactNode;
 }) {
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
@@ -263,7 +263,7 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }
 /* ─── Hub home screen ─── */
 function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect }: {
   lang: Lang; setLang: (l: Lang) => void; t: (typeof translations)[Lang];
-  autoEnabled: boolean; productCount: number | null; onSelect: (tab: Tab) => void;
+  autoEnabled: boolean | null; productCount: number | null; onSelect: (tab: Tab) => void;
 }) {
   const tiles = [
     {
@@ -366,7 +366,7 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect }: {
 export default function Dashboard() {
   const [lang, setLangState] = useState<Lang>("en");
   const [tab, setTab] = useState<Tab | null>(null);
-  const [autoEnabled, setAutoEnabled] = useState(false);
+  const [autoEnabled, setAutoEnabled] = useState<boolean | null>(null);
   const [autoNextRun, setAutoNextRun] = useState<string | null>(null);
   const [productCount, setProductCount] = useState<number | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);

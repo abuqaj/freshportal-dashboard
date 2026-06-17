@@ -321,7 +321,12 @@ def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str =
     )
 
     _status(i18n_msg(lang, "vbn_analyzing"), 88)
-    results = verify_products(products, vbn_data, cfg, auto_mode=auto_mode)
+
+    def _on_analyze(i: int, total: int) -> None:
+        progress = 88 + int((i - 1) / total * 5)  # 88 → 93 %
+        _status(i18n_msg(lang, "vbn_analyzing_product", i=i, total=total), progress)
+
+    results = verify_products(products, vbn_data, cfg, auto_mode=auto_mode, on_progress=_on_analyze)
 
     # Fetch names for proposed VBN codes not already in vbn_data
     proposed_codes = {
@@ -337,6 +342,15 @@ def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str =
             floricode_password=cfg.floricode_password,
         )
         vbn_data.update(extra)
+
+    # Discard proposed VBNs that don't exist in Floricode (AI hallucinations).
+    # Only check codes we actually looked up; KNOWN_VBN codes are trusted as-is.
+    for r in results:
+        if r.proposed_vbn and r.proposed_vbn in vbn_data:
+            if not vbn_data[r.proposed_vbn].found:
+                r.proposed_vbn = ""
+                r.status = "OK"
+                r.reason = ""
 
     def _proposed_name(code: str) -> str:
         if not code:

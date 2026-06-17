@@ -10,7 +10,7 @@ const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 interface Props {
   lang: Lang;
   onAutoVbnChange?: (enabled: boolean, nextRun: string | null) => void;
-  initialAutoEnabled?: boolean;
+  initialAutoEnabled?: boolean | null;
   initialAutoNextRun?: string | null;
 }
 
@@ -50,7 +50,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   const [vbnAutoTogglingLoading, setVbnAutoTogglingLoading] = useState(false);
   const [vbnAutoRunNowLoading, setVbnAutoRunNowLoading] = useState(false);
   // true once the fresh fetch from Railway has resolved; false while pending
-  const [autoStatusLoaded, setAutoStatusLoaded] = useState(initialAutoEnabled !== undefined);
+  const [autoStatusLoaded, setAutoStatusLoaded] = useState(initialAutoEnabled != null);
   const [showDisableConfirm, setShowDisableConfirm] = useState(false);
 
   // Fix result — persists until user explicitly resets (replaces auto-clearing fixSuccess)
@@ -101,6 +101,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   const step = fixing ? "fixing"
     : fixResult !== null ? "done"
     : results !== null ? "results"
+    : loading ? "loading"
     : "search";
 
   useEffect(() => {
@@ -447,35 +448,39 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
                   {loading ? t.vbn.checking : t.vbn.checkBtn}
                 </button>
               </div>
-              {loading && (
-                <div className="mt-3 bg-emerald-light border border-emerald/20 rounded-lg px-4 py-2.5 space-y-2">
-                  <div className="flex items-center gap-2.5 text-sm text-emerald">
-                    <Spinner className="h-3.5 w-3.5 flex-shrink-0" />
-                    <span className="truncate">{statusMessage ?? t.common.connecting}</span>
-                    {checkProgress !== null && (
-                      <span className="ml-auto text-xs text-emerald/70 tabular-nums flex-shrink-0">
-                        {checkProgress}%
-                      </span>
-                    )}
-                  </div>
-                  <div className="w-full h-1.5 bg-emerald/20 rounded-full overflow-hidden">
-                    {checkProgress !== null ? (
-                      <div
-                        className="h-1.5 bg-emerald rounded-full transition-all duration-500 ease-out"
-                        style={{ width: `${checkProgress}%` }}
-                      />
-                    ) : (
-                      <div className="h-1.5 w-2/5 bg-emerald rounded-full animate-[progress-slide_1.4s_ease-in-out_infinite]" />
-                    )}
-                  </div>
-                </div>
-              )}
               {checkError && (
                 <div className="mt-3 flex items-center gap-2 text-sm text-ember-dark bg-ember-light border border-ember/30 rounded-lg px-4 py-2.5">
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6.5" stroke="currentColor" strokeWidth="1.2"/><path d="M7 4v3.5M7 10h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
                   {checkError}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ── STEP 1.5: LOADING ── */}
+        {step === "loading" && (
+          <div className="p-10 flex flex-col items-center justify-center gap-4 min-h-[260px]">
+            <div className="w-full max-w-sm space-y-3">
+              <div className="flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2 text-emerald min-w-0">
+                  <Spinner className="h-4 w-4 flex-shrink-0" />
+                  <span className="truncate">{statusMessage ?? t.common.connecting}</span>
+                </div>
+                {checkProgress !== null && (
+                  <span className="text-xs text-ink-3 tabular-nums ml-3 flex-shrink-0">{checkProgress}%</span>
+                )}
+              </div>
+              <div className="w-full h-2 bg-emerald/15 rounded-full overflow-hidden">
+                {checkProgress !== null ? (
+                  <div
+                    className="h-2 bg-emerald rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${checkProgress}%` }}
+                  />
+                ) : (
+                  <div className="h-2 w-2/5 bg-emerald rounded-full animate-[progress-slide_1.4s_ease-in-out_infinite]" />
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -651,11 +656,11 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
                 </details>
               )}
             </div>
-            {/* Scroll-down gradient hint — fades when content is fully scrolled */}
+            {/* Scroll-down gradient hint */}
             {showScrollHint && (
-              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-surface/90 to-transparent flex items-end justify-center pb-2">
-                <span className="text-[10px] text-ink-3 font-medium flex items-center gap-1">
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 3.5l3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-white via-white/80 to-transparent flex items-end justify-center pb-3">
+                <span className="flex items-center gap-1.5 bg-ink/80 text-white text-[11px] font-semibold px-3 py-1 rounded-full shadow-sm">
+                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 4l3.5 3.5L9 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   scroll
                 </span>
               </div>
