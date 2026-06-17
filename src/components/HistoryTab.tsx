@@ -290,10 +290,13 @@ export default function HistoryTab({ lang }: Props) {
                           </td>
                           <td className="px-3 py-3 text-neutral-500 text-xs">
                             {row.type === "product_create" ? (
-                              <span>
+                              <span className="flex items-center gap-2 flex-wrap">
                                 <span className="font-medium text-neutral-700">{row.details?.name ?? "—"}</span>
                                 {row.details?.template_name && (
-                                  <span className="text-neutral-400 ml-1">({t.create.templateLabel} {row.details.template_name})</span>
+                                  <span className="text-neutral-400">({t.create.templateLabel} {row.details.template_name})</span>
+                                )}
+                                {row.details?.success === false && (
+                                  <span className="bg-red-50 text-red-600 text-[10px] px-1.5 py-0.5 rounded font-medium">failed</span>
                                 )}
                               </span>
                             ) : row.type === "photo_upload" ? (

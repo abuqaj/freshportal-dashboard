@@ -412,18 +412,17 @@ export default function ProductCreator({ lang }: Props) {
           else if (event.type === "result") {
             const d = event.data as { ok: boolean; message: string; url?: string };
             setCreateResult(d);
-            if (d.ok) {
-              fetch("/api/log", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  type: "product_create",
-                  vbn_filter: null,
-                  stats: {},
-                  details: { name: nameForLog, product_number: numberForLog, template_id: templateId, template_name: templateName },
-                }),
-              }).catch(() => {});
-            }
+            // Log regardless of ok/fail — if ok=false, we still want a record
+            fetch("/api/log", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "product_create",
+                vbn_filter: null,
+                stats: { ok: d.ok ? 1 : 0 },
+                details: { name: nameForLog, product_number: numberForLog, template_id: templateId, template_name: templateName, success: d.ok },
+              }),
+            }).catch(() => {});
           } else if (event.type === "error") throw new Error(event.message as string);
         }
       }
