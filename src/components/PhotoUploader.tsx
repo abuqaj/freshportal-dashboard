@@ -373,8 +373,8 @@ export default function PhotoUploader({ lang }: Props) {
                         </button>
                       </div>
 
-                      {/* Body: photo + matches side by side */}
-                      <div className="flex gap-3 pl-7">
+                      {/* Body: photo + matches — blocked when row is deselected */}
+                      <div className={`flex gap-3 pl-7 ${!item.approved ? "pointer-events-none" : ""}`}>
                         {/* Thumbnail — no zoom cursor */}
                         <div
                           className="w-14 h-14 rounded-xl overflow-hidden bg-muted flex-shrink-0 ring-1 ring-border"
