@@ -689,43 +689,48 @@ def copy_and_create(
             except Exception:
                 pass
 
-            # Validate: search by number (exact) — if the row exists, creation succeeded.
-            # Uses page.evaluate() on the rendered DOM so the SPA has time to paint.
+            # Validate: search by number on a *fresh* page so we don't race with
+            # FreshPortal's own post-submit SPA navigation still running on `page`.
             _s(msg(lang, "verifying_product"))
             encoded_num = pnum.replace(" ", "+")
             verify_url = (
                 f"{cfg.freshportal_url}/product/index/index/"
                 f"?1=1&number_adjustable={encoded_num}&page=1"
             )
-            page.goto(verify_url, wait_until="load", timeout=cfg.request_timeout)
+            verify_page = context.new_page()
+            _block_resources(verify_page)
             try:
-                page.wait_for_selector(
-                    "td[data-cell-action='product_number']", timeout=12_000
-                )
-            except Exception:
-                pass
+                verify_page.goto(verify_url, wait_until="load", timeout=cfg.request_timeout)
+                try:
+                    verify_page.wait_for_selector(
+                        "td[data-cell-action='product_number']", timeout=12_000
+                    )
+                except Exception:
+                    pass
 
-            found: bool = page.evaluate(
-                """
-                ([pnum, pname]) => {
-                    const numTarget  = pnum.toUpperCase();
-                    const nameTarget = pname.toUpperCase();
-                    for (const tr of document.querySelectorAll('table tbody tr')) {
-                        const numCell  = tr.querySelector(
-                            'td[data-cell-action="product_number"]');
-                        const nameCell = tr.querySelector(
-                            'td[data-cell-action="product_name"]');
-                        if (!numCell || !nameCell) continue;
-                        if (numCell.textContent.trim().toUpperCase()  === numTarget &&
-                            nameCell.textContent.trim().toUpperCase() === nameTarget) {
-                            return true;
+                found: bool = verify_page.evaluate(
+                    """
+                    ([pnum, pname]) => {
+                        const numTarget  = pnum.toUpperCase();
+                        const nameTarget = pname.toUpperCase();
+                        for (const tr of document.querySelectorAll('table tbody tr')) {
+                            const numCell  = tr.querySelector(
+                                'td[data-cell-action="product_number"]');
+                            const nameCell = tr.querySelector(
+                                'td[data-cell-action="product_name"]');
+                            if (!numCell || !nameCell) continue;
+                            if (numCell.textContent.trim().toUpperCase()  === numTarget &&
+                                nameCell.textContent.trim().toUpperCase() === nameTarget) {
+                                return true;
+                            }
                         }
+                        return false;
                     }
-                    return false;
-                }
-                """,
-                [pnum, new_name],
-            )
+                    """,
+                    [pnum, new_name],
+                )
+            finally:
+                verify_page.close()
 
             if found:
                 _s(msg(lang, "product_verified"))
