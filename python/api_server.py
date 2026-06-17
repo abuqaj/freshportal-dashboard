@@ -655,7 +655,7 @@ async def vbn_fix_stream(req: VbnFixRequest):
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
-            results = fix_vbn_batch(fixes, cfg, on_status=on_status)
+            results = fix_vbn_batch(fixes, cfg, on_status=on_status, lang=req.lang)
             fixed = sum(1 for ok in results.values() if ok)
             failed = len(results) - fixed
             queue.put({"type": "result", "data": {

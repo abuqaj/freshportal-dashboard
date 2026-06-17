@@ -43,6 +43,8 @@ MSGS: dict[str, dict[str, str]] = {
         "auto_vbn_checking":     "Checking VBN codes of {count} recently created products…",
         "auto_vbn_fixing":       "Fixing {count} incorrect VBN codes…",
         "auto_vbn_done":         "Done: checked {checked}, fixed {fixed}",
+        "fix_product":           "Fixing product {i}/{total} (ID {product_id} → VBN {new_vbn})…",
+        "fix_done":              "Done: {fixed}/{total} fixed",
     },
     "nl": {
         "logging_in":          "Inloggen bij FreshPortal…",
@@ -83,6 +85,8 @@ MSGS: dict[str, dict[str, str]] = {
         "auto_vbn_checking":     "VBN-codes van {count} recent aangemaakte producten controleren…",
         "auto_vbn_fixing":       "{count} onjuiste VBN-codes corrigeren…",
         "auto_vbn_done":         "Klaar: gecontroleerd {checked}, gecorrigeerd {fixed}",
+        "fix_product":           "Product {i}/{total} corrigeren (ID {product_id} → VBN {new_vbn})…",
+        "fix_done":              "Klaar: {fixed}/{total} gecorrigeerd",
     },
     "pl": {
         "logging_in":          "Logowanie do FreshPortal…",
@@ -123,6 +127,8 @@ MSGS: dict[str, dict[str, str]] = {
         "auto_vbn_checking":     "Sprawdzam kody VBN {count} nowo utworzonych produktów…",
         "auto_vbn_fixing":       "Poprawiam {count} błędnych kodów VBN…",
         "auto_vbn_done":         "Gotowe: sprawdzono {checked}, poprawiono {fixed}",
+        "fix_product":           "Poprawianie produktu {i}/{total} (ID {product_id} → VBN {new_vbn})…",
+        "fix_done":              "Zakończono: {fixed}/{total} poprawionych",
     },
     "es": {
         "logging_in":          "Iniciando sesión en FreshPortal…",
@@ -163,6 +169,8 @@ MSGS: dict[str, dict[str, str]] = {
         "auto_vbn_checking":     "Comprobando códigos VBN de {count} productos creados recientemente…",
         "auto_vbn_fixing":       "Corrigiendo {count} códigos VBN incorrectos…",
         "auto_vbn_done":         "Listo: comprobados {checked}, corregidos {fixed}",
+        "fix_product":           "Corrigiendo producto {i}/{total} (ID {product_id} → VBN {new_vbn})…",
+        "fix_done":              "Listo: {fixed}/{total} corregidos",
     },
 }
 
