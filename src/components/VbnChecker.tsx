@@ -437,7 +437,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
 
         {/* ── STEP 2: RESULTS ── */}
         {step === "results" && results !== null && (
-          <div className="flex flex-col">
+          <div className="flex flex-col max-h-[calc(100vh-200px)]">
             {/* Header */}
             <div className="px-6 py-4 border-b border-border flex items-center gap-3 flex-shrink-0">
               <button onClick={resetToSearch} className="flex items-center gap-1.5 text-xs text-ink-3 hover:text-ink transition-colors group">
@@ -450,7 +450,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
               <h2 className="font-semibold text-ink text-sm">{t.vbn.resultsFor} &ldquo;{vbnInput}&rdquo;</h2>
             </div>
 
-            <div className="p-5 space-y-4 overflow-y-auto">
+            <div className="p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
               {/* Stats */}
               {stats && (
                 <div className="grid grid-cols-4 gap-3">

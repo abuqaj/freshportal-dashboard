@@ -228,11 +228,13 @@ def verify_products(
                 )
 
         # Rule 5: Generic ambiguous — ask AI (skipped in auto_mode to prevent hallucinations)
+        # Only flag as incorrect if the AI both says it's wrong AND found a specific alternative.
+        # If the AI says "too generic" but proposes nothing, treat the VBN as acceptable.
         elif not auto_mode:
             is_correct, ai_reason, ai_proposed = ai_suggest_vbn_for_checker(
                 name, p.vbn_number, official, group, cfg
             )
-            if not is_correct:
+            if not is_correct and ai_proposed:
                 status = "ERROR"
                 reason = ai_reason
                 proposed = ai_proposed
