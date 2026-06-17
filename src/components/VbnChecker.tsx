@@ -29,6 +29,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   const [vbnInput, setVbnInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [checkProgress, setCheckProgress] = useState<{ current: number; total: number } | null>(null);
   const [results, setResults] = useState<VbnResult[] | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
@@ -103,12 +104,12 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   function resetAll() {
     setResults(null); setStats(null); setVbnInput(""); setVbnNameCache({});
     setFixResult(null); setFixMessage(null); setCheckError(null);
-    setStatusMessage(null);
+    setStatusMessage(null); setCheckProgress(null);
   }
 
   function resetToSearch() {
     setResults(null); setStats(null); setFixResult(null);
-    setFixMessage(null); setCheckError(null);
+    setFixMessage(null); setCheckError(null); setCheckProgress(null);
   }
 
   const errorResults = results?.filter((r) => !r.excluded && r.status !== "OK") ?? [];
@@ -156,7 +157,12 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
           try { event = JSON.parse(line.slice(6)); } catch { continue; }
 
           if (event.type === "status") {
-            flushSync(() => setStatusMessage(event.message as string));
+            const msg = event.message as string;
+            const m = /\((\d+)\/(\d+)\)/.exec(msg);
+            flushSync(() => {
+              setStatusMessage(msg);
+              setCheckProgress(m ? { current: parseInt(m[1]), total: parseInt(m[2]) } : null);
+            });
           } else if (event.type === "result") {
             const data = event.data as { results: VbnResult[]; stats: Stats };
             const withEdits = data.results.map((r) => ({ ...r, edited_vbn: r.proposed_vbn, excluded: false }));
@@ -183,6 +189,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
     } finally {
       setLoading(false);
       setStatusMessage(null);
+      setCheckProgress(null);
     }
   }
 
@@ -419,10 +426,27 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
                   {loading ? t.vbn.checking : t.vbn.checkBtn}
                 </button>
               </div>
-              {loading && statusMessage && (
-                <div className="mt-3 flex items-center gap-2.5 text-sm text-emerald bg-emerald-light border border-emerald/20 rounded-lg px-4 py-2.5">
-                  <Spinner className="h-3.5 w-3.5 flex-shrink-0" />
-                  {statusMessage}
+              {loading && (
+                <div className="mt-3 bg-emerald-light border border-emerald/20 rounded-lg px-4 py-2.5 space-y-2">
+                  <div className="flex items-center gap-2.5 text-sm text-emerald">
+                    <Spinner className="h-3.5 w-3.5 flex-shrink-0" />
+                    <span className="truncate">{statusMessage ?? t.common.connecting}</span>
+                    {checkProgress && (
+                      <span className="ml-auto text-xs text-emerald/70 tabular-nums flex-shrink-0">
+                        {checkProgress.current}/{checkProgress.total}
+                      </span>
+                    )}
+                  </div>
+                  <div className="w-full h-1 bg-emerald/20 rounded-full overflow-hidden">
+                    {checkProgress ? (
+                      <div
+                        className="h-1 bg-emerald rounded-full transition-all duration-300 ease-out"
+                        style={{ width: `${Math.min(100, (checkProgress.current / checkProgress.total) * 100)}%` }}
+                      />
+                    ) : (
+                      <div className="h-1 w-2/5 bg-emerald rounded-full animate-[progress-slide_1.4s_ease-in-out_infinite]" />
+                    )}
+                  </div>
                 </div>
               )}
               {checkError && (
@@ -437,7 +461,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
 
         {/* ── STEP 2: RESULTS ── */}
         {step === "results" && results !== null && (
-          <div className="flex flex-col max-h-[calc(100vh-200px)]">
+          <div className="flex flex-col">
             {/* Header */}
             <div className="px-6 py-4 border-b border-border flex items-center gap-3 flex-shrink-0">
               <button onClick={resetToSearch} className="flex items-center gap-1.5 text-xs text-ink-3 hover:text-ink transition-colors group">
@@ -450,7 +474,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
               <h2 className="font-semibold text-ink text-sm">{t.vbn.resultsFor} &ldquo;{vbnInput}&rdquo;</h2>
             </div>
 
-            <div className="p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
+            <div className="p-5 space-y-4 overflow-y-auto max-h-[calc(100vh-260px)]">
               {/* Stats */}
               {stats && (
                 <div className="grid grid-cols-4 gap-3">
