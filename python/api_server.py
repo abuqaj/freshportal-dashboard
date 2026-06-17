@@ -270,16 +270,17 @@ def _db_row_to_fp(row: dict) -> FPProduct:
 
 def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None, lang: str = "en") -> list:
     """Fetch products for all VBN codes — DB first, Playwright fallback."""
-    if get_product_count() > 0:
+    def _s(key: str, progress: int, **kwargs) -> None:
         if on_status:
-            on_status(i18n_msg(lang, "vbn_searching_db"))
+            on_status(i18n_msg(lang, key, **kwargs), progress)
+
+    if get_product_count() > 0:
+        _s("vbn_searching_db", 5)
         rows = get_products_by_vbn(vbn_codes)
         if rows:
-            if on_status:
-                on_status(i18n_msg(lang, "vbn_found_in_db", count=len(rows)))
+            _s("vbn_found_in_db", 15, count=len(rows))
             return [_db_row_to_fp(r) for r in rows]
-        if on_status:
-            on_status(i18n_msg(lang, "vbn_db_empty_fallback"))
+        _s("vbn_db_empty_fallback", 10)
 
     # Fallback: Playwright scrape (DB empty or VBN not found)
     all_products = []
@@ -287,7 +288,8 @@ def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None, lang:
     total = len(vbn_codes)
     for i, code in enumerate(vbn_codes, 1):
         if on_status and total > 1:
-            on_status(i18n_msg(lang, "vbn_fetching_code", code=code, i=i, total=total))
+            progress = 10 + int((i - 1) / total * 62)
+            on_status(i18n_msg(lang, "vbn_fetching_code", code=code, i=i, total=total), progress)
         products = fetch_products(code, cfg, on_status=on_status if total == 1 else None)
         for p in products:
             if p.product_id not in seen_ids:
@@ -298,15 +300,18 @@ def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None, lang:
 
 def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str = "en", auto_mode: bool = False) -> dict:
     """Run VBN lookup + verification and return result dict."""
-    def _status(message: str) -> None:
+    def _status(message: str, progress: int | None = None) -> None:
         if queue:
-            queue.put({"type": "status", "message": message})
+            event: dict = {"type": "status", "message": message}
+            if progress is not None:
+                event["progress"] = progress
+            queue.put(event)
 
     if not products:
         return {"results": [], "stats": {"total": 0, "errors": 0, "warnings": 0, "ok": 0}}
 
     unique_vbns = sorted({p.vbn_number for p in products if p.vbn_number})
-    _status(i18n_msg(lang, "vbn_verifying", count=len(unique_vbns)))
+    _status(i18n_msg(lang, "vbn_verifying", count=len(unique_vbns)), 75)
 
     vbn_data = lookup_vbn_codes(
         unique_vbns,
@@ -315,7 +320,7 @@ def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str =
         floricode_password=cfg.floricode_password,
     )
 
-    _status(i18n_msg(lang, "vbn_analyzing"))
+    _status(i18n_msg(lang, "vbn_analyzing"), 88)
     results = verify_products(products, vbn_data, cfg, auto_mode=auto_mode)
 
     # Fetch names for proposed VBN codes not already in vbn_data
@@ -324,7 +329,7 @@ def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str =
         if r.proposed_vbn and r.proposed_vbn not in vbn_data
     }
     if proposed_codes:
-        _status(i18n_msg(lang, "vbn_fetching_proposed"))
+        _status(i18n_msg(lang, "vbn_fetching_proposed"), 93)
         extra = lookup_vbn_codes(
             list(proposed_codes),
             request_timeout=cfg.request_timeout,
@@ -575,8 +580,11 @@ async def vbn_check_stream(req: VbnCheckRequest):
 
     def run() -> None:
         try:
-            def on_status(message: str) -> None:
-                queue.put({"type": "status", "message": message})
+            def on_status(message: str, progress: int | None = None) -> None:
+                event: dict = {"type": "status", "message": message}
+                if progress is not None:
+                    event["progress"] = progress
+                queue.put(event)
 
             products = _fetch_all_products(vbn_codes, cfg, on_status=on_status, lang=req.lang)
             data = _build_result(products, cfg, queue, lang=req.lang)

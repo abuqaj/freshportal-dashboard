@@ -239,6 +239,12 @@ def verify_products(
                 reason = ai_reason
                 proposed = ai_proposed
 
+        # If the proposed fix is identical to the current code, there is no improvement possible
+        if proposed and proposed == p.vbn_number:
+            proposed = ""
+            status = "OK"
+            reason = ""
+
         results.append(VerificationResult(
             product=p,
             vbn_info=vbn_info,

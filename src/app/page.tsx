@@ -253,7 +253,7 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }
       </div>
 
       {/* Content */}
-      <div className={`w-full ${w} bg-surface rounded-3xl border border-border shadow-sm overflow-hidden mb-8`}>
+      <div className={`w-full ${w} bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden mb-8`}>
         {children}
       </div>
     </div>

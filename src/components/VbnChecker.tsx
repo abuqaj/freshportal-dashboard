@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { flushSync, createPortal } from "react-dom";
 import { translations, Lang } from "@/lib/i18n";
 import { VbnResult, Stats, AutoVbnRun } from "@/lib/types";
@@ -29,7 +29,9 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   const [vbnInput, setVbnInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [checkProgress, setCheckProgress] = useState<{ current: number; total: number } | null>(null);
+  const [checkProgress, setCheckProgress] = useState<number | null>(null);
+  const scrollBodyRef = useRef<HTMLDivElement>(null);
+  const [showScrollHint, setShowScrollHint] = useState(false);
   const [results, setResults] = useState<VbnResult[] | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
@@ -55,6 +57,15 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   const [fixResult, setFixResult] = useState<{ fixed: number; failed: number; message: string } | null>(null);
 
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
+
+  useEffect(() => {
+    if (step === "results") {
+      requestAnimationFrame(() => {
+        const el = scrollBodyRef.current;
+        if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 40);
+      });
+    }
+  }, [step]);
 
   const loadVbnAutoStatus = useCallback(async () => {
     if (!RAILWAY) return;
@@ -158,10 +169,10 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
 
           if (event.type === "status") {
             const msg = event.message as string;
-            const m = /\((\d+)\/(\d+)\)/.exec(msg);
+            const prog = typeof event.progress === "number" ? event.progress : null;
             flushSync(() => {
               setStatusMessage(msg);
-              setCheckProgress(m ? { current: parseInt(m[1]), total: parseInt(m[2]) } : null);
+              setCheckProgress(prog);
             });
           } else if (event.type === "result") {
             const data = event.data as { results: VbnResult[]; stats: Stats };
@@ -296,13 +307,22 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
     }
   }
 
-  const AutoVbnCard = () => (
-    <div className={`bg-surface rounded-2xl border border-border overflow-hidden shadow-sm relative transition-opacity ${!autoStatusLoaded ? "opacity-60" : ""}`}>
-      {!autoStatusLoaded && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface/40 rounded-2xl">
-          <Spinner className="h-4 w-4 text-ink-3" />
+  const AutoVbnCard = () => {
+    if (!autoStatusLoaded) {
+      return (
+        <div className="bg-surface rounded-2xl border border-border overflow-hidden shadow-sm">
+          <div className="px-5 py-5 flex items-center gap-3">
+            <Spinner className="h-4 w-4 text-ink-3 flex-shrink-0" />
+            <div className="flex-1 space-y-2">
+              <div className="h-3 w-32 bg-border rounded animate-pulse" />
+              <div className="h-2.5 w-56 bg-border/60 rounded animate-pulse" />
+            </div>
+          </div>
         </div>
-      )}
+      );
+    }
+    return (
+    <div className="bg-surface rounded-2xl border border-border overflow-hidden shadow-sm">
       <div className="px-5 py-4 flex items-start gap-4">
         <div className="flex-shrink-0 mt-0.5">
           <span className={`flex w-8 h-8 items-center justify-center rounded-xl ${vbnAutoEnabled ? "bg-emerald-light" : "bg-muted"}`}>
@@ -348,6 +368,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
       </div>
     </div>
   );
+  };
 
   return (
     <div>
@@ -431,20 +452,20 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
                   <div className="flex items-center gap-2.5 text-sm text-emerald">
                     <Spinner className="h-3.5 w-3.5 flex-shrink-0" />
                     <span className="truncate">{statusMessage ?? t.common.connecting}</span>
-                    {checkProgress && (
+                    {checkProgress !== null && (
                       <span className="ml-auto text-xs text-emerald/70 tabular-nums flex-shrink-0">
-                        {checkProgress.current}/{checkProgress.total}
+                        {checkProgress}%
                       </span>
                     )}
                   </div>
-                  <div className="w-full h-1 bg-emerald/20 rounded-full overflow-hidden">
-                    {checkProgress ? (
+                  <div className="w-full h-1.5 bg-emerald/20 rounded-full overflow-hidden">
+                    {checkProgress !== null ? (
                       <div
-                        className="h-1 bg-emerald rounded-full transition-all duration-300 ease-out"
-                        style={{ width: `${Math.min(100, (checkProgress.current / checkProgress.total) * 100)}%` }}
+                        className="h-1.5 bg-emerald rounded-full transition-all duration-500 ease-out"
+                        style={{ width: `${checkProgress}%` }}
                       />
                     ) : (
-                      <div className="h-1 w-2/5 bg-emerald rounded-full animate-[progress-slide_1.4s_ease-in-out_infinite]" />
+                      <div className="h-1.5 w-2/5 bg-emerald rounded-full animate-[progress-slide_1.4s_ease-in-out_infinite]" />
                     )}
                   </div>
                 </div>
@@ -461,7 +482,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
 
         {/* ── STEP 2: RESULTS ── */}
         {step === "results" && results !== null && (
-          <div className="flex flex-col">
+          <div className="flex flex-col relative">
             {/* Header */}
             <div className="px-6 py-4 border-b border-border flex items-center gap-3 flex-shrink-0">
               <button onClick={resetToSearch} className="flex items-center gap-1.5 text-xs text-ink-3 hover:text-ink transition-colors group">
@@ -474,7 +495,19 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
               <h2 className="font-semibold text-ink text-sm">{t.vbn.resultsFor} &ldquo;{vbnInput}&rdquo;</h2>
             </div>
 
-            <div className="p-5 space-y-4 overflow-y-auto max-h-[calc(100vh-260px)]">
+            <div
+              ref={scrollBodyRef}
+              className="p-5 space-y-4 overflow-y-auto max-h-[calc(100vh-260px)] relative"
+              onScroll={() => {
+                const el = scrollBodyRef.current;
+                if (!el) return;
+                setShowScrollHint(el.scrollHeight - el.scrollTop - el.clientHeight > 40);
+              }}
+              onLoad={() => {
+                const el = scrollBodyRef.current;
+                if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 40);
+              }}
+            >
               {/* Stats */}
               {stats && (
                 <div className="grid grid-cols-4 gap-3">
@@ -618,6 +651,15 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
                 </details>
               )}
             </div>
+            {/* Scroll-down gradient hint — fades when content is fully scrolled */}
+            {showScrollHint && (
+              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-surface/90 to-transparent flex items-end justify-center pb-2">
+                <span className="text-[10px] text-ink-3 font-medium flex items-center gap-1">
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 3.5l3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  scroll
+                </span>
+              </div>
+            )}
           </div>
         )}
 
