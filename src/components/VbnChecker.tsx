@@ -103,7 +103,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   function resetAll() {
     setResults(null); setStats(null); setVbnInput(""); setVbnNameCache({});
     setFixResult(null); setFixMessage(null); setCheckError(null);
-    setSearchStatus(null);
+    setStatusMessage(null);
   }
 
   function resetToSearch() {
