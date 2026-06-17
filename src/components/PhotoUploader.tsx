@@ -344,7 +344,7 @@ export default function PhotoUploader({ lang }: Props) {
             <div className="relative">
               <div
                 ref={scrollBodyRef}
-                className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-360px)]"
+                className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-360px)] scroll-pb-4"
                 onScroll={() => {
                   const el = scrollBodyRef.current;
                   if (!el) return;
@@ -452,13 +452,11 @@ export default function PhotoUploader({ lang }: Props) {
                     </div>
                   </div>
                 ))}
-                {/* Bottom padding so the last item isn't clipped by border-radius */}
-                <div className="h-4" />
               </div>
 
               {/* Scroll hint */}
               {showScrollHint && (
-                <div className="pointer-events-none absolute bottom-0 inset-x-0 h-16 flex flex-col items-center justify-end pb-2 bg-gradient-to-t from-surface/90 to-transparent z-10">
+                <div className="pointer-events-none absolute bottom-0 inset-x-0 h-16 flex flex-col items-center justify-end pb-2 bg-gradient-to-t from-surface to-transparent z-10">
                   <span className="flex items-center gap-1.5 bg-ink/80 text-white text-[11px] font-semibold px-3 py-1 rounded-full shadow-sm">
                     <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 3.5L5 6.5L8 3.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     scroll
