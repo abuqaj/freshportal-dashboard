@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { translations, Lang } from "@/lib/i18n";
 
@@ -39,8 +39,7 @@ export default function PhotoUploader({ lang }: Props) {
   const [photoAnalyzing, setPhotoAnalyzing] = useState(false);
   const [photoError, setPhotoError]         = useState<string | null>(null);
   const [photoStatusMsg, setPhotoStatusMsg] = useState<string | null>(null);
-  const [mounted, setMounted]               = useState(false);
-  const [showScrollHint, setShowScrollHint] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   const scrollBodyRef = useRef<HTMLDivElement>(null);
   const hoverTimer    = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -48,18 +47,6 @@ export default function PhotoUploader({ lang }: Props) {
   const [previewPos, setPreviewPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   useEffect(() => { setMounted(true); }, []);
-
-  // Run after DOM paints to get accurate scroll measurements
-  useLayoutEffect(() => {
-    if (photoPhase !== "review" || reviewItems.length === 0) return;
-    const check = () => {
-      const el = scrollBodyRef.current;
-      if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 20);
-    };
-    check();
-    const timer = setTimeout(check, 80);
-    return () => clearTimeout(timer);
-  }, [photoPhase, reviewItems]);
 
   function handleThumbnailEnter(url: string, e: React.MouseEvent<HTMLElement>) {
     if (!url) return;
@@ -91,7 +78,6 @@ export default function PhotoUploader({ lang }: Props) {
     setPhotoError(null);
     setPhotoStatusMsg(null);
     setPreviewUrl(null);
-    setShowScrollHint(false);
   }
 
   async function analyzePhotos(fileList: FileList) {
@@ -320,40 +306,33 @@ export default function PhotoUploader({ lang }: Props) {
 
         {/* ── REVIEW ── */}
         {photoPhase === "review" && reviewItems.length > 0 && (
-          <div className="border border-border rounded-2xl overflow-hidden card-enter flex flex-col max-h-[calc(100vh-240px)]">
+          <div className="border border-border rounded-2xl overflow-hidden card-enter">
 
             {/* Review header */}
-            <div className="flex-shrink-0 px-5 py-3.5 border-b border-border flex items-center justify-between bg-ground/60">
+            <div className="px-5 py-3.5 border-b border-border flex items-center justify-between bg-ground/60">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold text-ink">{t.photo.reviewTitle}</span>
                 <span className="text-xs text-ink-3 bg-muted px-2 py-0.5 rounded-full">{reviewItems.length}</span>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-ink-3">{approvedItems.length} {t.photo.approved}</span>
-                <button
-                  onClick={executePhotoUpload}
-                  disabled={totalAssignments === 0}
-                  className="bg-emerald hover:bg-emerald-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors shadow-sm"
-                >
-                  {uploadLabel}
-                </button>
-              </div>
+              <span className="text-xs text-ink-3">{approvedItems.length} {t.photo.approved}</span>
             </div>
 
-            {/* Scrollable list + scroll hint */}
-            <div className="relative flex-1 min-h-0">
-              <div
-                ref={scrollBodyRef}
-                className="divide-y divide-border overflow-y-auto h-full scroll-pb-4"
-                onScroll={() => {
-                  const el = scrollBodyRef.current;
-                  if (!el) return;
-                  setShowScrollHint(el.scrollHeight - el.scrollTop - el.clientHeight > 40);
-                }}
-              >
+            {/*
+              Scrollable container with sticky footer.
+              The footer uses position:sticky bottom-0 INSIDE the overflow-y-auto div.
+              This is the only reliable way to keep it always visible:
+              - when content fits: footer sits naturally at the bottom
+              - when content overflows and user scrolls: footer sticks to bottom of visible area
+              No flex tricks, no max-h on parent, no layout knowledge needed.
+            */}
+            <div
+              ref={scrollBodyRef}
+              className="overflow-y-auto max-h-[calc(100vh-360px)]"
+            >
+              {/* Items */}
+              <div className="divide-y divide-border">
                 {reviewItems.map((item, idx) => (
-                  /* Outer wrapper gets the animation so it doesn't conflict with opacity */
-                  <div key={item.filename} className="card-enter divide-y divide-border" style={{ animationDelay: `${Math.min(idx * 25, 400)}ms` }}>
+                  <div key={item.filename} className="card-enter" style={{ animationDelay: `${Math.min(idx * 25, 400)}ms` }}>
                     <div className={`px-5 py-4 transition-opacity ${!item.approved ? "opacity-40" : ""}`}>
 
                       {/* Top: number + name + checkbox */}
@@ -375,7 +354,7 @@ export default function PhotoUploader({ lang }: Props) {
 
                       {/* Body: photo + matches — blocked when row is deselected */}
                       <div className={`flex gap-3 pl-7 ${!item.approved ? "pointer-events-none" : ""}`}>
-                        {/* Thumbnail — no zoom cursor */}
+                        {/* Thumbnail */}
                         <div
                           className="w-14 h-14 rounded-xl overflow-hidden bg-muted flex-shrink-0 ring-1 ring-border"
                           onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
@@ -393,14 +372,10 @@ export default function PhotoUploader({ lang }: Props) {
                         <div className="flex-1 min-w-0">
                           <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-1.5">{t.photo.foundMatches}</p>
 
-                          {/* Selected products list */}
                           {item.selected.length > 0 ? (
                             <div className="rounded-lg border border-emerald/25 bg-emerald-light/20 overflow-hidden mb-2">
                               {item.selected.map((p, pi) => (
-                                <div
-                                  key={p.product_id}
-                                  className={`flex items-center gap-2 px-2.5 py-1.5 group ${pi > 0 ? "border-t border-emerald/15" : ""}`}
-                                >
+                                <div key={p.product_id} className={`flex items-center gap-2 px-2.5 py-1.5 group ${pi > 0 ? "border-t border-emerald/15" : ""}`}>
                                   <span className="text-[9px] font-bold text-emerald/50 w-3 text-center flex-shrink-0 tabular-nums">{pi + 1}</span>
                                   <span className="text-xs font-medium text-emerald-dark flex-1 truncate">{p.name}</span>
                                   <span className={`text-[10px] font-semibold flex-shrink-0 mr-1 ${
@@ -424,7 +399,6 @@ export default function PhotoUploader({ lang }: Props) {
                             <p className="text-xs text-ink-3 italic mb-2">{t.photo.noMatch}</p>
                           )}
 
-                          {/* Alternatives */}
                           {item.alternatives.length > 0 && (
                             <div className="flex flex-wrap gap-1.5 items-center">
                               <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className="text-ink-3 flex-shrink-0"><path d="M4 1v6M1 4h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
@@ -454,29 +428,22 @@ export default function PhotoUploader({ lang }: Props) {
                 ))}
               </div>
 
-              {/* Scroll hint */}
-              {showScrollHint && (
-                <div className="pointer-events-none absolute bottom-0 inset-x-0 h-16 flex flex-col items-center justify-end pb-2 bg-gradient-to-t from-surface to-transparent z-10">
-                  <span className="flex items-center gap-1.5 bg-ink/80 text-white text-[11px] font-semibold px-3 py-1 rounded-full shadow-sm">
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 3.5L5 6.5L8 3.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    scroll
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* Review footer */}
-            <div className="flex-shrink-0 px-5 py-3.5 border-t border-border bg-ground/60 flex justify-end gap-2">
-              <button onClick={resetPhotoUploader} className="text-xs text-ink-3 border border-border rounded-lg px-3 py-2 hover:bg-muted transition-colors">
-                {t.photo.cancelUpload}
-              </button>
-              <button
-                onClick={executePhotoUpload}
-                disabled={totalAssignments === 0}
-                className="bg-emerald hover:bg-emerald-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors shadow-sm"
-              >
-                {uploadLabel} {t.photo.uploadToFP}
-              </button>
+              {/* Footer — sticky inside the scroll container so it's always visible */}
+              <div className="sticky bottom-0 px-5 py-3.5 border-t border-border bg-surface flex justify-end gap-2 shadow-[0_-4px_12px_-4px_rgba(0,0,0,0.06)]">
+                <button
+                  onClick={resetPhotoUploader}
+                  className="text-xs text-ink-3 border border-border rounded-lg px-3 py-2 hover:bg-muted transition-colors"
+                >
+                  {t.photo.cancelUpload}
+                </button>
+                <button
+                  onClick={executePhotoUpload}
+                  disabled={totalAssignments === 0}
+                  className="bg-emerald hover:bg-emerald-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors shadow-sm"
+                >
+                  {uploadLabel} {t.photo.uploadToFP}
+                </button>
+              </div>
             </div>
           </div>
         )}
