@@ -14,18 +14,43 @@ logger = logging.getLogger(__name__)
 
 # Known VBN reference table (supplement for offline/quick checks)
 KNOWN_VBN: dict[str, str] = {
-    "269": "Ranunculus other",
-    "580": "Rosa grootbloemig overig",
-    "595": "Rosa spray other",
-    "2712": "Droogbloemen bewerkt H%",
-    "4159": "Ruscus coloured H%",
-    "6268": "Cutflowers other coloured H%",
-    "15126": "Rosa large flowered colour treated",
-    "16128": "Rosa spray colour treated H%",
-    "17659": "Genista kleurbehandeld H%",
+    "269":    "Ranunculus other",
+    "397":    "Droogbloem onbekend H%",
+    "580":    "Rosa grootbloemig overig",
+    "595":    "Rosa spray other",
+    "992":    "Christmas deco cut flowers painted H%",
+    "2712":   "Droogbloemen bewerkt H%",
+    "4159":   "Ruscus coloured H%",
+    "5225":   "Limonium overig H%",
+    "6268":   "Cutflowers other coloured H%",
+    "10001":  "Limonium overig kleurbehandeld H%",
+    "13965":  "Cut flowers other colour treated H%",
+    "14642":  "Greenery coloured H%",
+    "15126":  "Rosa large flowered colour treated",
+    "16128":  "Rosa spray colour treated H%",
+    "17659":  "Genista kleurbehandeld H%",
+    "106317": "Greens deco coloured H%",
     "121267": "Amaranthus colour treated H%",
     "121584": "Anemone coronaria Mistral Plus Pinkie",
     "122819": "Lepidium kleurbehandeld H%",
+}
+
+# Maps genus-specific VBN codes to the lowercase genus name they belong to.
+# Category codes (2712, 6268, etc.) are intentionally EXCLUDED — those belong to
+# no particular genus and must never trigger a genus mismatch rejection.
+_GENUS_SPECIFIC_VBNS: dict[str, str] = {
+    "269":    "ranunculus",
+    "580":    "rosa",
+    "595":    "rosa",
+    "4159":   "ruscus",
+    "5225":   "limonium",
+    "10001":  "limonium",
+    "15126":  "rosa",
+    "16128":  "rosa",
+    "17659":  "genista",
+    "121267": "amaranthus",
+    "121584": "anemone",
+    "122819": "lepidium",
 }
 
 # Genus-specific fallback VBNs for colour treated products.
@@ -238,6 +263,20 @@ def verify_products(
             is_correct, ai_reason, ai_proposed = ai_suggest_vbn_for_checker(
                 name, p.vbn_number, official, group, cfg
             )
+            if not is_correct and ai_proposed:
+                # Genus guard: reject proposals that cross genus boundaries.
+                # Only applies to codes we KNOW are genus-specific (not to category codes
+                # like 2712/6268 which don't belong to any botanical genus).
+                # "Limonium Rose" → genus=limonium; AI must not propose Rosa code 580.
+                product_genus = name.split()[0].lower()
+                vbn_genus = _GENUS_SPECIFIC_VBNS.get(ai_proposed)
+                if vbn_genus and vbn_genus != product_genus:
+                    logger.warning(
+                        "Genus guard: discarded AI proposal %s (genus=%s) for '%s' (genus=%s)",
+                        ai_proposed, vbn_genus, name, product_genus,
+                    )
+                    is_correct = True
+                    ai_proposed = ""
             if not is_correct and ai_proposed:
                 status = "ERROR"
                 reason = ai_reason

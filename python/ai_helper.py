@@ -67,6 +67,15 @@ Always compare the DUTCH translation of the product name against Floricode VBN n
 Example: "Rosa Spray Royal Blush" → Dutch: "Rosa Tros Royal Blush"
   → Floricode VBN 130231 is named "Rosa Tros Royal Blush" → MATCH → suggest 130231, not 595.
 
+CRITICAL — genus rule (HIGHEST PRIORITY):
+The FIRST word of a product name is ALWAYS the genus/family. All remaining words describe
+variety, color, or type — they are NEVER a different genus.
+  "Limonium Rose"  → genus=Limonium, "Rose"=color/variety descriptor → Limonium VBN, NOT Rosa
+  "Limonium Pink"  → genus=Limonium, "Pink"=color descriptor → Limonium VBN, NOT Rosa
+  "Gypsophila Blue"→ genus=Gypsophila, "Blue"=color → Gypsophila VBN, NOT anything else
+Color and variety words (Rose, Pink, Blue, Red, Peach, Lavender, Lemon, Orchid, White, Yellow…)
+can follow ANY genus as descriptors. NEVER change the genus when proposing a VBN.
+
 Category VBN codes (use ONLY when no specific variety code exists for this product):
   580   — Rosa grootbloemig overig (large-flowered NON-spray, any origin including Ecuador)
   595   — Rosa spray other / tros overig (SPRAY type roses)
@@ -224,9 +233,13 @@ VBN product group: "{group}"
 4. Determine the correct VBN code. Use category codes from the VBN context when no specific variety code can be determined.
 
 Rules:
+- The FIRST word of the product name is the GENUS — the proposed VBN must belong to the SAME genus.
+  "Limonium Rose" is a Limonium; NEVER propose a Rosa VBN for it.
+  "Gypsophila Pink" is a Gypsophila; NEVER propose a VBN from a different genus.
+  Color/variety words (Rose, Pink, Blue, White, Peach, Lemon…) that follow the genus are descriptors only.
 - "Spray" / "Sp " in name → must use a spray/tros VBN
 - No "Spray"/"Sp" in name → must NOT use a spray/tros VBN
-- Colour treated / Painted / Absorbed / Tinted → kleurbehandeld VBN
+- Colour treated / Painted / Absorbed / Tinted → kleurbehandeld VBN within the SAME genus
 - Preserved / Bleached / Dried → 2712 or specific droog VBN
 - Prefer specific variety VBN over generic category code when the name matches
 
