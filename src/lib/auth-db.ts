@@ -40,6 +40,8 @@ export async function ensureAuthTables() {
       created_at    TIMESTAMPTZ DEFAULT NOW()
     )
   `
+  await sql`ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS failed_attempts INT DEFAULT 0`
+  await sql`ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ`
   await sql`
     CREATE TABLE IF NOT EXISTS auth_groups (
       id          SERIAL PRIMARY KEY,
@@ -133,6 +135,37 @@ export async function getUserPermissions(userId: number): Promise<string[]> {
   return rows.map((r) => r.name as string)
 }
 
+export async function isAccountLocked(username: string): Promise<boolean> {
+  const { rows: [row] } = await sql`
+    SELECT locked_until FROM auth_users WHERE username = ${username}
+  `
+  if (!row?.locked_until) return false
+  return new Date(row.locked_until) > new Date()
+}
+
+export async function recordFailedLogin(username: string): Promise<void> {
+  await sql`
+    UPDATE auth_users
+    SET
+      failed_attempts = failed_attempts + 1,
+      locked_until = CASE
+        WHEN failed_attempts + 1 >= 5 THEN NOW() + INTERVAL '15 minutes'
+        ELSE locked_until
+      END
+    WHERE username = ${username}
+  `
+}
+
+export async function clearFailedAttempts(username: string): Promise<void> {
+  await sql`
+    UPDATE auth_users SET failed_attempts = 0, locked_until = NULL WHERE username = ${username}
+  `
+}
+
+export async function unlockUser(userId: number): Promise<void> {
+  await sql`UPDATE auth_users SET failed_attempts = 0, locked_until = NULL WHERE id = ${userId}`
+}
+
 export async function verifyPassword(plain: string, hash: string): Promise<boolean> {
   return bcrypt.compare(plain, hash)
 }
@@ -147,6 +180,7 @@ export async function listUsers() {
   await ensureAuthTables()
   const { rows } = await sql`
     SELECT u.id, u.username, u.is_active, u.created_at,
+           u.failed_attempts, u.locked_until,
            COALESCE(json_agg(g.name) FILTER (WHERE g.name IS NOT NULL), '[]') AS groups
     FROM auth_users u
     LEFT JOIN auth_user_groups ug ON ug.user_id = u.id
@@ -173,7 +207,9 @@ export async function createUser(username: string, password: string, groupIds: n
 
 export async function updateUserPassword(userId: number, password: string) {
   const hash = await hashPassword(password)
-  await sql`UPDATE auth_users SET password_hash = ${hash} WHERE id = ${userId}`
+  await sql`
+    UPDATE auth_users SET password_hash = ${hash}, failed_attempts = 0, locked_until = NULL WHERE id = ${userId}
+  `
 }
 
 export async function toggleUserActive(userId: number, isActive: boolean) {

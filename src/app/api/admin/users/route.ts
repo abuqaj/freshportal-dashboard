@@ -3,7 +3,7 @@ import type { Session } from "next-auth"
 import { auth } from "@/lib/auth"
 import {
   listUsers, createUser, updateUserPassword,
-  toggleUserActive, deleteUser, setUserGroups,
+  toggleUserActive, deleteUser, setUserGroups, unlockUser,
 } from "@/lib/auth-db"
 
 function requireAdmin(session: Session | null) {
@@ -48,6 +48,11 @@ export async function POST(req: NextRequest) {
       case "setGroups": {
         if (userId == null || !Array.isArray(groupIds)) return NextResponse.json({ error: "userId and groupIds required" }, { status: 400 })
         await setUserGroups(userId, groupIds)
+        return NextResponse.json({ ok: true })
+      }
+      case "unlock": {
+        if (!userId) return NextResponse.json({ error: "userId required" }, { status: 400 })
+        await unlockUser(userId)
         return NextResponse.json({ ok: true })
       }
       case "delete": {

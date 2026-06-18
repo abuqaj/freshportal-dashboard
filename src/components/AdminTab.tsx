@@ -9,6 +9,8 @@ interface User {
   is_active: boolean
   created_at: string
   groups: string[]
+  failed_attempts: number
+  locked_until: string | null
 }
 
 interface Group {
@@ -170,16 +172,18 @@ function UserRow({ user, groups, onRefresh, currentUserId }: {
   }
 
   const isSelf = String(user.id) === currentUserId
+  const isLocked = !!user.locked_until && new Date(user.locked_until) > new Date()
 
   return (
-    <div className={`border border-border rounded-2xl overflow-hidden ${!user.is_active ? "opacity-60" : ""}`}>
+    <div className={`border rounded-2xl overflow-hidden ${isLocked ? "border-ember/40" : "border-border"} ${!user.is_active ? "opacity-60" : ""}`}>
       <div
         className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-ground/60 transition-colors"
         onClick={() => setExpanded(e => !e)}
       >
-        <div className={`w-2 h-2 rounded-full flex-shrink-0 ${user.is_active ? "bg-emerald" : "bg-ink-3/30"}`} />
+        <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isLocked ? "bg-ember" : user.is_active ? "bg-emerald" : "bg-ink-3/30"}`} />
         <span className="text-sm font-medium text-ink flex-1">{user.username}</span>
         {isSelf && <Badge variant="blue">you</Badge>}
+        {isLocked && <Badge variant="red">locked</Badge>}
         {user.groups.map(g => <Badge key={g} variant="neutral">{g}</Badge>)}
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
           className={`text-ink-3/50 transition-transform ${expanded ? "rotate-180" : ""}`}>
@@ -239,7 +243,16 @@ function UserRow({ user, groups, onRefresh, currentUserId }: {
           </div>
 
           {/* Actions */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
+            {isLocked && (
+              <button
+                disabled={saving}
+                onClick={() => apiCall({ action: "unlock", userId: user.id })}
+                className="h-7 px-3 rounded-lg bg-amber-500/10 text-amber-600 text-xs font-medium hover:bg-amber-500/20 disabled:opacity-50 transition-colors"
+              >
+                Unlock
+              </button>
+            )}
             <button
               disabled={saving || isSelf}
               onClick={() => apiCall({ action: "toggleActive", userId: user.id, isActive: !user.is_active })}
