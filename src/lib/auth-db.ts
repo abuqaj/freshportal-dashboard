@@ -30,7 +30,20 @@ const DEFAULT_GROUPS: Record<string, string[]> = {
   viewer: ["vbn:check"],
 }
 
-export async function ensureAuthTables() {
+// Runs DDL + seed exactly once per Lambda instance.
+let _authReady: Promise<void> | null = null;
+
+export function ensureAuthTables(): Promise<void> {
+  if (!_authReady) {
+    _authReady = _migrateAuth().catch((err) => {
+      _authReady = null;
+      throw err;
+    });
+  }
+  return _authReady;
+}
+
+async function _migrateAuth() {
   await sql`
     CREATE TABLE IF NOT EXISTS auth_users (
       id            SERIAL PRIMARY KEY,

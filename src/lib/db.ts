@@ -1,6 +1,21 @@
 import { sql } from "@vercel/postgres";
 
-export async function ensureTables() {
+// Runs DDL exactly once per Lambda instance. Subsequent calls return the
+// cached Promise — no round-trips to Neon on warm requests.
+let _ready: Promise<void> | null = null;
+
+export function ensureTables(): Promise<void> {
+  if (!_ready) {
+    _ready = _migrate().catch((err) => {
+      // Reset so the next cold-start attempt can retry.
+      _ready = null;
+      throw err;
+    });
+  }
+  return _ready;
+}
+
+async function _migrate() {
   await sql`
     CREATE TABLE IF NOT EXISTS operations (
       id SERIAL PRIMARY KEY,
