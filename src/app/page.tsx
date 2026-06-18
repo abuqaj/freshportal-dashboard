@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useSession } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
 import { SyncStatus } from "@/lib/types";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
@@ -8,9 +9,10 @@ import VbnChecker from "@/components/VbnChecker";
 import ProductCreator from "@/components/ProductCreator";
 import PhotoUploader from "@/components/PhotoUploader";
 import HistoryTab from "@/components/HistoryTab";
+import AdminTab from "@/components/AdminTab";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history";
+type Tab = "vbn" | "create" | "photos" | "history" | "admin";
 
 /* ─── 3-D tilt hook ─── */
 function useTilt(strength = 10) {
@@ -137,25 +139,28 @@ function LogoMark({ size = 28 }: { size?: number }) {
 }
 
 /* ─── Persistent top bar ─── */
-function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline }: {
+function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: {
   lang: Lang; setLang: (l: Lang) => void;
   tab: Tab | null; t: (typeof translations)[Lang];
   syncStatus: SyncStatus | null; railwayOnline: boolean | null;
+  username?: string;
 }) {
+  const tabLabel = tab === "vbn" ? t.nav.vbnChecker
+    : tab === "create" ? t.nav.newProducts
+    : tab === "photos" ? t.nav.photoUploader
+    : tab === "history" ? t.nav.history
+    : tab === "admin" ? "Admin"
+    : null;
+
   return (
     <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-surface flex-shrink-0">
       <div className="flex items-center gap-3">
         <LogoMark size={24}/>
         <span className="text-sm font-bold text-ink">FreshPortal</span>
-        {tab && (
+        {tab && tabLabel && (
           <>
             <span className="text-border text-sm select-none">/</span>
-            <span className="text-sm font-medium text-ink-3">
-              {tab === "vbn"     ? t.nav.vbnChecker
-               : tab === "create" ? t.nav.newProducts
-               : tab === "photos" ? t.nav.photoUploader
-               : t.nav.history}
-            </span>
+            <span className="text-sm font-medium text-ink-3">{tabLabel}</span>
           </>
         )}
       </div>
@@ -195,6 +200,11 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline }: {
             )}
           </span>
         )}
+        {username && (
+          <span className="text-[11px] text-ink-3 border border-border bg-muted px-2 py-0.5 rounded-full">
+            {username}
+          </span>
+        )}
         <LanguageSwitcher lang={lang} setLang={setLang}/>
       </div>
     </div>
@@ -207,6 +217,7 @@ const MODULE_WIDTH: Record<Tab, string> = {
   history: "max-w-4xl",
   create:  "max-w-3xl",
   photos:  "max-w-2xl",
+  admin:   "max-w-3xl",
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }: {
@@ -261,9 +272,10 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }
 }
 
 /* ─── Hub home screen ─── */
-function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect }: {
+function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, isAdmin }: {
   lang: Lang; setLang: (l: Lang) => void; t: (typeof translations)[Lang];
   autoEnabled: boolean | null; productCount: number | null; onSelect: (tab: Tab) => void;
+  isAdmin: boolean;
 }) {
   const tiles = [
     {
@@ -325,6 +337,22 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect }: {
         </svg>
       ),
     },
+    ...(isAdmin ? [{
+      id: "admin" as Tab,
+      label: "Admin",
+      desc: "Manage users and access control",
+      gradient: "bg-gradient-to-br from-[#374151] to-[#111827]",
+      stat: "Users & groups",
+      statColor: "text-white/60",
+      icon: (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="8" r="4" stroke="white" strokeWidth="1.8"/>
+          <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+          <circle cx="19" cy="7" r="2.5" fill="white" opacity="0.7"/>
+          <path d="M19 5.5v3M17.5 7h3" stroke="#374151" strokeWidth="1.2" strokeLinecap="round"/>
+        </svg>
+      ),
+    }] : []),
   ];
 
   return (
@@ -364,6 +392,7 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect }: {
 
 /* ─── Root ─── */
 export default function Dashboard() {
+  const { data: session, status: sessionStatus } = useSession();
   const [lang, setLangState] = useState<Lang>("en");
   const [tab, setTab] = useState<Tab | null>(null);
   const [autoEnabled, setAutoEnabled] = useState<boolean | null>(null);
@@ -372,13 +401,17 @@ export default function Dashboard() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [railwayOnline, setRailwayOnline] = useState<boolean | null>(null);
 
+  const permissions = session?.user?.permissions ?? [];
+  const isAdmin = permissions.includes("admin:manage");
+  const username = session?.user?.name ?? undefined;
+
   useEffect(() => {
     const saved = localStorage.getItem("fp_lang") as Lang | null;
     if (saved && ["en","nl","pl","es"].includes(saved)) setLangState(saved);
   }, []);
 
   useEffect(() => {
-    if (!RAILWAY) return;
+    if (!RAILWAY || sessionStatus !== "authenticated") return;
     fetch(`${RAILWAY}/vbn-auto/status`)
       .then(r => r.json())
       .then(d => { setAutoEnabled(d.enabled ?? false); setAutoNextRun(d.nextRun ?? null); setRailwayOnline(true); })
@@ -387,7 +420,7 @@ export default function Dashboard() {
       .then(r => r.json())
       .then(d => { if (d.product_count != null) setProductCount(d.product_count); setSyncStatus(d as SyncStatus); })
       .catch(() => {});
-  }, []);
+  }, [sessionStatus]);
 
   function setLang(l: Lang) { setLangState(l); localStorage.setItem("fp_lang", l); }
 
@@ -400,10 +433,19 @@ export default function Dashboard() {
     setAutoNextRun(nextRun);
   }, []);
 
+  // Show spinner while session loads
+  if (sessionStatus === "loading") {
+    return (
+      <div className="h-screen bg-ground flex items-center justify-center">
+        <div className="w-5 h-5 border-2 border-emerald border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen bg-surface flex flex-col overflow-hidden font-sans antialiased">
       {/* Persistent top bar — always visible */}
-      <TopBar lang={lang} setLang={setLang} tab={tab} t={t} syncStatus={syncStatus} railwayOnline={railwayOnline}/>
+      <TopBar lang={lang} setLang={setLang} tab={tab} t={t} syncStatus={syncStatus} railwayOnline={railwayOnline} username={username}/>
 
       {/* Main content */}
       <div className="flex-1 overflow-hidden flex flex-col">
@@ -415,6 +457,7 @@ export default function Dashboard() {
             autoEnabled={autoEnabled}
             productCount={productCount}
             onSelect={(t) => setTab(t)}
+            isAdmin={isAdmin}
           />
         ) : (
           <ModuleCard
@@ -429,6 +472,7 @@ export default function Dashboard() {
             {tab === "create"  && <ProductCreator lang={lang}/>}
             {tab === "photos"  && <PhotoUploader  lang={lang}/>}
             {tab === "history" && <HistoryTab     lang={lang}/>}
+            {tab === "admin"   && <AdminTab       currentUsername={username}/>}
           </ModuleCard>
         )}
       </div>

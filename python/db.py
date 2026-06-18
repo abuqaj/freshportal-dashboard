@@ -40,6 +40,131 @@ def _conn() -> Generator[psycopg2.extensions.connection, None, None]:
 # Schema
 # ---------------------------------------------------------------------------
 
+_ALL_PERMISSIONS = ["vbn:check", "vbn:fix", "products:create", "photos:upload", "admin:manage"]
+_DEFAULT_GROUPS: dict[str, list[str]] = {
+    "admin":    _ALL_PERMISSIONS,
+    "operator": ["vbn:check", "vbn:fix", "products:create", "photos:upload"],
+    "viewer":   ["vbn:check"],
+}
+
+
+def ensure_auth_tables() -> None:
+    """Create auth tables and seed default groups/admin user if empty."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS auth_users (
+                    id            SERIAL PRIMARY KEY,
+                    username      TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    is_active     BOOLEAN DEFAULT TRUE,
+                    created_at    TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS auth_groups (
+                    id          SERIAL PRIMARY KEY,
+                    name        TEXT UNIQUE NOT NULL,
+                    description TEXT DEFAULT ''
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS auth_permissions (
+                    id   SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS auth_user_groups (
+                    user_id  INT REFERENCES auth_users(id)  ON DELETE CASCADE,
+                    group_id INT REFERENCES auth_groups(id) ON DELETE CASCADE,
+                    PRIMARY KEY (user_id, group_id)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS auth_group_permissions (
+                    group_id      INT REFERENCES auth_groups(id)      ON DELETE CASCADE,
+                    permission_id INT REFERENCES auth_permissions(id) ON DELETE CASCADE,
+                    PRIMARY KEY (group_id, permission_id)
+                )
+            """)
+
+            # Seed permissions
+            for perm in _ALL_PERMISSIONS:
+                cur.execute("""
+                    INSERT INTO auth_permissions (name) VALUES (%s)
+                    ON CONFLICT (name) DO NOTHING
+                """, (perm,))
+
+            # Seed default groups
+            for group_name, group_perms in _DEFAULT_GROUPS.items():
+                cur.execute("""
+                    INSERT INTO auth_groups (name) VALUES (%s)
+                    ON CONFLICT (name) DO NOTHING RETURNING id
+                """, (group_name,))
+                row = cur.fetchone()
+                if row:
+                    gid = row[0]
+                    for perm in group_perms:
+                        cur.execute("""
+                            INSERT INTO auth_group_permissions (group_id, permission_id)
+                            SELECT %s, id FROM auth_permissions WHERE name = %s
+                            ON CONFLICT DO NOTHING
+                        """, (gid, perm))
+
+            # Seed default admin user (password: "admin") if no users exist
+            cur.execute("SELECT COUNT(*) FROM auth_users")
+            if cur.fetchone()[0] == 0:
+                from passlib.hash import bcrypt as pw_bcrypt
+                import os as _os
+                default_pw = _os.getenv("ADMIN_DEFAULT_PASSWORD", "admin")
+                hashed = pw_bcrypt.hash(default_pw)
+                cur.execute("""
+                    INSERT INTO auth_users (username, password_hash)
+                    VALUES ('admin', %s) RETURNING id
+                """, (hashed,))
+                uid = cur.fetchone()[0]
+                cur.execute("SELECT id FROM auth_groups WHERE name = 'admin'")
+                gid_row = cur.fetchone()
+                if gid_row:
+                    cur.execute("""
+                        INSERT INTO auth_user_groups (user_id, group_id) VALUES (%s, %s)
+                        ON CONFLICT DO NOTHING
+                    """, (uid, gid_row[0]))
+
+
+def get_user_by_username(username: str) -> dict | None:
+    try:
+        ensure_auth_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, username, password_hash, is_active
+                    FROM auth_users WHERE username = %s
+                """, (username,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception as exc:
+        logger.warning("get_user_by_username: %s", exc)
+        return None
+
+
+def get_user_permissions(user_id: int) -> list[str]:
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT p.name
+                    FROM auth_user_groups ug
+                    JOIN auth_group_permissions gp ON gp.group_id = ug.group_id
+                    JOIN auth_permissions p ON p.id = gp.permission_id
+                    WHERE ug.user_id = %s
+                """, (user_id,))
+                return [row[0] for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
 def ensure_tables() -> None:
     with _conn() as conn:
         with conn.cursor() as cur:
