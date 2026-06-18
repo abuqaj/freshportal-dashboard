@@ -37,7 +37,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                get_distinct_colors, get_setting, set_setting, get_recent_created_products,
                log_vbn_auto_start, log_vbn_auto_finish, get_vbn_auto_history)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
-from auth_middleware import require_permission, get_token_payload
+from auth_middleware import require_permission, require_any_permission, get_token_payload
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -864,7 +864,7 @@ def vbn_search_endpoint(q: str, limit: int = 8, _: dict = Depends(require_permis
 
 
 @app.get("/vbn-name/{code}")
-def get_vbn_name(code: str, _: dict = Depends(require_permission("vbn:check"))):
+def get_vbn_name(code: str, _: dict = Depends(require_any_permission("vbn:check", "products:create"))):
     """Return the official Floricode name for a single VBN code."""
     cfg = Config()
     # Check hardcoded table first (instant, no API call)

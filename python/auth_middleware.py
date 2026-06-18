@@ -54,3 +54,14 @@ def require_permission(perm: str):
         return payload
 
     return dependency
+
+
+def require_any_permission(*perms: str):
+    """Returns a dependency that passes if the token has ANY of the given perms."""
+    def dependency(payload: dict = Depends(get_token_payload)) -> dict:
+        user_perms = payload.get("permissions", [])
+        if not any(p in user_perms for p in perms):
+            raise HTTPException(status_code=403, detail=f"One of {list(perms)} required")
+        return payload
+
+    return dependency

@@ -97,19 +97,27 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const INPUT = "w-full h-9 px-3 rounded-xl border border-border bg-ground text-sm text-ink focus:outline-none focus:border-emerald/60 focus:ring-2 focus:ring-emerald/15 transition-all"
 
 /* ─── User edit modal ─── */
-function UserEditModal({ user, groups, currentUsername, onSaved, onClose }: {
-  user: User; groups: Group[]; currentUsername: string | undefined
+function UserEditModal({ user, currentUsername, onSaved, onClose }: {
+  user: User; currentUsername: string | undefined
   onSaved: () => void; onClose: () => void
 }) {
+  const [groups, setGroups] = useState<Group[]>([])
   const [username, setUsername] = useState(user.username)
-  const [groupId, setGroupId] = useState<number | null>(
-    user.groups.length > 0 ? (groups.find(g => g.name === user.groups[0])?.id ?? null) : null
-  )
+  const [groupId, setGroupId] = useState<number | null>(null)
   const [isActive, setIsActive] = useState(user.is_active)
   const [password, setPassword] = useState("")
   const [confirmPw, setConfirmPw] = useState("")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
+
+  useEffect(() => {
+    fetch("/api/admin/groups").then(r => r.json()).then(d => {
+      const fresh: Group[] = d.groups ?? []
+      setGroups(fresh)
+      const matched = fresh.find(g => g.name === user.groups[0])
+      setGroupId(matched?.id ?? fresh[0]?.id ?? null)
+    })
+  }, [user.groups])
 
   const isSelf = user.username === currentUsername
 
@@ -123,13 +131,14 @@ function UserEditModal({ user, groups, currentUsername, onSaved, onClose }: {
   }
 
   async function save() {
-    if (password && password !== confirmPw) { setError("Passwords do not match"); return }
     if (!username.trim()) { setError("Username is required"); return }
+    if (groupId == null) { setError("A group must be selected"); return }
+    if (password && password !== confirmPw) { setError("Passwords do not match"); return }
     setError("")
     setSaving(true)
     try {
       if (username !== user.username) await api({ action: "updateUsername", userId: user.id, newUsername: username.trim() })
-      await api({ action: "setGroups", userId: user.id, groupIds: groupId != null ? [groupId] : [] })
+      await api({ action: "setGroups", userId: user.id, groupIds: [groupId] })
       if (!isSelf) await api({ action: "toggleActive", userId: user.id, isActive })
       if (password) await api({ action: "changePassword", userId: user.id, password })
       onSaved()
@@ -148,23 +157,23 @@ function UserEditModal({ user, groups, currentUsername, onSaved, onClose }: {
       </Field>
 
       <Field label="Group">
-        <div className="flex flex-col gap-1.5">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="radio" name="group" className="accent-emerald"
-              checked={groupId === null}
-              onChange={() => setGroupId(null)} />
-            <span className="text-sm text-ink-3 italic">No group</span>
-          </label>
-          {groups.map(g => (
-            <label key={g.id} className="flex items-center gap-2 cursor-pointer">
-              <input type="radio" name="group" className="accent-emerald"
-                checked={groupId === g.id}
-                onChange={() => setGroupId(g.id)} />
-              <span className="text-sm text-ink">{g.name}</span>
-              <span className="text-xs text-ink-3">({g.permissions.map(p => PERM_LABELS[p] ?? p).join(", ")})</span>
-            </label>
-          ))}
-        </div>
+        {groups.length === 0
+          ? <p className="text-xs text-ink-3">Loading…</p>
+          : (
+            <div className="flex flex-col gap-1.5">
+              {groups.map(g => (
+                <label key={g.id} className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="group" className="accent-emerald"
+                    checked={groupId === g.id}
+                    onChange={() => setGroupId(g.id)} />
+                  <span className="text-sm font-medium text-ink">{g.name}</span>
+                  {g.permissions.length > 0 && (
+                    <span className="text-xs text-ink-3">({g.permissions.map(p => PERM_LABELS[p] ?? p).join(", ")})</span>
+                  )}
+                </label>
+              ))}
+            </div>
+          )}
       </Field>
 
       {!isSelf && (
@@ -269,8 +278,8 @@ function GroupEditModal({ group, onSaved, onClose }: {
 }
 
 /* ─── User row ─── */
-function UserRow({ user, groups, currentUsername, onRefresh }: {
-  user: User; groups: Group[]; currentUsername: string | undefined; onRefresh: () => void
+function UserRow({ user, currentUsername, onRefresh }: {
+  user: User; currentUsername: string | undefined; onRefresh: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -297,7 +306,6 @@ function UserRow({ user, groups, currentUsername, onRefresh }: {
       {editing && (
         <UserEditModal
           user={user}
-          groups={groups}
           currentUsername={currentUsername}
           onSaved={onRefresh}
           onClose={() => setEditing(false)}
@@ -353,9 +361,13 @@ function UserRow({ user, groups, currentUsername, onRefresh }: {
 }
 
 /* ─── New user row ─── */
-function NewUserRow({ groups, onCreated, onCancel }: {
-  groups: Group[]; onCreated: () => void; onCancel: () => void
+function NewUserRow({ onCreated, onCancel }: {
+  onCreated: () => void; onCancel: () => void
 }) {
+  const [groups, setGroups] = useState<Group[]>([])
+  useEffect(() => {
+    fetch("/api/admin/groups").then(r => r.json()).then(d => setGroups(d.groups ?? []))
+  }, [])
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [groupId, setGroupId] = useState<number | null>(null)
@@ -422,7 +434,7 @@ function NewUserRow({ groups, onCreated, onCancel }: {
 }
 
 /* ─── Users table ─── */
-function UsersTable({ groups, currentUsername }: { groups: Group[]; currentUsername: string | undefined }) {
+function UsersTable({ currentUsername }: { currentUsername: string | undefined }) {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [showNew, setShowNew] = useState(false)
@@ -468,14 +480,14 @@ function UsersTable({ groups, currentUsername }: { groups: Group[]; currentUsern
         </thead>
         <tbody>
           {showNew && (
-            <NewUserRow groups={groups} onCreated={() => { setShowNew(false); load() }} onCancel={() => setShowNew(false)} />
+            <NewUserRow onCreated={() => { setShowNew(false); load() }} onCancel={() => setShowNew(false)} />
           )}
           {loading ? (
             <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
           ) : users.length === 0 ? (
             <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-ink-3">No users</td></tr>
           ) : users.map(u => (
-            <UserRow key={u.id} user={u} groups={groups} currentUsername={currentUsername} onRefresh={load} />
+            <UserRow key={u.id} user={u} currentUsername={currentUsername} onRefresh={load} />
           ))}
         </tbody>
       </table>
@@ -671,14 +683,6 @@ function GroupsTable() {
 /* ─── Main ─── */
 export default function AdminTab({ currentUsername }: { currentUsername?: string }) {
   const [activeTab, setActiveTab] = useState<"users" | "groups">("users")
-  const [groups, setGroups] = useState<Group[]>([])
-
-  const loadGroups = useCallback(async () => {
-    const r = await fetch("/api/admin/groups").then(r => r.json())
-    setGroups(r.groups ?? [])
-  }, [])
-
-  useEffect(() => { loadGroups() }, [loadGroups])
 
   return (
     <div>
@@ -700,7 +704,7 @@ export default function AdminTab({ currentUsername }: { currentUsername?: string
       </div>
 
       {activeTab === "users"
-        ? <UsersTable groups={groups} currentUsername={currentUsername} />
+        ? <UsersTable currentUsername={currentUsername} />
         : <GroupsTable />}
     </div>
   )
