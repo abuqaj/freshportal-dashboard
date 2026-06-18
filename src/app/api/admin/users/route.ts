@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
+import type { Session } from "next-auth"
 import { auth } from "@/lib/auth"
 import {
   listUsers, createUser, updateUserPassword,
   toggleUserActive, deleteUser, setUserGroups,
 } from "@/lib/auth-db"
 
-function requireAdmin(session: Awaited<ReturnType<typeof auth>>) {
+function requireAdmin(session: Session | null) {
   if (!session?.user?.permissions?.includes("admin:manage")) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
