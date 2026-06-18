@@ -40,6 +40,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   const [vbnNameCache, setVbnNameCache] = useState<Record<string, string>>({});
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const abortRef = useRef<AbortController | null>(null);
+  const checkCancelRef = useRef<string | null>(null);
   const [suggestions, setSuggestions] = useState<{ product_id: string; items: { id: string; name: string }[] } | null>(null);
   const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number } | null>(null);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -130,6 +131,11 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   function cancelOp() {
     abortRef.current?.abort();
     abortRef.current = null;
+    const token = checkCancelRef.current;
+    checkCancelRef.current = null;
+    if (token && RAILWAY) {
+      fetch(`${RAILWAY}/cancel/${token}`, { method: "POST" }).catch(() => {});
+    }
   }
 
   async function handleCheck() {
@@ -151,10 +157,12 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
     });
 
     try {
+      const cancelToken = crypto.randomUUID();
+      checkCancelRef.current = cancelToken;
       const res = await fetch(`${RAILWAY}/vbn-check/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vbn: vbnInput.trim(), lang }),
+        body: JSON.stringify({ vbn: vbnInput.trim(), lang, cancel_token: cancelToken }),
         signal: ctrl.signal,
       });
 

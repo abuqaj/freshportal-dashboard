@@ -270,11 +270,13 @@ def ai_suggest_vbn_for_checker(
     official_name: str,
     group: str,
     cfg: "Config",
+    cancel_event: "threading.Event | None" = None,
 ) -> tuple[bool, str, str]:
     """Ask Claude to verify a VBN assignment and propose the correct code if wrong.
 
     Returns (is_correct, reason, proposed_vbn).
     Falls back to (True, error_msg, "") on failure so the caller treats it as non-actionable.
+    Uses streaming so cancellation closes the Anthropic connection and stops billing.
     """
     if not cfg.anthropic_api_key:
         return True, "AI unavailable (no API key)", ""
@@ -289,12 +291,18 @@ def ai_suggest_vbn_for_checker(
 
     try:
         client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
-        msg = client.messages.create(
+        parts: list[str] = []
+        with client.messages.stream(
             model=cfg.anthropic_model,
             max_tokens=256,
             messages=[{"role": "user", "content": prompt}],
-        )
-        text = msg.content[0].text.strip()
+        ) as stream:
+            for chunk in stream.text_stream:
+                if cancel_event and cancel_event.is_set():
+                    logger.info("ai_suggest_vbn_for_checker: cancelled — closing Anthropic stream")
+                    return True, "cancelled", ""
+                parts.append(chunk)
+        text = "".join(parts).strip()
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if not m:
             logger.warning("ai_suggest_vbn_for_checker: non-JSON response: %.200s", text)

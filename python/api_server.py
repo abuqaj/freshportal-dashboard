@@ -222,6 +222,7 @@ app.add_middleware(
 class VbnCheckRequest(BaseModel):
     vbn: str
     lang: str = "en"
+    cancel_token: str | None = None
 
 
 class FixItem(BaseModel):
@@ -302,7 +303,7 @@ def _fetch_all_products(vbn_codes: list[str], cfg: Config, on_status=None, lang:
     return all_products
 
 
-def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str = "en", auto_mode: bool = False) -> dict:
+def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str = "en", auto_mode: bool = False, cancel_event: threading.Event | None = None) -> dict:
     """Run VBN lookup + verification and return result dict."""
     def _status(message: str, progress: int | None = None) -> None:
         if queue:
@@ -330,7 +331,7 @@ def _build_result(products, cfg: Config, queue: Queue | None = None, lang: str =
         progress = 88 + int((i - 1) / total * 5)  # 88 → 93 %
         _status(i18n_msg(lang, "vbn_analyzing_product", i=i, total=total), progress)
 
-    results = verify_products(products, vbn_data, cfg, auto_mode=auto_mode, on_progress=_on_analyze)
+    results = verify_products(products, vbn_data, cfg, auto_mode=auto_mode, on_progress=_on_analyze, cancel_event=cancel_event)
 
     # Fetch names for proposed VBN codes not already in vbn_data
     proposed_codes = {
@@ -596,6 +597,11 @@ async def vbn_check_stream(req: VbnCheckRequest, _: dict = Depends(require_permi
 
     vbn_codes = _parse_vbn_codes(req.vbn)
 
+    check_cancel_event: threading.Event | None = None
+    if req.cancel_token:
+        check_cancel_event = threading.Event()
+        _cancel_tokens[req.cancel_token] = check_cancel_event
+
     def run() -> None:
         try:
             def on_status(message: str, progress: int | None = None) -> None:
@@ -605,11 +611,14 @@ async def vbn_check_stream(req: VbnCheckRequest, _: dict = Depends(require_permi
                 queue.put(event)
 
             products = _fetch_all_products(vbn_codes, cfg, on_status=on_status, lang=req.lang)
-            data = _build_result(products, cfg, queue, lang=req.lang)
+            data = _build_result(products, cfg, queue, lang=req.lang, cancel_event=check_cancel_event)
             queue.put({"type": "result", "data": data})
         except Exception as e:
             log.exception("vbn-check/stream failed")
             queue.put({"type": "error", "message": str(e)})
+        finally:
+            if req.cancel_token:
+                _cancel_tokens.pop(req.cancel_token, None)
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()

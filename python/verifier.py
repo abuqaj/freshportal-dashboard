@@ -115,13 +115,18 @@ def verify_products(
     cfg: Config,
     auto_mode: bool = False,
     on_progress=None,
+    cancel_event=None,
 ) -> list[VerificationResult]:
     """Apply verification rules to each product. Uses AI for ambiguous cases.
-    auto_mode=True skips Rule 5 (AI-only generic check) to prevent hallucinations in automated runs."""
+    auto_mode=True skips Rule 5 (AI-only generic check) to prevent hallucinations in automated runs.
+    cancel_event (threading.Event): if set, stops processing immediately and returns partial results."""
     results: list[VerificationResult] = []
 
     total = len(products)
     for idx, p in enumerate(products, 1):
+        if cancel_event and cancel_event.is_set():
+            logger.info("verify_products: cancelled after %d/%d products", idx - 1, total)
+            break
         if on_progress:
             on_progress(idx, total)
         vbn_info = vbn_data.get(p.vbn_number)
@@ -136,7 +141,7 @@ def verify_products(
             continue
 
         if not p.vbn_number:
-            _, _, ai_proposed = ai_suggest_vbn_for_checker(p.name, "", "", "", cfg)
+            _, _, ai_proposed = ai_suggest_vbn_for_checker(p.name, "", "", "", cfg, cancel_event=cancel_event)
             results.append(VerificationResult(
                 product=p,
                 vbn_info=None,
@@ -147,7 +152,7 @@ def verify_products(
             continue
 
         if vbn_info is None or not vbn_info.found:
-            _, _, ai_proposed = ai_suggest_vbn_for_checker(p.name, p.vbn_number, "", "", cfg)
+            _, _, ai_proposed = ai_suggest_vbn_for_checker(p.name, p.vbn_number, "", "", cfg, cancel_event=cancel_event)
             results.append(VerificationResult(
                 product=p,
                 vbn_info=vbn_info,
@@ -227,7 +232,7 @@ def verify_products(
             spray_vbn_names = ("spray", "tros")
             if not any(kw in official.lower() for kw in spray_vbn_names):
                 is_correct, ai_reason, ai_proposed = ai_suggest_vbn_for_checker(
-                    name, p.vbn_number, official, group, cfg
+                    name, p.vbn_number, official, group, cfg, cancel_event=cancel_event
                 )
                 if not is_correct:
                     status = "ERROR"
@@ -243,7 +248,7 @@ def verify_products(
         # Rule 4: Non-spray name with spray VBN
         elif not _is_spray(name) and "spray" in official.lower():
             is_correct, ai_reason, ai_proposed = ai_suggest_vbn_for_checker(
-                name, p.vbn_number, official, group, cfg
+                name, p.vbn_number, official, group, cfg, cancel_event=cancel_event
             )
             if not is_correct:
                 status = "ERROR"
@@ -261,7 +266,7 @@ def verify_products(
         # If the AI says "too generic" but proposes nothing, treat the VBN as acceptable.
         elif not auto_mode:
             is_correct, ai_reason, ai_proposed = ai_suggest_vbn_for_checker(
-                name, p.vbn_number, official, group, cfg
+                name, p.vbn_number, official, group, cfg, cancel_event=cancel_event
             )
             if not is_correct and ai_proposed:
                 # Genus guard: reject proposals that cross genus boundaries.
