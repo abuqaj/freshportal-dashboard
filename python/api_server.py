@@ -83,13 +83,13 @@ def _auto_vbn_check() -> None:
 
         product_rows = get_recent_created_products()
         if not product_rows:
-            log.info("Auto VBN check: no products created today — nothing to do")
-            messages.append("No products created today — nothing to check")
+            log.info("Auto VBN check: no products created today or yesterday — nothing to do")
+            messages.append("No products created today or yesterday — nothing to check")
             log_vbn_auto_finish(run_id, 0, 0, [], messages=messages)
             set_setting("vbn_auto_last_check", datetime.datetime.now(datetime.timezone.utc).isoformat())
             return
 
-        messages.append(f"Found {len(product_rows)} products created today")
+        messages.append(f"Found {len(product_rows)} products created today or yesterday")
         products = [_db_row_to_fp(r) for r in product_rows]
         data = _build_result(products, cfg, auto_mode=True)
 

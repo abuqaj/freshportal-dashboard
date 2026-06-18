@@ -222,6 +222,7 @@ export default function HistoryTab({ lang }: Props) {
                     <th className="text-left px-5 py-3 text-[11px] font-medium text-ink-3">{t.history.colType}</th>
                     <th className="text-left px-3 py-3 text-[11px] font-medium text-ink-3">{t.history.colFilter}</th>
                     <th className="text-left px-3 py-3 text-[11px] font-medium text-ink-3">{t.history.colDetails}</th>
+                    <th className="text-left px-3 py-3 text-[11px] font-medium text-ink-3">{t.history.colUser}</th>
                     <th className="text-left px-3 py-3 text-[11px] font-medium text-ink-3">{t.history.colDate}</th>
                   </tr>
                 </thead>
@@ -282,6 +283,9 @@ export default function HistoryTab({ lang }: Props) {
                               : "—"}
                           </td>
                           <td className="px-3 py-3 text-[11px] text-ink-3/60 whitespace-nowrap">
+                            {row.username ?? <span className="text-ink-3/30">—</span>}
+                          </td>
+                          <td className="px-3 py-3 text-[11px] text-ink-3/60 whitespace-nowrap">
                             {new Date(row.created_at).toLocaleString(localeStr)}
                           </td>
                         </tr>
@@ -289,7 +293,7 @@ export default function HistoryTab({ lang }: Props) {
                         {/* Expanded: VBN fixes */}
                         {isExpanded && fixes.length > 0 && (
                           <tr key={`${row.id}-fixes`} className="border-b border-border">
-                            <td colSpan={4} className="px-8 py-4 bg-emerald-light/20">
+                            <td colSpan={5} className="px-8 py-4 bg-emerald-light/20">
                               <div className="divide-y divide-emerald/10">
                                 {fixes.map((f, i) => (
                                   <div key={i} className="flex items-center gap-3 py-1.5">
@@ -309,7 +313,7 @@ export default function HistoryTab({ lang }: Props) {
                         {/* Expanded: Photo upload items */}
                         {isExpanded && row.type === "photo_upload" && photoItems.length > 0 && (
                           <tr key={`${row.id}-photos`} className="border-b border-border">
-                            <td colSpan={4} className="px-8 py-4 bg-amber-50/40">
+                            <td colSpan={5} className="px-8 py-4 bg-amber-50/40">
                               <div className="divide-y divide-amber-100">
                                 {photoItems.map((item: PhotoUploadItem, i: number) => (
                                   <div key={i} className="flex items-center gap-3 py-1.5">

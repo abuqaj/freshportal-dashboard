@@ -62,6 +62,7 @@ export type HistoryRow = {
     success?: boolean;
     items?: PhotoUploadItem[];
   } | null;
+  username: string | null;
   created_at: string;
 };
 
