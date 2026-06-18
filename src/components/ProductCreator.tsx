@@ -135,6 +135,37 @@ export default function ProductCreator({ lang }: Props) {
   const nameChangeDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialFormName = useRef<string>("");
   const abortRef = useRef<AbortController | null>(null);
+  const aiCancelRef = useRef<{ ctrl: AbortController; token: string } | null>(null);
+
+  function cancelAi() {
+    if (!aiCancelRef.current) return;
+    const { ctrl, token } = aiCancelRef.current;
+    ctrl.abort();
+    aiCancelRef.current = null;
+    setAiLoading(false);
+    if (RAILWAY) fetch(`${RAILWAY}/cancel/${token}`, { method: "POST" }).catch(() => {});
+  }
+
+  async function callAiAnalyze(body: Record<string, unknown>): Promise<AIAnalysis | null> {
+    cancelAi();
+    const token = crypto.randomUUID();
+    const ctrl = new AbortController();
+    aiCancelRef.current = { ctrl, token };
+    try {
+      const r = await fetch(`${RAILWAY}/product-ai-analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, cancel_token: token }),
+        signal: ctrl.signal,
+      });
+      return (await r.json()) as AIAnalysis;
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") return null;
+      throw e;
+    } finally {
+      if (aiCancelRef.current?.token === token) aiCancelRef.current = null;
+    }
+  }
 
   useEffect(() => {
     function handleOutsideClick(e: MouseEvent) {
@@ -299,14 +330,10 @@ export default function ProductCreator({ lang }: Props) {
             setSearchStatus(null);
             if (results.length > 0 && RAILWAY) {
               setAiLoading(true);
-              fetch(`${RAILWAY}/product-ai-analyze`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name: createInput.trim(), candidates: results.slice(0, 6) }),
-              })
-                .then((r) => r.json())
-                .then((data: AIAnalysis) => { setAiAnalysis(data); setAiLoading(false); })
-                .catch(() => setAiLoading(false));
+              callAiAnalyze({ name: createInput.trim(), candidates: results.slice(0, 6) })
+                .then((data) => { if (data) setAiAnalysis(data); })
+                .catch(() => {})
+                .finally(() => setAiLoading(false));
             }
           } else if (event.type === "error") {
             throw new Error(event.message as string);
@@ -363,13 +390,9 @@ export default function ProductCreator({ lang }: Props) {
     setVbnForCreateChecking(true);
 
     if (RAILWAY && searchResults && searchResults.length > 0) {
-      fetch(`${RAILWAY}/product-ai-analyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, candidates: searchResults.slice(0, 6), preferred_vbn: templateVbn || null }),
-      })
-        .then(r => r.json())
-        .then((data: AIAnalysis) => {
+      callAiAnalyze({ name, candidates: searchResults.slice(0, 6), preferred_vbn: templateVbn || null })
+        .then((data: AIAnalysis | null) => {
+          if (!data) { setVbnForCreateChecking(false); return; }
           const code = data?.vbn?.code ?? null;
           setVbnForCreate(code ?? "");
           setVbnForCreateInfo(null);
@@ -667,7 +690,7 @@ export default function ProductCreator({ lang }: Props) {
               <p className="text-xs text-ink-3 animate-pulse border-t border-border pt-4 w-full max-w-xs">{searchStatus}</p>
             )}
             <button
-              onClick={() => { abortRef.current?.abort(); abortRef.current = null; }}
+              onClick={() => { abortRef.current?.abort(); abortRef.current = null; cancelAi(); }}
               className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
             >{t.common.cancel}</button>
           </div>
@@ -786,13 +809,9 @@ export default function ProductCreator({ lang }: Props) {
                         if (trimmed && RAILWAY && searchResults && searchResults.length > 0) {
                           setVbnForCreateChecking(true);
                           setVbnForCreateInfo(null);
-                          fetch(`${RAILWAY}/product-ai-analyze`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ name: trimmed, candidates: searchResults.slice(0, 6), preferred_vbn: vbnForCreate || null }),
-                          })
-                            .then(r => r.json())
-                            .then((data: AIAnalysis) => {
+                          callAiAnalyze({ name: trimmed, candidates: searchResults.slice(0, 6), preferred_vbn: vbnForCreate || null })
+                            .then((data: AIAnalysis | null) => {
+                              if (!data) { setVbnForCreateChecking(false); return; }
                               const code = data?.vbn?.code ?? null;
                               if (code) {
                                 setVbnForCreate(code);
@@ -969,7 +988,7 @@ export default function ProductCreator({ lang }: Props) {
               <p className="text-xs text-ink-3 animate-pulse border-t border-border pt-4 w-full max-w-xs">{createStatus}</p>
             )}
             <button
-              onClick={() => { abortRef.current?.abort(); abortRef.current = null; }}
+              onClick={() => { abortRef.current?.abort(); abortRef.current = null; cancelAi(); }}
               className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
             >{t.common.cancel}</button>
           </div>

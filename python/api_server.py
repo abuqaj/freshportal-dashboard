@@ -905,6 +905,20 @@ class AIAnalyzeRequest(BaseModel):
     name: str
     candidates: list[dict]
     preferred_vbn: str | None = None  # template's VBN — validate first, skip AI if valid
+    cancel_token: str | None = None  # UUID from frontend; POST /cancel/{token} to abort
+
+
+# Maps cancel_token → threading.Event; set the event to abort the Anthropic stream.
+_cancel_tokens: dict[str, threading.Event] = {}
+
+
+@app.post("/cancel/{token}")
+def cancel_task(token: str, _: dict = Depends(get_token_payload)):
+    """Signal the server-side Anthropic stream to stop immediately."""
+    event = _cancel_tokens.get(token)
+    if event:
+        event.set()
+    return {"ok": True, "found": token in _cancel_tokens}
 
 
 @app.post("/product-search")
@@ -1107,7 +1121,18 @@ def product_ai_analyze(req: AIAnalyzeRequest, _: dict = Depends(require_permissi
         )
         for c in req.candidates[:6]
     ]
-    result = ai_analyze_product(req.name, candidates, cfg)
+
+    cancel_event: threading.Event | None = None
+    if req.cancel_token:
+        cancel_event = threading.Event()
+        _cancel_tokens[req.cancel_token] = cancel_event
+
+    try:
+        result = ai_analyze_product(req.name, candidates, cfg, cancel_event=cancel_event)
+    finally:
+        if req.cancel_token:
+            _cancel_tokens.pop(req.cancel_token, None)
+
     if result is None:
         return {
             "duplicate": {"found": False, "reason": "AI analysis failed"},

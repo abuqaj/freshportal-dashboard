@@ -173,12 +173,16 @@ def ai_analyze_product(
     query: str,
     candidates: list["ProductMatch"],
     cfg: "Config",
+    cancel_event: "threading.Event | None" = None,
 ) -> dict | None:
     """
     Ask Claude Haiku to check for duplicates and suggest a VBN code.
 
-    Returns a dict with keys "duplicate" and "vbn", or None if API key missing.
+    Returns a dict with keys "duplicate" and "vbn", or None if API key missing or cancelled.
+    Uses streaming so that the Anthropic connection can be closed early on cancellation,
+    stopping token billing immediately.
     """
+    import threading as _threading
     if not cfg.anthropic_api_key:
         return None
 
@@ -198,12 +202,20 @@ def ai_analyze_product(
 
     try:
         client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
-        msg = client.messages.create(
+        parts: list[str] = []
+        # Stream the response so we can close the Anthropic connection early if cancelled.
+        # Exiting the `with` block mid-stream closes the HTTP connection and stops billing.
+        with client.messages.stream(
             model=cfg.anthropic_model,
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
-        )
-        text = msg.content[0].text.strip()
+        ) as stream:
+            for chunk in stream.text_stream:
+                if cancel_event and cancel_event.is_set():
+                    logger.info("ai_analyze_product: cancelled — closing Anthropic stream")
+                    return None  # __exit__ closes connection to Anthropic
+                parts.append(chunk)
+        text = "".join(parts).strip()
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if not m:
             logger.warning("AI response not JSON: %.200s", text)
