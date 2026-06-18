@@ -134,6 +134,7 @@ export default function ProductCreator({ lang }: Props) {
 
   const nameChangeDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialFormName = useRef<string>("");
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     function handleOutsideClick(e: MouseEvent) {
@@ -248,6 +249,9 @@ export default function ProductCreator({ lang }: Props) {
 
   async function handleProductSearch() {
     if (!createInput.trim() || !RAILWAY) return;
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     flushSync(() => {
       setSearching(true);
       setSearchResults(null);
@@ -267,6 +271,7 @@ export default function ProductCreator({ lang }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: createInput.trim(), lang }),
+        signal: ctrl.signal,
       });
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
@@ -309,7 +314,9 @@ export default function ProductCreator({ lang }: Props) {
         }
       }
     } catch (e: unknown) {
-      setSearchError(e instanceof Error ? e.message : String(e));
+      if (!(e instanceof Error && e.name === "AbortError")) {
+        setSearchError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       setSearching(false);
       setSearchStatus(null);
@@ -424,12 +431,16 @@ export default function ProductCreator({ lang }: Props) {
     const { templateId, templateName } = pendingCreate;
     const nameForLog = finalName.trim();
     const numberForLog = productNumber.trim();
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     flushSync(() => { setCreating(true); setCreateStatus(t.create.creating); setCreateResult(null); setPendingCreate(null); setColorDropdownOpen(false); });
     try {
       const res = await fetch(`${RAILWAY}/product-create/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ template_id: templateId, new_name: nameForLog, product_number: numberForLog || null, lang, vbn_code: vbnForCreate || null, color_id: colorForCreate || null }),
+        signal: ctrl.signal,
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
@@ -464,7 +475,9 @@ export default function ProductCreator({ lang }: Props) {
         }
       }
     } catch (e: unknown) {
-      setCreateResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+      if (!(e instanceof Error && e.name === "AbortError")) {
+        setCreateResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+      }
     } finally {
       setCreating(false);
       setCreateStatus(null);
@@ -653,6 +666,10 @@ export default function ProductCreator({ lang }: Props) {
             {searchStatus && (
               <p className="text-xs text-ink-3 animate-pulse border-t border-border pt-4 w-full max-w-xs">{searchStatus}</p>
             )}
+            <button
+              onClick={() => { abortRef.current?.abort(); abortRef.current = null; }}
+              className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
+            >{t.common.cancel}</button>
           </div>
         )}
 
@@ -951,6 +968,10 @@ export default function ProductCreator({ lang }: Props) {
             {createStatus && (
               <p className="text-xs text-ink-3 animate-pulse border-t border-border pt-4 w-full max-w-xs">{createStatus}</p>
             )}
+            <button
+              onClick={() => { abortRef.current?.abort(); abortRef.current = null; }}
+              className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
+            >{t.common.cancel}</button>
           </div>
         )}
 

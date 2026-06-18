@@ -39,6 +39,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   const [fixMessage, setFixMessage] = useState<string | null>(null);
   const [vbnNameCache, setVbnNameCache] = useState<Record<string, string>>({});
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const abortRef = useRef<AbortController | null>(null);
   const [suggestions, setSuggestions] = useState<{ product_id: string; items: { id: string; name: string }[] } | null>(null);
   const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number } | null>(null);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -126,12 +127,20 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
 
   const errorResults = results?.filter((r) => !r.excluded && r.status !== "OK") ?? [];
 
+  function cancelOp() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }
+
   async function handleCheck() {
     if (!vbnInput.trim()) return;
     if (!RAILWAY) {
       setCheckError("NEXT_PUBLIC_RAILWAY_API_URL not configured — redeploy Vercel after adding the env var.");
       return;
     }
+    cancelOp();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     flushSync(() => {
       setLoading(true);
       setCheckError(null);
@@ -146,6 +155,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ vbn: vbnInput.trim(), lang }),
+        signal: ctrl.signal,
       });
 
       if (!res.ok || !res.body) {
@@ -197,7 +207,9 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
         }
       }
     } catch (e: unknown) {
-      setCheckError(e instanceof Error ? e.message : String(e));
+      if (!(e instanceof Error && e.name === "AbortError")) {
+        setCheckError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       setLoading(false);
       setStatusMessage(null);
@@ -259,6 +271,9 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
 
     if (toFix.length === 0) { setFixMessage(t.vbn.nothingToFix); return; }
 
+    cancelOp();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     flushSync(() => { setFixing(true); setFixMessage(null); });
     try {
       const fixPayload = toFix.map(({ product_id, new_vbn }) => ({ product_id, new_vbn }));
@@ -266,6 +281,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fixes: fixPayload, lang }),
+        signal: ctrl.signal,
       });
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
@@ -302,7 +318,9 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
         }
       }
     } catch (e: unknown) {
-      setFixMessage(`${t.common.error}: ${e instanceof Error ? e.message : String(e)}`);
+      if (!(e instanceof Error && e.name === "AbortError")) {
+        setFixMessage(`${t.common.error}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
       setFixing(false);
     }
@@ -481,6 +499,12 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
                 ) : (
                   <div className="h-2 w-2/5 bg-emerald rounded-full animate-[progress-slide_1.4s_ease-in-out_infinite]" />
                 )}
+              </div>
+              <div className="flex justify-center pt-2">
+                <button
+                  onClick={cancelOp}
+                  className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
+                >{t.common.cancel}</button>
               </div>
             </div>
           </div>
@@ -685,6 +709,10 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
               <p className="text-xs text-ink-3 uppercase tracking-widest mb-2">{t.vbn.fixingTitle}</p>
               {fixMessage && <p className="text-sm text-ink-3 animate-pulse mt-2">{fixMessage}</p>}
             </div>
+            <button
+              onClick={cancelOp}
+              className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
+            >{t.common.cancel}</button>
           </div>
         )}
 

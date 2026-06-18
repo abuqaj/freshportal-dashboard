@@ -43,6 +43,7 @@ export default function PhotoUploader({ lang }: Props) {
 
   const scrollBodyRef = useRef<HTMLDivElement>(null);
   const hoverTimer    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef      = useRef<AbortController | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewPos, setPreviewPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
@@ -70,6 +71,8 @@ export default function PhotoUploader({ lang }: Props) {
   }
 
   function resetPhotoUploader() {
+    abortRef.current?.abort();
+    abortRef.current = null;
     reviewItems.forEach(i => { try { URL.revokeObjectURL(i.thumbnailUrl); } catch { /* ok */ } });
     setPhotoPhase("idle");
     setPhotoSessionId(null);
@@ -82,6 +85,9 @@ export default function PhotoUploader({ lang }: Props) {
 
   async function analyzePhotos(fileList: FileList) {
     if (!RAILWAY || fileList.length === 0) return;
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setPhotoAnalyzing(true);
     setPhotoPhase("analyzing");
     setPhotoError(null);
@@ -95,7 +101,7 @@ export default function PhotoUploader({ lang }: Props) {
     });
 
     try {
-      const res = await fetch(`${RAILWAY}/photo-upload/analyze/stream`, { method: "POST", body: fd });
+      const res = await fetch(`${RAILWAY}/photo-upload/analyze/stream`, { method: "POST", body: fd, signal: ctrl.signal });
       if (!res.ok || !res.body) {
         const errData = await res.json().catch(() => ({}));
         throw new Error((errData as { detail?: string }).detail ?? `HTTP ${res.status}`);
@@ -157,8 +163,12 @@ export default function PhotoUploader({ lang }: Props) {
         setPhotoPhase("review");
       }
     } catch (e: unknown) {
-      setPhotoError(e instanceof Error ? e.message : String(e));
-      setPhotoPhase("idle");
+      if (e instanceof Error && e.name === "AbortError") {
+        setPhotoPhase("idle");
+      } else {
+        setPhotoError(e instanceof Error ? e.message : String(e));
+        setPhotoPhase("idle");
+      }
       Object.values(thumbMap).forEach(u => URL.revokeObjectURL(u));
     } finally {
       setPhotoAnalyzing(false);
@@ -174,6 +184,9 @@ export default function PhotoUploader({ lang }: Props) {
     if (confirmed.length === 0) return;
 
     let localResults: UploadResultItem[] = confirmed.map(c => ({ filename: c.filename, product_name: c.product_name, status: "pending" as const }));
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setPhotoPhase("uploading");
     setUploadResults(localResults);
     setPhotoStatusMsg(t.photo.connectingFP);
@@ -183,6 +196,7 @@ export default function PhotoUploader({ lang }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: photoSessionId, confirmed, lang }),
+        signal: ctrl.signal,
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
@@ -229,8 +243,10 @@ export default function PhotoUploader({ lang }: Props) {
         }
       }
     } catch (e: unknown) {
-      setPhotoError(e instanceof Error ? e.message : String(e));
-      setPhotoPhase("review");
+      if (!(e instanceof Error && e.name === "AbortError")) {
+        setPhotoError(e instanceof Error ? e.message : String(e));
+        setPhotoPhase("review");
+      }
     }
   }
 
@@ -301,6 +317,10 @@ export default function PhotoUploader({ lang }: Props) {
           <div className="flex flex-col items-center justify-center gap-4 py-14">
             <Spinner className="h-7 w-7 text-emerald" />
             <p className="text-sm text-ink-3">{photoStatusMsg ?? t.photo.analyzing}</p>
+            <button
+              onClick={resetPhotoUploader}
+              className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
+            >{t.common.cancel}</button>
           </div>
         )}
 
@@ -453,7 +473,11 @@ export default function PhotoUploader({ lang }: Props) {
           <div className="border border-border rounded-2xl overflow-hidden card-enter">
             <div className="px-5 py-3.5 border-b border-border bg-ground/60 flex items-center gap-2.5">
               <Spinner className="h-4 w-4 text-emerald flex-shrink-0" />
-              <p className="text-sm font-medium text-ink">{photoStatusMsg ?? t.photo.uploadingStatus}</p>
+              <p className="text-sm font-medium text-ink flex-1">{photoStatusMsg ?? t.photo.uploadingStatus}</p>
+              <button
+                onClick={resetPhotoUploader}
+                className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-3 py-1 bg-surface hover:bg-ember-light/50 transition-colors flex-shrink-0"
+              >{t.common.cancel}</button>
             </div>
             <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-320px)]">
               {uploadResults.map(r => (
