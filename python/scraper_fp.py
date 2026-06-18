@@ -513,6 +513,13 @@ def _detect_columns(page: Page) -> dict[str, int]:
 def _fix_inline(page: Page, product_id: str, new_vbn: str, vbn_col: int, cfg: Config) -> bool:
     url = f"{cfg.freshportal_url}/product/index/index/?1=1&{_id_filter(cfg, product_id)}"
     page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+
+    # Re-login if session expired after previous fix
+    if "login" in page.url.lower():
+        logger.warning("Session expired for id=%s — re-logging in", product_id)
+        _login(page, cfg)
+        page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+
     try:
         page.wait_for_selector("table tbody tr", timeout=10_000)
     except Exception:
@@ -520,7 +527,7 @@ def _fix_inline(page: Page, product_id: str, new_vbn: str, vbn_col: int, cfg: Co
 
     rows = page.query_selector_all("table tbody tr")
     if not rows:
-        logger.error("Product not found for id=%s", product_id)
+        logger.error("Product not found for id=%s (url=%s)", product_id, page.url)
         return False
 
     cells = rows[0].query_selector_all("td")
@@ -551,8 +558,22 @@ def _fix_inline(page: Page, product_id: str, new_vbn: str, vbn_col: int, cfg: Co
     input_el.press("Control+a")
     input_el.fill(new_vbn)
     input_el.press("Enter")
-    time.sleep(1)
+    # Wait for Angular to finish saving before navigating away
+    try:
+        page.wait_for_load_state("networkidle", timeout=6_000)
+    except Exception:
+        time.sleep(2)
     logger.info("Saved VBN for id=%s -> %s", product_id, new_vbn)
+    # Return to the main product list to ensure a clean state for the next fix
+    try:
+        page.goto(
+            f"{cfg.freshportal_url}/product/index/index/?1=1",
+            wait_until="load",
+            timeout=cfg.request_timeout,
+        )
+        page.wait_for_selector("table tbody tr", timeout=8_000)
+    except Exception:
+        time.sleep(1)
     return True
 
 
