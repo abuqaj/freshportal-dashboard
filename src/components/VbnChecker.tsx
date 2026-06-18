@@ -420,6 +420,11 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
         {/* ── STEP 1: SEARCH ── */}
         {step === "search" && (
           <div className="p-6 space-y-4">
+            <div>
+              <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.vbnChecker}</h2>
+              <p className="text-sm text-ink-3 mt-1">{t.vbn.description}</p>
+            </div>
+
             <AutoVbnCard />
 
             <div className="bg-surface rounded-2xl border border-border p-5 shadow-sm">
