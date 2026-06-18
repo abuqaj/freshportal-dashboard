@@ -38,7 +38,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         })
           .setProtectedHeader({ alg: "HS256" })
           .setIssuedAt()
-          .setExpirationTime("8h")
+          .setExpirationTime("2h")
           .sign(secret)
 
         return {
@@ -68,5 +68,5 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   pages: {
     signIn: "/login",
   },
-  session: { strategy: "jwt" },
+  session: { strategy: "jwt", maxAge: 2 * 60 * 60 },
 })
