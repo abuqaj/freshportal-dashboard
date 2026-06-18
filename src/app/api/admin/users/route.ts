@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import type { Session } from "next-auth"
 import { auth } from "@/lib/auth"
 import {
-  listUsers, createUser, updateUserPassword,
+  listUsers, createUser, updateUserPassword, updateUsername,
   toggleUserActive, deleteUser, setUserGroups, unlockUser,
 } from "@/lib/auth-db"
 
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   const deny = requireAdmin(session)
   if (deny) return deny
 
-  const { action, userId, username, password, groupIds, isActive } = await req.json()
+  const { action, userId, username, newUsername, password, groupIds, isActive } = await req.json()
 
   try {
     switch (action) {
@@ -34,6 +34,11 @@ export async function POST(req: NextRequest) {
         if (!username || !password) return NextResponse.json({ error: "Username and password required" }, { status: 400 })
         const user = await createUser(username, password, groupIds ?? [])
         return NextResponse.json({ ok: true, user })
+      }
+      case "updateUsername": {
+        if (!userId || !newUsername) return NextResponse.json({ error: "userId and newUsername required" }, { status: 400 })
+        await updateUsername(userId, newUsername)
+        return NextResponse.json({ ok: true })
       }
       case "changePassword": {
         if (!userId || !password) return NextResponse.json({ error: "userId and password required" }, { status: 400 })

@@ -75,17 +75,19 @@ export async function ensureAuthTables() {
     await sql`INSERT INTO auth_permissions (name) VALUES (${perm}) ON CONFLICT (name) DO NOTHING`
   }
 
-  // Seed default groups
+  // Seed default groups — only insert permissions when the group is first created
   for (const [groupName, groupPerms] of Object.entries(DEFAULT_GROUPS)) {
-    await sql`INSERT INTO auth_groups (name) VALUES (${groupName}) ON CONFLICT (name) DO NOTHING`
-    const { rows: [group] } = await sql`SELECT id FROM auth_groups WHERE name = ${groupName}`
-    if (group) {
-      for (const perm of groupPerms) {
-        await sql`
-          INSERT INTO auth_group_permissions (group_id, permission_id)
-          SELECT ${group.id}, id FROM auth_permissions WHERE name = ${perm}
-          ON CONFLICT DO NOTHING
-        `
+    const inserted = await sql`INSERT INTO auth_groups (name) VALUES (${groupName}) ON CONFLICT (name) DO NOTHING`
+    if ((inserted.rowCount ?? 0) > 0) {
+      const { rows: [group] } = await sql`SELECT id FROM auth_groups WHERE name = ${groupName}`
+      if (group) {
+        for (const perm of groupPerms) {
+          await sql`
+            INSERT INTO auth_group_permissions (group_id, permission_id)
+            SELECT ${group.id}, id FROM auth_permissions WHERE name = ${perm}
+            ON CONFLICT DO NOTHING
+          `
+        }
       }
     }
   }
@@ -203,6 +205,10 @@ export async function createUser(username: string, password: string, groupIds: n
     `
   }
   return user
+}
+
+export async function updateUsername(userId: number, newUsername: string): Promise<void> {
+  await sql`UPDATE auth_users SET username = ${newUsername} WHERE id = ${userId}`
 }
 
 export async function updateUserPassword(userId: number, password: string) {
