@@ -206,6 +206,11 @@ async def _on_startup() -> None:
 
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
+if _allowed_origins == ["*"]:
+    log.warning(
+        "ALLOWED_ORIGINS is not set — CORS is open to all origins. "
+        "Set ALLOWED_ORIGINS=https://your-app.vercel.app on Railway."
+    )
 
 app.add_middleware(
     CORSMiddleware,

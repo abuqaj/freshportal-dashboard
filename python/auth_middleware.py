@@ -28,12 +28,19 @@ def _dev_payload() -> dict:
     return {"sub": "dev", "username": "dev", "permissions": _ALL_PERMS}
 
 
+import logging as _logging
+_mw_log = _logging.getLogger(__name__)
+
 def get_token_payload(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict:
     """Verify JWT and return payload. Raises 401 if missing/invalid."""
     secret = _secret()
     if not secret:
+        _mw_log.warning(
+            "AUTH_SECRET is not set — running in INSECURE dev mode (all permissions granted). "
+            "Set AUTH_SECRET on Railway to enable authentication."
+        )
         return _dev_payload()
     if not credentials:
         raise HTTPException(status_code=401, detail="Authentication required")

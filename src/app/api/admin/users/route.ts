@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
       case "delete": {
         if (!userId) return NextResponse.json({ error: "userId required" }, { status: 400 })
         // Prevent deleting own account
-        if (String(userId) === session?.user?.name) return NextResponse.json({ error: "Cannot delete own account" }, { status: 400 })
+        if (String(userId) === session?.user?.id) return NextResponse.json({ error: "Cannot delete own account" }, { status: 400 })
         await deleteUser(userId)
         return NextResponse.json({ ok: true })
       }

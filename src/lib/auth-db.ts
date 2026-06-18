@@ -1,4 +1,4 @@
-import { sql } from "@vercel/postgres"
+import { sql, db } from "@vercel/postgres"
 import bcrypt from "bcryptjs"
 
 export interface AuthUser {
@@ -227,12 +227,22 @@ export async function deleteUser(userId: number) {
 }
 
 export async function setUserGroups(userId: number, groupIds: number[]) {
-  await sql`DELETE FROM auth_user_groups WHERE user_id = ${userId}`
-  for (const gid of groupIds) {
-    await sql`
-      INSERT INTO auth_user_groups (user_id, group_id) VALUES (${userId}, ${gid})
-      ON CONFLICT DO NOTHING
-    `
+  const client = await db.connect()
+  try {
+    await client.sql`BEGIN`
+    await client.sql`DELETE FROM auth_user_groups WHERE user_id = ${userId}`
+    for (const gid of groupIds) {
+      await client.sql`
+        INSERT INTO auth_user_groups (user_id, group_id) VALUES (${userId}, ${gid})
+        ON CONFLICT DO NOTHING
+      `
+    }
+    await client.sql`COMMIT`
+  } catch (e) {
+    await client.sql`ROLLBACK`
+    throw e
+  } finally {
+    client.release()
   }
 }
 
