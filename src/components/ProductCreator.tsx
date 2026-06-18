@@ -608,10 +608,6 @@ export default function ProductCreator({ lang }: Props) {
         {/* ── STEP 1: SEARCH ── */}
         {step === "search" && (
           <div className="p-10 flex flex-col items-center gap-8 min-h-72">
-            <div className="text-center">
-              <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.newProducts}</h2>
-              <p className="text-sm text-ink-3 mt-2 max-w-md">{t.create.description}</p>
-            </div>
             <div className="w-full max-w-md">
               <div className="flex gap-2.5">
                 <input

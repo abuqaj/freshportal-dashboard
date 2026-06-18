@@ -165,8 +165,7 @@ export default function HistoryTab({ lang }: Props) {
       {/* ── Header ── */}
       <div className="px-6 py-5 border-b border-border flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-base font-semibold text-ink">{t.history.title}</h2>
-          <p className="text-xs text-ink-3 mt-0.5">{t.history.description}</p>
+          <p className="text-sm text-ink-3">{t.history.description}</p>
         </div>
         <button
           onClick={handleRefresh}

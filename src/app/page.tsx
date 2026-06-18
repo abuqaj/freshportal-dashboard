@@ -272,14 +272,17 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }
 }
 
 /* ─── Hub home screen ─── */
-function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, isAdmin }: {
+function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permissions }: {
   lang: Lang; setLang: (l: Lang) => void; t: (typeof translations)[Lang];
   autoEnabled: boolean | null; productCount: number | null; onSelect: (tab: Tab) => void;
-  isAdmin: boolean;
+  permissions: string[];
 }) {
-  const tiles = [
+  const isAdmin = permissions.includes("admin:manage");
+
+  const allTiles: { id: Tab; perm: string; label: string; desc: string; gradient: string; stat?: string; statColor?: string; icon: React.ReactNode }[] = [
     {
-      id: "vbn" as Tab,
+      id: "vbn",
+      perm: "vbn:check",
       label: t.nav.vbnChecker,
       desc: t.hub.vbnDesc,
       gradient: "bg-gradient-to-br from-emerald to-[#0D5430]",
@@ -294,7 +297,8 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, isAdmin }:
       ),
     },
     {
-      id: "create" as Tab,
+      id: "create",
+      perm: "products:create",
       label: t.nav.newProducts,
       desc: t.hub.createDesc,
       gradient: "bg-gradient-to-br from-ember to-[#B83220]",
@@ -308,7 +312,8 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, isAdmin }:
       ),
     },
     {
-      id: "photos" as Tab,
+      id: "photos",
+      perm: "photos:upload",
       label: t.nav.photoUploader,
       desc: t.hub.photosDesc,
       gradient: "bg-gradient-to-br from-[#145E35] to-[#073D22]",
@@ -324,7 +329,8 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, isAdmin }:
       ),
     },
     {
-      id: "history" as Tab,
+      id: "history",
+      perm: "admin:manage",
       label: t.nav.history,
       desc: t.hub.historyDesc,
       gradient: "bg-gradient-to-br from-[#C43320] to-[#8B1E14]",
@@ -337,8 +343,9 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, isAdmin }:
         </svg>
       ),
     },
-    ...(isAdmin ? [{
-      id: "admin" as Tab,
+    {
+      id: "admin",
+      perm: "admin:manage",
       label: "Admin",
       desc: "Manage users and access control",
       gradient: "bg-gradient-to-br from-[#374151] to-[#111827]",
@@ -352,15 +359,20 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, isAdmin }:
           <path d="M19 5.5v3M17.5 7h3" stroke="#374151" strokeWidth="1.2" strokeLinecap="round"/>
         </svg>
       ),
-    }] : []),
+    },
   ];
+
+  const tiles = allTiles.filter(tile => permissions.includes(tile.perm));
+
+  const colsClass = tiles.length <= 2 ? "grid-cols-2" : "grid-cols-3";
+  const maxWClass = tiles.length <= 2 ? "max-w-3xl" : "max-w-5xl";
 
   return (
     <div className="hub-enter flex-1 flex flex-col items-center justify-center px-8 py-10 bg-ground overflow-y-auto">
-      <div className="w-full max-w-3xl">
+      <div className={`w-full ${maxWClass}`}>
         <h1 className="text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.title}</h1>
         <p className="text-sm text-ink-3 mb-10">{t.hub.subtitle}</p>
-        <div className="grid grid-cols-2 gap-5">
+        <div className={`grid ${colsClass} gap-5`}>
           {tiles.map((tile, i) => (
             <Tile
               key={tile.id}
@@ -402,7 +414,6 @@ export default function Dashboard() {
   const [railwayOnline, setRailwayOnline] = useState<boolean | null>(null);
 
   const permissions = session?.user?.permissions ?? [];
-  const isAdmin = permissions.includes("admin:manage");
   const username = session?.user?.name ?? undefined;
 
   useEffect(() => {
@@ -457,7 +468,7 @@ export default function Dashboard() {
             autoEnabled={autoEnabled}
             productCount={productCount}
             onSelect={(t) => setTab(t)}
-            isAdmin={isAdmin}
+            permissions={permissions}
           />
         ) : (
           <ModuleCard
