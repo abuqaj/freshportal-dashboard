@@ -242,3 +242,33 @@ export async function listGroups(): Promise<AuthGroup[]> {
   `
   return rows as AuthGroup[]
 }
+
+export async function createGroup(name: string, description: string, permissionNames: string[]): Promise<AuthGroup> {
+  const { rows: [group] } = await sql`
+    INSERT INTO auth_groups (name, description) VALUES (${name}, ${description}) RETURNING id, name, description
+  `
+  for (const perm of permissionNames) {
+    await sql`
+      INSERT INTO auth_group_permissions (group_id, permission_id)
+      SELECT ${group.id}, id FROM auth_permissions WHERE name = ${perm}
+      ON CONFLICT DO NOTHING
+    `
+  }
+  return group as AuthGroup
+}
+
+export async function updateGroup(groupId: number, description: string, permissionNames: string[]): Promise<void> {
+  await sql`UPDATE auth_groups SET description = ${description} WHERE id = ${groupId}`
+  await sql`DELETE FROM auth_group_permissions WHERE group_id = ${groupId}`
+  for (const perm of permissionNames) {
+    await sql`
+      INSERT INTO auth_group_permissions (group_id, permission_id)
+      SELECT ${groupId}, id FROM auth_permissions WHERE name = ${perm}
+      ON CONFLICT DO NOTHING
+    `
+  }
+}
+
+export async function deleteGroup(groupId: number): Promise<void> {
+  await sql`DELETE FROM auth_groups WHERE id = ${groupId}`
+}
