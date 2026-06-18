@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useSession } from "next-auth/react";
+import { useSession, signOut } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
 import { SyncStatus } from "@/lib/types";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
@@ -205,6 +205,12 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
             {username}
           </span>
         )}
+        <button
+          onClick={() => signOut({ callbackUrl: "/login" })}
+          className="h-7 px-2.5 rounded-lg text-[11px] font-medium text-ink-3 hover:text-ink border border-border bg-muted hover:bg-border/40 transition-colors"
+        >
+          Sign out
+        </button>
         <LanguageSwitcher lang={lang} setLang={setLang}/>
       </div>
     </div>
