@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { SessionProvider } from "next-auth/react";
 import FetchAuthPatch from "@/components/FetchAuthPatch";
+import { auth } from "@/lib/auth";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -15,11 +16,12 @@ export const metadata: Metadata = {
   description: "VBN Checker & Product Management for FreshPortal",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const session = await auth();
   return (
     <html lang="pl" className={inter.variable}>
       <body className="font-sans antialiased">
-        <SessionProvider>
+        <SessionProvider session={session}>
           <FetchAuthPatch />
           {children}
         </SessionProvider>
