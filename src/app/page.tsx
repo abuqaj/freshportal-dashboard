@@ -222,7 +222,7 @@ const MODULE_WIDTH: Record<Tab, string> = {
   vbn:     "max-w-4xl",
   history: "max-w-4xl",
   create:  "max-w-3xl",
-  photos:  "max-w-2xl",
+  photos:  "max-w-5xl",
   admin:   "max-w-3xl",
 };
 

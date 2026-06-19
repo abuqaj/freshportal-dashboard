@@ -372,9 +372,10 @@ export default function PhotoUploader({ lang }: Props) {
                         </button>
                       </div>
 
-                      {/* Body: photo + matches — blocked when row is deselected */}
-                      <div className={`flex gap-3 pl-7 ${!item.approved ? "pointer-events-none" : ""}`}>
-                        {/* Thumbnail */}
+                      {/* Body: 3-column grid — thumbnail | selected | alternatives */}
+                      <div className={`grid grid-cols-[56px_1fr_1fr] gap-x-4 pl-7 ${!item.approved ? "pointer-events-none" : ""}`}>
+
+                        {/* Col 1: Thumbnail */}
                         <div
                           className="w-14 h-14 rounded-xl overflow-hidden bg-muted flex-shrink-0 ring-1 ring-border"
                           onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
@@ -388,17 +389,16 @@ export default function PhotoUploader({ lang }: Props) {
                           }
                         </div>
 
-                        {/* Matches section */}
-                        <div className="flex-1 min-w-0">
+                        {/* Col 2: Selected matches — full names */}
+                        <div className="min-w-0">
                           <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-1.5">{t.photo.foundMatches}</p>
-
                           {item.selected.length > 0 ? (
-                            <div className="rounded-lg border border-emerald/25 bg-emerald-light/20 overflow-hidden mb-2">
+                            <div className="rounded-lg border border-emerald/25 bg-emerald-light/20 overflow-hidden">
                               {item.selected.map((p, pi) => (
-                                <div key={p.product_id} className={`flex items-center gap-2 px-2.5 py-1.5 group ${pi > 0 ? "border-t border-emerald/15" : ""}`}>
-                                  <span className="text-[9px] font-bold text-emerald/50 w-3 text-center flex-shrink-0 tabular-nums">{pi + 1}</span>
-                                  <span className="text-xs font-medium text-emerald-dark flex-1 truncate">{p.name}</span>
-                                  <span className={`text-[10px] font-semibold flex-shrink-0 mr-1 ${
+                                <div key={p.product_id} className={`flex items-start gap-2 px-2.5 py-1.5 group ${pi > 0 ? "border-t border-emerald/15" : ""}`}>
+                                  <span className="text-[9px] font-bold text-emerald/50 w-3 text-center flex-shrink-0 tabular-nums mt-0.5">{pi + 1}</span>
+                                  <span className="text-xs font-medium text-emerald-dark flex-1 leading-snug">{p.name}</span>
+                                  <span className={`text-[10px] font-semibold flex-shrink-0 mt-0.5 mr-1 ${
                                     p.similarity >= 0.9 ? "text-emerald/70" : p.similarity >= 0.6 ? "text-amber-500/80" : "text-ember/70"
                                   }`}>{Math.round(p.similarity * 100)}%</span>
                                   <button
@@ -408,7 +408,7 @@ export default function PhotoUploader({ lang }: Props) {
                                       alternatives: [p, ...r.alternatives],
                                       approved: r.selected.length > 1,
                                     }))}
-                                    className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-ink-3 hover:text-ember"
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-ink-3 hover:text-ember mt-0.5"
                                   >
                                     <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
                                   </button>
@@ -416,12 +416,15 @@ export default function PhotoUploader({ lang }: Props) {
                               ))}
                             </div>
                           ) : (
-                            <p className="text-xs text-ink-3 italic mb-2">{t.photo.noMatch}</p>
+                            <p className="text-xs text-ink-3 italic">{t.photo.noMatch}</p>
                           )}
+                        </div>
 
-                          {item.alternatives.length > 0 && (
-                            <div className="flex flex-wrap gap-1.5 items-center">
-                              <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className="text-ink-3 flex-shrink-0"><path d="M4 1v6M1 4h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                        {/* Col 3: Alternative suggestions — full names, list layout */}
+                        <div className="min-w-0 border-l border-border pl-4">
+                          <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-1.5">{t.photo.suggestions}</p>
+                          {item.alternatives.length > 0 ? (
+                            <div className="flex flex-col gap-1">
                               {item.alternatives.map(alt => (
                                 <button
                                   key={alt.product_id}
@@ -431,17 +434,21 @@ export default function PhotoUploader({ lang }: Props) {
                                     alternatives: r.alternatives.filter(a => a.product_id !== alt.product_id),
                                     approved: true,
                                   }))}
-                                  className="flex items-center gap-1.5 text-[11px] text-ink-3 hover:text-ink bg-ground hover:bg-muted border border-border rounded-md px-2 py-1 transition-colors"
+                                  className="flex items-start gap-2 text-left text-[11px] text-ink-3 hover:text-ink bg-ground hover:bg-muted border border-border rounded-md px-2.5 py-1.5 transition-colors group w-full"
                                 >
-                                  <span className="truncate max-w-[160px]">{alt.name}</span>
-                                  <span className={`text-[10px] font-semibold flex-shrink-0 ${
+                                  <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className="text-ink-3 flex-shrink-0 mt-0.5 group-hover:text-emerald transition-colors"><path d="M4 1v6M1 4h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                                  <span className="flex-1 leading-snug">{alt.name}</span>
+                                  <span className={`text-[10px] font-semibold flex-shrink-0 mt-0.5 ${
                                     alt.similarity >= 0.8 ? "text-emerald" : alt.similarity >= 0.5 ? "text-amber-500" : "text-ember"
                                   }`}>{Math.round(alt.similarity * 100)}%</span>
                                 </button>
                               ))}
                             </div>
+                          ) : (
+                            <p className="text-xs text-ink-3 italic">{t.photo.noSuggestions}</p>
                           )}
                         </div>
+
                       </div>
                     </div>
                   </div>

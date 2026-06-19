@@ -168,6 +168,8 @@ const en = {
     uploadMore:         "Upload more photos",
     connectingFP:       "Connecting to FreshPortal…",
     foundMatches:       "Found matches",
+    suggestions:        "Suggestions",
+    noSuggestions:      "No other suggestions",
     reviewInstruction:  "Review matched photos — adjust or remove assignments, then upload to FreshPortal.",
   },
   hub: {
@@ -389,6 +391,8 @@ const nl: typeof en = {
     uploadMore:         "Meer foto's uploaden",
     connectingFP:       "Verbinding maken met FreshPortal…",
     foundMatches:       "Gevonden overeenkomsten",
+    suggestions:        "Suggesties",
+    noSuggestions:      "Geen andere suggesties",
     reviewInstruction:  "Controleer de fotokoppelingen — pas aan of verwijder waar nodig, en upload daarna naar FreshPortal.",
   },
   hub: {
@@ -610,6 +614,8 @@ const pl: typeof en = {
     uploadMore:         "Uploaduj więcej zdjęć",
     connectingFP:       "Łączę się z FreshPortal…",
     foundMatches:       "Znalezione dopasowania",
+    suggestions:        "Sugestie",
+    noSuggestions:      "Brak innych sugestii",
     reviewInstruction:  "Sprawdź przypisania zdjęć — dostosuj lub usuń dopasowania, następnie uploaduj do FreshPortal.",
   },
   hub: {
@@ -831,6 +837,8 @@ const es: typeof en = {
     uploadMore:         "Subir más fotos",
     connectingFP:       "Conectando con FreshPortal…",
     foundMatches:       "Coincidencias encontradas",
+    suggestions:        "Sugerencias",
+    noSuggestions:      "Sin otras sugerencias",
     reviewInstruction:  "Revisa las asignaciones de fotos — ajusta o elimina coincidencias, luego sube a FreshPortal.",
   },
   hub: {
