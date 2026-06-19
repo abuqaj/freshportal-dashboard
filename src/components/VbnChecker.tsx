@@ -73,7 +73,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
     finally { setAutoStatusLoaded(true); }
   }, [onAutoVbnChange]);
 
-  useState(() => { loadVbnAutoStatus(); });
+  useEffect(() => { loadVbnAutoStatus(); }, []);
 
   const toggleVbnAuto = useCallback(async (enabled: boolean) => {
     if (!RAILWAY) return;

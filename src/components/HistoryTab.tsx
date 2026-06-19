@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { translations, Lang } from "@/lib/i18n";
 import { HistoryRow, SyncRun, AutoVbnRun, FixEntry, PhotoUploadItem } from "@/lib/types";
 
@@ -148,7 +148,7 @@ export default function HistoryTab({ lang }: Props) {
     if (tab === "auto" && autoVbnHistory === null)  loadAutoVbnHistory();
   }
 
-  useState(() => { loadHistory(); loadSyncHistory(); loadAutoVbnHistory(); });
+  useEffect(() => { loadHistory(); loadSyncHistory(); loadAutoVbnHistory(); }, []);
 
   function handleRefresh() {
     if (historySubTab === "ops")   loadHistory();
