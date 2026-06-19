@@ -510,29 +510,49 @@ def _detect_columns(page: Page) -> dict[str, int]:
     return col_map
 
 
-def _fix_inline(page: Page, product_id: str, new_vbn: str, vbn_col: int, cfg: Config) -> bool:
-    url = f"{cfg.freshportal_url}/product/index/index/?1=1&{_id_filter(cfg, product_id)}"
-    page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+def _fix_inline(
+    page: Page,
+    product_id: str,
+    new_vbn: str,
+    vbn_col: int,
+    cfg: Config,
+    on_error=None,
+) -> bool:
+    def _err(msg: str) -> None:
+        logger.error(msg)
+        if on_error:
+            on_error(msg)
 
-    # Re-login if session expired after previous fix
-    if "login" in page.url.lower():
-        logger.warning("Session expired for id=%s — re-logging in", product_id)
-        _login(page, cfg)
+    primary_filter = _id_filter(cfg, product_id)
+    alt_filter = f"id={product_id}" if primary_filter.startswith("external_id=") else f"external_id={product_id}"
+
+    def _load_with_filter(url_filter: str) -> bool:
+        """Navigate to product list filtered by url_filter; returns True if rows found."""
+        url = f"{cfg.freshportal_url}/product/index/index/?1=1&{url_filter}"
         page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+        if "login" in page.url.lower():
+            logger.warning("Session expired for id=%s — re-logging in", product_id)
+            _login(page, cfg)
+            page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+        try:
+            page.wait_for_selector("table tbody tr", timeout=10_000)
+        except Exception:
+            time.sleep(3)
+        return bool(page.query_selector_all("table tbody tr"))
 
-    try:
-        page.wait_for_selector("table tbody tr", timeout=10_000)
-    except Exception:
-        time.sleep(3)
+    found = _load_with_filter(primary_filter)
+    if not found:
+        logger.info("id=%s not found with %s — trying %s", product_id, primary_filter, alt_filter)
+        found = _load_with_filter(alt_filter)
 
     rows = page.query_selector_all("table tbody tr")
     if not rows:
-        logger.error("Product not found for id=%s (url=%s)", product_id, page.url)
+        _err(f"Product not found for id={product_id} (tried both id= and external_id= filters)")
         return False
 
     cells = rows[0].query_selector_all("td")
     if len(cells) <= vbn_col:
-        logger.error("VBN column %d out of range for id=%s", vbn_col, product_id)
+        _err(f"VBN column {vbn_col} out of range (only {len(cells)} cols) for id={product_id}")
         return False
 
     vbn_cell = cells[vbn_col]
@@ -552,7 +572,7 @@ def _fix_inline(page: Page, product_id: str, new_vbn: str, vbn_col: int, cfg: Co
                 break
 
     if not input_el:
-        logger.error("VBN cell not editable for id=%s (data-can-edit=0?)", product_id)
+        _err(f"VBN cell not editable for id={product_id} (col={vbn_col}, data-can-edit=0?)")
         return False
 
     input_el.press("Control+a")
@@ -607,16 +627,30 @@ def fix_vbn_batch(
                 wait_until="load",
                 timeout=cfg.request_timeout,
             )
-            time.sleep(1.5)
+            # Wait for Angular to finish rendering table headers before detecting columns.
+            try:
+                page.wait_for_selector("table thead th, table thead td", timeout=10_000)
+            except Exception:
+                pass
+            time.sleep(0.5)
             col_map = _detect_columns(page)
             vbn_col = col_map.get("vbn_number", 8)
+            logger.info("fix_vbn_batch: detected vbn_col=%d col_map=%s", vbn_col, col_map)
             for i, (product_id, new_vbn) in enumerate(fixes, 1):
                 _status(_msg(lang, "fix_product", i=i, total=total, product_id=product_id, new_vbn=new_vbn))
+                fix_errors: list[str] = []
                 try:
-                    results[product_id] = _fix_inline(page, product_id, new_vbn, vbn_col, cfg)
+                    results[product_id] = _fix_inline(
+                        page, product_id, new_vbn, vbn_col, cfg,
+                        on_error=fix_errors.append,
+                    )
                 except Exception as exc:
                     logger.error("Error fixing id=%s: %s", product_id, exc)
+                    fix_errors.append(f"Exception: {exc}")
                     results[product_id] = False
+                if fix_errors and on_status:
+                    for e in fix_errors:
+                        on_status(f"  ↳ {e}")
         finally:
             context.close()
             browser.close()

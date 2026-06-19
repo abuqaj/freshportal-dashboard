@@ -121,7 +121,7 @@ def _auto_vbn_check() -> None:
 
         if to_fix:
             log.info("Auto VBN check: fixing %d products", len(to_fix))
-            fix_results = fix_vbn_batch(to_fix, cfg)
+            fix_results = fix_vbn_batch(to_fix, cfg, on_status=messages.append)
             result_map = {r["product_id"]: r for r in data["results"]}
             for product_id, new_vbn in to_fix:
                 ok = fix_results.get(product_id, False)
