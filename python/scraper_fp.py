@@ -584,16 +584,6 @@ def _fix_inline(
     except Exception:
         time.sleep(2)
     logger.info("Saved VBN for id=%s -> %s", product_id, new_vbn)
-    # Return to the main product list to ensure a clean state for the next fix
-    try:
-        page.goto(
-            f"{cfg.freshportal_url}/product/index/index/?1=1",
-            wait_until="load",
-            timeout=cfg.request_timeout,
-        )
-        page.wait_for_selector("table tbody tr", timeout=8_000)
-    except Exception:
-        time.sleep(1)
     return True
 
 
@@ -603,7 +593,8 @@ def fix_vbn_batch(
     on_status=None,
     lang: str = "en",
 ) -> dict[str, bool]:
-    """Apply VBN fixes using a single Playwright browser session."""
+    """Apply VBN fixes. Each product runs in its own Playwright browser instance
+    to prevent RAM accumulation / page-crash on constrained containers (Railway)."""
     from i18n import msg as _msg
 
     def _status(m: str) -> None:
@@ -614,6 +605,9 @@ def fix_vbn_batch(
     results: dict[str, bool] = {}
     total = len(fixes)
 
+    # ── Phase 1: login once, detect VBN column layout, save session cookies ──
+    saved_cookies: list = []
+    vbn_col = 8  # fallback if detection fails
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         context = browser.new_context()
@@ -627,7 +621,6 @@ def fix_vbn_batch(
                 wait_until="load",
                 timeout=cfg.request_timeout,
             )
-            # Wait for Angular to finish rendering table headers before detecting columns.
             try:
                 page.wait_for_selector("table thead th, table thead td", timeout=10_000)
             except Exception:
@@ -636,24 +629,37 @@ def fix_vbn_batch(
             col_map = _detect_columns(page)
             vbn_col = col_map.get("vbn_number", 8)
             logger.info("fix_vbn_batch: detected vbn_col=%d col_map=%s", vbn_col, col_map)
-            for i, (product_id, new_vbn) in enumerate(fixes, 1):
-                _status(_msg(lang, "fix_product", i=i, total=total, product_id=product_id, new_vbn=new_vbn))
-                fix_errors: list[str] = []
-                try:
-                    results[product_id] = _fix_inline(
-                        page, product_id, new_vbn, vbn_col, cfg,
-                        on_error=fix_errors.append,
-                    )
-                except Exception as exc:
-                    logger.error("Error fixing id=%s: %s", product_id, exc)
-                    fix_errors.append(f"Exception: {exc}")
-                    results[product_id] = False
-                if fix_errors and on_status:
-                    for e in fix_errors:
-                        on_status(f"  ↳ {e}")
+            saved_cookies = context.cookies()
         finally:
             context.close()
             browser.close()
+
+    # ── Phase 2: each product in an isolated browser (avoids Angular SPA RAM crash) ──
+    for i, (product_id, new_vbn) in enumerate(fixes, 1):
+        _status(_msg(lang, "fix_product", i=i, total=total, product_id=product_id, new_vbn=new_vbn))
+        fix_errors: list[str] = []
+        with sync_playwright() as pw:
+            browser = _launch_browser(pw)
+            context = browser.new_context()
+            if saved_cookies:
+                context.add_cookies(saved_cookies)
+            page = context.new_page()
+            _block_resources(page)
+            try:
+                results[product_id] = _fix_inline(
+                    page, product_id, new_vbn, vbn_col, cfg,
+                    on_error=fix_errors.append,
+                )
+            except Exception as exc:
+                logger.error("Error fixing id=%s: %s", product_id, exc)
+                fix_errors.append(f"Exception: {exc}")
+                results[product_id] = False
+            finally:
+                context.close()
+                browser.close()
+        if fix_errors and on_status:
+            for e in fix_errors:
+                on_status(f"  ↳ {e}")
 
     fixed = sum(1 for ok in results.values() if ok)
     _status(_msg(lang, "fix_done", fixed=fixed, total=total))
