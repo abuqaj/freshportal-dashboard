@@ -385,19 +385,32 @@ export default function ProductCreator({ lang }: Props) {
     setNumberChecking(true);
     setNumberCheckResult(null);
 
-    setVbnForCreate(templateVbn);
+    // If typed name is ≥70% similar to template name, the template VBN is likely correct.
+    // Below 70% the user is creating a different product — let AI determine the right VBN.
+    const nameSimilarity = wordJaccard(name, templateName);
+    const useTemplateVbn = nameSimilarity >= 0.70;
+
+    setVbnForCreate(useTemplateVbn ? templateVbn : "");
     setVbnForCreateInfo(null);
     setVbnForCreateChecking(true);
+    setAiAnalysis(null);
+    setAiLoading(true);
 
     if (RAILWAY && searchResults && searchResults.length > 0) {
-      callAiAnalyze({ name, candidates: searchResults.slice(0, 6), preferred_vbn: templateVbn || null })
+      const aiBody = useTemplateVbn && templateVbn
+        ? { name, candidates: searchResults.slice(0, 6), preferred_vbn: templateVbn }
+        : { name, candidates: searchResults.slice(0, 6) };
+
+      callAiAnalyze(aiBody)
         .then((data: AIAnalysis | null) => {
           if (!data) { setVbnForCreateChecking(false); return; }
-          const code = data?.vbn?.code ?? null;
-          setVbnForCreate(code ?? "");
+          setAiAnalysis(data);
+          // When template VBN is trusted, keep it; otherwise apply AI's recommendation.
+          const resolvedVbn = useTemplateVbn ? templateVbn : (data?.vbn?.code ?? "");
+          setVbnForCreate(resolvedVbn);
           setVbnForCreateInfo(null);
-          if (code && RAILWAY) {
-            fetch(`${RAILWAY}/vbn-name/${code}`)
+          if (resolvedVbn && RAILWAY) {
+            fetch(`${RAILWAY}/vbn-name/${resolvedVbn}`)
               .then(r => r.json())
               .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
               .catch(() => {})
@@ -407,8 +420,9 @@ export default function ProductCreator({ lang }: Props) {
           }
         })
         .catch(() => {
-          if (templateVbn) {
-            fetch(`${RAILWAY}/vbn-name/${templateVbn}`)
+          const fallback = useTemplateVbn ? templateVbn : "";
+          if (fallback && RAILWAY) {
+            fetch(`${RAILWAY}/vbn-name/${fallback}`)
               .then(r => r.json())
               .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
               .catch(() => {})
@@ -416,14 +430,17 @@ export default function ProductCreator({ lang }: Props) {
           } else {
             setVbnForCreateChecking(false);
           }
-        });
-    } else if (templateVbn && RAILWAY) {
+        })
+        .finally(() => setAiLoading(false));
+    } else if (useTemplateVbn && templateVbn && RAILWAY) {
+      setAiLoading(false);
       fetch(`${RAILWAY}/vbn-name/${templateVbn}`)
         .then(r => r.json())
         .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
         .catch(() => {})
         .finally(() => setVbnForCreateChecking(false));
     } else {
+      setAiLoading(false);
       setVbnForCreateChecking(false);
     }
 
@@ -809,9 +826,11 @@ export default function ProductCreator({ lang }: Props) {
                         if (trimmed && RAILWAY && searchResults && searchResults.length > 0) {
                           setVbnForCreateChecking(true);
                           setVbnForCreateInfo(null);
-                          callAiAnalyze({ name: trimmed, candidates: searchResults.slice(0, 6), preferred_vbn: vbnForCreate || null })
+                          setAiLoading(true);
+                          callAiAnalyze({ name: trimmed, candidates: searchResults.slice(0, 6) })
                             .then((data: AIAnalysis | null) => {
                               if (!data) { setVbnForCreateChecking(false); return; }
+                              setAiAnalysis(data);
                               const code = data?.vbn?.code ?? null;
                               if (code) {
                                 setVbnForCreate(code);
@@ -825,9 +844,10 @@ export default function ProductCreator({ lang }: Props) {
                                 setVbnForCreate(""); setVbnForCreateInfo(null); setVbnForCreateChecking(false);
                               }
                             })
-                            .catch(() => setVbnForCreateChecking(false));
+                            .catch(() => setVbnForCreateChecking(false))
+                            .finally(() => setAiLoading(false));
                         }
-                      }, 1000);
+                      }, 500);
                     }}
                     placeholder={t.create.finalNamePlaceholder}
                     className={`w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 transition-colors ${nameFromTemplate ? "border-amber-300 bg-amber-50/40 focus:ring-amber-300/50 focus:border-amber-400" : "border-border bg-ground focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface"}`}
