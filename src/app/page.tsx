@@ -10,6 +10,8 @@ import ProductCreator from "@/components/ProductCreator";
 import PhotoUploader from "@/components/PhotoUploader";
 import HistoryTab from "@/components/HistoryTab";
 import AdminTab from "@/components/AdminTab";
+import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
+import { useSystem } from "@/contexts/SystemContext";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 type Tab = "vbn" | "create" | "photos" | "history" | "admin";
@@ -277,13 +279,94 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }
   );
 }
 
+/* ─── System selector card ─── */
+function SystemCard({
+  system, isActive, index, onClick,
+}: {
+  system: FPSystem; isActive: boolean; index: number; onClick: () => void;
+}) {
+  const tilt = useTilt(8);
+  return (
+    <div
+      ref={tilt.ref}
+      onMouseMove={tilt.onMouseMove}
+      onMouseLeave={tilt.onMouseLeave}
+      onClick={onClick}
+      style={{ animationDelay: `${index * 70}ms` }}
+      className={`tile-enter relative overflow-hidden rounded-3xl cursor-pointer ${system.gradient} group
+        ${isActive ? "ring-4 ring-white/60 ring-offset-2 ring-offset-transparent" : ""}`}
+    >
+      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/8 transition-colors duration-300 rounded-3xl" />
+      <div className="relative z-10 flex flex-col h-full p-7 min-h-[180px]">
+        <div className="mb-auto">
+          <div className="w-14 h-14 rounded-2xl bg-white/15 flex items-center justify-center group-hover:bg-white/25 transition-colors duration-300 mb-4 group-hover:scale-110 transition-transform">
+            {system.iconPath ? (
+              <img src={system.iconPath} alt={system.name} className="w-8 h-8 object-contain" />
+            ) : system.flagEmoji ? (
+              <span className="text-3xl leading-none">{system.flagEmoji}</span>
+            ) : (
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="1.8"/>
+                <path d="M12 2c-3 3-3 17 0 20M12 2c3 3 3 17 0 20M2 12h20" stroke="white" strokeWidth="1.5"/>
+              </svg>
+            )}
+          </div>
+          <h2 className="text-lg font-bold text-white tracking-tight leading-tight">{system.name}</h2>
+          <p className="text-xs text-white/55 mt-1 font-mono">{system.url.replace("https://", "")}</p>
+        </div>
+        <div className="flex items-end justify-end mt-4">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300
+            ${isActive ? "bg-white/40 translate-x-0" : "bg-white/20 group-hover:bg-white/35 group-hover:translate-x-1"}`}>
+            {isActive ? (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M3 7l3 3 5-5" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M3 7h8M8 4l3 3-3 3" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── System selector step (admin only) ─── */
+function SystemSelector({ t, onSelect }: {
+  t: (typeof translations)[Lang]; onSelect: (system: FPSystem) => void;
+}) {
+  const { system: currentSystem } = useSystem();
+  return (
+    <div className="hub-enter flex-1 flex flex-col items-center justify-center px-8 py-10 bg-ground overflow-y-auto">
+      <div className="w-full max-w-5xl">
+        <h1 className="text-3xl font-bold text-ink mb-2 tracking-tight">Select system</h1>
+        <p className="text-sm text-ink-3 mb-10">Choose which FreshPortal environment to work on</p>
+        <div className="grid grid-cols-3 gap-5">
+          {FP_SYSTEMS.map((sys, i) => (
+            <SystemCard
+              key={sys.id}
+              system={sys}
+              isActive={sys.id === currentSystem.id}
+              index={i}
+              onClick={() => onSelect(sys)}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Hub home screen ─── */
-function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permissions }: {
+function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permissions, onChangeSystem }: {
   lang: Lang; setLang: (l: Lang) => void; t: (typeof translations)[Lang];
   autoEnabled: boolean | null; productCount: number | null; onSelect: (tab: Tab) => void;
-  permissions: string[];
+  permissions: string[]; onChangeSystem?: () => void;
 }) {
   const isAdmin = permissions.includes("admin:manage");
+  const { system } = useSystem();
 
   const allTiles: { id: Tab; perm: string; label: string; desc: string; gradient: string; stat?: string; statColor?: string; icon: React.ReactNode }[] = [
     {
@@ -403,6 +486,21 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
           <span className={`w-1.5 h-1.5 rounded-full ${autoEnabled ? "bg-emerald" : "bg-muted"}`}/>
           {autoEnabled ? t.hub.autoVbnActive : t.hub.autoVbnDisabled}
         </span>
+        {isAdmin && onChangeSystem && (
+          <>
+            <span className="w-px h-3 bg-border"/>
+            <span className="flex items-center gap-1.5">
+              <span className="opacity-70">{system.flagEmoji ?? "🌐"}</span>
+              <span>{system.name}</span>
+              <button
+                onClick={onChangeSystem}
+                className="ml-1 underline underline-offset-2 hover:text-ink transition-colors"
+              >
+                Change
+              </button>
+            </span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -411,8 +509,10 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
 /* ─── Root ─── */
 export default function Dashboard() {
   const { data: session, status: sessionStatus } = useSession();
+  const { setSystem } = useSystem();
   const [lang, setLangState] = useState<Lang>("en");
   const [tab, setTab] = useState<Tab | null>(null);
+  const [hubStep, setHubStep] = useState<"system" | "module">("system");
   const [autoEnabled, setAutoEnabled] = useState<boolean | null>(null);
   const [autoNextRun, setAutoNextRun] = useState<string | null>(null);
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -420,12 +520,20 @@ export default function Dashboard() {
   const [railwayOnline, setRailwayOnline] = useState<boolean | null>(null);
 
   const permissions = session?.user?.permissions ?? [];
+  const isAdmin = permissions.includes("admin:manage");
   const username = session?.user?.name ?? undefined;
 
   useEffect(() => {
     const saved = localStorage.getItem("fp_lang") as Lang | null;
     if (saved && ["en","nl","pl","es"].includes(saved)) setLangState(saved);
   }, []);
+
+  // Non-admins skip the system step entirely
+  useEffect(() => {
+    if (sessionStatus === "authenticated" && !isAdmin) {
+      setHubStep("module");
+    }
+  }, [sessionStatus, isAdmin]);
 
   useEffect(() => {
     if (!RAILWAY || sessionStatus !== "authenticated") return;
@@ -450,6 +558,11 @@ export default function Dashboard() {
     setAutoNextRun(nextRun);
   }, []);
 
+  function handleSystemSelect(sys: FPSystem) {
+    setSystem(sys);
+    setHubStep("module");
+  }
+
   // Show spinner while session loads
   if (sessionStatus === "loading") {
     return (
@@ -467,15 +580,20 @@ export default function Dashboard() {
       {/* Main content */}
       <div className="flex-1 overflow-hidden flex flex-col">
         {!tab ? (
-          <Hub
-            lang={lang}
-            setLang={setLang}
-            t={t}
-            autoEnabled={autoEnabled}
-            productCount={productCount}
-            onSelect={(t) => setTab(t)}
-            permissions={permissions}
-          />
+          isAdmin && hubStep === "system" ? (
+            <SystemSelector t={t} onSelect={handleSystemSelect} />
+          ) : (
+            <Hub
+              lang={lang}
+              setLang={setLang}
+              t={t}
+              autoEnabled={autoEnabled}
+              productCount={productCount}
+              onSelect={(t) => setTab(t)}
+              permissions={permissions}
+              onChangeSystem={isAdmin ? () => setHubStep("system") : undefined}
+            />
+          )
         ) : (
           <ModuleCard
             tab={tab}

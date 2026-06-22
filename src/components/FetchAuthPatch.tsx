@@ -2,15 +2,17 @@
 
 import { useSession } from "next-auth/react"
 import { useEffect, useRef } from "react"
+import { useSystem } from "@/contexts/SystemContext"
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? ""
 
 /**
- * Patches window.fetch to append Authorization: Bearer <backendToken>
+ * Patches window.fetch to append Authorization + X-FP-URL headers
  * to all requests targeting the Railway API. Mounted once in the root layout.
  */
 export default function FetchAuthPatch() {
   const { data: session } = useSession()
+  const { fpUrlRef } = useSystem()
   const tokenRef = useRef<string>("")
 
   // Keep the ref always current — avoids re-running the effect on token change
@@ -33,6 +35,9 @@ export default function FetchAuthPatch() {
         const headers = new Headers(init?.headers)
         if (!headers.has("Authorization")) {
           headers.set("Authorization", `Bearer ${tokenRef.current}`)
+        }
+        if (fpUrlRef.current && !headers.has("X-FP-URL")) {
+          headers.set("X-FP-URL", fpUrlRef.current)
         }
         return orig(input, { ...init, headers })
       }

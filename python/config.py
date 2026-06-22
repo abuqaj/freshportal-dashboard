@@ -50,3 +50,12 @@ class Config:
 
 
 config = Config()
+
+ALLOWED_FP_URLS: frozenset[str] = frozenset({
+    "https://fp042100.freshportal.nl",
+    "https://850295.freshportal.nl",
+    "https://850255.freshportal.nl",
+    "https://fp012603.freshportal.com",
+    "https://850254.freshportal.nl",
+    "https://fp066801.freshportal.com",
+})

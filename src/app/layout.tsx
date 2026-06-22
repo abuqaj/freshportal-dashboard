@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { SessionProvider } from "next-auth/react";
 import FetchAuthPatch from "@/components/FetchAuthPatch";
+import { SystemProvider } from "@/contexts/SystemContext";
 import { auth } from "@/lib/auth";
 
 const inter = Inter({
@@ -18,12 +19,15 @@ export const metadata: Metadata = {
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
+  const isAdmin = session?.user?.permissions?.includes("admin:manage") ?? false;
   return (
     <html lang="pl" className={inter.variable}>
       <body className="font-sans antialiased">
         <SessionProvider session={session}>
-          <FetchAuthPatch />
-          {children}
+          <SystemProvider userId={session?.user?.id} isAdmin={isAdmin}>
+            <FetchAuthPatch />
+            {children}
+          </SystemProvider>
         </SessionProvider>
       </body>
     </html>

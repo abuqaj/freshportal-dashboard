@@ -18,14 +18,14 @@ from queue import Empty, Queue
 
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import Config
+from config import Config, ALLOWED_FP_URLS
 from i18n import msg as i18n_msg
 from scraper_fp import fetch_products, fix_vbn_batch, FPProduct, _debug_fetch, _debug_rendered
 from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
@@ -40,6 +40,16 @@ from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def get_cfg(request: Request, payload: dict = Depends(get_token_payload)) -> Config:
+    """Return a Config instance, overriding freshportal_url for admin requests with X-FP-URL header."""
+    cfg = Config()
+    if "admin:manage" in payload.get("permissions", []):
+        fp_url = request.headers.get("X-FP-URL", "").strip().rstrip("/")
+        if fp_url in ALLOWED_FP_URLS:
+            cfg.freshportal_url = fp_url
+    return cfg
 log = logging.getLogger(__name__)
 
 # Temp directory for photo upload sessions (cleaned up after execute)
@@ -430,7 +440,7 @@ def sync_history_endpoint(limit: int = 10, offset: int = 0, _: dict = Depends(re
 
 
 @app.get("/sync/debug-page")
-def sync_debug_page(page: int = 180, _: dict = Depends(require_permission("admin:manage"))):
+def sync_debug_page(page: int = 180, _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     """Fetch a specific page of the unfiltered product list and report what's there.
 
     Use this to diagnose why the full sync stops at ~44 K:
@@ -443,7 +453,6 @@ def sync_debug_page(page: int = 180, _: dict = Depends(require_permission("admin
     from scraper_fp import _launch_browser, _login, _block_resources, _goto_and_wait, _detect_columns_html, _parse_rows_html, _get_last_page_html
     from bs4 import BeautifulSoup
 
-    cfg = Config()
     url = f"{cfg.freshportal_url}/product/index/index/?1=1&page={page}"
 
     with sync_playwright() as pw:
@@ -522,7 +531,7 @@ def vbn_auto_run_now(_: dict = Depends(require_permission("admin:manage"))):
 
 
 @app.post("/sync/run")
-def sync_run(full: bool = False, _: dict = Depends(require_permission("admin:manage"))):
+def sync_run(full: bool = False, _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     """Manually trigger product sync (non-blocking).
 
     ?full=true forces a full rescan of all 64 K products.
@@ -530,7 +539,6 @@ def sync_run(full: bool = False, _: dict = Depends(require_permission("admin:man
     """
     if is_sync_running():
         raise HTTPException(409, "Sync already running")
-    cfg = Config()
     if full:
         threading.Thread(target=run_full_sync, args=(cfg,), daemon=True).start()
         return {"ok": True, "message": "Full sync started in background"}
@@ -552,9 +560,8 @@ def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:
 
 
 @app.get("/floricode/colors")
-def floricode_colors_endpoint(_: dict = Depends(require_permission("products:create"))):
+def floricode_colors_endpoint(_: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
     """Return color list from Floricode API, or DB fallback if API unavailable."""
-    cfg = Config()
     colors, source = _colors_with_db_fallback(cfg)
     if not colors:
         raise HTTPException(status_code=500, detail="No colors available: Floricode API returned 401 and products DB is empty")
@@ -562,10 +569,9 @@ def floricode_colors_endpoint(_: dict = Depends(require_permission("products:cre
 
 
 @app.get("/floricode/colors/refresh")
-def floricode_colors_refresh(_: dict = Depends(require_permission("admin:manage"))):
+def floricode_colors_refresh(_: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     """Clear all color + token caches and re-fetch."""
     invalidate_colors_cache()
-    cfg = Config()
     colors, source = _colors_with_db_fallback(cfg)
     if not colors:
         raise HTTPException(status_code=500, detail="No colors available after refresh")
@@ -573,9 +579,8 @@ def floricode_colors_refresh(_: dict = Depends(require_permission("admin:manage"
 
 
 @app.post("/vbn-check")
-def vbn_check(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:check"))):
+def vbn_check(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:check")), cfg: Config = Depends(get_cfg)):
     """Non-streaming VBN check (kept for backwards compat)."""
-    cfg = Config()
     cfg.vbn_to_check = req.vbn
     try:
         cfg.validate()
@@ -589,9 +594,8 @@ def vbn_check(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:ch
 
 
 @app.post("/vbn-check/stream")
-async def vbn_check_stream(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:check"))):
+async def vbn_check_stream(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:check")), cfg: Config = Depends(get_cfg)):
     """Streaming SSE endpoint — pushes progress messages then final result."""
-    cfg = Config()
     cfg.vbn_to_check = req.vbn
     try:
         cfg.validate()
@@ -660,8 +664,7 @@ async def vbn_check_stream(req: VbnCheckRequest, _: dict = Depends(require_permi
 
 
 @app.post("/vbn-fix")
-def vbn_fix(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix"))):
-    cfg = Config()
+def vbn_fix(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix")), cfg: Config = Depends(get_cfg)):
     try:
         cfg.validate()
     except ValueError as e:
@@ -679,9 +682,8 @@ def vbn_fix(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix"))
 
 
 @app.post("/vbn-fix/stream")
-async def vbn_fix_stream(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix"))):
+async def vbn_fix_stream(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix")), cfg: Config = Depends(get_cfg)):
     """Streaming SSE endpoint for VBN fix — pushes per-product progress."""
-    cfg = Config()
     try:
         cfg.validate()
     except ValueError as e:
@@ -732,7 +734,7 @@ async def vbn_fix_stream(req: VbnFixRequest, _: dict = Depends(require_permissio
 
 
 @app.post("/photo-upload/analyze/stream")
-async def photo_analyze_stream(files: list[UploadFile] = File(...), _: dict = Depends(require_permission("photos:upload"))):
+async def photo_analyze_stream(files: list[UploadFile] = File(...), _: dict = Depends(require_permission("photos:upload")), cfg: Config = Depends(get_cfg)):
     """Save uploaded images then stream per-photo match results via SSE.
 
     Events emitted:
@@ -776,7 +778,6 @@ async def photo_analyze_stream(files: list[UploadFile] = File(...), _: dict = De
                         "matches": [],
                     })
             else:
-                cfg = Config()
                 for fn in saved:
                     queue.put({"type": "match", **match_single_photo(fn, cfg, top_k=5)})
         except Exception as exc:
@@ -870,17 +871,15 @@ async def photo_upload(xlsx: UploadFile = File(...), _: dict = Depends(require_p
 
 
 @app.get("/vbn-search")
-def vbn_search_endpoint(q: str, limit: int = 8, _: dict = Depends(require_permission("vbn:check"))):
+def vbn_search_endpoint(q: str, limit: int = 8, _: dict = Depends(require_permission("vbn:check")), cfg: Config = Depends(get_cfg)):
     """Search VBN codes by name words. q='dianthus solex' finds VBNs containing both words."""
-    cfg = Config()
     results = search_vbn_by_name(q, cfg.floricode_username, cfg.floricode_password, limit=limit)
     return {"results": results}
 
 
 @app.get("/vbn-name/{code}")
-def get_vbn_name(code: str, _: dict = Depends(require_any_permission("vbn:check", "products:create"))):
+def get_vbn_name(code: str, _: dict = Depends(require_any_permission("vbn:check", "products:create")), cfg: Config = Depends(get_cfg)):
     """Return the official Floricode name for a single VBN code."""
-    cfg = Config()
     # Check hardcoded table first (instant, no API call)
     if code in KNOWN_VBN:
         return {"code": code, "name": KNOWN_VBN[code], "found": True}
@@ -936,8 +935,7 @@ def cancel_task(token: str, _: dict = Depends(get_token_payload)):
 
 
 @app.post("/product-search")
-def product_search(req: ProductSearchRequest, _: dict = Depends(require_permission("products:create"))):
-    cfg = Config()
+def product_search(req: ProductSearchRequest, _: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
     try:
         cfg.validate()
     except ValueError as e:
@@ -972,9 +970,8 @@ def _matches_to_results(matches) -> list[dict]:
 
 
 @app.post("/product-search/stream")
-async def product_search_stream(req: ProductSearchRequest, _: dict = Depends(require_permission("products:create"))):
+async def product_search_stream(req: ProductSearchRequest, _: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
     """SSE stream: DB search first (instant), Playwright fallback if DB empty."""
-    cfg = Config()
     try:
         cfg.validate()
     except ValueError as e:
@@ -1117,9 +1114,8 @@ def _find_fallback_vbn(product_name: str, cfg: Config) -> dict | None:
 
 
 @app.post("/product-ai-analyze")
-def product_ai_analyze(req: AIAnalyzeRequest, _: dict = Depends(require_permission("products:create"))):
+def product_ai_analyze(req: AIAnalyzeRequest, _: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
     """Duplicate check + VBN suggestion via Claude Haiku (single call)."""
-    cfg = Config()
     if not cfg.anthropic_api_key:
         return {
             "duplicate": {"found": False, "reason": "ANTHROPIC_API_KEY not configured"},
@@ -1256,13 +1252,12 @@ def product_ai_analyze(req: AIAnalyzeRequest, _: dict = Depends(require_permissi
 
 
 @app.get("/product-number-suggest")
-def product_number_suggest(name: str = "", number: str = "", _: dict = Depends(require_permission("products:create"))):
+def product_number_suggest(name: str = "", number: str = "", _: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
     """Return first available product number for given name or base number.
 
     Called by the frontend immediately when the create-confirmation form opens,
     so the user sees a validated, free number before clicking Create.
     """
-    cfg = Config()
     base = number.strip() or (generate_product_number(name.strip()) if name.strip() else "")
     if not base:
         raise HTTPException(400, "Provide 'name' or 'number' query param")
@@ -1273,9 +1268,8 @@ def product_number_suggest(name: str = "", number: str = "", _: dict = Depends(r
 
 
 @app.post("/product-create/stream")
-async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(require_permission("products:create"))):
+async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
     """SSE stream: copies template product, renames it, returns result."""
-    cfg = Config()
     try:
         cfg.validate()
     except ValueError as e:
@@ -1319,9 +1313,8 @@ async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(req
 
 
 @app.get("/debug/colour-table")
-def debug_colour_table(_: dict = Depends(require_permission("admin:manage"))):
+def debug_colour_table(_: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     """Show the colour VBN table (genera and their kleurbehandeld codes)."""
-    cfg = Config()
     table = get_colour_vbn_table(cfg.floricode_username, cfg.floricode_password)
     return {
         "genera_count": len(table),
@@ -1334,21 +1327,19 @@ def debug_colour_table(_: dict = Depends(require_permission("admin:manage"))):
 
 
 @app.post("/debug/colour-table/refresh")
-def refresh_colour_table(_: dict = Depends(require_permission("admin:manage"))):
+def refresh_colour_table(_: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     """Force rebuild of colour VBN table from Floricode API."""
     invalidate_colour_table()
-    cfg = Config()
     table = get_colour_vbn_table(cfg.floricode_username, cfg.floricode_password)
     return {"ok": True, "genera_count": len(table), "total_entries": sum(len(v) for v in table.values())}
 
 
 @app.get("/debug/product-row/{product_id}")
-def debug_product_row(product_id: str, _: dict = Depends(require_permission("admin:manage"))):
+def debug_product_row(product_id: str, _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     """Return every link and button found in a product row — used to discover copy UI."""
     from scraper_fp import _launch_browser, _block_resources, _login, _goto_and_wait
     from playwright.sync_api import sync_playwright
 
-    cfg = Config()
     result: dict = {"product_id": product_id, "links": [], "buttons": [], "row_html": ""}
 
     with sync_playwright() as pw:
@@ -1395,13 +1386,12 @@ def debug_product_row(product_id: str, _: dict = Depends(require_permission("adm
 
 
 @app.get("/debug/product-copy-flow/{product_id}")
-def debug_product_copy_flow(product_id: str, _: dict = Depends(require_permission("admin:manage"))):
+def debug_product_copy_flow(product_id: str, _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     """Simulate clicking the copy button and return what's on the page afterwards."""
     from scraper_fp import _launch_browser, _login
     from playwright.sync_api import sync_playwright
     import time as _time
 
-    cfg = Config()
     result: dict = {
         "url_before": "",
         "url_after": "",
@@ -1528,12 +1518,11 @@ def debug_product_copy_flow(product_id: str, _: dict = Depends(require_permissio
 
 
 @app.get("/debug/product-copy-form/{product_id}")
-def debug_product_copy_form(product_id: str, _: dict = Depends(require_permission("admin:manage"))):
+def debug_product_copy_form(product_id: str, _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     """Inspect all form elements on the copy product page."""
     from scraper_fp import _launch_browser, _login
     from playwright.sync_api import sync_playwright
 
-    cfg = Config()
     result: dict = {"url": "", "all_inputs": [], "all_custom": [], "fps_inputs": [], "html": ""}
 
     with sync_playwright() as pw:
@@ -1590,12 +1579,11 @@ def debug_product_copy_form(product_id: str, _: dict = Depends(require_permissio
 
 
 @app.get("/debug/product-add-page")
-def debug_product_add_page(_: dict = Depends(require_permission("admin:manage"))):
+def debug_product_add_page(_: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     """Return the HTML of the add-product page so we can see its form fields."""
     from scraper_fp import _launch_browser, _block_resources, _login
     from playwright.sync_api import sync_playwright
 
-    cfg = Config()
     result: dict = {"url": "", "form_fields": [], "buttons": [], "html_snippet": ""}
 
     candidate_urls = [
@@ -1649,8 +1637,7 @@ def debug_product_add_page(_: dict = Depends(require_permission("admin:manage"))
 
 
 @app.get("/debug/fp")
-def debug_fp(vbn: str = "580", _: dict = Depends(require_permission("admin:manage"))):
-    cfg = Config()
+def debug_fp(vbn: str = "580", _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     try:
         cfg.validate()
     except ValueError as e:
@@ -1659,8 +1646,7 @@ def debug_fp(vbn: str = "580", _: dict = Depends(require_permission("admin:manag
 
 
 @app.get("/debug/fp-rendered")
-def debug_fp_rendered(vbn: str = "580", _: dict = Depends(require_permission("admin:manage"))):
-    cfg = Config()
+def debug_fp_rendered(vbn: str = "580", _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
     try:
         cfg.validate()
     except ValueError as e:
