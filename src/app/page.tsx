@@ -285,7 +285,7 @@ function SystemCard({
 }: {
   system: FPSystem; isActive: boolean; index: number; onClick: () => void;
 }) {
-  const tilt = useTilt(8);
+  const tilt = useTilt(6);
   return (
     <div
       ref={tilt.ref}
@@ -293,39 +293,45 @@ function SystemCard({
       onMouseLeave={tilt.onMouseLeave}
       onClick={onClick}
       style={{ animationDelay: `${index * 70}ms` }}
-      className={`tile-enter relative overflow-hidden rounded-3xl cursor-pointer ${system.gradient} group
-        ${isActive ? "ring-4 ring-white/60 ring-offset-2 ring-offset-transparent" : ""}`}
+      className={`tile-enter relative overflow-hidden rounded-3xl cursor-pointer ${system.fallbackGradient} group min-h-[200px]
+        ${isActive ? "ring-4 ring-white/70 ring-offset-4 ring-offset-ground" : ""}`}
     >
-      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/8 transition-colors duration-300 rounded-3xl" />
-      <div className="relative z-10 flex flex-col h-full p-7 min-h-[180px]">
-        <div className="mb-auto">
-          <div className="w-14 h-14 rounded-2xl bg-white/15 flex items-center justify-center group-hover:bg-white/25 transition-colors duration-300 mb-4 group-hover:scale-110 transition-transform">
-            {system.iconPath ? (
-              <img src={system.iconPath} alt={system.name} className="w-8 h-8 object-contain" />
-            ) : system.flagEmoji ? (
-              <span className="text-3xl leading-none">{system.flagEmoji}</span>
-            ) : (
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="1.8"/>
-                <path d="M12 2c-3 3-3 17 0 20M12 2c3 3 3 17 0 20M2 12h20" stroke="white" strokeWidth="1.5"/>
-              </svg>
-            )}
-          </div>
-          <h2 className="text-lg font-bold text-white tracking-tight leading-tight">{system.name}</h2>
-          <p className="text-xs text-white/55 mt-1 font-mono">{system.url.replace("https://", "")}</p>
+      {/* Full-bleed SVG background */}
+      <img
+        src={system.svgPath}
+        alt=""
+        aria-hidden="true"
+        className="absolute inset-0 w-full h-full object-cover select-none pointer-events-none"
+        draggable={false}
+      />
+
+      {/* Bottom scrim for text readability */}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+
+      {/* Hover darkening */}
+      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/15 transition-colors duration-300" />
+
+      {/* Active checkmark badge */}
+      {isActive && (
+        <div className="absolute top-3 right-3 w-7 h-7 rounded-full bg-white flex items-center justify-center shadow">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M2.5 7l3.5 3.5 5.5-6" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
         </div>
-        <div className="flex items-end justify-end mt-4">
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300
-            ${isActive ? "bg-white/40 translate-x-0" : "bg-white/20 group-hover:bg-white/35 group-hover:translate-x-1"}`}>
-            {isActive ? (
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M3 7l3 3 5-5" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M3 7h8M8 4l3 3-3 3" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            )}
+      )}
+
+      {/* Content — pinned to bottom */}
+      <div className="relative z-10 flex flex-col justify-end h-full p-6 min-h-[200px]">
+        <div className="flex items-end justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-white tracking-tight leading-tight drop-shadow">{system.name}</h2>
+            <p className="text-[11px] text-white/60 mt-0.5 font-mono">{system.url.replace("https://", "")}</p>
+          </div>
+          <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center transition-all duration-300 ml-3
+            ${isActive ? "bg-white/30" : "bg-black/30 group-hover:bg-black/50 group-hover:translate-x-0.5"}`}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M3 7h8M8 4l3 3-3 3" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           </div>
         </div>
       </div>
