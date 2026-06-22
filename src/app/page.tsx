@@ -496,7 +496,6 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
           <>
             <span className="w-px h-3 bg-border"/>
             <span className="flex items-center gap-1.5">
-              <span className="opacity-70">{system.flagEmoji ?? "🌐"}</span>
               <span>{system.name}</span>
               <button
                 onClick={onChangeSystem}
