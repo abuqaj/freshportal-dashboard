@@ -50,6 +50,15 @@ def get_cfg(request: Request, payload: dict = Depends(get_token_payload)) -> Con
         if fp_url in ALLOWED_FP_URLS:
             cfg.freshportal_url = fp_url
     return cfg
+
+
+def get_stamgegevens_cfg() -> Config:
+    """Always returns Config with the Stamgegevens (default env) FreshPortal URL.
+
+    Used for VBN check/fix and sync endpoints which must only ever run against
+    the central Stamgegevens system, regardless of which system the admin has selected.
+    """
+    return Config()
 log = logging.getLogger(__name__)
 
 # Temp directory for photo upload sessions (cleaned up after execute)
@@ -440,7 +449,7 @@ def sync_history_endpoint(limit: int = 10, offset: int = 0, _: dict = Depends(re
 
 
 @app.get("/sync/debug-page")
-def sync_debug_page(page: int = 180, _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
+def sync_debug_page(page: int = 180, _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_stamgegevens_cfg)):
     """Fetch a specific page of the unfiltered product list and report what's there.
 
     Use this to diagnose why the full sync stops at ~44 K:
@@ -531,7 +540,7 @@ def vbn_auto_run_now(_: dict = Depends(require_permission("admin:manage"))):
 
 
 @app.post("/sync/run")
-def sync_run(full: bool = False, _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_cfg)):
+def sync_run(full: bool = False, _: dict = Depends(require_permission("admin:manage")), cfg: Config = Depends(get_stamgegevens_cfg)):
     """Manually trigger product sync (non-blocking).
 
     ?full=true forces a full rescan of all 64 K products.
@@ -579,7 +588,7 @@ def floricode_colors_refresh(_: dict = Depends(require_permission("admin:manage"
 
 
 @app.post("/vbn-check")
-def vbn_check(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:check")), cfg: Config = Depends(get_cfg)):
+def vbn_check(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:check")), cfg: Config = Depends(get_stamgegevens_cfg)):
     """Non-streaming VBN check (kept for backwards compat)."""
     cfg.vbn_to_check = req.vbn
     try:
@@ -594,7 +603,7 @@ def vbn_check(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:ch
 
 
 @app.post("/vbn-check/stream")
-async def vbn_check_stream(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:check")), cfg: Config = Depends(get_cfg)):
+async def vbn_check_stream(req: VbnCheckRequest, _: dict = Depends(require_permission("vbn:check")), cfg: Config = Depends(get_stamgegevens_cfg)):
     """Streaming SSE endpoint — pushes progress messages then final result."""
     cfg.vbn_to_check = req.vbn
     try:
@@ -664,7 +673,7 @@ async def vbn_check_stream(req: VbnCheckRequest, _: dict = Depends(require_permi
 
 
 @app.post("/vbn-fix")
-def vbn_fix(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix")), cfg: Config = Depends(get_cfg)):
+def vbn_fix(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix")), cfg: Config = Depends(get_stamgegevens_cfg)):
     try:
         cfg.validate()
     except ValueError as e:
@@ -682,7 +691,7 @@ def vbn_fix(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix"))
 
 
 @app.post("/vbn-fix/stream")
-async def vbn_fix_stream(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix")), cfg: Config = Depends(get_cfg)):
+async def vbn_fix_stream(req: VbnFixRequest, _: dict = Depends(require_permission("vbn:fix")), cfg: Config = Depends(get_stamgegevens_cfg)):
     """Streaming SSE endpoint for VBN fix — pushes per-product progress."""
     try:
         cfg.validate()
@@ -734,7 +743,7 @@ async def vbn_fix_stream(req: VbnFixRequest, _: dict = Depends(require_permissio
 
 
 @app.post("/photo-upload/analyze/stream")
-async def photo_analyze_stream(files: list[UploadFile] = File(...), _: dict = Depends(require_permission("photos:upload")), cfg: Config = Depends(get_cfg)):
+async def photo_analyze_stream(files: list[UploadFile] = File(...), _: dict = Depends(require_permission("photos:upload")), cfg: Config = Depends(get_stamgegevens_cfg)):
     """Save uploaded images then stream per-photo match results via SSE.
 
     Events emitted:

@@ -457,7 +457,13 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
     },
   ];
 
-  const tiles = allTiles.filter(tile => permissions.includes(tile.perm));
+  const isStamgegevens = system.id === "stamgegevens";
+  const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
+
+  const tiles = allTiles.filter(tile =>
+    permissions.includes(tile.perm) &&
+    (isStamgegevens || !STAMGEGEVENS_ONLY_TABS.includes(tile.id))
+  );
 
   const colsClass = tiles.length <= 2 ? "grid-cols-2" : "grid-cols-3";
   const maxWClass = tiles.length <= 2 ? "max-w-3xl" : "max-w-5xl";
