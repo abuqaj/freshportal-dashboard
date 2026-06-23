@@ -192,6 +192,26 @@ def _get_last_page(soup: BeautifulSoup) -> int:
     return 1
 
 
+_EXTRACT_JS = """() => {
+    const table  = document.querySelector('table');
+    const pager  = document.querySelector(
+        '.pager, .pagination, [class*="pager"], [class*="pagination"]'
+    );
+    return (table ? table.outerHTML : '') + (pager ? pager.outerHTML : '');
+}"""
+
+
+def _page_soup(page) -> BeautifulSoup:
+    """Extract only table+pager HTML via JS to avoid serialising the full DOM.
+
+    page.content() on FreshPortal catalogue pages crashes Railway containers
+    because the full DOM includes huge SVG blobs in every <th>, easily 2-5 MB
+    of HTML that spikes memory during serialisation.
+    """
+    html = page.evaluate(_EXTRACT_JS)
+    return BeautifulSoup(html or "", "lxml")
+
+
 def fetch_supplier_catalogue(
     supplier_id: int | str,
     cfg: Config,
@@ -233,7 +253,7 @@ def fetch_supplier_catalogue(
             except Exception:
                 pass
 
-            soup = BeautifulSoup(page.content(), "lxml")
+            soup = _page_soup(page)
             header_row = _find_header_row(soup)
             col_map = _detect_columns(header_row)
             _s(f"Detected columns: {col_map}")
@@ -252,7 +272,7 @@ def fetch_supplier_catalogue(
                     page.wait_for_selector("table tbody tr", timeout=15_000)
                 except Exception:
                     pass
-                soup = BeautifulSoup(page.content(), "lxml")
+                soup = _page_soup(page)
                 items = _parse_rows(soup, col_map)
                 if not items:
                     _s(f"Page {p}: empty — stopping")
