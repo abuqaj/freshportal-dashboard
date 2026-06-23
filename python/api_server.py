@@ -42,7 +42,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, match_order
-from scraper_catalogue import fetch_supplier_catalogue, fetch_supplier_list
+from scraper_catalogue import fetch_supplier_catalogue, fetch_supplier_list, debug_supplier_page
 from scraper_delivery import add_delivery, explore_delivery_form, explore_stock_add_form
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -2098,6 +2098,18 @@ def catalogue_items(
     """Return all catalogue items for a supplier from DB."""
     items = get_supplier_catalogue(supplier_id)
     return {"supplier_id": supplier_id, "items": items, "count": len(items)}
+
+
+@app.get("/catalogue/debug/suppliers")
+def catalogue_debug_suppliers(
+    _: dict = Depends(require_permission("admin:manage")),
+    cfg: Config = Depends(get_cfg),
+):
+    """Debug endpoint: return raw page content and parse diagnostics for /supplier/index/index/."""
+    try:
+        return debug_supplier_page(cfg)
+    except Exception as exc:
+        raise HTTPException(502, f"Debug scrape failed: {exc}")
 
 
 # ---------------------------------------------------------------------------

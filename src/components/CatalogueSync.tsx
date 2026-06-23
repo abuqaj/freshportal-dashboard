@@ -30,8 +30,8 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
   const [fetchError, setFetchError] = useState("");
   const [syncStates, setSyncStates] = useState<Record<string, SupplierSyncState>>({});
   const logsEndRefs = useRef<Record<string, HTMLDivElement | null>>({});
-
-  const fpHeader = useRef<Record<string, string>>({});
+  const [debugData, setDebugData] = useState<Record<string, unknown> | null>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
 
   // Load suppliers on mount
   const loadSuppliers = useCallback(async () => {
@@ -66,6 +66,20 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
     setTimeout(() => {
       logsEndRefs.current[supplierId]?.scrollIntoView({ behavior: "smooth" });
     }, 50);
+  }
+
+  async function handleDebug() {
+    setDebugLoading(true);
+    setDebugData(null);
+    try {
+      const res = await fetch(`${RAILWAY}/catalogue/debug/suppliers`);
+      const data = await res.json();
+      setDebugData(data);
+    } catch (e: unknown) {
+      setDebugData({ error: String(e) });
+    } finally {
+      setDebugLoading(false);
+    }
   }
 
   async function handleSync(supplier: Supplier) {
@@ -135,14 +149,93 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
           <h2 className="text-lg font-bold text-ink">{tc.title}</h2>
           <p className="text-sm text-ink-3 mt-0.5">{tc.description}</p>
         </div>
-        <button
-          onClick={loadSuppliers}
-          disabled={loading}
-          className="shrink-0 h-8 px-3 rounded-xl text-xs font-medium border border-border text-ink-3 hover:text-ink disabled:opacity-40 transition-colors"
-        >
-          {loading ? tc.loading : tc.refresh}
-        </button>
+        <div className="flex gap-2 shrink-0">
+          <button
+            onClick={handleDebug}
+            disabled={debugLoading}
+            className="h-8 px-3 rounded-xl text-xs font-medium border border-border text-ink-3 hover:text-ink disabled:opacity-40 transition-colors"
+          >
+            {debugLoading ? "…" : "Debug"}
+          </button>
+          <button
+            onClick={loadSuppliers}
+            disabled={loading}
+            className="h-8 px-3 rounded-xl text-xs font-medium border border-border text-ink-3 hover:text-ink disabled:opacity-40 transition-colors"
+          >
+            {loading ? tc.loading : tc.refresh}
+          </button>
+        </div>
       </div>
+
+      {/* Debug panel */}
+      {debugData && (
+        <details open className="rounded-2xl border border-amber-300/40 bg-amber-50/30 overflow-hidden">
+          <summary className="px-4 py-2.5 text-xs font-semibold text-amber-700 cursor-pointer select-none">
+            Debug — /supplier/index/index/
+          </summary>
+          <div className="px-4 pb-4 flex flex-col gap-3 text-xs">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono">
+              <span className="text-ink-3">Final URL</span>
+              <span className="text-ink break-all">{String(debugData.final_url ?? "—")}</span>
+              <span className="text-ink-3">Page title</span>
+              <span className="text-ink">{String(debugData.page_title ?? "—")}</span>
+              <span className="text-ink-3">Tables found</span>
+              <span className="text-ink">{String(debugData.table_count ?? "—")}</span>
+              <span className="text-ink-3">Total &lt;tr&gt; elements</span>
+              <span className="text-ink">{Array.isArray(debugData.all_tr_samples) ? `${(debugData.all_tr_samples as unknown[]).length} shown (of all)` : "—"}</span>
+              <span className="text-ink-3">Rows with data-id</span>
+              <span className="text-ink">{Array.isArray(debugData.rows_with_dataid) ? (debugData.rows_with_dataid as unknown[]).length : "—"}</span>
+              <span className="text-ink-3">Parsed suppliers</span>
+              <span className="text-ink font-semibold">{Array.isArray(debugData.parsed_suppliers) ? (debugData.parsed_suppliers as unknown[]).length : "—"}</span>
+            </div>
+
+            {Array.isArray(debugData.parsed_suppliers) && (debugData.parsed_suppliers as {fp_supplier_id: string; nm_supplier: string}[]).length > 0 && (
+              <div>
+                <p className="text-ink-3 mb-1 font-semibold">Parsed suppliers:</p>
+                <div className="bg-muted rounded-lg p-2 space-y-0.5 max-h-32 overflow-y-auto">
+                  {(debugData.parsed_suppliers as {fp_supplier_id: string; nm_supplier: string}[]).map((s, i) => (
+                    <div key={i} className="text-ink font-mono">ID {s.fp_supplier_id} — {s.nm_supplier}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {Array.isArray(debugData.all_tr_samples) && (
+              <div>
+                <p className="text-ink-3 mb-1 font-semibold">First &lt;tr&gt; samples (raw HTML):</p>
+                <div className="bg-muted rounded-lg p-2 space-y-2 max-h-48 overflow-y-auto font-mono text-[10px] text-ink-3">
+                  {(debugData.all_tr_samples as string[]).map((html, i) => (
+                    <div key={i} className="border-b border-border/40 pb-1">
+                      <span className="text-emerald font-bold">tr[{i}]: </span>{html}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {Array.isArray(debugData.all_links) && (
+              <div>
+                <p className="text-ink-3 mb-1 font-semibold">All links ({(debugData.all_links as string[]).length}):</p>
+                <div className="bg-muted rounded-lg p-2 max-h-32 overflow-y-auto font-mono text-[10px] text-ink-3 space-y-0.5">
+                  {(debugData.all_links as string[]).filter(l => /supplier/i.test(l)).map((l, i) => (
+                    <div key={i}>{l}</div>
+                  ))}
+                  {(debugData.all_links as string[]).filter(l => /supplier/i.test(l)).length === 0 && (
+                    <div className="text-amber-600">No links containing "supplier" found</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <details>
+              <summary className="text-ink-3 cursor-pointer">HTML snippet (first 4KB)</summary>
+              <pre className="mt-1 bg-muted rounded-lg p-2 text-[10px] text-ink-3 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
+                {String(debugData.html_snippet ?? "")}
+              </pre>
+            </details>
+          </div>
+        </details>
+      )}
 
       {/* Error loading supplier list */}
       {fetchError && (
