@@ -36,11 +36,13 @@ from ai_helper import ai_analyze_product
 from db import (search_products_db, get_products_by_vbn, get_product_count, get_last_sync,
                get_distinct_colors, get_setting, set_setting, get_recent_created_products,
                log_vbn_auto_start, log_vbn_auto_finish, get_vbn_auto_history,
-               upsert_catalogue_items, get_catalogue, get_catalogue_count, get_catalogue_last_sync)
+               upsert_catalogue_items, get_catalogue, get_catalogue_count, get_catalogue_last_sync,
+               sync_supplier_catalogue, get_supplier_catalogue, get_all_catalogue_meta,
+               get_supplier_meta_one)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, match_order
-from scraper_catalogue import fetch_supplier_catalogue
+from scraper_catalogue import fetch_supplier_catalogue, fetch_supplier_list
 from scraper_delivery import add_delivery, explore_delivery_form, explore_stock_add_form
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -1976,6 +1978,126 @@ def delivery_debug_stock(batch_id: str, _: dict = Depends(require_permission("ad
     """Explore /company_product_add_stock/index/index/BAT_ID/{batch_id}/ structure."""
     cfg = get_ecuador_cfg()
     return explore_stock_add_form(batch_id, cfg)
+
+
+# ---------------------------------------------------------------------------
+# Catalogue module  (/catalogue/...)
+# ---------------------------------------------------------------------------
+
+@app.get("/catalogue/suppliers")
+def catalogue_suppliers(
+    _: dict = Depends(require_permission("admin:manage")),
+    cfg: Config = Depends(get_cfg),
+):
+    """Scrape /supplier/index/index/ for the current FP system and enrich with
+    local DB sync status.
+
+    Returns:
+      { suppliers: [{fp_supplier_id, nm_supplier, synced: bool,
+                     item_count, synced_at}] }
+    """
+    try:
+        scraped = fetch_supplier_list(cfg)
+    except Exception as exc:
+        raise HTTPException(502, f"Could not fetch supplier list: {exc}")
+
+    # Build lookup from catalogue_meta
+    meta_rows = get_all_catalogue_meta()
+    meta_by_id = {m["supplier_id"]: m for m in meta_rows}
+
+    suppliers = []
+    for s in scraped:
+        sid = s["fp_supplier_id"]
+        meta = meta_by_id.get(sid, {})
+        suppliers.append({
+            "fp_supplier_id": sid,
+            "nm_supplier": s["nm_supplier"],
+            "synced": bool(meta.get("synced_at")),
+            "item_count": meta.get("item_count", 0),
+            "synced_at": meta.get("synced_at"),
+        })
+
+    return {"suppliers": suppliers}
+
+
+@app.get("/catalogue/{supplier_id}/status")
+def catalogue_status(supplier_id: str, _: dict = Depends(require_permission("admin:manage"))):
+    """Return sync status for a single supplier from DB (no scraping)."""
+    meta = get_supplier_meta_one(supplier_id)
+    if not meta:
+        return {"supplier_id": supplier_id, "synced": False, "item_count": 0, "synced_at": None}
+    return {**meta, "synced": bool(meta.get("synced_at"))}
+
+
+@app.post("/catalogue/sync/{supplier_id}/stream")
+def catalogue_sync_stream(
+    supplier_id: str,
+    nm_supplier: str = "",
+    _: dict = Depends(require_permission("admin:manage")),
+    cfg: Config = Depends(get_cfg),
+):
+    """SSE stream: scrape the full catalogue for supplier_id and save to DB.
+
+    Query params:
+      nm_supplier  — display name (stored in catalogue_meta)
+    """
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            def on_status(msg: str) -> None:
+                queue.put({"type": "status", "message": msg})
+
+            on_status(f"Starting catalogue sync for supplier {supplier_id}…")
+            items = fetch_supplier_catalogue(supplier_id, cfg, on_status=on_status)
+            on_status(f"Saving {len(items)} items to database…")
+            saved = sync_supplier_catalogue(
+                supplier_id,
+                nm_supplier or supplier_id,
+                cfg.freshportal_url,
+                items,
+            )
+            queue.put({"type": "result", "data": {
+                "supplier_id": supplier_id,
+                "items_saved": saved,
+                "synced": True,
+            }})
+        except Exception as exc:
+            log.exception("catalogue/sync/%s/stream failed", supplier_id)
+            queue.put({"type": "error", "message": str(exc)})
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    async def generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+        thread.join(timeout=10)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@app.get("/catalogue/{supplier_id}/items")
+def catalogue_items(
+    supplier_id: str,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Return all catalogue items for a supplier from DB."""
+    items = get_supplier_catalogue(supplier_id)
+    return {"supplier_id": supplier_id, "items": items, "count": len(items)}
 
 
 # ---------------------------------------------------------------------------

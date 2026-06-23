@@ -11,11 +11,12 @@ import PhotoUploader from "@/components/PhotoUploader";
 import HistoryTab from "@/components/HistoryTab";
 import AdminTab from "@/components/AdminTab";
 import DeliveryImporter from "@/components/DeliveryImporter";
+import CatalogueSync from "@/components/CatalogueSync";
 import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
 import { useSystem } from "@/contexts/SystemContext";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery";
+type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "catalogue";
 
 /* ─── 3-D tilt hook ─── */
 function useTilt(strength = 10) {
@@ -154,6 +155,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     : tab === "history" ? t.nav.history
     : tab === "admin" ? "Admin"
     : tab === "delivery" ? t.nav.deliveryImporter
+    : tab === "catalogue" ? t.nav.catalogueSync
     : null;
 
   return (
@@ -223,12 +225,13 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
 
 /* ─── Module card wrapper ─── */
 const MODULE_WIDTH: Record<Tab, string> = {
-  vbn:      "max-w-4xl",
-  history:  "max-w-4xl",
-  create:   "max-w-3xl",
-  photos:   "max-w-5xl",
-  admin:    "max-w-3xl",
-  delivery: "max-w-5xl",
+  vbn:       "max-w-4xl",
+  history:   "max-w-4xl",
+  create:    "max-w-3xl",
+  photos:    "max-w-5xl",
+  admin:     "max-w-3xl",
+  delivery:  "max-w-5xl",
+  catalogue: "max-w-4xl",
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }: {
@@ -474,12 +477,29 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
         </svg>
       ),
     },
+    {
+      id: "catalogue",
+      perm: "admin:manage",
+      label: t.nav.catalogueSync,
+      desc: t.hub.catalogueSyncDesc,
+      gradient: "bg-gradient-to-br from-[#5B3FA6] to-[#2E1D66]",
+      stat: t.hub.catalogueSyncStat,
+      statColor: "text-white/60",
+      icon: (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="18" height="18" rx="3" stroke="white" strokeWidth="1.8"/>
+          <path d="M3 9h18" stroke="white" strokeWidth="1.5"/>
+          <path d="M9 9v12" stroke="white" strokeWidth="1.5"/>
+          <path d="M15 14l2 2-4 4" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      ),
+    },
   ];
 
   const isStamgegevens = system.id === "stamgegevens";
   const isEcuador = system.id === "ecuador";
   const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
-  const ECUADOR_ONLY_TABS: Tab[] = ["delivery"];
+  const ECUADOR_ONLY_TABS: Tab[] = ["delivery", "catalogue"];
 
   const tiles = allTiles.filter(tile =>
     permissions.includes(tile.perm) &&
@@ -641,7 +661,8 @@ export default function Dashboard() {
             {tab === "photos"   && <PhotoUploader   lang={lang}/>}
             {tab === "history"  && <HistoryTab      lang={lang}/>}
             {tab === "admin"    && <AdminTab        currentUsername={username}/>}
-            {tab === "delivery" && <DeliveryImporter lang={lang}/>}
+            {tab === "delivery"  && <DeliveryImporter lang={lang}/>}
+            {tab === "catalogue" && <CatalogueSync    lang={lang}/>}
           </ModuleCard>
         )}
       </div>

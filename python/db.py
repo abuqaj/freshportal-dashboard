@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Generator
@@ -750,7 +751,16 @@ def upsert_catalogue_items(supplier_id: str, items: list[dict]) -> int:
 
 
 def get_catalogue(supplier_id: str) -> list[dict]:
-    """Return all catalogue entries for a supplier."""
+    """Return all catalogue entries for a supplier.
+
+    Prefers the per-supplier table (catalogue_sup_{id}); falls back to the
+    legacy shared supplier_catalogue table if the per-supplier table is empty.
+    """
+    # Try new per-supplier table first
+    per_sup = get_supplier_catalogue(supplier_id)
+    if per_sup:
+        return per_sup
+    # Fall back to legacy shared table
     try:
         ensure_catalogue_table()
         with _conn() as conn:
@@ -786,6 +796,192 @@ def get_catalogue_count(supplier_id: str) -> int:
                 return cur.fetchone()[0]
     except Exception:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Per-supplier catalogue tables  (catalogue_sup_{id} + catalogue_meta)
+# ---------------------------------------------------------------------------
+
+def _safe_sup_id(supplier_id: str) -> str:
+    """Return a safe identifier usable as part of a table name."""
+    return re.sub(r"[^a-zA-Z0-9]", "_", str(supplier_id))
+
+
+def _cat_table(supplier_id: str) -> str:
+    return f"catalogue_sup_{_safe_sup_id(supplier_id)}"
+
+
+def ensure_catalogue_meta_table() -> None:
+    """Create the supplier registry table that tracks sync state per supplier."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS catalogue_meta (
+                    supplier_id   TEXT PRIMARY KEY,
+                    nm_supplier   TEXT,
+                    fp_url        TEXT,
+                    item_count    INTEGER DEFAULT 0,
+                    synced_at     TIMESTAMPTZ,
+                    created_at    TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+
+def ensure_supplier_catalogue_table(supplier_id: str) -> None:
+    """Create catalogue_sup_{id} table if it does not exist yet."""
+    table = _cat_table(supplier_id)
+    ensure_catalogue_meta_table()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table} (
+                    fp_product_id  TEXT PRIMARY KEY,
+                    nm_product     TEXT,
+                    nm_variety     TEXT,
+                    nm_species     TEXT,
+                    nu_length      INTEGER,
+                    nu_stems_bunch INTEGER,
+                    id_floricode   TEXT,
+                    extra          JSONB DEFAULT '{{}}'::jsonb,
+                    synced_at      TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute(f"CREATE INDEX IF NOT EXISTS {table}_floricode_idx ON {table}(id_floricode)")
+
+
+def clear_supplier_catalogue(supplier_id: str) -> int:
+    """Delete all rows for this supplier. Returns rows deleted."""
+    table = _cat_table(supplier_id)
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM {table}")
+                return cur.rowcount
+    except Exception:
+        return 0
+
+
+def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, items: list[dict]) -> int:
+    """Full re-sync: clear existing rows then bulk insert. Returns items saved."""
+    table = _cat_table(supplier_id)
+    ensure_supplier_catalogue_table(supplier_id)
+    ensure_catalogue_meta_table()
+
+    now = datetime.now(timezone.utc)
+
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            # Clear old data
+            cur.execute(f"DELETE FROM {table}")
+
+            # Bulk insert
+            count = 0
+            for item in items:
+                cur.execute(f"""
+                    INSERT INTO {table}
+                        (fp_product_id, nm_product, nm_variety, nm_species,
+                         nu_length, nu_stems_bunch, id_floricode, synced_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (fp_product_id) DO UPDATE SET
+                        nm_product     = EXCLUDED.nm_product,
+                        nm_variety     = EXCLUDED.nm_variety,
+                        nm_species     = EXCLUDED.nm_species,
+                        nu_length      = EXCLUDED.nu_length,
+                        nu_stems_bunch = EXCLUDED.nu_stems_bunch,
+                        id_floricode   = EXCLUDED.id_floricode,
+                        synced_at      = EXCLUDED.synced_at
+                """, (
+                    item.get("fp_product_id", ""),
+                    item.get("nm_product"),
+                    item.get("nm_variety"),
+                    item.get("nm_species"),
+                    item.get("nu_length"),
+                    item.get("nu_stems_bunch"),
+                    item.get("id_floricode"),
+                    now,
+                ))
+                count += 1
+
+            # Update meta
+            cur.execute("""
+                INSERT INTO catalogue_meta (supplier_id, nm_supplier, fp_url, item_count, synced_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (supplier_id) DO UPDATE SET
+                    nm_supplier = EXCLUDED.nm_supplier,
+                    fp_url      = EXCLUDED.fp_url,
+                    item_count  = EXCLUDED.item_count,
+                    synced_at   = EXCLUDED.synced_at
+            """, (supplier_id, nm_supplier, fp_url, count, now))
+
+        conn.commit()
+
+    return count
+
+
+def get_supplier_catalogue(supplier_id: str) -> list[dict]:
+    """Return all catalogue items for supplier from its own table."""
+    table = _cat_table(supplier_id)
+    try:
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT fp_product_id, nm_product, nm_variety, nm_species,
+                           nu_length, nu_stems_bunch, id_floricode, synced_at
+                    FROM {table}
+                    ORDER BY nm_product
+                """)
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(r)
+                    if d.get("synced_at") and hasattr(d["synced_at"], "isoformat"):
+                        d["synced_at"] = d["synced_at"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception:
+        return []
+
+
+def get_all_catalogue_meta() -> list[dict]:
+    """Return all rows from catalogue_meta (one per synced supplier)."""
+    try:
+        ensure_catalogue_meta_table()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT supplier_id, nm_supplier, fp_url, item_count, synced_at
+                    FROM catalogue_meta
+                    ORDER BY nm_supplier
+                """)
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(r)
+                    if d.get("synced_at") and hasattr(d["synced_at"], "isoformat"):
+                        d["synced_at"] = d["synced_at"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception:
+        return []
+
+
+def get_supplier_meta_one(supplier_id: str) -> dict | None:
+    """Return catalogue_meta row for one supplier, or None if not synced."""
+    try:
+        ensure_catalogue_meta_table()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT supplier_id, nm_supplier, fp_url, item_count, synced_at
+                    FROM catalogue_meta WHERE supplier_id = %s
+                """, (supplier_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                if d.get("synced_at") and hasattr(d["synced_at"], "isoformat"):
+                    d["synced_at"] = d["synced_at"].isoformat()
+                return d
+    except Exception:
+        return None
 
 
 def get_catalogue_last_sync(supplier_id: str) -> str | None:

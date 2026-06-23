@@ -210,3 +210,88 @@ def fetch_supplier_catalogue(
             browser.close()
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Supplier list
+# ---------------------------------------------------------------------------
+
+def fetch_supplier_list(
+    cfg: Config,
+    on_status: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """Scrape /supplier/index/index/ and return [{fp_supplier_id, nm_supplier}].
+
+    FreshPortal supplier pages typically contain a table where each row has:
+      - data-id attribute OR a link like /supplier/edit/index/SUP_ID/123/
+      - First text column = supplier name
+    """
+    from scraper_fp import _launch_browser, _login, _block_resources
+
+    def _s(msg: str) -> None:
+        if on_status:
+            on_status(msg)
+
+    _s("Logging into FreshPortal…")
+
+    suppliers: list[dict] = []
+
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        context = browser.new_context()
+        page = context.new_page()
+        _block_resources(page)
+        try:
+            _login(page, cfg)
+
+            url = f"{cfg.freshportal_url}/supplier/index/index/"
+            _s(f"Loading supplier list from {url}…")
+            page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+            try:
+                page.wait_for_selector("table tbody tr", timeout=15_000)
+            except Exception:
+                pass
+
+            soup = BeautifulSoup(page.content(), "lxml")
+
+            for tr in soup.select("table tbody tr, table tr[data-id]"):
+                # Supplier ID: data-id attr or from edit link
+                sup_id = tr.get("data-id", "").strip()
+                if not sup_id:
+                    for a in tr.find_all("a", href=True):
+                        m = re.search(
+                            r"/(?:SUP_ID|supplier_id|edit(?:/index)?)/(\d+)",
+                            a["href"],
+                            re.IGNORECASE,
+                        )
+                        if m:
+                            sup_id = m.group(1)
+                            break
+                if not sup_id:
+                    continue
+
+                # Supplier name: first non-empty text cell
+                cells = tr.find_all("td")
+                nm = ""
+                for cell in cells:
+                    text = cell.get_text(" ", strip=True)
+                    if text and not text.isdigit():
+                        nm = text
+                        break
+
+                if not nm:
+                    continue
+
+                suppliers.append({"fp_supplier_id": sup_id, "nm_supplier": nm})
+
+            _s(f"Found {len(suppliers)} suppliers")
+
+        except Exception as exc:
+            log.exception("fetch_supplier_list failed")
+            _s(f"Error: {exc}")
+            raise
+        finally:
+            context.close()
+            browser.close()
+
+    return suppliers
