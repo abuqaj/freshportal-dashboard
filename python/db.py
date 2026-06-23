@@ -679,6 +679,102 @@ def log_vbn_auto_finish(run_id: int, checked: int, fixed: int, fixes: list, erro
 
 
 # ---------------------------------------------------------------------------
+# Supplier registry  (fp_suppliers)
+# ---------------------------------------------------------------------------
+
+def ensure_suppliers_table() -> None:
+    """One row per (fp_url, fp_supplier_id) — the list of known suppliers."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS fp_suppliers (
+                    fp_url         TEXT NOT NULL,
+                    fp_supplier_id TEXT NOT NULL,
+                    nm_supplier    TEXT,
+                    discovered_at  TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at     TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (fp_url, fp_supplier_id)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS fp_suppliers_url_idx
+                ON fp_suppliers(fp_url)
+            """)
+
+
+def upsert_suppliers(fp_url: str, suppliers: list[dict]) -> int:
+    """Upsert scraped supplier list for a given FP system. Returns row count."""
+    if not suppliers:
+        return 0
+    ensure_suppliers_table()
+    now = datetime.now(timezone.utc)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for s in suppliers:
+                cur.execute("""
+                    INSERT INTO fp_suppliers (fp_url, fp_supplier_id, nm_supplier, discovered_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (fp_url, fp_supplier_id) DO UPDATE SET
+                        nm_supplier = EXCLUDED.nm_supplier,
+                        updated_at  = EXCLUDED.updated_at
+                """, (fp_url, s["fp_supplier_id"], s.get("nm_supplier", ""), now, now))
+        conn.commit()
+    return len(suppliers)
+
+
+def get_suppliers(fp_url: str) -> list[dict]:
+    """Return all suppliers for fp_url joined with catalogue sync status."""
+    try:
+        ensure_suppliers_table()
+        ensure_catalogue_meta_table()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        s.fp_supplier_id,
+                        s.nm_supplier,
+                        s.discovered_at,
+                        s.updated_at,
+                        m.item_count,
+                        m.synced_at,
+                        (m.synced_at IS NOT NULL) AS synced
+                    FROM fp_suppliers s
+                    LEFT JOIN catalogue_meta m
+                        ON m.supplier_id = s.fp_supplier_id
+                       AND m.fp_url      = s.fp_url
+                    WHERE s.fp_url = %s
+                    ORDER BY s.nm_supplier
+                """, (fp_url,))
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(r)
+                    for k in ("discovered_at", "updated_at", "synced_at"):
+                        if d.get(k) and hasattr(d[k], "isoformat"):
+                            d[k] = d[k].isoformat()
+                    d["synced"] = bool(d.get("synced"))
+                    d["item_count"] = d.get("item_count") or 0
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("get_suppliers failed: %s", exc)
+        return []
+
+
+def get_suppliers_count(fp_url: str) -> int:
+    """Return number of known suppliers for this FP system (0 if table empty)."""
+    try:
+        ensure_suppliers_table()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM fp_suppliers WHERE fp_url = %s", (fp_url,)
+                )
+                return cur.fetchone()[0]
+    except Exception:
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # Supplier catalogue
 # ---------------------------------------------------------------------------
 

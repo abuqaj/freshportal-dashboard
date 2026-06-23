@@ -38,7 +38,8 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                log_vbn_auto_start, log_vbn_auto_finish, get_vbn_auto_history,
                upsert_catalogue_items, get_catalogue, get_catalogue_count, get_catalogue_last_sync,
                sync_supplier_catalogue, get_supplier_catalogue, get_all_catalogue_meta,
-               get_supplier_meta_one)
+               get_supplier_meta_one,
+               upsert_suppliers, get_suppliers, get_suppliers_count)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, match_order
@@ -1986,45 +1987,46 @@ def delivery_debug_stock(batch_id: str, _: dict = Depends(require_permission("ad
 
 @app.get("/catalogue/suppliers")
 def catalogue_suppliers(
+    refresh: bool = False,
     debug: bool = False,
     _: dict = Depends(require_permission("admin:manage")),
     cfg: Config = Depends(get_cfg),
 ):
-    """Scrape /supplier/index/index/ for the current FP system and enrich with
-    local DB sync status.
+    """Return supplier list with catalogue sync status.
 
-    ?debug=true  — returns raw diagnostics alongside suppliers (same Playwright
-                   session, no extra memory cost).
+    Serves from DB cache by default.  Pass ?refresh=true to re-scrape
+    and update the cache.  ?debug=true adds page diagnostics (same
+    Playwright session — no extra memory cost).
     """
+    fp_url = cfg.freshportal_url
+    debug_payload: dict = {}
+
+    if not refresh:
+        cached = get_suppliers(fp_url)
+        if cached:
+            return {"suppliers": cached, "source": "db"}
+
+    # Need to scrape (first load or forced refresh)
     try:
         result = fetch_supplier_list(cfg, debug=debug)
     except Exception as exc:
         raise HTTPException(502, f"Could not fetch supplier list: {exc}")
 
     if debug:
-        # result is a dict with parsed_suppliers + diagnostics
-        scraped = result.get("parsed_suppliers", [])  # type: ignore[union-attr]
+        scraped: list[dict] = result.get("parsed_suppliers", [])  # type: ignore[union-attr]
+        debug_payload = {k: v for k, v in result.items() if k != "parsed_suppliers"}  # type: ignore[union-attr]
     else:
         scraped = result  # type: ignore[assignment]
 
-    meta_rows = get_all_catalogue_meta()
-    meta_by_id = {m["supplier_id"]: m for m in meta_rows}
+    # Persist to DB
+    upsert_suppliers(fp_url, scraped)
 
-    suppliers = []
-    for s in scraped:
-        sid = s["fp_supplier_id"]
-        meta = meta_by_id.get(sid, {})
-        suppliers.append({
-            "fp_supplier_id": sid,
-            "nm_supplier": s["nm_supplier"],
-            "synced": bool(meta.get("synced_at")),
-            "item_count": meta.get("item_count", 0),
-            "synced_at": meta.get("synced_at"),
-        })
+    # Return with catalogue sync status (from DB join)
+    suppliers = get_suppliers(fp_url)
 
-    response: dict = {"suppliers": suppliers}
+    response: dict = {"suppliers": suppliers, "source": "scraped"}
     if debug:
-        response["debug"] = {k: v for k, v in result.items() if k != "parsed_suppliers"}  # type: ignore[union-attr]
+        response["debug"] = debug_payload
     return response
 
 

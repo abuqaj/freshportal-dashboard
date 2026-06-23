@@ -11,6 +11,7 @@ interface Supplier {
   synced: boolean;
   item_count: number;
   synced_at: string | null;
+  discovered_at?: string;
 }
 
 type SyncState = "idle" | "syncing" | "done" | "error";
@@ -26,22 +27,26 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
   const tc = t.catalogue;
 
   const [loading, setLoading] = useState(true);
+  const [source, setSource] = useState<"db" | "scraped" | null>(null);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [fetchError, setFetchError] = useState("");
   const [syncStates, setSyncStates] = useState<Record<string, SupplierSyncState>>({});
   const logsEndRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [nameFilter, setNameFilter] = useState("");
   const [debugData, setDebugData] = useState<Record<string, unknown> | null>(null);
   const [debugLoading, setDebugLoading] = useState(false);
 
-  // Load suppliers on mount
-  const loadSuppliers = useCallback(async () => {
+  const loadSuppliers = useCallback(async (refresh = false) => {
     setLoading(true);
     setFetchError("");
     try {
-      const res = await fetch(`${RAILWAY}/catalogue/suppliers`);
+      const params = new URLSearchParams();
+      if (refresh) params.set("refresh", "true");
+      const res = await fetch(`${RAILWAY}/catalogue/suppliers?${params}`);
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setSuppliers(data.suppliers ?? []);
+      setSource(data.source ?? null);
     } catch (e: unknown) {
       setFetchError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -54,13 +59,16 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
   function setSyncField(supplierId: string, patch: Partial<SupplierSyncState>) {
     setSyncStates(prev => ({
       ...prev,
-      [supplierId]: { ...(prev[supplierId] ?? { state: "idle" as SyncState, logs: [], error: "" }), ...patch },
+      [supplierId]: {
+        ...(prev[supplierId] ?? { state: "idle" as SyncState, logs: [], error: "" }),
+        ...patch,
+      },
     }));
   }
 
   function addLog(supplierId: string, msg: string) {
     setSyncStates(prev => {
-      const cur = prev[supplierId] ?? { state: "idle", logs: [], error: "" };
+      const cur = prev[supplierId] ?? { state: "idle" as SyncState, logs: [], error: "" };
       return { ...prev, [supplierId]: { ...cur, logs: [...cur.logs, msg] } };
     });
     setTimeout(() => {
@@ -72,10 +80,12 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
     setDebugLoading(true);
     setDebugData(null);
     try {
-      const res = await fetch(`${RAILWAY}/catalogue/suppliers?debug=true`);
+      const res = await fetch(`${RAILWAY}/catalogue/suppliers?debug=true&refresh=true`);
       const data = await res.json();
-      // Merge suppliers into state and show the debug block
-      if (data.suppliers) setSuppliers(data.suppliers);
+      if (data.suppliers) {
+        setSuppliers(data.suppliers);
+        setSource(data.source ?? null);
+      }
       setDebugData(data.debug ?? data);
     } catch (e: unknown) {
       setDebugData({ error: String(e) });
@@ -102,7 +112,6 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -117,7 +126,6 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
           if (ev.type === "status") addLog(fp_supplier_id, ev.message);
           if (ev.type === "result") {
             setSyncField(fp_supplier_id, { state: "done" });
-            // Update supplier row in list
             setSuppliers(prev =>
               prev.map(s =>
                 s.fp_supplier_id === fp_supplier_id
@@ -134,14 +142,19 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
     }
   }
 
-  function formatDate(iso: string | null) {
+  function formatDate(iso: string | null | undefined) {
     if (!iso) return "—";
-    const d = new Date(iso);
-    return d.toLocaleDateString(lang === "nl" ? "nl-NL" : lang === "pl" ? "pl-PL" : lang === "es" ? "es-ES" : "en-GB", {
-      day: "2-digit", month: "short", year: "numeric",
-      hour: "2-digit", minute: "2-digit",
-    });
+    return new Date(iso).toLocaleString(
+      lang === "nl" ? "nl-NL" : lang === "pl" ? "pl-PL" : lang === "es" ? "es-ES" : "en-GB",
+      { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }
+    );
   }
+
+  const filtered = suppliers.filter(s =>
+    !nameFilter || s.nm_supplier.toLowerCase().includes(nameFilter.toLowerCase())
+  );
+
+  const syncedCount = suppliers.filter(s => s.synced).length;
 
   return (
     <div className="p-6 flex flex-col gap-5">
@@ -154,13 +167,13 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
         <div className="flex gap-2 shrink-0">
           <button
             onClick={handleDebug}
-            disabled={debugLoading}
+            disabled={debugLoading || loading}
             className="h-8 px-3 rounded-xl text-xs font-medium border border-border text-ink-3 hover:text-ink disabled:opacity-40 transition-colors"
           >
             {debugLoading ? "…" : "Debug"}
           </button>
           <button
-            onClick={loadSuppliers}
+            onClick={() => loadSuppliers(true)}
             disabled={loading}
             className="h-8 px-3 rounded-xl text-xs font-medium border border-border text-ink-3 hover:text-ink disabled:opacity-40 transition-colors"
           >
@@ -169,11 +182,127 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
         </div>
       </div>
 
+      {/* Stats bar */}
+      {!loading && suppliers.length > 0 && (
+        <div className="flex items-center gap-3 text-xs flex-wrap">
+          <span className="px-2.5 py-1 rounded-full bg-muted border border-border text-ink-3 font-medium">
+            {suppliers.length} {tc.colSupplier.toLowerCase()}
+          </span>
+          {syncedCount > 0 && (
+            <span className="px-2.5 py-1 rounded-full bg-emerald/10 border border-emerald/20 text-emerald font-medium">
+              {syncedCount} {tc.synced}
+            </span>
+          )}
+          {source === "db" && (
+            <span className="px-2.5 py-1 rounded-full bg-muted border border-border text-ink-3/60">
+              {tc.fromCache}
+            </span>
+          )}
+          {source === "scraped" && (
+            <span className="px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-600">
+              {tc.justScraped}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Error */}
+      {fetchError && (
+        <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20 text-sm text-red-500 font-mono break-all">
+          {fetchError}
+        </div>
+      )}
+
+      {/* Loading skeleton */}
+      {loading && !fetchError && (
+        <div className="space-y-2">
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="h-12 rounded-xl bg-muted animate-pulse" style={{ opacity: 1 - i * 0.15 }}/>
+          ))}
+        </div>
+      )}
+
+      {/* Table */}
+      {!loading && suppliers.length > 0 && (
+        <div className="rounded-2xl border border-border overflow-hidden flex flex-col">
+          {/* Filter bar */}
+          <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border bg-muted/50">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="text-ink-3 shrink-0">
+              <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M10 10l2.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            <input
+              type="text"
+              value={nameFilter}
+              onChange={e => setNameFilter(e.target.value)}
+              placeholder={tc.filterPlaceholder}
+              className="flex-1 text-sm bg-transparent outline-none text-ink placeholder:text-ink-3/50 min-w-0"
+            />
+            {nameFilter && (
+              <button
+                onClick={() => setNameFilter("")}
+                className="text-[11px] text-ink-3 hover:text-ink transition-colors shrink-0"
+              >
+                {tc.clearFilter}
+              </button>
+            )}
+            <span className="text-[11px] text-ink-3 shrink-0 tabular-nums">
+              {filtered.length}{nameFilter ? ` / ${suppliers.length}` : ""}
+            </span>
+          </div>
+
+          {/* Scrollable table body */}
+          <div className="overflow-y-auto" style={{ maxHeight: "calc(100vh - 380px)", minHeight: "200px" }}>
+            <table className="w-full text-sm border-collapse">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-muted border-b border-border">
+                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-ink-3 w-10">#</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-ink-3">{tc.colSupplier}</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-ink-3 w-28">{tc.colProducts}</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-ink-3 w-44">{tc.colLastSync}</th>
+                  <th className="px-4 py-2.5 text-right text-xs font-semibold text-ink-3 w-32">{tc.colAction}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center text-sm text-ink-3">
+                      {tc.noMatch}
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map((supplier, idx) => {
+                    const ss = syncStates[supplier.fp_supplier_id] ?? { state: "idle" as SyncState, logs: [], error: "" };
+                    return (
+                      <SupplierRow
+                        key={supplier.fp_supplier_id}
+                        index={idx + 1}
+                        supplier={supplier}
+                        syncState={ss}
+                        logsEndRef={el => { logsEndRefs.current[supplier.fp_supplier_id] = el; }}
+                        onSync={() => handleSync(supplier)}
+                        formatDate={formatDate}
+                        t={tc}
+                      />
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!loading && !fetchError && suppliers.length === 0 && (
+        <div className="text-center py-12 text-sm text-ink-3">{tc.noSuppliers}</div>
+      )}
+
       {/* Debug panel */}
       {debugData && (
         <details open className="rounded-2xl border border-amber-300/40 bg-amber-50/30 overflow-hidden">
           <summary className="px-4 py-2.5 text-xs font-semibold text-amber-700 cursor-pointer select-none">
-            Debug — /supplier/index/index/
+            Debug — /supplier/index_v2/index/
           </summary>
           <div className="px-4 pb-4 flex flex-col gap-3 text-xs">
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono">
@@ -183,54 +312,34 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
               <span className="text-ink">{String(debugData.page_title ?? "—")}</span>
               <span className="text-ink-3">Tables found</span>
               <span className="text-ink">{String(debugData.table_count ?? "—")}</span>
-              <span className="text-ink-3">Total &lt;tr&gt; elements</span>
-              <span className="text-ink">{Array.isArray(debugData.all_tr_samples) ? `${(debugData.all_tr_samples as unknown[]).length} shown (of all)` : "—"}</span>
               <span className="text-ink-3">Rows with data-id</span>
               <span className="text-ink">{Array.isArray(debugData.rows_with_dataid) ? (debugData.rows_with_dataid as unknown[]).length : "—"}</span>
               <span className="text-ink-3">Parsed suppliers</span>
               <span className="text-ink font-semibold">{Array.isArray(debugData.parsed_suppliers) ? (debugData.parsed_suppliers as unknown[]).length : "—"}</span>
             </div>
-
-            {Array.isArray(debugData.parsed_suppliers) && (debugData.parsed_suppliers as {fp_supplier_id: string; nm_supplier: string}[]).length > 0 && (
+            {Array.isArray(debugData.supplier_links) && (
               <div>
-                <p className="text-ink-3 mb-1 font-semibold">Parsed suppliers:</p>
-                <div className="bg-muted rounded-lg p-2 space-y-0.5 max-h-32 overflow-y-auto">
-                  {(debugData.parsed_suppliers as {fp_supplier_id: string; nm_supplier: string}[]).map((s, i) => (
-                    <div key={i} className="text-ink font-mono">ID {s.fp_supplier_id} — {s.nm_supplier}</div>
-                  ))}
+                <p className="text-ink-3 mb-1 font-semibold">Supplier links:</p>
+                <div className="bg-muted rounded-lg p-2 max-h-28 overflow-y-auto font-mono text-[10px] text-ink-3 space-y-0.5">
+                  {(debugData.supplier_links as string[]).map((l, i) => <div key={i}>{l}</div>)}
+                  {(debugData.supplier_links as string[]).length === 0 && <div className="text-amber-600">none</div>}
                 </div>
               </div>
             )}
-
-            {Array.isArray(debugData.all_tr_samples) && (
+            {Array.isArray(debugData.tr_samples) && (
               <div>
-                <p className="text-ink-3 mb-1 font-semibold">First &lt;tr&gt; samples (raw HTML):</p>
-                <div className="bg-muted rounded-lg p-2 space-y-2 max-h-48 overflow-y-auto font-mono text-[10px] text-ink-3">
-                  {(debugData.all_tr_samples as string[]).map((html, i) => (
+                <p className="text-ink-3 mb-1 font-semibold">First &lt;tr&gt; samples:</p>
+                <div className="bg-muted rounded-lg p-2 space-y-1.5 max-h-48 overflow-y-auto font-mono text-[10px] text-ink-3">
+                  {(debugData.tr_samples as string[]).map((h, i) => (
                     <div key={i} className="border-b border-border/40 pb-1">
-                      <span className="text-emerald font-bold">tr[{i}]: </span>{html}
+                      <span className="text-emerald font-bold">tr[{i}]: </span>{h}
                     </div>
                   ))}
                 </div>
               </div>
             )}
-
-            {Array.isArray(debugData.all_links) && (
-              <div>
-                <p className="text-ink-3 mb-1 font-semibold">All links ({(debugData.all_links as string[]).length}):</p>
-                <div className="bg-muted rounded-lg p-2 max-h-32 overflow-y-auto font-mono text-[10px] text-ink-3 space-y-0.5">
-                  {(debugData.all_links as string[]).filter(l => /supplier/i.test(l)).map((l, i) => (
-                    <div key={i}>{l}</div>
-                  ))}
-                  {(debugData.all_links as string[]).filter(l => /supplier/i.test(l)).length === 0 && (
-                    <div className="text-amber-600">No links containing "supplier" found</div>
-                  )}
-                </div>
-              </div>
-            )}
-
             <details>
-              <summary className="text-ink-3 cursor-pointer">HTML snippet (first 4KB)</summary>
+              <summary className="text-ink-3 cursor-pointer">HTML snippet (first 3KB)</summary>
               <pre className="mt-1 bg-muted rounded-lg p-2 text-[10px] text-ink-3 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
                 {String(debugData.html_snippet ?? "")}
               </pre>
@@ -238,74 +347,19 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
           </div>
         </details>
       )}
-
-      {/* Error loading supplier list */}
-      {fetchError && (
-        <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20 text-sm text-red-500">
-          {fetchError}
-        </div>
-      )}
-
-      {/* Loading skeleton */}
-      {loading && !fetchError && (
-        <div className="space-y-2">
-          {[1, 2, 3].map(i => (
-            <div key={i} className="h-14 rounded-2xl bg-muted animate-pulse" />
-          ))}
-        </div>
-      )}
-
-      {/* Supplier table */}
-      {!loading && suppliers.length > 0 && (
-        <div className="rounded-2xl border border-border overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-muted border-b border-border">
-                <th className="px-4 py-2.5 text-left text-xs font-semibold text-ink-3">{tc.colSupplier}</th>
-                <th className="px-4 py-2.5 text-left text-xs font-semibold text-ink-3 w-32">{tc.colProducts}</th>
-                <th className="px-4 py-2.5 text-left text-xs font-semibold text-ink-3 w-44">{tc.colLastSync}</th>
-                <th className="px-4 py-2.5 text-right text-xs font-semibold text-ink-3 w-36">{tc.colAction}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {suppliers.map(supplier => {
-                const ss = syncStates[supplier.fp_supplier_id] ?? { state: "idle", logs: [], error: "" };
-                const isSyncing = ss.state === "syncing";
-                return (
-                  <SupplierRow
-                    key={supplier.fp_supplier_id}
-                    supplier={supplier}
-                    syncState={ss}
-                    logsEndRef={el => { logsEndRefs.current[supplier.fp_supplier_id] = el; }}
-                    onSync={() => handleSync(supplier)}
-                    formatDate={formatDate}
-                    t={tc}
-                  />
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Empty state */}
-      {!loading && !fetchError && suppliers.length === 0 && (
-        <div className="text-center py-12 text-sm text-ink-3">
-          {tc.noSuppliers}
-        </div>
-      )}
     </div>
   );
 }
 
 function SupplierRow({
-  supplier, syncState, logsEndRef, onSync, formatDate, t,
+  index, supplier, syncState, logsEndRef, onSync, formatDate, t,
 }: {
+  index: number;
   supplier: Supplier;
   syncState: SupplierSyncState;
   logsEndRef: (el: HTMLDivElement | null) => void;
   onSync: () => void;
-  formatDate: (iso: string | null) => string;
+  formatDate: (iso: string | null | undefined) => string;
   t: (typeof translations)[Lang]["catalogue"];
 }) {
   const { fp_supplier_id, nm_supplier, synced, item_count, synced_at } = supplier;
@@ -317,40 +371,39 @@ function SupplierRow({
   return (
     <>
       <tr className="border-b border-border/60 hover:bg-muted/40 transition-colors">
-        {/* Supplier name + sync indicator */}
-        <td className="px-4 py-3">
-          <div className="flex items-center gap-2.5">
+        <td className="px-4 py-2.5 text-xs text-ink-3 tabular-nums">{index}</td>
+
+        <td className="px-4 py-2.5">
+          <div className="flex items-center gap-2">
             {synced && state === "idle" ? (
-              <span className="relative w-2 h-2 flex-shrink-0">
+              <span className="relative w-2 h-2 shrink-0">
                 <span className="absolute inset-0 rounded-full bg-emerald pulse-ring"/>
                 <span className="relative w-2 h-2 rounded-full bg-emerald block"/>
               </span>
             ) : isSyncing ? (
-              <svg className="animate-spin w-3.5 h-3.5 text-emerald flex-shrink-0" viewBox="0 0 24 24" fill="none">
+              <svg className="animate-spin w-3 h-3 text-emerald shrink-0" viewBox="0 0 24 24" fill="none">
                 <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/>
                 <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
               </svg>
             ) : (
-              <span className="w-2 h-2 rounded-full bg-ink-3/20 flex-shrink-0"/>
+              <span className="w-2 h-2 rounded-full bg-ink-3/20 shrink-0"/>
             )}
             <div>
-              <div className="font-medium text-ink">{nm_supplier}</div>
-              <div className="text-[11px] text-ink-3 font-mono">ID: {fp_supplier_id}</div>
+              <span className="font-medium text-ink">{nm_supplier}</span>
+              <span className="ml-2 text-[10px] text-ink-3/50 font-mono">#{fp_supplier_id}</span>
             </div>
           </div>
         </td>
 
-        {/* Product count */}
-        <td className="px-4 py-3 text-sm">
-          {synced || isDone ? (
+        <td className="px-4 py-2.5 text-sm tabular-nums">
+          {(synced || isDone) ? (
             <span className="font-semibold text-ink">{item_count.toLocaleString()}</span>
           ) : (
-            <span className="text-ink-3/50">—</span>
+            <span className="text-ink-3/40">—</span>
           )}
         </td>
 
-        {/* Last sync */}
-        <td className="px-4 py-3 text-xs text-ink-3">
+        <td className="px-4 py-2.5 text-xs text-ink-3">
           {isDone ? (
             <span className="text-emerald font-medium">{t.justSynced}</span>
           ) : isError ? (
@@ -360,8 +413,7 @@ function SupplierRow({
           )}
         </td>
 
-        {/* Action */}
-        <td className="px-4 py-3 text-right">
+        <td className="px-4 py-2.5 text-right">
           <button
             onClick={onSync}
             disabled={isSyncing}
@@ -371,35 +423,26 @@ function SupplierRow({
                 : "bg-emerald text-white hover:bg-emerald/90"
               }`}
           >
-            {isSyncing
-              ? t.syncing
-              : synced && state === "idle"
-                ? t.resync
-                : t.syncBtn
-            }
+            {isSyncing ? t.syncing : synced && state === "idle" ? t.resync : t.syncBtn}
           </button>
         </td>
       </tr>
 
-      {/* Expandable log row */}
+      {/* Inline log */}
       {(isSyncing || isDone || isError) && logs.length > 0 && (
-        <tr className="border-b border-border/60 bg-muted/30">
-          <td colSpan={4} className="px-6 pb-3 pt-1">
-            <div className="bg-muted rounded-xl p-3 max-h-32 overflow-y-auto font-mono text-[11px] space-y-0.5">
+        <tr className="border-b border-border/60 bg-muted/20">
+          <td colSpan={5} className="px-6 pb-3 pt-1">
+            <div className="bg-muted rounded-xl p-3 max-h-28 overflow-y-auto font-mono text-[11px] space-y-0.5">
               {logs.map((l, i) => (
                 <div key={i} className={
                   l.startsWith("Error") || l.includes("failed") ? "text-red-500" :
-                  l.includes("complete") || l.includes("Saving") ? "text-emerald" :
+                  l.includes("complete") || l.includes("Saving") || l.includes("✓") ? "text-emerald" :
                   "text-ink-3"
-                }>
-                  {l}
-                </div>
+                }>{l}</div>
               ))}
               <div ref={logsEndRef}/>
             </div>
-            {isError && error && (
-              <p className="text-xs text-red-500 mt-1.5">{error}</p>
-            )}
+            {isError && error && <p className="text-xs text-red-500 mt-1">{error}</p>}
           </td>
         </tr>
       )}
