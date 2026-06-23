@@ -211,7 +211,7 @@ function SupplierRow({
   logsEndRef: (el: HTMLDivElement | null) => void;
   onSync: () => void;
   formatDate: (iso: string | null) => string;
-  t: ReturnType<typeof translations[keyof typeof translations]>["catalogue"];
+  t: (typeof translations)[Lang]["catalogue"];
 }) {
   const { fp_supplier_id, nm_supplier, synced, item_count, synced_at } = supplier;
   const { state, logs, error } = syncState;
