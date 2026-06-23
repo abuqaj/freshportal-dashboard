@@ -26,9 +26,11 @@ _SORT_FIELD_MAP: dict[str, str] = {
     "STE_Description":     "nm_product",
     "PRO_Number":          "_pro_number",   # internal ID fallback
     "PRO_VbnNumber":       "id_floricode",
-    "STE_QuantityPerPack": "nu_stems_bunch",
+    "STE_QuantityPerPack": "nu_stems_pack",  # content = qty per STE/pack
     "SEF_Length0":         "nu_length",
-    "SEF_StemsPerBunch":   "nu_stems_bunch",
+    "SEF_StemsPerBunch":   "nu_stems_bunch",  # L11 = stems per individual bunch
+    "FUS_Code":            "nm_packaging",
+    "CST_Code":            "nm_maturity",
 }
 
 # Fallback: text-keyword → field for non-v2 pages (no data-sort-field)
@@ -44,7 +46,9 @@ _COL_MAP = {
     "stuks":        "nu_stems_bunch",
     "stems":        "nu_stems_bunch",
     "bunch":        "nu_stems_bunch",
-    "content":      "nu_stems_bunch",
+    "content":      "nu_stems_pack",
+    "packaging":    "nm_packaging",
+    "maturity":     "nm_maturity",
     "soort":        "nm_species",
     "species":      "nm_species",
     "ras":          "nm_variety",
@@ -148,7 +152,7 @@ def _parse_rows(soup: BeautifulSoup, col_map: dict[int, str]) -> list[dict]:
             if not field:
                 continue
             val = cell.get_text(" ", strip=True)
-            if field in ("nu_length", "nu_stems_bunch"):
+            if field in ("nu_length", "nu_stems_bunch", "nu_stems_pack"):
                 try:
                     item[field] = int(re.search(r"\d+", val).group())
                 except (AttributeError, ValueError):
@@ -171,33 +175,23 @@ def _parse_rows(soup: BeautifulSoup, col_map: dict[int, str]) -> list[dict]:
     return items
 
 
-def _get_last_page(soup: BeautifulSoup) -> int:
-    """Extract last page number from FreshPortal pagination."""
-    # Common patterns: "Pagina X van Y" or data-page attributes
-    pager = soup.find(class_=re.compile("pager|pagination", re.I))
-    if pager:
-        # Find last numbered page link
-        links = pager.find_all("a", href=True)
-        nums = []
-        for a in links:
-            m = re.search(r"[?&]page=(\d+)", a["href"])
-            if m:
-                nums.append(int(m.group(1)))
-        if nums:
-            return max(nums)
-        # Text like "van 7"
-        m = re.search(r"van\s+(\d+)", pager.get_text(), re.I)
-        if m:
-            return int(m.group(1))
-    return 1
-
-
 _EXTRACT_JS = """() => {
-    const table  = document.querySelector('table');
-    const pager  = document.querySelector(
-        '.pager, .pagination, [class*="pager"], [class*="pagination"]'
-    );
-    return (table ? table.outerHTML : '') + (pager ? pager.outerHTML : '');
+    const table = document.querySelector('table');
+    return table ? table.outerHTML : '';
+}"""
+
+_LAST_PAGE_JS = """() => {
+    // Scan ALL <a href> tags for the highest ?page=N value
+    let maxPage = 1;
+    document.querySelectorAll('a[href]').forEach(a => {
+        const m = (a.getAttribute('href') || '').match(/[?&]page=(\\d+)/);
+        if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
+    });
+    // Also check for text like "van 7" or "of 7" anywhere on the page
+    const bodyText = document.body ? document.body.innerText : '';
+    const m = bodyText.match(/(?:van|of)\\s+(\\d+)/i);
+    if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
+    return maxPage;
 }"""
 
 
@@ -257,7 +251,7 @@ def fetch_supplier_catalogue(
             header_row = _find_header_row(soup)
             col_map = _detect_columns(header_row)
             _s(f"Detected columns: {col_map}")
-            last_page = _get_last_page(soup)
+            last_page = page.evaluate(_LAST_PAGE_JS)
             _s(f"Pages to scrape: {last_page}")
 
             # Parse first page

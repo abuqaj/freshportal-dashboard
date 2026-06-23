@@ -937,12 +937,24 @@ def ensure_supplier_catalogue_table(supplier_id: str) -> None:
                     nm_species     TEXT,
                     nu_length      INTEGER,
                     nu_stems_bunch INTEGER,
+                    nu_stems_pack  INTEGER,
+                    nm_packaging   TEXT,
+                    nm_maturity    TEXT,
                     id_floricode   TEXT,
                     extra          JSONB DEFAULT '{{}}'::jsonb,
                     synced_at      TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
             cur.execute(f"CREATE INDEX IF NOT EXISTS {table}_floricode_idx ON {table}(id_floricode)")
+            # Migrate existing tables that predate these columns
+            for col, coltype in [
+                ("nu_stems_pack", "INTEGER"),
+                ("nm_packaging",  "TEXT"),
+                ("nm_maturity",   "TEXT"),
+            ]:
+                cur.execute(f"""
+                    ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {coltype}
+                """)
 
 
 def clear_supplier_catalogue(supplier_id: str) -> int:
@@ -976,14 +988,18 @@ def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, ite
                 cur.execute(f"""
                     INSERT INTO {table}
                         (fp_product_id, nm_product, nm_variety, nm_species,
-                         nu_length, nu_stems_bunch, id_floricode, synced_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         nu_length, nu_stems_bunch, nu_stems_pack,
+                         nm_packaging, nm_maturity, id_floricode, synced_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (fp_product_id) DO UPDATE SET
                         nm_product     = EXCLUDED.nm_product,
                         nm_variety     = EXCLUDED.nm_variety,
                         nm_species     = EXCLUDED.nm_species,
                         nu_length      = EXCLUDED.nu_length,
                         nu_stems_bunch = EXCLUDED.nu_stems_bunch,
+                        nu_stems_pack  = EXCLUDED.nu_stems_pack,
+                        nm_packaging   = EXCLUDED.nm_packaging,
+                        nm_maturity    = EXCLUDED.nm_maturity,
                         id_floricode   = EXCLUDED.id_floricode,
                         synced_at      = EXCLUDED.synced_at
                 """, (
@@ -993,6 +1009,9 @@ def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, ite
                     item.get("nm_species"),
                     item.get("nu_length"),
                     item.get("nu_stems_bunch"),
+                    item.get("nu_stems_pack"),
+                    item.get("nm_packaging"),
+                    item.get("nm_maturity"),
                     item.get("id_floricode"),
                     now,
                 ))
@@ -1022,7 +1041,8 @@ def get_supplier_catalogue(supplier_id: str) -> list[dict]:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
                     SELECT fp_product_id, nm_product, nm_variety, nm_species,
-                           nu_length, nu_stems_bunch, id_floricode, synced_at
+                           nu_length, nu_stems_bunch, nu_stems_pack,
+                           nm_packaging, nm_maturity, id_floricode, synced_at
                     FROM {table}
                     ORDER BY nm_product
                 """)
