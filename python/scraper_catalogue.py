@@ -216,76 +216,6 @@ def fetch_supplier_catalogue(
 # Supplier list
 # ---------------------------------------------------------------------------
 
-def debug_supplier_page(cfg: Config) -> dict:
-    """Return raw diagnostic info about /supplier/index/index/ for debugging.
-
-    Returns:
-      final_url       — URL after any redirects
-      page_title      — <title> text
-      html_snippet    — first 4 KB of rendered HTML
-      all_links       — all href values on the page
-      table_count     — number of <table> elements
-      rows_with_dataid — rows that have data-id
-      all_tr_samples  — first 5 <tr> outer HTML (truncated to 500 chars each)
-      parsed_suppliers — what fetch_supplier_list would extract
-    """
-    from scraper_fp import _launch_browser, _login, _block_resources
-
-    with sync_playwright() as pw:
-        browser = _launch_browser(pw)
-        context = browser.new_context()
-        page = context.new_page()
-        _block_resources(page)
-        try:
-            _login(page, cfg)
-
-            url = f"{cfg.freshportal_url}/supplier/index/index/"
-            page.goto(url, wait_until="networkidle", timeout=cfg.request_timeout)
-            try:
-                page.wait_for_selector("table", timeout=10_000)
-            except Exception:
-                pass
-
-            html = page.content()
-            final_url = page.url
-            soup = BeautifulSoup(html, "lxml")
-
-            # All links
-            all_links = list({a["href"] for a in soup.find_all("a", href=True)})[:80]
-
-            # Tables
-            tables = soup.find_all("table")
-            table_count = len(tables)
-
-            # All <tr> elements (first 10)
-            all_trs = soup.find_all("tr")
-            tr_samples = [str(tr)[:600] for tr in all_trs[:10]]
-
-            # Rows with data-id
-            rows_with_dataid = [
-                {"data_id": tr.get("data-id"), "text": tr.get_text(" ", strip=True)[:120]}
-                for tr in soup.find_all(True, {"data-id": True})
-            ][:20]
-
-            # What the parser extracts
-            parsed = _parse_supplier_rows(soup)
-
-        finally:
-            context.close()
-            browser.close()
-
-    return {
-        "final_url": final_url,
-        "page_title": (soup.find("title") or {}).get_text(strip=True) if soup.find("title") else "",
-        "html_snippet": html[:4000],
-        "all_links": all_links,
-        "table_count": table_count,
-        "rows_with_dataid": rows_with_dataid,
-        "all_tr_samples": tr_samples,
-        "parsed_suppliers": parsed,
-    }
-
-
 def _parse_supplier_rows(soup: BeautifulSoup) -> list[dict]:
     """Extract supplier rows from already-fetched BeautifulSoup. Used by both
     fetch_supplier_list and debug_supplier_page."""
@@ -344,8 +274,14 @@ def _parse_supplier_rows(soup: BeautifulSoup) -> list[dict]:
 def fetch_supplier_list(
     cfg: Config,
     on_status: Callable[[str], None] | None = None,
-) -> list[dict]:
-    """Scrape /supplier/index/index/ and return [{fp_supplier_id, nm_supplier}]."""
+    debug: bool = False,
+) -> list[dict] | dict:
+    """Scrape /supplier/index/index/ in a single Playwright session.
+
+    Normal mode  (debug=False): returns [{fp_supplier_id, nm_supplier}]
+    Debug mode   (debug=True):  returns dict with suppliers + diagnostics
+                                (same session — no extra memory cost)
+    """
     from scraper_fp import _launch_browser, _login, _block_resources
 
     def _s(msg: str) -> None:
@@ -354,6 +290,7 @@ def fetch_supplier_list(
 
     _s("Logging into FreshPortal…")
     suppliers: list[dict] = []
+    diag: dict = {}
 
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
@@ -366,36 +303,52 @@ def fetch_supplier_list(
             url = f"{cfg.freshportal_url}/supplier/index/index/"
             _s(f"Loading {url}…")
             page.goto(url, wait_until="networkidle", timeout=cfg.request_timeout)
-            _s(f"Final URL after redirect: {page.url}")
+            final_url = page.url
+            _s(f"Final URL: {final_url}")
+
             try:
                 page.wait_for_selector("table", timeout=15_000)
                 _s("Table found on page")
             except Exception:
-                _s("No table found — will try parsing anyway")
+                _s("No <table> found after 15s — parsing anyway")
 
             html = page.content()
-            _s(f"Page HTML length: {len(html)} chars")
             soup = BeautifulSoup(html, "lxml")
 
-            tables = soup.find_all("table")
-            _s(f"Tables on page: {len(tables)}")
-
             all_trs = soup.find_all("tr")
-            _s(f"Total <tr> elements: {len(all_trs)}")
-
+            tables = soup.find_all("table")
             rows_with_data_id = soup.find_all(True, {"data-id": True})
-            _s(f"Rows with data-id: {len(rows_with_data_id)}")
+
+            _s(f"Page: {len(html)} chars | tables: {len(tables)} | tr: {len(all_trs)} | data-id rows: {len(rows_with_data_id)}")
 
             suppliers = _parse_supplier_rows(soup)
-            _s(f"Found {len(suppliers)} suppliers")
+            _s(f"Parsed {len(suppliers)} supplier(s)")
 
             if not suppliers:
-                # Log first 3 tr texts to help diagnose
-                for i, tr in enumerate(all_trs[:5]):
-                    _s(f"  tr[{i}] text: {tr.get_text(' ', strip=True)[:120]!r}")
-                    links = [a["href"] for a in tr.find_all("a", href=True)]
-                    if links:
-                        _s(f"  tr[{i}] links: {links[:3]}")
+                for i, tr in enumerate(all_trs[:6]):
+                    text = tr.get_text(" ", strip=True)[:120]
+                    links = [a["href"] for a in tr.find_all("a", href=True)][:3]
+                    _s(f"  tr[{i}]: {text!r}  links={links}")
+
+            if debug:
+                page_title = soup.find("title")
+                diag = {
+                    "final_url": final_url,
+                    "page_title": page_title.get_text(strip=True) if page_title else "",
+                    "html_snippet": html[:3000],
+                    "table_count": len(tables),
+                    "tr_count": len(all_trs),
+                    "rows_with_dataid": [
+                        {"data_id": el.get("data-id"), "text": el.get_text(" ", strip=True)[:100]}
+                        for el in rows_with_data_id[:15]
+                    ],
+                    "tr_samples": [str(tr)[:500] for tr in all_trs[:8]],
+                    "supplier_links": sorted({
+                        a["href"] for a in soup.find_all("a", href=True)
+                        if "supplier" in a["href"].lower()
+                    })[:40],
+                    "parsed_suppliers": suppliers,
+                }
 
         except Exception as exc:
             log.exception("fetch_supplier_list failed")
@@ -404,8 +357,7 @@ def fetch_supplier_list(
         finally:
             context.close()
             browser.close()
-        finally:
-            context.close()
-            browser.close()
 
+    if debug:
+        return diag
     return suppliers

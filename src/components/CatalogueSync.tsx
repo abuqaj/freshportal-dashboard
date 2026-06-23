@@ -72,9 +72,11 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
     setDebugLoading(true);
     setDebugData(null);
     try {
-      const res = await fetch(`${RAILWAY}/catalogue/debug/suppliers`);
+      const res = await fetch(`${RAILWAY}/catalogue/suppliers?debug=true`);
       const data = await res.json();
-      setDebugData(data);
+      // Merge suppliers into state and show the debug block
+      if (data.suppliers) setSuppliers(data.suppliers);
+      setDebugData(data.debug ?? data);
     } catch (e: unknown) {
       setDebugData({ error: String(e) });
     } finally {

@@ -42,7 +42,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, match_order
-from scraper_catalogue import fetch_supplier_catalogue, fetch_supplier_list, debug_supplier_page
+from scraper_catalogue import fetch_supplier_catalogue, fetch_supplier_list
 from scraper_delivery import add_delivery, explore_delivery_form, explore_stock_add_form
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -1986,22 +1986,27 @@ def delivery_debug_stock(batch_id: str, _: dict = Depends(require_permission("ad
 
 @app.get("/catalogue/suppliers")
 def catalogue_suppliers(
+    debug: bool = False,
     _: dict = Depends(require_permission("admin:manage")),
     cfg: Config = Depends(get_cfg),
 ):
     """Scrape /supplier/index/index/ for the current FP system and enrich with
     local DB sync status.
 
-    Returns:
-      { suppliers: [{fp_supplier_id, nm_supplier, synced: bool,
-                     item_count, synced_at}] }
+    ?debug=true  — returns raw diagnostics alongside suppliers (same Playwright
+                   session, no extra memory cost).
     """
     try:
-        scraped = fetch_supplier_list(cfg)
+        result = fetch_supplier_list(cfg, debug=debug)
     except Exception as exc:
         raise HTTPException(502, f"Could not fetch supplier list: {exc}")
 
-    # Build lookup from catalogue_meta
+    if debug:
+        # result is a dict with parsed_suppliers + diagnostics
+        scraped = result.get("parsed_suppliers", [])  # type: ignore[union-attr]
+    else:
+        scraped = result  # type: ignore[assignment]
+
     meta_rows = get_all_catalogue_meta()
     meta_by_id = {m["supplier_id"]: m for m in meta_rows}
 
@@ -2017,7 +2022,10 @@ def catalogue_suppliers(
             "synced_at": meta.get("synced_at"),
         })
 
-    return {"suppliers": suppliers}
+    response: dict = {"suppliers": suppliers}
+    if debug:
+        response["debug"] = {k: v for k, v in result.items() if k != "parsed_suppliers"}  # type: ignore[union-attr]
+    return response
 
 
 @app.get("/catalogue/{supplier_id}/status")
@@ -2100,16 +2108,6 @@ def catalogue_items(
     return {"supplier_id": supplier_id, "items": items, "count": len(items)}
 
 
-@app.get("/catalogue/debug/suppliers")
-def catalogue_debug_suppliers(
-    _: dict = Depends(require_permission("admin:manage")),
-    cfg: Config = Depends(get_cfg),
-):
-    """Debug endpoint: return raw page content and parse diagnostics for /supplier/index/index/."""
-    try:
-        return debug_supplier_page(cfg)
-    except Exception as exc:
-        raise HTTPException(502, f"Debug scrape failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
