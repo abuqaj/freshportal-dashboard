@@ -54,7 +54,7 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
   function setSyncField(supplierId: string, patch: Partial<SupplierSyncState>) {
     setSyncStates(prev => ({
       ...prev,
-      [supplierId]: { state: "idle", logs: [], error: "", ...prev[supplierId], ...patch },
+      [supplierId]: { ...(prev[supplierId] ?? { state: "idle" as SyncState, logs: [], error: "" }), ...patch },
     }));
   }
 
