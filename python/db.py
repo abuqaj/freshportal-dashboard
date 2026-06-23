@@ -933,8 +933,6 @@ def ensure_supplier_catalogue_table(supplier_id: str) -> None:
                 CREATE TABLE IF NOT EXISTS {table} (
                     fp_product_id  TEXT PRIMARY KEY,
                     nm_product     TEXT,
-                    nm_variety     TEXT,
-                    nm_species     TEXT,
                     nu_length      INTEGER,
                     nu_stems_bunch INTEGER,
                     nu_stems_pack  INTEGER,
@@ -980,8 +978,6 @@ def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, ite
         (
             item.get("fp_product_id", ""),
             item.get("nm_product"),
-            item.get("nm_variety"),
-            item.get("nm_species"),
             item.get("nu_length"),
             item.get("nu_stems_bunch"),
             item.get("nu_stems_pack"),
@@ -998,14 +994,12 @@ def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, ite
             cur.execute(f"DELETE FROM {table}")
             psycopg2.extras.execute_values(cur, f"""
                 INSERT INTO {table}
-                    (fp_product_id, nm_product, nm_variety, nm_species,
+                    (fp_product_id, nm_product,
                      nu_length, nu_stems_bunch, nu_stems_pack,
                      nm_packaging, nm_maturity, id_floricode, synced_at)
                 VALUES %s
                 ON CONFLICT (fp_product_id) DO UPDATE SET
                     nm_product     = EXCLUDED.nm_product,
-                    nm_variety     = EXCLUDED.nm_variety,
-                    nm_species     = EXCLUDED.nm_species,
                     nu_length      = EXCLUDED.nu_length,
                     nu_stems_bunch = EXCLUDED.nu_stems_bunch,
                     nu_stems_pack  = EXCLUDED.nu_stems_pack,
@@ -1037,7 +1031,7 @@ def get_supplier_catalogue(supplier_id: str) -> list[dict]:
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
-                    SELECT fp_product_id, nm_product, nm_variety, nm_species,
+                    SELECT fp_product_id, nm_product,
                            nu_length, nu_stems_bunch, nu_stems_pack,
                            nm_packaging, nm_maturity, id_floricode, synced_at
                     FROM {table}

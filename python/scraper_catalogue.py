@@ -49,10 +49,6 @@ _COL_MAP = {
     "content":      "nu_stems_pack",
     "packaging":    "nm_packaging",
     "maturity":     "nm_maturity",
-    "soort":        "nm_species",
-    "species":      "nm_species",
-    "ras":          "nm_variety",
-    "variety":      "nm_variety",
 }
 
 
@@ -181,17 +177,12 @@ _EXTRACT_JS = """() => {
 }"""
 
 _LAST_PAGE_JS = """() => {
-    // Only consider links whose href starts with '?' or the current pathname
-    // to avoid picking up unrelated page=N params from other URLs on the page.
-    const basePath = location.pathname;
     let maxPage = 1;
     document.querySelectorAll('a[href]').forEach(a => {
-        const href = a.getAttribute('href') || '';
-        if (!href.startsWith('?') && !href.startsWith(basePath)) return;
-        const m = href.match(/[?&]page=(\\d+)/);
+        const m = (a.getAttribute('href') || '').match(/[?&]page=(\\d+)/);
         if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
     });
-    return maxPage;
+    return Math.min(maxPage, 10);
 }"""
 
 
