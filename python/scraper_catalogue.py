@@ -302,7 +302,7 @@ def fetch_supplier_list(
 
             url = f"{cfg.freshportal_url}/supplier/index/index/"
             _s(f"Loading {url}…")
-            page.goto(url, wait_until="networkidle", timeout=cfg.request_timeout)
+            page.goto(url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
             final_url = page.url
             _s(f"Final URL: {final_url}")
 
