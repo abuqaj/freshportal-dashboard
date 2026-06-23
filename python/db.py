@@ -1091,6 +1091,130 @@ def get_supplier_meta_one(supplier_id: str) -> dict | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Delivery → catalogue product match cache
+# ---------------------------------------------------------------------------
+
+def ensure_delivery_product_map() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS delivery_product_map (
+                    fp_url          TEXT NOT NULL,
+                    fp_supplier_id  TEXT NOT NULL,
+                    delivery_key    TEXT NOT NULL,
+                    nm_variety      TEXT,
+                    nu_length       INTEGER,
+                    id_floricode    TEXT,
+                    fp_product_id   TEXT NOT NULL,
+                    nm_product      TEXT,
+                    match_type      TEXT,
+                    created_at      TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at      TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (fp_url, fp_supplier_id, delivery_key)
+                )
+            """)
+        conn.commit()
+
+
+def get_delivery_matches(fp_url: str, fp_supplier_id: str) -> dict[str, dict]:
+    """Return {delivery_key: match_dict} for fast lookup during parsing."""
+    try:
+        ensure_delivery_product_map()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT delivery_key, nm_variety, nu_length, id_floricode,
+                           fp_product_id, nm_product, match_type
+                    FROM delivery_product_map
+                    WHERE fp_url = %s AND fp_supplier_id = %s
+                """, (fp_url, fp_supplier_id))
+                return {r["delivery_key"]: dict(r) for r in cur.fetchall()}
+    except Exception:
+        return {}
+
+
+def save_delivery_matches(fp_url: str, fp_supplier_id: str, matches: list[dict]) -> int:
+    """Upsert matched delivery lines. Only updates existing cache if match_type != 'manual'."""
+    if not matches:
+        return 0
+    ensure_delivery_product_map()
+    now = datetime.now(timezone.utc)
+    rows = [
+        (
+            fp_url, fp_supplier_id,
+            m["delivery_key"],
+            m.get("nm_variety"),
+            m.get("nu_length"),
+            m.get("id_floricode"),
+            m["fp_product_id"],
+            m.get("nm_product"),
+            m.get("match_type", "auto"),
+            now, now,
+        )
+        for m in matches if m.get("fp_product_id")
+    ]
+    if not rows:
+        return 0
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_values(cur, """
+                INSERT INTO delivery_product_map
+                    (fp_url, fp_supplier_id, delivery_key, nm_variety, nu_length,
+                     id_floricode, fp_product_id, nm_product, match_type,
+                     created_at, updated_at)
+                VALUES %s
+                ON CONFLICT (fp_url, fp_supplier_id, delivery_key) DO UPDATE SET
+                    fp_product_id = EXCLUDED.fp_product_id,
+                    nm_product    = EXCLUDED.nm_product,
+                    match_type    = CASE
+                        WHEN delivery_product_map.match_type = 'manual' THEN 'manual'
+                        ELSE EXCLUDED.match_type END,
+                    updated_at    = EXCLUDED.updated_at
+            """, rows)
+        conn.commit()
+    return len(rows)
+
+
+def set_delivery_match(fp_url: str, fp_supplier_id: str, delivery_key: str,
+                       nm_variety: str | None, nu_length: int | None,
+                       fp_product_id: str, nm_product: str | None) -> None:
+    """Manually override (or create) a single cached match, marked as 'manual'."""
+    ensure_delivery_product_map()
+    now = datetime.now(timezone.utc)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO delivery_product_map
+                    (fp_url, fp_supplier_id, delivery_key, nm_variety, nu_length,
+                     fp_product_id, nm_product, match_type, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'manual', %s, %s)
+                ON CONFLICT (fp_url, fp_supplier_id, delivery_key) DO UPDATE SET
+                    fp_product_id = EXCLUDED.fp_product_id,
+                    nm_product    = EXCLUDED.nm_product,
+                    match_type    = 'manual',
+                    updated_at    = EXCLUDED.updated_at
+            """, (fp_url, fp_supplier_id, delivery_key, nm_variety, nu_length,
+                  fp_product_id, nm_product, now, now))
+        conn.commit()
+
+
+def delete_delivery_match(fp_url: str, fp_supplier_id: str, delivery_key: str) -> bool:
+    """Remove a cached match. Returns True if a row was deleted."""
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    DELETE FROM delivery_product_map
+                    WHERE fp_url = %s AND fp_supplier_id = %s AND delivery_key = %s
+                """, (fp_url, fp_supplier_id, delivery_key))
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
+    except Exception:
+        return False
+
+
 def get_catalogue_last_sync(supplier_id: str) -> str | None:
     try:
         ensure_catalogue_table()

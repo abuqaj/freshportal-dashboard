@@ -39,10 +39,12 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                upsert_catalogue_items, get_catalogue, get_catalogue_count, get_catalogue_last_sync,
                sync_supplier_catalogue, get_supplier_catalogue, get_all_catalogue_meta,
                get_supplier_meta_one,
-               upsert_suppliers, get_suppliers, get_suppliers_count)
+               upsert_suppliers, get_suppliers, get_suppliers_count,
+               get_delivery_matches, save_delivery_matches,
+               set_delivery_match, delete_delivery_match)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
-from parser_delivery import parse_delivery_json, order_to_dict, match_order
+from parser_delivery import parse_delivery_json, order_to_dict, match_order, delivery_key
 from scraper_catalogue import fetch_supplier_catalogue, fetch_supplier_list
 from scraper_delivery import add_delivery, explore_delivery_form, explore_stock_add_form
 
@@ -1725,29 +1727,50 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permissi
         raise HTTPException(400, "No invoices found in JSON")
 
     catalogue = []
+    cached_matches: dict = {}
     if req.with_matching:
         catalogue = get_catalogue(req.supplier_id)
+        fp_url = get_ecuador_cfg().freshportal_url
+        cached_matches = get_delivery_matches(fp_url, req.supplier_id)
 
     matched_count = 0
     unmatched_count = 0
+    new_matches: list[dict] = []
 
     result_orders = []
     for order in orders:
         if catalogue:
-            match_order(order, catalogue)
+            match_order(order, catalogue, cached_matches)
         d = order_to_dict(order)
         for line in d["lines"]:
             if line.get("fp_product_id"):
                 matched_count += 1
+                key = delivery_key(line.get("nm_variety"), line.get("nu_length"))
+                if key not in cached_matches:
+                    new_matches.append({
+                        "delivery_key": key,
+                        "nm_variety":   line.get("nm_variety"),
+                        "nu_length":    line.get("nu_length"),
+                        "id_floricode": line.get("id_floricode"),
+                        "fp_product_id": line["fp_product_id"],
+                        "nm_product":   line.get("catalogue_nm_product"),
+                        "match_type":   line.get("match_method", "auto"),
+                    })
             else:
                 unmatched_count += 1
         result_orders.append(d)
+
+    if new_matches and req.with_matching:
+        fp_url = get_ecuador_cfg().freshportal_url
+        save_delivery_matches(fp_url, req.supplier_id, new_matches)
 
     return {
         "orders": result_orders,
         "catalogue_count": len(catalogue),
         "matched_count": matched_count,
         "unmatched_count": unmatched_count,
+        "cached_matches_used": len(cached_matches),
+        "new_matches_saved": len(new_matches),
     }
 
 
@@ -1984,6 +2007,50 @@ def delivery_debug_stock(batch_id: str, _: dict = Depends(require_permission("ad
 # ---------------------------------------------------------------------------
 # Catalogue module  (/catalogue/...)
 # ---------------------------------------------------------------------------
+
+@app.get("/catalogue/{supplier_id}/matches")
+def catalogue_get_matches(
+    supplier_id: str,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Return all cached delivery→catalogue product matches for a supplier."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    matches = get_delivery_matches(fp_url, supplier_id)
+    return {"matches": list(matches.values()), "count": len(matches)}
+
+
+class DeliveryMatchRequest(BaseModel):
+    delivery_key: str
+    nm_variety: str | None = None
+    nu_length: int | None = None
+    fp_product_id: str
+    nm_product: str | None = None
+
+
+@app.put("/catalogue/{supplier_id}/matches")
+def catalogue_set_match(
+    supplier_id: str,
+    req: DeliveryMatchRequest,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Manually create or override a cached match (marks as 'manual', never auto-overwritten)."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    set_delivery_match(fp_url, supplier_id, req.delivery_key,
+                       req.nm_variety, req.nu_length, req.fp_product_id, req.nm_product)
+    return {"ok": True}
+
+
+@app.delete("/catalogue/{supplier_id}/matches/{delivery_key}")
+def catalogue_delete_match(
+    supplier_id: str,
+    delivery_key: str,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Delete a single cached match so the next parse re-runs live matching."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    deleted = delete_delivery_match(fp_url, supplier_id, delivery_key)
+    return {"deleted": deleted}
+
 
 @app.get("/catalogue/suppliers")
 def catalogue_suppliers(

@@ -155,25 +155,47 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
 # Catalogue matching
 # ---------------------------------------------------------------------------
 
+def delivery_key(nm_variety: str | None, nu_length: int | None) -> str:
+    """Stable cache key for a delivery line: '<variety_lower>|<length>'."""
+    return f"{(nm_variety or '').lower().strip()}|{nu_length or ''}"
+
+
 def match_line_to_catalogue(
-    line: "DeliveryLine", catalogue: list[dict]
+    line: "DeliveryLine",
+    catalogue: list[dict],
+    cached_matches: dict[str, dict] | None = None,
 ) -> tuple[str, str, str]:
     """Return (fp_product_id, match_method, catalogue_nm_product).
 
     Matching priority:
-    1. Exact nm_variety + nu_length  (primary — user-specified)
-    2. Exact id_floricode            (secondary)
-    3. Fuzzy nm_variety (substring) + nu_length (fallback)
+    0. Cache hit (delivery_product_map)
+    1. Exact nm_variety + nu_length  (via cat.nm_variety or cat.nm_product prefix)
+    2. Exact id_floricode
+    3. Fuzzy nm_variety in cat.nm_product + nu_length
+    4. Mix box
     """
+    key = delivery_key(line.nm_variety, line.nu_length)
+
+    # 0. Cache lookup
+    if cached_matches and key in cached_matches:
+        m = cached_matches[key]
+        return m["fp_product_id"], m["match_type"], m.get("nm_product") or ""
+
     variety = (line.nm_variety or "").lower().strip()
     length = line.nu_length
 
-    # 1. Exact variety + length
+    # 1. Exact variety + length — check nm_variety first, then nm_product prefix
     for entry in catalogue:
-        cat_var = (entry.get("nm_variety") or "").lower().strip()
         cat_len = entry.get("nu_length")
-        if cat_var == variety and cat_len == length:
+        if cat_len != length:
+            continue
+        cat_var = (entry.get("nm_variety") or "").lower().strip()
+        if cat_var and cat_var == variety:
             return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_var
+        # FP catalogue stores STE_Description like "FREEDOM 60CM 5S" — variety is the first word
+        cat_prod = (entry.get("nm_product") or "").lower()
+        if variety and cat_prod.startswith(variety):
+            return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_prod
 
     # 2. Floricode / VBN match
     if line.id_floricode:
@@ -181,28 +203,36 @@ def match_line_to_catalogue(
             if entry.get("id_floricode") == line.id_floricode:
                 return entry["fp_product_id"], "floricode", entry.get("nm_product") or ""
 
-    # 3. Fuzzy variety (substring) + length
+    # 3. Fuzzy variety in nm_product + length
     for entry in catalogue:
-        cat_var = (entry.get("nm_variety") or "").lower().strip()
         cat_len = entry.get("nu_length")
-        if cat_len == length and (variety in cat_var or cat_var in variety) and variety:
-            return entry["fp_product_id"], "fuzzy_variety", entry.get("nm_product") or cat_var
+        if cat_len != length or not variety:
+            continue
+        cat_var = (entry.get("nm_variety") or "").lower().strip()
+        cat_prod = (entry.get("nm_product") or "").lower()
+        if (cat_var and (variety in cat_var or cat_var in variety)) or \
+           (cat_prod and variety in cat_prod):
+            return entry["fp_product_id"], "fuzzy_variety", entry.get("nm_product") or cat_var or cat_prod
 
-    # 4. Mix box matching (for lines with nm_variety starting with "Mix")
+    # 4. Mix box matching
     if line.gu_product.startswith("__MIX__"):
         box_type = line.gu_product.replace("__MIX__", "").replace(" ", "").upper()
         for entry in catalogue:
-            cat_nm = (entry.get("nm_product") or entry.get("nm_variety") or "").upper()
+            cat_nm = (entry.get("nm_product") or "").upper()
             if "MIX" in cat_nm and (not box_type or box_type in cat_nm):
                 return entry["fp_product_id"], "mix", entry.get("nm_product") or cat_nm
 
     return "", "none", ""
 
 
-def match_order(order: "DeliveryOrder", catalogue: list[dict]) -> "DeliveryOrder":
+def match_order(
+    order: "DeliveryOrder",
+    catalogue: list[dict],
+    cached_matches: dict[str, dict] | None = None,
+) -> "DeliveryOrder":
     """Attach catalogue match results to each line (mutates in-place, returns order)."""
     for line in order.lines:
-        fp_id, method, cat_name = match_line_to_catalogue(line, catalogue)
+        fp_id, method, cat_name = match_line_to_catalogue(line, catalogue, cached_matches)
         line.fp_product_id = fp_id
         line.match_method = method
         line.catalogue_nm_product = cat_name
