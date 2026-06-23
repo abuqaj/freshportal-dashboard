@@ -160,18 +160,24 @@ def _parse_rows(soup: BeautifulSoup, col_map: dict[int, str]) -> list[dict]:
         pro_num = (item.pop("_pro_number", None) or "").strip()
 
         if not fp_id:
-            if pro_num:
-                # PRO_Number is a variety number shared across lengths/stems —
-                # qualify it with length + stems so each line gets a unique ID.
-                ln  = item.get("nu_length") or ""
-                sp  = item.get("nu_stems_pack") or item.get("nu_stems_bunch") or ""
-                fp_id = f"{pro_num}_{ln}_{sp}"
+            # Build a discriminator from ALL available fields so two products
+            # that share variety+length but differ in packaging/maturity/stems
+            # still get different IDs.
+            ln  = item.get("nu_length") or ""
+            sb  = item.get("nu_stems_bunch") or ""
+            sp  = item.get("nu_stems_pack") or ""
+            pk  = re.sub(r"\s+", "_", (item.get("nm_packaging") or "").lower().strip())
+            mt  = re.sub(r"\s+", "_", (item.get("nm_maturity") or "").lower().strip())
+            flc = (item.get("id_floricode") or "").strip()
+
+            if flc:
+                # VBN/floricode is a globally unique product identifier
+                fp_id = f"flc_{flc}_{ln}_{sb}_{sp}"
+            elif pro_num:
+                fp_id = f"{pro_num}_{ln}_{sb}_{sp}_{pk}_{mt}"
             else:
-                # Synthetic fallback: stable across re-syncs, unique per variant.
-                nm  = re.sub(r"\s+", "_", (item.get("nm_product") or "").lower().strip())
-                ln  = item.get("nu_length") or ""
-                sp  = item.get("nu_stems_pack") or item.get("nu_stems_bunch") or ""
-                fp_id = f"syn_{nm}_{ln}_{sp}"
+                nm = re.sub(r"\s+", "_", (item.get("nm_product") or "").lower().strip())
+                fp_id = f"syn_{nm}_{ln}_{sb}_{sp}_{pk}_{mt}"
 
         if not fp_id or fp_id in seen_ids:
             continue
