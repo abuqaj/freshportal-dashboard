@@ -217,56 +217,88 @@ def fetch_supplier_catalogue(
 # ---------------------------------------------------------------------------
 
 def _parse_supplier_rows(soup: BeautifulSoup) -> list[dict]:
-    """Extract supplier rows from already-fetched BeautifulSoup. Used by both
-    fetch_supplier_list and debug_supplier_page."""
+    """Extract supplier rows. Supports:
+    - data-sort-field="SUP_ID" / "SUP_Name" column headers (FreshPortal _v2)
+    - data-id row attributes
+    - edit/view link patterns
+    """
     suppliers: list[dict] = []
     seen_ids: set[str] = set()
 
-    # Try every <tr> regardless of tbody (some FP pages skip tbody)
-    for tr in soup.find_all("tr"):
-        # Skip header rows
-        if tr.find("th") and not tr.find("td"):
-            continue
+    for table in soup.find_all("table"):
+        # ── Detect column positions from header ──────────────────────────
+        col_id: int | None = None
+        col_name: int | None = None
 
-        # Supplier ID: data-id attr first
-        sup_id = (tr.get("data-id") or "").strip()
+        header_tr = None
+        thead = table.find("thead")
+        if thead:
+            header_tr = thead.find("tr")
+        if not header_tr:
+            header_tr = table.find("tr")
 
-        # Then try all href patterns used by FreshPortal supplier pages
-        if not sup_id:
-            for a in tr.find_all("a", href=True):
-                m = re.search(
-                    r"/(?:SUP_ID|supplier_id|edit(?:/index)?|view(?:/index)?)/(\d+)",
-                    a["href"],
-                    re.IGNORECASE,
-                )
-                if m:
-                    sup_id = m.group(1)
-                    break
+        if header_tr:
+            for idx, th in enumerate(header_tr.find_all(["th", "td"])):
+                sf = th.get("data-sort-field", "")
+                txt = th.get_text(strip=True).lower()
+                if sf == "SUP_ID" or txt in ("#", "id", "nr"):
+                    col_id = idx
+                elif sf == "SUP_Name" or sf == "SUP_name" or "supplier" in txt or "name" in txt:
+                    col_name = idx
 
-        # Last resort: any numeric segment in an edit/view link
-        if not sup_id:
-            for a in tr.find_all("a", href=True):
-                if re.search(r"/(edit|view|detail)", a["href"], re.I):
-                    m = re.search(r"/(\d+)/?$", a["href"])
+        # ── Parse body rows ───────────────────────────────────────────────
+        tbody = table.find("tbody") or table
+        for tr in tbody.find_all("tr"):
+            if tr.find_parent("thead"):
+                continue
+            cells = tr.find_all("td")
+            if not cells:
+                continue
+
+            # --- Supplier ID ---
+            sup_id = (tr.get("data-id") or "").strip()
+
+            if not sup_id and col_id is not None and len(cells) > col_id:
+                txt = cells[col_id].get_text(strip=True)
+                if re.match(r"^\d+$", txt):
+                    sup_id = txt
+
+            if not sup_id:
+                for a in tr.find_all("a", href=True):
+                    m = re.search(
+                        r"/(?:SUP_ID|supplier_id|edit(?:/index)?|view(?:/index)?)/(\d+)",
+                        a["href"], re.IGNORECASE,
+                    )
                     if m:
                         sup_id = m.group(1)
                         break
 
-        if not sup_id or sup_id in seen_ids:
-            continue
-        seen_ids.add(sup_id)
+            if not sup_id:
+                for a in tr.find_all("a", href=True):
+                    if re.search(r"/(edit|view|detail)", a["href"], re.I):
+                        m = re.search(r"/(\d+)/?(?:\?|$)", a["href"])
+                        if m:
+                            sup_id = m.group(1)
+                            break
 
-        # Name: first non-empty, non-numeric td text
-        cells = tr.find_all("td")
-        nm = ""
-        for cell in cells:
-            text = cell.get_text(" ", strip=True)
-            if text and not re.match(r"^\d+$", text):
-                nm = text
-                break
+            if not sup_id or sup_id in seen_ids:
+                continue
+            seen_ids.add(sup_id)
 
-        if nm:
-            suppliers.append({"fp_supplier_id": sup_id, "nm_supplier": nm})
+            # --- Supplier name ---
+            nm = ""
+            if col_name is not None and len(cells) > col_name:
+                nm = cells[col_name].get_text(" ", strip=True)
+
+            if not nm:
+                for cell in cells:
+                    txt = cell.get_text(" ", strip=True)
+                    if txt and not re.match(r"^\d+$", txt):
+                        nm = txt
+                        break
+
+            if nm:
+                suppliers.append({"fp_supplier_id": sup_id, "nm_supplier": nm})
 
     return suppliers
 
@@ -307,10 +339,10 @@ def fetch_supplier_list(
             _s(f"Final URL: {final_url}")
 
             try:
-                page.wait_for_selector("table", timeout=15_000)
-                _s("Table found on page")
+                page.wait_for_selector("table tbody tr", timeout=20_000)
+                _s("Table rows loaded")
             except Exception:
-                _s("No <table> found after 15s — parsing anyway")
+                _s("No table rows after 20s — parsing whatever is present")
 
             html = page.content()
             soup = BeautifulSoup(html, "lxml")
