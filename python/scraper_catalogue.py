@@ -181,16 +181,16 @@ _EXTRACT_JS = """() => {
 }"""
 
 _LAST_PAGE_JS = """() => {
-    // Scan ALL <a href> tags for the highest ?page=N value
+    // Only consider links whose href starts with '?' or the current pathname
+    // to avoid picking up unrelated page=N params from other URLs on the page.
+    const basePath = location.pathname;
     let maxPage = 1;
     document.querySelectorAll('a[href]').forEach(a => {
-        const m = (a.getAttribute('href') || '').match(/[?&]page=(\\d+)/);
+        const href = a.getAttribute('href') || '';
+        if (!href.startsWith('?') && !href.startsWith(basePath)) return;
+        const m = href.match(/[?&]page=(\\d+)/);
         if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
     });
-    // Also check for text like "van 7" or "of 7" anywhere on the page
-    const bodyText = document.body ? document.body.innerText : '';
-    const m = bodyText.match(/(?:van|of)\\s+(\\d+)/i);
-    if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
     return maxPage;
 }"""
 

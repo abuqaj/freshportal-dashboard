@@ -976,48 +976,45 @@ def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, ite
     ensure_catalogue_meta_table()
 
     now = datetime.now(timezone.utc)
+    rows = [
+        (
+            item.get("fp_product_id", ""),
+            item.get("nm_product"),
+            item.get("nm_variety"),
+            item.get("nm_species"),
+            item.get("nu_length"),
+            item.get("nu_stems_bunch"),
+            item.get("nu_stems_pack"),
+            item.get("nm_packaging"),
+            item.get("nm_maturity"),
+            item.get("id_floricode"),
+            now,
+        )
+        for item in items
+    ]
 
     with _conn() as conn:
         with conn.cursor() as cur:
-            # Clear old data
             cur.execute(f"DELETE FROM {table}")
+            psycopg2.extras.execute_values(cur, f"""
+                INSERT INTO {table}
+                    (fp_product_id, nm_product, nm_variety, nm_species,
+                     nu_length, nu_stems_bunch, nu_stems_pack,
+                     nm_packaging, nm_maturity, id_floricode, synced_at)
+                VALUES %s
+                ON CONFLICT (fp_product_id) DO UPDATE SET
+                    nm_product     = EXCLUDED.nm_product,
+                    nm_variety     = EXCLUDED.nm_variety,
+                    nm_species     = EXCLUDED.nm_species,
+                    nu_length      = EXCLUDED.nu_length,
+                    nu_stems_bunch = EXCLUDED.nu_stems_bunch,
+                    nu_stems_pack  = EXCLUDED.nu_stems_pack,
+                    nm_packaging   = EXCLUDED.nm_packaging,
+                    nm_maturity    = EXCLUDED.nm_maturity,
+                    id_floricode   = EXCLUDED.id_floricode,
+                    synced_at      = EXCLUDED.synced_at
+            """, rows, page_size=100)
 
-            # Bulk insert
-            count = 0
-            for item in items:
-                cur.execute(f"""
-                    INSERT INTO {table}
-                        (fp_product_id, nm_product, nm_variety, nm_species,
-                         nu_length, nu_stems_bunch, nu_stems_pack,
-                         nm_packaging, nm_maturity, id_floricode, synced_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (fp_product_id) DO UPDATE SET
-                        nm_product     = EXCLUDED.nm_product,
-                        nm_variety     = EXCLUDED.nm_variety,
-                        nm_species     = EXCLUDED.nm_species,
-                        nu_length      = EXCLUDED.nu_length,
-                        nu_stems_bunch = EXCLUDED.nu_stems_bunch,
-                        nu_stems_pack  = EXCLUDED.nu_stems_pack,
-                        nm_packaging   = EXCLUDED.nm_packaging,
-                        nm_maturity    = EXCLUDED.nm_maturity,
-                        id_floricode   = EXCLUDED.id_floricode,
-                        synced_at      = EXCLUDED.synced_at
-                """, (
-                    item.get("fp_product_id", ""),
-                    item.get("nm_product"),
-                    item.get("nm_variety"),
-                    item.get("nm_species"),
-                    item.get("nu_length"),
-                    item.get("nu_stems_bunch"),
-                    item.get("nu_stems_pack"),
-                    item.get("nm_packaging"),
-                    item.get("nm_maturity"),
-                    item.get("id_floricode"),
-                    now,
-                ))
-                count += 1
-
-            # Update meta
             cur.execute("""
                 INSERT INTO catalogue_meta (supplier_id, nm_supplier, fp_url, item_count, synced_at)
                 VALUES (%s, %s, %s, %s, %s)
@@ -1026,11 +1023,11 @@ def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, ite
                     fp_url      = EXCLUDED.fp_url,
                     item_count  = EXCLUDED.item_count,
                     synced_at   = EXCLUDED.synced_at
-            """, (supplier_id, nm_supplier, fp_url, count, now))
+            """, (supplier_id, nm_supplier, fp_url, len(rows), now))
 
         conn.commit()
 
-    return count
+    return len(rows)
 
 
 def get_supplier_catalogue(supplier_id: str) -> list[dict]:
