@@ -157,11 +157,21 @@ def _parse_rows(soup: BeautifulSoup, col_map: dict[int, str]) -> list[dict]:
             else:
                 item[field] = val or None
 
-        # Use _pro_number as fp_id fallback when no link/data-id found
+        pro_num = (item.pop("_pro_number", None) or "").strip()
+
         if not fp_id:
-            fp_id = (item.pop("_pro_number", None) or "").strip()
-        else:
-            item.pop("_pro_number", None)
+            if pro_num:
+                # PRO_Number is a variety number shared across lengths/stems —
+                # qualify it with length + stems so each line gets a unique ID.
+                ln  = item.get("nu_length") or ""
+                sp  = item.get("nu_stems_pack") or item.get("nu_stems_bunch") or ""
+                fp_id = f"{pro_num}_{ln}_{sp}"
+            else:
+                # Synthetic fallback: stable across re-syncs, unique per variant.
+                nm  = re.sub(r"\s+", "_", (item.get("nm_product") or "").lower().strip())
+                ln  = item.get("nu_length") or ""
+                sp  = item.get("nu_stems_pack") or item.get("nu_stems_bunch") or ""
+                fp_id = f"syn_{nm}_{ln}_{sp}"
 
         if not fp_id or fp_id in seen_ids:
             continue
