@@ -8,6 +8,8 @@ delivery scraper can select the right product without guessing.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from typing import Callable
@@ -157,27 +159,22 @@ def _parse_rows(soup: BeautifulSoup, col_map: dict[int, str]) -> list[dict]:
             else:
                 item[field] = val or None
 
-        pro_num = (item.pop("_pro_number", None) or "").strip()
+        item.pop("_pro_number", None)  # not a reliable unique ID — discard
 
         if not fp_id:
-            # Build a discriminator from ALL available fields so two products
-            # that share variety+length but differ in packaging/maturity/stems
-            # still get different IDs.
-            ln  = item.get("nu_length") or ""
-            sb  = item.get("nu_stems_bunch") or ""
-            sp  = item.get("nu_stems_pack") or ""
-            pk  = re.sub(r"\s+", "_", (item.get("nm_packaging") or "").lower().strip())
-            mt  = re.sub(r"\s+", "_", (item.get("nm_maturity") or "").lower().strip())
-            flc = (item.get("id_floricode") or "").strip()
-
-            if flc:
-                # VBN/floricode is a globally unique product identifier
-                fp_id = f"flc_{flc}_{ln}_{sb}_{sp}"
-            elif pro_num:
-                fp_id = f"{pro_num}_{ln}_{sb}_{sp}_{pk}_{mt}"
-            else:
-                nm = re.sub(r"\s+", "_", (item.get("nm_product") or "").lower().strip())
-                fp_id = f"syn_{nm}_{ln}_{sb}_{sp}_{pk}_{mt}"
+            # Hash ALL product fields so any two products that differ in ANY
+            # attribute get a different ID, with no risk of collision from
+            # partial-field combinations.
+            h = hashlib.sha1(json.dumps({
+                "nm":  (item.get("nm_product")  or "").strip().lower(),
+                "ln":  item.get("nu_length"),
+                "sb":  item.get("nu_stems_bunch"),
+                "sp":  item.get("nu_stems_pack"),
+                "pk":  (item.get("nm_packaging") or "").strip().lower(),
+                "mt":  (item.get("nm_maturity")  or "").strip().lower(),
+                "flc": (item.get("id_floricode") or "").strip(),
+            }, sort_keys=True).encode()).hexdigest()[:16]
+            fp_id = f"h_{h}"
 
         if not fp_id or fp_id in seen_ids:
             continue
