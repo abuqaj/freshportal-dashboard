@@ -20,41 +20,89 @@ from config import Config
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Column name → our field mapping  (case-insensitive substring search)
+# data-sort-field → our field mapping  (FreshPortal v2 canonical column IDs)
 # ---------------------------------------------------------------------------
+_SORT_FIELD_MAP: dict[str, str] = {
+    "STE_Description":     "nm_product",
+    "PRO_Number":          "_pro_number",   # internal ID fallback
+    "PRO_VbnNumber":       "id_floricode",
+    "STE_QuantityPerPack": "nu_stems_bunch",
+    "SEF_Length0":         "nu_length",
+    "SEF_StemsPerBunch":   "nu_stems_bunch",
+}
+
+# Fallback: text-keyword → field for non-v2 pages (no data-sort-field)
 _COL_MAP = {
-    # FP column header keywords → normalized field name
     "naam":         "nm_product",
     "name":         "nm_product",
     "omschrijving": "nm_product",
     "description":  "nm_product",
     "vbn":          "id_floricode",
     "floricode":    "id_floricode",
-    "code":         "id_floricode",
     "lengte":       "nu_length",
     "length":       "nu_length",
-    "cm":           "nu_length",
     "stuks":        "nu_stems_bunch",
     "stems":        "nu_stems_bunch",
-    "bos":          "nu_stems_bunch",
     "bunch":        "nu_stems_bunch",
+    "content":      "nu_stems_bunch",
     "soort":        "nm_species",
     "species":      "nm_species",
     "ras":          "nm_variety",
     "variety":      "nm_variety",
-    "variété":      "nm_variety",
 }
 
 
+def _find_header_row(soup: BeautifulSoup):
+    """Return the single <tr> that holds column headers.
+
+    FreshPortal v2 <thead> may have multiple rows (group headers +
+    individual column headers).  We prefer the row that carries
+    data-sort-field attributes; otherwise the last row in <thead>.
+    """
+    thead = soup.find("thead")
+    if thead:
+        rows = thead.find_all("tr")
+        for row in rows:
+            if any(th.get("data-sort-field") for th in row.find_all(["th", "td"])):
+                return row
+        if rows:
+            return rows[-1]
+    tbody = soup.find("tbody")
+    if tbody:
+        return tbody.find("tr")
+    return None
+
+
 def _detect_columns(header_row) -> dict[int, str]:
-    """Map column index → field name from table <th> cells."""
+    """Map column index → field name from a single header <tr>.
+
+    Uses data-sort-field attributes first (reliable for FP v2 pages
+    whose <th> contain SVG icons rather than text).  Falls back to
+    keyword-in-text matching for legacy pages.
+    """
     col_map: dict[int, str] = {}
-    for idx, th in enumerate(header_row.find_all(["th", "td"])):
+    if header_row is None:
+        return col_map
+
+    # Direct <th>/<td> children only — avoids counting nested elements
+    cells = header_row.find_all(["th", "td"], recursive=False)
+    if not cells:
+        cells = header_row.find_all(["th", "td"])
+
+    for idx, th in enumerate(cells):
+        sf = th.get("data-sort-field", "")
+        if sf and sf in _SORT_FIELD_MAP:
+            col_map[idx] = _SORT_FIELD_MAP[sf]
+            continue
+        # Fallback: text matching (skip cells with no useful text)
         text = (th.get_text(" ", strip=True) or "").lower()
+        if not text:
+            continue
         for keyword, field in _COL_MAP.items():
             if keyword in text and field not in col_map.values():
                 col_map[idx] = field
                 break
+
     return col_map
 
 
@@ -72,32 +120,52 @@ def _parse_rows(soup: BeautifulSoup, col_map: dict[int, str]) -> list[dict]:
 
         item: dict = {}
 
-        # Extract FP product ID from row data-id attribute or edit link
-        fp_id = tr.get("data-id") or tr.get("data-product-id") or ""
+        # --- Extract FP product ID ---
+        fp_id = (tr.get("data-id") or tr.get("data-product-id") or "").strip()
+
         if not fp_id:
             for a in tr.find_all("a", href=True):
-                m = re.search(r"/(?:id|edit|PRO_ID)/(\d+)", a["href"])
+                href = a["href"]
+                # /PRO_ID/123  /edit/123  /view/123  /id/123
+                m = re.search(r"/(?:PRO_ID|edit|view|id)/(\d+)", href, re.I)
                 if m:
                     fp_id = m.group(1)
                     break
+                # query string: ?PRO_ID=123 or &id=123
+                m = re.search(r"[?&](?:PRO_ID|product_id|pro_id|id)=(\d+)", href, re.I)
+                if m:
+                    fp_id = m.group(1)
+                    break
+                # last numeric segment: /company_product_v2/.../123
+                m = re.search(r"/(\d+)(?:[/?]|$)", href)
+                if m:
+                    fp_id = m.group(1)
+                    break
+
+        # --- Map cells to fields ---
+        for idx, cell in enumerate(cells):
+            field = col_map.get(idx)
+            if not field:
+                continue
+            val = cell.get_text(" ", strip=True)
+            if field in ("nu_length", "nu_stems_bunch"):
+                try:
+                    item[field] = int(re.search(r"\d+", val).group())
+                except (AttributeError, ValueError):
+                    item[field] = None
+            else:
+                item[field] = val or None
+
+        # Use _pro_number as fp_id fallback when no link/data-id found
+        if not fp_id:
+            fp_id = (item.pop("_pro_number", None) or "").strip()
+        else:
+            item.pop("_pro_number", None)
+
         if not fp_id:
             continue
 
         item["fp_product_id"] = fp_id
-
-        # Map cells to fields
-        for idx, cell in enumerate(cells):
-            field = col_map.get(idx)
-            if field:
-                val = cell.get_text(" ", strip=True)
-                if field in ("nu_length", "nu_stems_bunch"):
-                    try:
-                        item[field] = int(re.search(r"\d+", val).group())
-                    except (AttributeError, ValueError):
-                        item[field] = None
-                else:
-                    item[field] = val or None
-
         items.append(item)
 
     return items
@@ -159,22 +227,15 @@ def fetch_supplier_catalogue(
 
             # First page — detect columns + last page
             _s("Loading catalogue page 1…")
-            page.goto(f"{base_url}&page=1", wait_until="load", timeout=cfg.request_timeout)
+            page.goto(f"{base_url}&page=1", wait_until="domcontentloaded", timeout=cfg.request_timeout)
             try:
-                page.wait_for_selector("table tbody tr", timeout=15_000)
+                page.wait_for_selector("table tbody tr", timeout=20_000)
             except Exception:
                 pass
 
             soup = BeautifulSoup(page.content(), "lxml")
-            header = soup.find("thead")
-            if header:
-                col_map = _detect_columns(header)
-            elif soup.find("tbody"):
-                # Try first row as header
-                first_row = soup.find("tbody").find("tr")
-                if first_row:
-                    col_map = _detect_columns(first_row)
-
+            header_row = _find_header_row(soup)
+            col_map = _detect_columns(header_row)
             _s(f"Detected columns: {col_map}")
             last_page = _get_last_page(soup)
             _s(f"Pages to scrape: {last_page}")
@@ -186,9 +247,9 @@ def fetch_supplier_catalogue(
 
             # Remaining pages
             for p in range(2, last_page + 1):
-                page.goto(f"{base_url}&page={p}", wait_until="load", timeout=cfg.request_timeout)
+                page.goto(f"{base_url}&page={p}", wait_until="domcontentloaded", timeout=cfg.request_timeout)
                 try:
-                    page.wait_for_selector("table tbody tr", timeout=10_000)
+                    page.wait_for_selector("table tbody tr", timeout=15_000)
                 except Exception:
                     pass
                 soup = BeautifulSoup(page.content(), "lxml")
