@@ -974,6 +974,12 @@ def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, ite
     ensure_catalogue_meta_table()
 
     now = datetime.now(timezone.utc)
+    # Deduplicate by fp_product_id — keep last occurrence (most complete data)
+    seen: dict[str, dict] = {}
+    for item in items:
+        pid = item.get("fp_product_id", "")
+        if pid:
+            seen[pid] = item
     rows = [
         (
             item.get("fp_product_id", ""),
@@ -986,7 +992,7 @@ def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, ite
             item.get("id_floricode"),
             now,
         )
-        for item in items
+        for item in seen.values()
     ]
 
     with _conn() as conn:

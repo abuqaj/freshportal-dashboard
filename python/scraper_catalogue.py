@@ -109,6 +109,7 @@ def _detect_columns(header_row) -> dict[int, str]:
 def _parse_rows(soup: BeautifulSoup, col_map: dict[int, str]) -> list[dict]:
     """Parse visible data rows into catalogue dicts."""
     items: list[dict] = []
+    seen_ids: set[str] = set()
     tbody = soup.find("tbody")
     if not tbody:
         return items
@@ -162,9 +163,10 @@ def _parse_rows(soup: BeautifulSoup, col_map: dict[int, str]) -> list[dict]:
         else:
             item.pop("_pro_number", None)
 
-        if not fp_id:
+        if not fp_id or fp_id in seen_ids:
             continue
 
+        seen_ids.add(fp_id)
         item["fp_product_id"] = fp_id
         items.append(item)
 
@@ -243,7 +245,11 @@ def fetch_supplier_catalogue(
             col_map = _detect_columns(header_row)
             _s(f"Detected columns: {col_map}")
             last_page = page.evaluate(_LAST_PAGE_JS)
-            _s(f"Pages to scrape: {last_page}")
+            # FP may use JS-driven pagination with no plain <a href="?page=N"> links.
+            # Fall back to probing up to 10 pages; the empty-stop guard below handles the rest.
+            if last_page <= 1:
+                last_page = 10
+            _s(f"Pages to scrape: up to {last_page}")
 
             # Parse first page
             items = _parse_rows(soup, col_map)
