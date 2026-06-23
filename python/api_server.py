@@ -35,9 +35,13 @@ from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
 from db import (search_products_db, get_products_by_vbn, get_product_count, get_last_sync,
                get_distinct_colors, get_setting, set_setting, get_recent_created_products,
-               log_vbn_auto_start, log_vbn_auto_finish, get_vbn_auto_history)
+               log_vbn_auto_start, log_vbn_auto_finish, get_vbn_auto_history,
+               upsert_catalogue_items, get_catalogue, get_catalogue_count, get_catalogue_last_sync)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
+from parser_delivery import parse_delivery_json, order_to_dict, match_order
+from scraper_catalogue import fetch_supplier_catalogue
+from scraper_delivery import add_delivery, explore_delivery_form, explore_stock_add_form
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -1661,6 +1665,317 @@ def debug_fp_rendered(vbn: str = "580", _: dict = Depends(require_permission("ad
     except ValueError as e:
         raise HTTPException(400, str(e))
     return _debug_rendered(cfg, vbn)
+
+
+# ---------------------------------------------------------------------------
+# Delivery / batch import
+# ---------------------------------------------------------------------------
+
+ECUADOR_FP_URL = os.getenv("ECUADOR_FP_URL", "https://850255.freshportal.nl")
+
+
+def get_ecuador_cfg() -> Config:
+    """Config always targeting Ecuador FreshPortal (850255).
+
+    Optionally uses ECUADOR_FP_USERNAME / ECUADOR_FP_PASSWORD if set;
+    otherwise falls back to the main FreshPortal credentials.
+    """
+    cfg = Config()
+    cfg.freshportal_url = ECUADOR_FP_URL
+    ec_user = os.getenv("ECUADOR_FP_USERNAME", "")
+    ec_pass = os.getenv("ECUADOR_FP_PASSWORD", "")
+    if ec_user:
+        cfg.freshportal_username = ec_user
+    if ec_pass:
+        cfg.freshportal_password = ec_pass
+    return cfg
+
+
+class DeliveryParseRequest(BaseModel):
+    raw_json: dict
+    supplier_id: str = "27"
+    with_matching: bool = True
+
+
+class DeliveryCreateRequest(BaseModel):
+    order: dict
+    supplier_id: str = "27"
+    supplier_fp_id: str = ""
+    lang: str = "en"
+
+
+@app.post("/delivery/parse")
+def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permission("admin:manage"))):
+    """Parse delivery JSON, aggregate products, match against supplier catalogue.
+
+    Request body:
+      { raw_json: <the full delivery JSON>, supplier_id: "27", with_matching: true }
+
+    Returns aggregated DeliveryOrder(s) with match results per line.
+    """
+    try:
+        orders = parse_delivery_json(req.raw_json)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid delivery JSON: {exc}")
+
+    if not orders:
+        raise HTTPException(400, "No invoices found in JSON")
+
+    catalogue = []
+    if req.with_matching:
+        catalogue = get_catalogue(req.supplier_id)
+
+    matched_count = 0
+    unmatched_count = 0
+
+    result_orders = []
+    for order in orders:
+        if catalogue:
+            match_order(order, catalogue)
+        d = order_to_dict(order)
+        for line in d["lines"]:
+            if line.get("fp_product_id"):
+                matched_count += 1
+            else:
+                unmatched_count += 1
+        result_orders.append(d)
+
+    return {
+        "orders": result_orders,
+        "catalogue_count": len(catalogue),
+        "matched_count": matched_count,
+        "unmatched_count": unmatched_count,
+    }
+
+
+@app.post("/delivery/catalogue/sync")
+def delivery_catalogue_sync(
+    supplier_id: str = "27",
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Trigger synchronous scrape of supplier catalogue from Ecuador FP.
+
+    Stores results in supplier_catalogue table in DB.
+    """
+    cfg = get_ecuador_cfg()
+    try:
+        cfg.validate()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    messages: list[str] = []
+
+    def on_status(msg: str) -> None:
+        log.info("[catalogue sync] %s", msg)
+        messages.append(msg)
+
+    try:
+        items = fetch_supplier_catalogue(int(supplier_id), cfg, on_status=on_status)
+        saved = upsert_catalogue_items(supplier_id, items)
+        return {
+            "ok": True,
+            "items_scraped": len(items),
+            "items_saved": saved,
+            "supplier_id": supplier_id,
+            "messages": messages,
+        }
+    except Exception as exc:
+        log.exception("catalogue sync failed")
+        raise HTTPException(500, str(exc))
+
+
+@app.post("/delivery/catalogue/sync/stream")
+async def delivery_catalogue_sync_stream(
+    supplier_id: str = "27",
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """SSE-streaming version of catalogue sync."""
+    cfg = get_ecuador_cfg()
+    try:
+        cfg.validate()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            def on_status(msg: str) -> None:
+                queue.put({"type": "status", "message": msg})
+
+            items = fetch_supplier_catalogue(int(supplier_id), cfg, on_status=on_status)
+            saved = upsert_catalogue_items(supplier_id, items)
+            queue.put({"type": "result", "data": {
+                "ok": True,
+                "items_scraped": len(items),
+                "items_saved": saved,
+                "supplier_id": supplier_id,
+            }})
+        except Exception as exc:
+            log.exception("catalogue sync stream failed")
+            queue.put({"type": "error", "message": str(exc)})
+
+    threading.Thread(target=run, daemon=True).start()
+
+    async def generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@app.get("/delivery/catalogue/{supplier_id}")
+def delivery_catalogue_get(
+    supplier_id: str,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Return stored catalogue for a supplier from DB."""
+    items = get_catalogue(supplier_id)
+    return {
+        "supplier_id": supplier_id,
+        "count": len(items),
+        "last_sync": get_catalogue_last_sync(supplier_id),
+        "items": items,
+    }
+
+
+@app.post("/delivery/create/stream")
+async def delivery_create_stream(
+    req: DeliveryCreateRequest,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """SSE stream: create batch + add product lines in Ecuador FreshPortal.
+
+    Request body:
+      { order: <order dict from /delivery/parse>, supplier_id: "27",
+        supplier_fp_id: "<select value>", lang: "en" }
+
+    The order.lines must include fp_product_id for matched lines.
+    """
+    cfg = get_ecuador_cfg()
+    try:
+        cfg.validate()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    # Reconstruct DeliveryOrder from dict for the scraper
+    from parser_delivery import DeliveryOrder, DeliveryLine
+    raw = req.order
+    try:
+        lines = [
+            DeliveryLine(
+                gu_product=l.get("gu_product", ""),
+                nm_variety=l.get("nm_variety", ""),
+                nm_species=l.get("nm_species", ""),
+                nu_length=int(l.get("nu_length") or 0),
+                nu_stems_bunch=int(l.get("nu_stems_bunch") or 0),
+                nu_bunches=int(l.get("nu_bunches") or 0),
+                mny_rate_stem=float(l.get("mny_rate_stem") or 0),
+                id_floricode=l.get("id_floricode", ""),
+                nm_product=l.get("nm_product", ""),
+                fp_product_id=l.get("fp_product_id", ""),
+                match_method=l.get("match_method", "none"),
+                catalogue_nm_product=l.get("catalogue_nm_product", ""),
+            )
+            for l in raw.get("lines", [])
+        ]
+        order = DeliveryOrder(
+            tx_company=raw.get("tx_company", ""),
+            nm_location=raw.get("nm_location", ""),
+            id_invoice=raw.get("id_invoice", ""),
+            id_purchaseorder=raw.get("id_purchaseorder", ""),
+            dt_fly=raw.get("dt_fly", ""),
+            dt_invoice=raw.get("dt_invoice", ""),
+            nm_ship=raw.get("nm_ship", ""),
+            nm_cargo=raw.get("nm_cargo", ""),
+            tx_awb=raw.get("tx_awb", ""),
+            tx_hawb=raw.get("tx_hawb", ""),
+            nu_boxes=int(raw.get("nu_boxes") or 0),
+            nu_stems_total=int(raw.get("nu_stems_total") or 0),
+            mny_total=float(raw.get("mny_total") or 0),
+            lines=lines,
+        )
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid order payload: {exc}")
+
+    matched_lines = [
+        {
+            "fp_product_id": l.fp_product_id,
+            "nu_bunches": l.nu_bunches,
+            "nu_stems_bunch": l.nu_stems_bunch,
+            "mny_rate_stem": l.mny_rate_stem,
+            "nm_variety": l.nm_variety,
+            "nu_length": l.nu_length,
+        }
+        for l in lines
+    ]
+
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            def on_status(msg: str) -> None:
+                queue.put({"type": "status", "message": msg})
+
+            result = add_delivery(
+                order=order,
+                matched_lines=matched_lines,
+                cfg=cfg,
+                supplier_fp_id=req.supplier_fp_id,
+                on_status=on_status,
+            )
+            queue.put({"type": "result", "data": result})
+        except Exception as exc:
+            log.exception("delivery/create/stream failed")
+            queue.put({"type": "error", "message": str(exc)})
+
+    threading.Thread(target=run, daemon=True).start()
+
+    async def generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@app.get("/delivery/debug-form")
+def delivery_debug_form(_: dict = Depends(require_permission("admin:manage"))):
+    """Explore /batch_v2/form/add/ form structure in Ecuador FP."""
+    cfg = get_ecuador_cfg()
+    return explore_delivery_form(cfg)
+
+
+@app.get("/delivery/debug-stock/{batch_id}")
+def delivery_debug_stock(batch_id: str, _: dict = Depends(require_permission("admin:manage"))):
+    """Explore /company_product_add_stock/index/index/BAT_ID/{batch_id}/ structure."""
+    cfg = get_ecuador_cfg()
+    return explore_stock_add_form(batch_id, cfg)
 
 
 # ---------------------------------------------------------------------------

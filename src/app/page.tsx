@@ -10,11 +10,12 @@ import ProductCreator from "@/components/ProductCreator";
 import PhotoUploader from "@/components/PhotoUploader";
 import HistoryTab from "@/components/HistoryTab";
 import AdminTab from "@/components/AdminTab";
+import DeliveryImporter from "@/components/DeliveryImporter";
 import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
 import { useSystem } from "@/contexts/SystemContext";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history" | "admin";
+type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery";
 
 /* ─── 3-D tilt hook ─── */
 function useTilt(strength = 10) {
@@ -152,6 +153,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     : tab === "photos" ? t.nav.photoUploader
     : tab === "history" ? t.nav.history
     : tab === "admin" ? "Admin"
+    : tab === "delivery" ? t.nav.deliveryImporter
     : null;
 
   return (
@@ -221,11 +223,12 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
 
 /* ─── Module card wrapper ─── */
 const MODULE_WIDTH: Record<Tab, string> = {
-  vbn:     "max-w-4xl",
-  history: "max-w-4xl",
-  create:  "max-w-3xl",
-  photos:  "max-w-5xl",
-  admin:   "max-w-3xl",
+  vbn:      "max-w-4xl",
+  history:  "max-w-4xl",
+  create:   "max-w-3xl",
+  photos:   "max-w-5xl",
+  admin:    "max-w-3xl",
+  delivery: "max-w-5xl",
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }: {
@@ -455,14 +458,33 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
         </svg>
       ),
     },
+    {
+      id: "delivery",
+      perm: "admin:manage",
+      label: t.nav.deliveryImporter,
+      desc: t.hub.deliveryDesc,
+      gradient: "bg-gradient-to-br from-[#0F4C8A] to-[#0A2E54]",
+      stat: t.hub.deliveryStat,
+      statColor: "text-white/60",
+      icon: (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <rect x="2" y="7" width="20" height="14" rx="3" stroke="white" strokeWidth="1.8"/>
+          <path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+          <path d="M12 12v4M10 14h4" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+        </svg>
+      ),
+    },
   ];
 
   const isStamgegevens = system.id === "stamgegevens";
+  const isEcuador = system.id === "ecuador";
   const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
+  const ECUADOR_ONLY_TABS: Tab[] = ["delivery"];
 
   const tiles = allTiles.filter(tile =>
     permissions.includes(tile.perm) &&
-    (isStamgegevens || !STAMGEGEVENS_ONLY_TABS.includes(tile.id))
+    (isStamgegevens || !STAMGEGEVENS_ONLY_TABS.includes(tile.id)) &&
+    (isEcuador || !ECUADOR_ONLY_TABS.includes(tile.id))
   );
 
   const colsClass = tiles.length <= 2 ? "grid-cols-2" : "grid-cols-3";
@@ -614,11 +636,12 @@ export default function Dashboard() {
             lang={lang}
             t={t}
           >
-            {tab === "vbn"     && <VbnChecker     lang={lang} onAutoVbnChange={handleAutoVbnChange} initialAutoEnabled={autoEnabled} initialAutoNextRun={autoNextRun}/>}
-            {tab === "create"  && <ProductCreator lang={lang}/>}
-            {tab === "photos"  && <PhotoUploader  lang={lang}/>}
-            {tab === "history" && <HistoryTab     lang={lang}/>}
-            {tab === "admin"   && <AdminTab       currentUsername={username}/>}
+            {tab === "vbn"      && <VbnChecker       lang={lang} onAutoVbnChange={handleAutoVbnChange} initialAutoEnabled={autoEnabled} initialAutoNextRun={autoNextRun}/>}
+            {tab === "create"   && <ProductCreator  lang={lang}/>}
+            {tab === "photos"   && <PhotoUploader   lang={lang}/>}
+            {tab === "history"  && <HistoryTab      lang={lang}/>}
+            {tab === "admin"    && <AdminTab        currentUsername={username}/>}
+            {tab === "delivery" && <DeliveryImporter lang={lang}/>}
           </ModuleCard>
         )}
       </div>

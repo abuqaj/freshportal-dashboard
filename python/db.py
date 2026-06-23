@@ -677,6 +677,133 @@ def log_vbn_auto_finish(run_id: int, checked: int, fixed: int, fixes: list, erro
         logger.error("log_vbn_auto_finish: %s", exc)
 
 
+# ---------------------------------------------------------------------------
+# Supplier catalogue
+# ---------------------------------------------------------------------------
+
+def ensure_catalogue_table() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS supplier_catalogue (
+                    id             SERIAL PRIMARY KEY,
+                    supplier_id    TEXT NOT NULL,
+                    fp_product_id  TEXT NOT NULL,
+                    nm_product     TEXT,
+                    nm_variety     TEXT,
+                    nm_species     TEXT,
+                    nu_length      INT,
+                    nu_stems_bunch INT,
+                    id_floricode   TEXT,
+                    extra          JSONB DEFAULT '{}'::jsonb,
+                    synced_at      TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(supplier_id, fp_product_id)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS catalogue_supplier_idx
+                ON supplier_catalogue(supplier_id)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS catalogue_floricode_idx
+                ON supplier_catalogue(id_floricode)
+            """)
+
+
+def upsert_catalogue_items(supplier_id: str, items: list[dict]) -> int:
+    """Bulk upsert catalogue items. Returns number of rows processed."""
+    if not items:
+        return 0
+    ensure_catalogue_table()
+    now = datetime.now(timezone.utc).isoformat()
+    total = 0
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for item in items:
+                cur.execute("""
+                    INSERT INTO supplier_catalogue
+                        (supplier_id, fp_product_id, nm_product, nm_variety,
+                         nm_species, nu_length, nu_stems_bunch, id_floricode, synced_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (supplier_id, fp_product_id) DO UPDATE SET
+                        nm_product     = EXCLUDED.nm_product,
+                        nm_variety     = EXCLUDED.nm_variety,
+                        nm_species     = EXCLUDED.nm_species,
+                        nu_length      = EXCLUDED.nu_length,
+                        nu_stems_bunch = EXCLUDED.nu_stems_bunch,
+                        id_floricode   = EXCLUDED.id_floricode,
+                        synced_at      = EXCLUDED.synced_at
+                """, (
+                    supplier_id,
+                    item.get("fp_product_id", ""),
+                    item.get("nm_product"),
+                    item.get("nm_variety"),
+                    item.get("nm_species"),
+                    item.get("nu_length"),
+                    item.get("nu_stems_bunch"),
+                    item.get("id_floricode"),
+                    now,
+                ))
+                total += 1
+        conn.commit()
+    return total
+
+
+def get_catalogue(supplier_id: str) -> list[dict]:
+    """Return all catalogue entries for a supplier."""
+    try:
+        ensure_catalogue_table()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT fp_product_id, nm_product, nm_variety, nm_species,
+                           nu_length, nu_stems_bunch, id_floricode, synced_at
+                    FROM supplier_catalogue
+                    WHERE supplier_id = %s
+                    ORDER BY nm_product
+                """, (supplier_id,))
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(r)
+                    if d.get("synced_at") and hasattr(d["synced_at"], "isoformat"):
+                        d["synced_at"] = d["synced_at"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("get_catalogue failed: %s", exc)
+        return []
+
+
+def get_catalogue_count(supplier_id: str) -> int:
+    try:
+        ensure_catalogue_table()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM supplier_catalogue WHERE supplier_id = %s",
+                    (supplier_id,),
+                )
+                return cur.fetchone()[0]
+    except Exception:
+        return 0
+
+
+def get_catalogue_last_sync(supplier_id: str) -> str | None:
+    try:
+        ensure_catalogue_table()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT MAX(synced_at) FROM supplier_catalogue WHERE supplier_id = %s
+                """, (supplier_id,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0])
+                return None
+    except Exception:
+        return None
+
+
 def get_vbn_auto_history(limit: int = 10, offset: int = 0) -> list[dict]:
     try:
         ensure_tables()
