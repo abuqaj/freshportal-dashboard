@@ -1,6 +1,8 @@
 """Parse and aggregate delivery JSON (Elite/Ecoroses format) into FreshPortal delivery lines."""
 from __future__ import annotations
 
+import difflib
+import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -188,30 +190,75 @@ def delivery_key(nm_variety: str | None, nu_length: int | None) -> str:
     return f"{(nm_variety or '').lower().strip()}|{nu_length or ''}"
 
 
-def _norm(s: str) -> str:
-    """Normalize a product/variety name for fuzzy comparison.
+# Origin tokens that appear between genus and variety in FP catalogue names.
+# Same list as product_creator._ORIGIN_TOKENS — keep in sync.
+_ORIGIN_TOKENS = {"ec", "col", "co", "ke", "ken", "nl", "et", "zim", "sa", "tz", "be", "de",
+                  "garden", "premium", "special", "select"}
 
-    Strips hyphens, dots, apostrophes and collapses whitespace so that
-    "x-pression" == "xpression", "S.A." == "SA", etc.
+
+def _norm(s: str) -> str:
+    """Lowercase, strip hyphens/dots, collapse spaces.
+
+    "x-pression" → "xpression"  |  "Rosa EC" → "rosa ec"
     """
-    import re as _re
     s = s.lower().strip()
-    s = _re.sub(r"[-.'`]", "", s)        # remove hyphens, dots, apostrophes
+    s = _re.sub(r"[-.'`]", "", s)
     s = _re.sub(r"\s+", " ", s).strip()
     return s
 
 
-def _catalogue_variety(entry: dict) -> str:
-    """Extract variety from a catalogue entry.
+def _extract_variety(nm_product: str) -> str:
+    """Extract the variety part from a full FP catalogue name.
 
-    Prefers nm_variety when present.  Falls back to the first word of nm_product
-    (FreshPortal stores products as "FREEDOM 60CM 5S" — the first token is the variety).
+    "Rosa EC Garden Country Candy 60CM 5S" → "country candy"
+    "Veggie 60CM 5S"                       → "veggie"  (single word = genus=variety)
+    "Rosa Atena"                           → "atena"
+
+    Strips: genus (first token), origin/qualifier tokens, length+bunch suffixes.
     """
-    var = (entry.get("nm_variety") or "").lower().strip()
-    if var:
-        return var
-    nm = (entry.get("nm_product") or "").lower().strip()
-    return nm.split()[0] if nm else ""
+    tokens = _norm(nm_product).split()
+    if not tokens:
+        return ""
+    # Remove length/bunch tokens: "60cm", "5s", pure numbers
+    tokens = [t for t in tokens if not _re.fullmatch(r"\d+(cm)?|\d+s", t)]
+    if not tokens:
+        return ""
+    # Drop first token (genus like "rosa", "dianthus") only when there are more
+    if len(tokens) > 1:
+        tokens = tokens[1:]
+    # Strip known origin/qualifier tokens
+    tokens = [t for t in tokens if t not in _ORIGIN_TOKENS]
+    return " ".join(tokens) if tokens else _norm(nm_product).split()[0]
+
+
+def _variety_sim(delivery_variety: str, catalogue_nm_product: str) -> float:
+    """Similarity between a delivery variety name and a FP catalogue product name.
+
+    Uses the same approach as product_creator._similarity:
+    1. Extract variety from catalogue product (strip genus + origin tokens)
+    2. Compare with difflib.SequenceMatcher
+    Also does word-level containment check first (exact match despite prefixes).
+
+    "Country Candy"  vs "Rosa Garden Country Candy 60CM 5S" → 1.0
+    "Pomarosa"       vs "Rosa Premium Pomarosa 60CM 5S"     → 1.0
+    "Pomarosa"       vs "Rosa Premium Alba 60CM 5S"         → ~0.2 (no match)
+    "Veggie"         vs "Veggie 60CM 5S"                    → 1.0
+    "Cotton Xpress." vs "Rosa EC Cotton Xpression 60CM 5S"  → ~0.93 (typo-tolerant)
+    """
+    d = _norm(delivery_variety)
+    cat_var = _extract_variety(catalogue_nm_product)
+
+    if not d or not cat_var:
+        return 0.0
+
+    # Fast path: all delivery words appear in extracted variety word-set
+    d_words = set(d.split())
+    c_words = set(cat_var.split())
+    if d_words and d_words.issubset(c_words):
+        return 1.0
+
+    # Difflib on (delivery variety, extracted catalogue variety)
+    return difflib.SequenceMatcher(None, d, cat_var).ratio()
 
 
 def match_line_to_catalogue(
@@ -221,12 +268,16 @@ def match_line_to_catalogue(
 ) -> tuple[str, str, str]:
     """Return (fp_product_id, match_method, catalogue_nm_product).
 
-    Matching priority:
+    Uses the same variety-extraction + similarity approach as product_creator.py:
+    _extract_variety() strips genus and origin tokens from catalogue nm_product,
+    then compares against the delivery variety (word-set first, difflib fallback).
+
+    Priority:
     0. Cache hit (delivery_product_map)
-    1. Exact variety + length  (nm_variety field, or first word of nm_product)
-    2. Variety substring in nm_product + length
-    3. Exact id_floricode
-    4. Fuzzy variety substring + length (no length required if delivery length=0)
+    1. sim == 1.0 + exact length   — perfect variety word-match
+    2. Floricode / VBN             — length-agnostic
+    3. sim ≥ 0.80 + exact length   — typo-tolerant (difflib)
+    4. Steps 1 & 3 without length  — for mix-box lines where nu_length == 0
     """
     key = delivery_key(line.nm_variety, line.nu_length)
 
@@ -235,46 +286,47 @@ def match_line_to_catalogue(
         m = cached_matches[key]
         return m["fp_product_id"], m["match_type"], m.get("nm_product") or ""
 
-    variety     = (line.nm_variety or "").lower().strip()
-    variety_n   = _norm(variety)          # normalized: hyphens/dots removed
-    length      = line.nu_length
+    variety = (line.nm_variety or "").strip()
+    length  = line.nu_length
 
-    # 1. Exact normalized variety + exact length
-    for entry in catalogue:
-        cat_len = entry.get("nu_length")
-        if cat_len != length:
-            continue
-        cat_var_n = _norm(_catalogue_variety(entry))
-        if variety_n and cat_var_n and cat_var_n == variety_n:
-            return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_var_n
+    if not variety:
+        return "", "none", ""
 
-    # 2. Normalized variety substring in normalized nm_product + exact length
-    for entry in catalogue:
-        cat_len = entry.get("nu_length")
-        if cat_len != length or not variety_n:
-            continue
-        cat_prod_n = _norm(entry.get("nm_product") or "")
-        if variety_n in cat_prod_n:
-            return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_prod_n
+    def _scan(entries: list[dict], min_sim: float) -> tuple[dict | None, float]:
+        """Return (best_entry, best_sim) from entries above min_sim threshold."""
+        best_e, best_s = None, 0.0
+        for e in entries:
+            s = _variety_sim(variety, e.get("nm_product") or "")
+            if s >= min_sim and s > best_s:
+                best_e, best_s = e, s
+        return best_e, best_s
 
-    # 3. Floricode / VBN match
+    exact_len = [e for e in catalogue if e.get("nu_length") == length]
+
+    # 1. Perfect match + exact length
+    e, _ = _scan(exact_len, 1.0)
+    if e:
+        return e["fp_product_id"], "variety_length", e.get("nm_product") or ""
+
+    # 2. Floricode / VBN (length-agnostic)
     if line.id_floricode:
-        for entry in catalogue:
-            if entry.get("id_floricode") == line.id_floricode:
-                return entry["fp_product_id"], "floricode", entry.get("nm_product") or ""
+        for e in catalogue:
+            if e.get("id_floricode") == line.id_floricode:
+                return e["fp_product_id"], "floricode", e.get("nm_product") or ""
 
-    # 4. Fuzzy: normalized variety substring in catalogue; relax length when delivery has 0
-    for entry in catalogue:
-        cat_len = entry.get("nu_length")
-        len_ok = (cat_len == length) or (length == 0)
-        if not len_ok or not variety_n:
-            continue
-        cat_var_n = _norm(_catalogue_variety(entry))
-        cat_prod_n = _norm(entry.get("nm_product") or "")
-        if (cat_var_n and (variety_n in cat_var_n or cat_var_n in variety_n)) or \
-           (cat_prod_n and variety_n in cat_prod_n):
-            method = "fuzzy_variety" if (cat_len == length) else "fuzzy_variety_nolen"
-            return entry["fp_product_id"], method, entry.get("nm_product") or cat_prod_n
+    # 3. Fuzzy (≥ 0.80) + exact length
+    e, _ = _scan(exact_len, 0.80)
+    if e:
+        return e["fp_product_id"], "fuzzy_variety", e.get("nm_product") or ""
+
+    # 4. Relax length when delivery has nu_length == 0 (mix-box or missing)
+    if length == 0:
+        e, _ = _scan(catalogue, 1.0)
+        if e:
+            return e["fp_product_id"], "variety_nolen", e.get("nm_product") or ""
+        e, _ = _scan(catalogue, 0.80)
+        if e:
+            return e["fp_product_id"], "fuzzy_nolen", e.get("nm_product") or ""
 
     return "", "none", ""
 
