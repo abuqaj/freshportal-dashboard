@@ -774,6 +774,45 @@ def get_suppliers_count(fp_url: str) -> int:
         return 0
 
 
+def find_supplier_fp_id(fp_url: str, company_name: str) -> str:
+    """Return fp_supplier_id (option value) for the best name match in fp_suppliers.
+
+    Tries:
+    1. Exact nm_supplier match (case-insensitive)
+    2. First word of company_name appears in nm_supplier (ILIKE)
+    Returns "" if not found.
+    """
+    if not company_name:
+        return ""
+    try:
+        ensure_suppliers_table()
+        keyword = company_name.lower().split()[0] if company_name.split() else ""
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                # Exact
+                cur.execute(
+                    "SELECT fp_supplier_id FROM fp_suppliers "
+                    "WHERE fp_url = %s AND LOWER(nm_supplier) = %s LIMIT 1",
+                    (fp_url, company_name.lower()),
+                )
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+                # First-word fuzzy
+                if keyword:
+                    cur.execute(
+                        "SELECT fp_supplier_id FROM fp_suppliers "
+                        "WHERE fp_url = %s AND LOWER(nm_supplier) LIKE %s LIMIT 1",
+                        (fp_url, f"%{keyword}%"),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return row[0]
+    except Exception as exc:
+        logger.warning("find_supplier_fp_id failed: %s", exc)
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Supplier catalogue
 # ---------------------------------------------------------------------------

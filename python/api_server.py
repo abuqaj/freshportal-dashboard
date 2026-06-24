@@ -40,6 +40,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                sync_supplier_catalogue, get_supplier_catalogue, get_all_catalogue_meta,
                get_supplier_meta_one,
                upsert_suppliers, get_suppliers, get_suppliers_count,
+               find_supplier_fp_id,
                get_delivery_matches, save_delivery_matches,
                set_delivery_match, delete_delivery_match)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
@@ -1920,6 +1921,119 @@ def delivery_catalogue_get(
         "last_sync": get_catalogue_last_sync(supplier_id),
         "items": items,
     }
+
+
+class BatchCreateRequest(BaseModel):
+    order: dict
+    supplier_id: str = "27"
+    supplier_fp_id: str = ""
+
+
+@app.post("/delivery/create-batch")
+async def delivery_create_batch(
+    req: BatchCreateRequest,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """SSE stream: create a FreshPortal batch header via direct HTTP POST.
+
+    Much faster than the Playwright UI path — logs in once with Playwright to
+    get session cookies, then POSTs form data directly with httpx.
+
+    Request body:
+      { order: <order dict from /delivery/parse>,
+        supplier_id: "27",        # used for batch-list lookup
+        supplier_fp_id: "27"      # value sent as supplier[] in the form POST
+      }
+
+    Returns SSE events: data: <status line>  +  data: DONE <json result>
+    """
+    from scraper_delivery import create_batch_header
+    from parser_delivery import DeliveryOrder, DeliveryLine
+
+    cfg = get_ecuador_cfg()
+    try:
+        cfg.validate()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    raw = req.order
+    try:
+        lines = [
+            DeliveryLine(
+                gu_product=l.get("gu_product", ""),
+                nm_variety=l.get("nm_variety", ""),
+                nm_species=l.get("nm_species", ""),
+                nu_length=int(l.get("nu_length") or 0),
+                nu_stems_bunch=int(l.get("nu_stems_bunch") or 0),
+                nu_bunches=int(l.get("nu_bunches") or 0),
+                mny_rate_stem=float(l.get("mny_rate_stem") or 0),
+                id_floricode=l.get("id_floricode", ""),
+                nm_product=l.get("nm_product", ""),
+                nm_box=l.get("nm_box", ""),
+                fp_product_id=l.get("fp_product_id", ""),
+                match_method=l.get("match_method", "none"),
+                catalogue_nm_product=l.get("catalogue_nm_product", ""),
+            )
+            for l in raw.get("lines", [])
+        ]
+        order = DeliveryOrder(
+            tx_company=raw.get("tx_company", ""),
+            nm_location=raw.get("nm_location", ""),
+            id_invoice=raw.get("id_invoice", ""),
+            id_purchaseorder=raw.get("id_purchaseorder", ""),
+            dt_fly=raw.get("dt_fly", ""),
+            dt_invoice=raw.get("dt_invoice", ""),
+            nm_ship=raw.get("nm_ship", ""),
+            nm_cargo=raw.get("nm_cargo", ""),
+            tx_awb=raw.get("tx_awb", ""),
+            tx_hawb=raw.get("tx_hawb", ""),
+            nu_boxes=int(raw.get("nu_boxes") or 0),
+            nu_stems_total=int(raw.get("nu_stems_total") or 0),
+            mny_total=float(raw.get("mny_total") or 0),
+            lines=lines,
+        )
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid order data: {exc}")
+
+    # Resolve supplier_fp_id: explicit override → DB lookup by company name → request default
+    supplier_fp_id = req.supplier_fp_id
+    if not supplier_fp_id:
+        supplier_fp_id = find_supplier_fp_id(cfg.freshportal_url, order.tx_company)
+    if not supplier_fp_id:
+        supplier_fp_id = req.supplier_id  # last resort (may be a catalogue ID, not form value)
+
+    async def _stream():
+        import asyncio
+        queue: list[str] = []
+
+        def on_status(msg: str):
+            queue.append(msg)
+
+        loop = asyncio.get_event_loop()
+        result_holder: list[dict] = []
+
+        def _run():
+            r = create_batch_header(order, cfg, supplier_fp_id=supplier_fp_id, on_status=on_status)
+            result_holder.append(r)
+
+        task = loop.run_in_executor(None, _run)
+
+        while not task.done():
+            while queue:
+                yield f"data: {queue.pop(0)}\n\n"
+            await asyncio.sleep(0.3)
+        while queue:
+            yield f"data: {queue.pop(0)}\n\n"
+
+        result = result_holder[0] if result_holder else {"ok": False, "message": "no result"}
+        import json as _json
+        yield f"data: DONE {_json.dumps(result)}\n\n"
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.post("/delivery/create/stream")

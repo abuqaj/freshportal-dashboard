@@ -1,11 +1,12 @@
-"""FreshPortal Ecuador delivery import via Playwright.
+"""FreshPortal Ecuador delivery import.
 
-Flow:
-  1. POST /batch_v2/form/add/  — create batch header (code, supplier, dates, AWB)
-  2. Scrape batch ID from the redirect or batch list page
-  3. For each matched product line:
-       GET /company_product_add_stock/index/index/BAT_ID/{batch_id}/
-       → fill product form → submit
+Flow A — batch header only (HTTP, fast, reliable):
+  1. Login via Playwright → extract session cookies
+  2. POST cookies + form data to /batch_v2/form/add/ via httpx (no UI)
+  3. Parse redirect or batch list HTML to extract BAT_ID
+
+Flow B — product lines (Playwright, interactive):
+  Coming once we know the correct POST format for company_product_add_stock.
 """
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ import re
 import time
 from typing import Callable
 
+import httpx
+from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, Page
 
 from config import Config
@@ -173,7 +176,174 @@ def explore_stock_add_form(batch_id: str, cfg: Config) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Main delivery creation
+# HTTP-based session helpers (fast, no UI)
+# ---------------------------------------------------------------------------
+
+def _get_session_cookies(cfg: Config) -> dict[str, str]:
+    """Login to FreshPortal via Playwright and return session cookies dict."""
+    from scraper_fp import _launch_browser, _login
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        ctx = browser.new_context()
+        page = ctx.new_page()
+        try:
+            _login(page, cfg)
+            return {c["name"]: c["value"] for c in ctx.cookies()}
+        finally:
+            ctx.close()
+            browser.close()
+
+
+def _fp_http_client(cfg: Config, cookies: dict[str, str]) -> httpx.Client:
+    return httpx.Client(
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": cfg.freshportal_url,
+            "Referer": f"{cfg.freshportal_url}/batch_v2/form/add/",
+            "User-Agent": "Mozilla/5.0 (compatible; FPImport/1.0)",
+        },
+        cookies=cookies,
+        follow_redirects=True,
+        timeout=30,
+    )
+
+
+def _batch_id_from_url(url: str) -> str:
+    """Try to extract numeric batch ID from a URL."""
+    for pat in [r"/(?:id|edit|detail)/(\d+)/?", r"[?&]id=(\d+)"]:
+        m = re.search(pat, url)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _batch_id_from_html(html: str, invoice_code: str) -> str:
+    """Parse batch list HTML and return first matching (or first overall) BAT_ID."""
+    soup = BeautifulSoup(html, "lxml")
+    rows = soup.select("table tbody tr")
+
+    def _row_id(row) -> str:
+        did = row.get("data-id", "")
+        if did and str(did).isdigit():
+            return str(did)
+        for a in row.select("a[href]"):
+            m = re.search(r"/(\d+)/?", a.get("href", ""))
+            if m:
+                return m.group(1)
+        # Fingerprint column — first numeric-only cell
+        for td in row.select("td"):
+            txt = td.get_text(strip=True)
+            if txt.isdigit():
+                return txt
+        return ""
+
+    first_id = ""
+    for row in rows:
+        rid = _row_id(row)
+        if not first_id and rid:
+            first_id = rid
+        if invoice_code and invoice_code in row.get_text():
+            if rid:
+                return rid
+    return first_id
+
+
+def create_batch_header(
+    order: DeliveryOrder,
+    cfg: Config,
+    supplier_fp_id: str = "",
+    on_status: Callable[[str], None] | None = None,
+) -> dict:
+    """Create a FreshPortal batch header via direct HTTP POST (no Playwright UI).
+
+    Uses session cookies obtained by logging in with Playwright once, then
+    sends all form data with httpx — much faster and more reliable than filling
+    forms through the browser.
+
+    Returns {"ok": bool, "batch_id": str, "batch_url": str, "message": str}
+    """
+    def _s(msg: str) -> None:
+        log.info(msg)
+        if on_status:
+            on_status(msg)
+
+    result: dict = {"ok": False, "batch_id": "", "batch_url": "", "message": ""}
+
+    try:
+        _s("Logging in to FreshPortal (Playwright)…")
+        cookies = _get_session_cookies(cfg)
+        _s(f"  → got {len(cookies)} session cookies: {', '.join(sorted(cookies))}")
+
+        payload = {
+            "code":               order.id_invoice,
+            "supplier[]":         supplier_fp_id or "",
+            "date":               _to_iso_date(order.dt_invoice),
+            "delivery_date":      _to_iso_date(order.dt_fly),
+            "delivery_date_time": "",
+            "carrier":            "",
+            "container_number":   order.tx_hawb or "",
+            "order_number":       order.id_purchaseorder or "",
+            "airway_bill":        order.tx_awb or "",
+        }
+        _s(f"POST /batch_v2/form/add/")
+        _s(f"  code={order.id_invoice}  supplier[]={supplier_fp_id}  "
+           f"date={payload['date']}  delivery_date={payload['delivery_date']}  "
+           f"awb={order.tx_awb}")
+
+        with _fp_http_client(cfg, cookies) as client:
+            resp = client.post(
+                f"{cfg.freshportal_url}/batch_v2/form/add/",
+                data=payload,
+            )
+
+        final_url = str(resp.url)
+        result["batch_url"] = final_url
+        _s(f"Response: HTTP {resp.status_code}  →  {final_url}")
+
+        # Try URL-based ID first
+        batch_id = _batch_id_from_url(final_url)
+        if batch_id:
+            _s(f"Batch ID from URL: {batch_id}")
+        else:
+            # Parse the HTML response (may be batch list or another page)
+            _s("Batch ID not in URL — scanning HTML response…")
+            batch_id = _batch_id_from_html(resp.text, order.id_invoice)
+            if batch_id:
+                _s(f"Batch ID from HTML: {batch_id}")
+
+        # If still not found, fetch the batch list with supplier filter
+        if not batch_id:
+            _s("Fetching batch list to find new batch…")
+            list_url = f"{cfg.freshportal_url}/batch_v2/index/index/?1=1"
+            if supplier_fp_id:
+                list_url += f"&supplier={supplier_fp_id}"
+            with _fp_http_client(cfg, cookies) as client:
+                list_resp = client.get(list_url)
+            batch_id = _batch_id_from_html(list_resp.text, order.id_invoice)
+            _s(f"Batch ID from list page: {batch_id or '(not found)'}")
+
+        if batch_id:
+            result["ok"] = True
+            result["batch_id"] = batch_id
+            result["message"] = f"Batch {order.id_invoice} created (ID: {batch_id})"
+        else:
+            result["message"] = (
+                f"Batch POST sent (HTTP {resp.status_code}) but batch ID could not "
+                f"be determined. Final URL: {final_url}"
+            )
+
+        _s(result["message"])
+
+    except Exception as exc:
+        result["message"] = str(exc)
+        _s(f"Error: {exc}")
+        log.exception("create_batch_header failed")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Main delivery creation (Playwright — kept for backward compat / product adding)
 # ---------------------------------------------------------------------------
 
 def add_delivery(
