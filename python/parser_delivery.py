@@ -188,6 +188,19 @@ def delivery_key(nm_variety: str | None, nu_length: int | None) -> str:
     return f"{(nm_variety or '').lower().strip()}|{nu_length or ''}"
 
 
+def _norm(s: str) -> str:
+    """Normalize a product/variety name for fuzzy comparison.
+
+    Strips hyphens, dots, apostrophes and collapses whitespace so that
+    "x-pression" == "xpression", "S.A." == "SA", etc.
+    """
+    import re as _re
+    s = s.lower().strip()
+    s = _re.sub(r"[-.'`]", "", s)        # remove hyphens, dots, apostrophes
+    s = _re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def _catalogue_variety(entry: dict) -> str:
     """Extract variety from a catalogue entry.
 
@@ -222,26 +235,27 @@ def match_line_to_catalogue(
         m = cached_matches[key]
         return m["fp_product_id"], m["match_type"], m.get("nm_product") or ""
 
-    variety = (line.nm_variety or "").lower().strip()
-    length = line.nu_length
+    variety     = (line.nm_variety or "").lower().strip()
+    variety_n   = _norm(variety)          # normalized: hyphens/dots removed
+    length      = line.nu_length
 
-    # 1. Exact variety + exact length
+    # 1. Exact normalized variety + exact length
     for entry in catalogue:
         cat_len = entry.get("nu_length")
         if cat_len != length:
             continue
-        cat_var = _catalogue_variety(entry)
-        if variety and cat_var and cat_var == variety:
-            return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_var
+        cat_var_n = _norm(_catalogue_variety(entry))
+        if variety_n and cat_var_n and cat_var_n == variety_n:
+            return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_var_n
 
-    # 2. Variety substring in nm_product + exact length
+    # 2. Normalized variety substring in normalized nm_product + exact length
     for entry in catalogue:
         cat_len = entry.get("nu_length")
-        if cat_len != length or not variety:
+        if cat_len != length or not variety_n:
             continue
-        cat_prod = (entry.get("nm_product") or "").lower()
-        if variety in cat_prod or cat_prod.startswith(variety):
-            return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_prod
+        cat_prod_n = _norm(entry.get("nm_product") or "")
+        if variety_n in cat_prod_n:
+            return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_prod_n
 
     # 3. Floricode / VBN match
     if line.id_floricode:
@@ -249,18 +263,18 @@ def match_line_to_catalogue(
             if entry.get("id_floricode") == line.id_floricode:
                 return entry["fp_product_id"], "floricode", entry.get("nm_product") or ""
 
-    # 4. Fuzzy: variety substring in nm_product or nm_variety; relax length when delivery has 0
+    # 4. Fuzzy: normalized variety substring in catalogue; relax length when delivery has 0
     for entry in catalogue:
         cat_len = entry.get("nu_length")
         len_ok = (cat_len == length) or (length == 0)
-        if not len_ok or not variety:
+        if not len_ok or not variety_n:
             continue
-        cat_var = _catalogue_variety(entry)
-        cat_prod = (entry.get("nm_product") or "").lower()
-        if (cat_var and (variety in cat_var or cat_var in variety)) or \
-           (cat_prod and variety in cat_prod):
+        cat_var_n = _norm(_catalogue_variety(entry))
+        cat_prod_n = _norm(entry.get("nm_product") or "")
+        if (cat_var_n and (variety_n in cat_var_n or cat_var_n in variety_n)) or \
+           (cat_prod_n and variety_n in cat_prod_n):
             method = "fuzzy_variety" if (cat_len == length) else "fuzzy_variety_nolen"
-            return entry["fp_product_id"], method, entry.get("nm_product") or cat_prod
+            return entry["fp_product_id"], method, entry.get("nm_product") or cat_prod_n
 
     return "", "none", ""
 

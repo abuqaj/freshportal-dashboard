@@ -268,7 +268,7 @@ def add_delivery(
             _s(f"Redirected to: {batch_url}")
 
             # ── 2. Extract batch ID ───────────────────────────────────────────
-            batch_id = _extract_batch_id(page, cfg, order.id_invoice)
+            batch_id = _extract_batch_id(page, cfg, order.id_invoice, supplier_id=sid or supplier_fp_id)
             if not batch_id:
                 raise RuntimeError(
                     f"Could not determine batch ID after submission. "
@@ -327,68 +327,75 @@ def add_delivery(
 # Batch ID extraction
 # ---------------------------------------------------------------------------
 
-def _extract_batch_id(page: Page, cfg: Config, invoice_code: str) -> str:
+def _extract_batch_id(page: Page, cfg: Config, invoice_code: str, supplier_id: str = "") -> str:
     """Extract batch ID after form submission.
 
     Strategy:
     1. Parse from redirect URL (e.g. /batch_v2/form/edit/id/12345/)
-    2. Navigate to batch list and search for the invoice code
+    2. Search current page table for invoice_code row
+    3. Navigate to batch list (filtered by supplier) and:
+       a. Search for invoice_code row
+       b. If still not found, take the first row (newest batch, list is sorted BAT_ID desc)
     """
-    # 1. From redirect URL
-    m = re.search(r"/(?:id|edit|detail)/(\d+)/?", page.url)
-    if m:
-        return m.group(1)
-    m = re.search(r"[?&]id=(\d+)", page.url)
-    if m:
-        return m.group(1)
-    m = re.search(r"/(\d+)/?$", page.url)
-    if m:
-        return m.group(1)
+    def _id_from_row(row) -> str:
+        data_id = (row.get_attribute("data-id") or "").strip()
+        if data_id and data_id.isdigit():
+            return data_id
+        # Look for edit/detail link like /batch_v2/form/edit/id/12345/
+        link = row.query_selector("a[href]")
+        if link:
+            href = link.get_attribute("href") or ""
+            m2 = re.search(r"/(\d+)/?(?:\?|$)", href)
+            if m2:
+                return m2.group(1)
+        # Fingerprint cell: first td that is a number
+        cells = row.query_selector_all("td")
+        for cell in cells:
+            txt = (cell.inner_text() or "").strip()
+            if txt.isdigit():
+                return txt
+        return ""
 
-    # 2. Search in page content (data attribute or link)
+    # 1. From redirect URL
+    for pattern in [r"/(?:id|edit|detail)/(\d+)/?", r"[?&]id=(\d+)", r"/(\d+)/?$"]:
+        m = re.search(pattern, page.url)
+        if m:
+            return m.group(1)
+
+    # 2. Search current page
     try:
         rows = page.query_selector_all("table tbody tr")
         for row in rows:
-            text = (row.inner_text() or "")
-            if invoice_code in text:
-                # Grab id from link or data-id
-                data_id = row.get_attribute("data-id") or ""
-                if data_id:
-                    return data_id
-                link = row.query_selector("a[href]")
-                if link:
-                    href = link.get_attribute("href") or ""
-                    m2 = re.search(r"/(\d+)/?", href)
-                    if m2:
-                        return m2.group(1)
+            if invoice_code in (row.inner_text() or ""):
+                bid = _id_from_row(row)
+                if bid:
+                    return bid
     except Exception:
         pass
 
-    # 3. Navigate to batch list, find by code
+    # 3. Navigate to batch list with supplier filter
     try:
-        page.goto(
-            f"{cfg.freshportal_url}/batch_v2/index/index/?1=1",
-            wait_until="load",
-            timeout=cfg.request_timeout,
-        )
+        list_url = f"{cfg.freshportal_url}/batch_v2/index/index/?1=1"
+        if supplier_id:
+            list_url += f"&supplier={supplier_id}"
+        page.goto(list_url, wait_until="load", timeout=cfg.request_timeout)
         try:
             page.wait_for_selector("table tbody tr", timeout=10_000)
         except Exception:
             pass
 
         rows = page.query_selector_all("table tbody tr")
+        first_row_id = ""
         for row in rows:
-            text = (row.inner_text() or "")
-            if invoice_code in text:
-                data_id = row.get_attribute("data-id") or ""
-                if data_id:
-                    return data_id
-                link = row.query_selector("a[href]")
-                if link:
-                    href = link.get_attribute("href") or ""
-                    m2 = re.search(r"/(\d+)/?", href)
-                    if m2:
-                        return m2.group(1)
+            bid = _id_from_row(row)
+            if bid and not first_row_id:
+                first_row_id = bid  # remember first (newest) row as fallback
+            if invoice_code in (row.inner_text() or ""):
+                if bid:
+                    return bid
+        # Fallback: return first row's ID (list is sorted BAT_ID desc — newest first)
+        if first_row_id:
+            return first_row_id
     except Exception:
         pass
 
@@ -543,55 +550,58 @@ def _find_supplier_id(page: Page, company_name: str) -> str:
 
 
 def _select_supplier(page: Page, supplier_id: str, supplier_text: str = "") -> None:
-    """Select supplier in a jQuery Chosen multi-select.
+    """Select supplier in a jQuery Chosen multi-select (searchable mode).
 
-    Chosen hides the native <select> and renders its own searchable dropdown.
-    We click the Chosen search field, type the supplier name, then click the
-    matching result.  Falls back to a plain JS value-set if Chosen isn't found.
+    FreshPortal uses a Chosen multi-select with a .chosen-search-input inside
+    .chosen-choices.  Clicking that input opens the dropdown; typing filters
+    results; clicking an .active-result selects it.
     """
-    # Build search term: prefer display text, fall back to supplier_id
-    search_term = supplier_text.strip() if supplier_text.strip() else supplier_id
+    # Pick a search keyword: first word > 3 chars from supplier_text (skips "SA", "S.A." etc.)
+    raw = supplier_text.strip() or supplier_id
+    words = [w for w in raw.split() if len(w) > 3]
+    keyword = words[0] if words else (raw.split()[0] if raw.split() else raw)
 
-    # 1. Locate the Chosen container that wraps supplier[]
+    # 1. jQuery Chosen multi-select
     chosen = page.locator(
         "#cf_element_supplier_chosen, "
-        ".chosen-container:has(~ select[name='supplier[]']), "
-        ".chosen-container:has(~ select[name='supplier'])"
+        "[id$='_supplier_chosen'], "
+        "[id$='supplier_chosen']"
     )
-    if chosen.count() == 0:
-        # Try by the id pattern Chosen generates: <select id="X"> → <div id="X_chosen">
-        chosen = page.locator("[id$='_supplier_chosen'], [id$='supplier_chosen']")
-
     if chosen.count() > 0:
-        # Click to open the Chosen dropdown
-        chosen.first.click()
-        page.wait_for_timeout(300)
-
-        # Type into the Chosen search input (inside .chosen-search or .search-field)
-        search_inp = chosen.first.locator("input[type='text']")
+        # Click the Chosen search input (inside .chosen-choices .search-field)
+        search_inp = chosen.first.locator(".chosen-search-input, .search-field input[type='text']")
         if search_inp.count() > 0:
-            # Use first word of the search term so results narrow down
-            first_word = search_term.split()[0]
-            search_inp.first.fill(first_word)
-            page.wait_for_timeout(500)
-
-        # Click the first matching result
-        result = chosen.first.locator(f".chosen-results li:not(.disabled)")
-        if result.count() > 0:
-            result.first.click()
+            search_inp.first.click()
             page.wait_for_timeout(300)
-            return
+            search_inp.first.fill(keyword)
+            page.wait_for_timeout(700)  # let Chosen filter the list
 
-    # 2. Fallback: set value directly via JS (works when form reads the hidden select)
+            # Click the first .active-result (not .result-selected / disabled)
+            results = chosen.first.locator(".chosen-results li.active-result")
+            if results.count() > 0:
+                results.first.click()
+                page.wait_for_timeout(400)
+                return
+
+    # 2. JS fallback — find option by value or by partial text match, then trigger chosen:updated
     page.evaluate("""
-        (sid) => {
+        ([sid, keyword]) => {
             const sel = document.querySelector("select[name='supplier[]'], select[name='supplier']");
             if (!sel) return;
-            for (const opt of sel.options) { opt.selected = opt.value === sid; }
-            sel.dispatchEvent(new Event('change', { bubbles: true }));
-            if (window.jQuery) { jQuery(sel).trigger('chosen:updated'); }
+            const kw = keyword.toLowerCase();
+            let found = null;
+            for (const opt of sel.options) {
+                if (opt.value === sid) { found = opt; break; }
+                if (kw && opt.text.toLowerCase().includes(kw)) { found = opt; break; }
+            }
+            if (found) {
+                found.selected = true;
+                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                if (window.jQuery) jQuery(sel).trigger('chosen:updated');
+            }
         }
-    """, supplier_id)
+    """, [supplier_id, keyword])
+    page.wait_for_timeout(300)
 
     # 3. fps-select fallback
     for sel_str in ["fps-select[name='supplier[]']", "fps-select[name='supplier']"]:
