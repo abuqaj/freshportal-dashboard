@@ -254,90 +254,146 @@ def create_batch_header(
     supplier_fp_id: str = "",
     on_status: Callable[[str], None] | None = None,
 ) -> dict:
-    """Create a FreshPortal batch header via direct HTTP POST (no Playwright UI).
+    """Create a FreshPortal batch header via Playwright with network request capture.
 
-    Uses session cookies obtained by logging in with Playwright once, then
-    sends all form data with httpx — much faster and more reliable than filling
-    forms through the browser.
+    Fills the form, intercepts the actual outgoing POST request (captures URL +
+    body so we can see what FreshPortal really expects), then submits and extracts
+    the batch ID from redirect or batch list.
 
-    Returns {"ok": bool, "batch_id": str, "batch_url": str, "message": str}
+    Returns {"ok": bool, "batch_id": str, "batch_url": str, "message": str,
+             "captured_post": {url, body}}
     """
+    from scraper_fp import _launch_browser, _login
+
     def _s(msg: str) -> None:
         log.info(msg)
         if on_status:
             on_status(msg)
 
-    result: dict = {"ok": False, "batch_id": "", "batch_url": "", "message": ""}
+    result: dict = {
+        "ok": False, "batch_id": "", "batch_url": "", "message": "",
+        "captured_post": None,
+    }
 
-    try:
-        _s("Logging in to FreshPortal (Playwright)…")
-        cookies = _get_session_cookies(cfg)
-        _s(f"  → got {len(cookies)} session cookies: {', '.join(sorted(cookies))}")
+    captured_post: dict = {}
 
-        payload = {
-            "code":               order.id_invoice,
-            "supplier[]":         supplier_fp_id or "",
-            "date":               _to_iso_date(order.dt_invoice),
-            "delivery_date":      _to_iso_date(order.dt_fly),
-            "delivery_date_time": "",
-            "carrier":            "",
-            "container_number":   order.tx_hawb or "",
-            "order_number":       order.id_purchaseorder or "",
-            "airway_bill":        order.tx_awb or "",
-        }
-        _s(f"POST /batch_v2/form/add/")
-        _s(f"  code={order.id_invoice}  supplier[]={supplier_fp_id}  "
-           f"date={payload['date']}  delivery_date={payload['delivery_date']}  "
-           f"awb={order.tx_awb}")
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        ctx = browser.new_context()
+        page = ctx.new_page()
+        page.route(
+            "**/*",
+            lambda r: r.abort() if r.request.resource_type in ("image", "font", "media") else r.continue_(),
+        )
 
-        with _fp_http_client(cfg, cookies) as client:
-            resp = client.post(
+        # Capture ALL POST requests so we can see the actual form submission URL + body
+        def _on_request(req):
+            if req.method.upper() == "POST":
+                body = ""
+                try:
+                    body = req.post_data or ""
+                except Exception:
+                    pass
+                captured_post["url"] = req.url
+                captured_post["body"] = body
+                _s(f"[NET] POST → {req.url}")
+                if body:
+                    _s(f"[NET] body: {body[:400]}")
+
+        page.on("request", _on_request)
+
+        try:
+            _s("Logging in to FreshPortal…")
+            _login(page, cfg)
+
+            _s("Loading /batch_v2/form/add/…")
+            page.goto(
                 f"{cfg.freshportal_url}/batch_v2/form/add/",
-                data=payload,
+                wait_until="load",
+                timeout=cfg.request_timeout,
             )
+            try:
+                page.wait_for_selector("input[name='code'], fps-input", timeout=15_000)
+            except Exception:
+                _s("Warning: batch form slow to load")
+            time.sleep(1.5)
 
-        final_url = str(resp.url)
-        result["batch_url"] = final_url
-        _s(f"Response: HTTP {resp.status_code}  →  {final_url}")
+            # Fill batch code
+            _s(f"Setting code = {order.id_invoice}")
+            _fill_field(page, "code", order.id_invoice)
 
-        # Try URL-based ID first
-        batch_id = _batch_id_from_url(final_url)
-        if batch_id:
-            _s(f"Batch ID from URL: {batch_id}")
-        else:
-            # Parse the HTML response (may be batch list or another page)
-            _s("Batch ID not in URL — scanning HTML response…")
-            batch_id = _batch_id_from_html(resp.text, order.id_invoice)
-            if batch_id:
-                _s(f"Batch ID from HTML: {batch_id}")
-
-        # If still not found, fetch the batch list with supplier filter
-        if not batch_id:
-            _s("Fetching batch list to find new batch…")
-            list_url = f"{cfg.freshportal_url}/batch_v2/index/index/?1=1"
+            # Set supplier via JS directly on the native select (reliable, no Chosen UI)
             if supplier_fp_id:
-                list_url += f"&supplier={supplier_fp_id}"
-            with _fp_http_client(cfg, cookies) as client:
-                list_resp = client.get(list_url)
-            batch_id = _batch_id_from_html(list_resp.text, order.id_invoice)
-            _s(f"Batch ID from list page: {batch_id or '(not found)'}")
+                set_ok = page.evaluate("""
+                    (sid) => {
+                        const sel = document.querySelector(
+                            "select[name='supplier[]'], select[name='supplier']");
+                        if (!sel) return "select not found";
+                        let found = false;
+                        for (const opt of sel.options) {
+                            opt.selected = opt.value === sid;
+                            if (opt.value === sid) found = true;
+                        }
+                        sel.dispatchEvent(new Event('change', { bubbles: true }));
+                        if (window.jQuery) jQuery(sel).trigger('chosen:updated');
+                        const chosen = document.querySelector(
+                            '#cf_element_supplier_chosen .chosen-single span, '
+                            + '#cf_element_supplier_chosen .search-choice span');
+                        return found
+                            ? "set: " + (chosen ? chosen.textContent : "ok")
+                            : "value " + sid + " not found in options";
+                    }
+                """, supplier_fp_id)
+                _s(f"Supplier JS set → {set_ok}")
+            else:
+                _s("⚠ No supplier_fp_id provided — supplier field left empty")
 
-        if batch_id:
-            result["ok"] = True
-            result["batch_id"] = batch_id
-            result["message"] = f"Batch {order.id_invoice} created (ID: {batch_id})"
-        else:
-            result["message"] = (
-                f"Batch POST sent (HTTP {resp.status_code}) but batch ID could not "
-                f"be determined. Final URL: {final_url}"
-            )
+            # Fill dates
+            if order.dt_invoice:
+                iso = _to_iso_date(order.dt_invoice)
+                _fill_field(page, "date", iso)
+                _s(f"date = {iso}")
+            if order.dt_fly:
+                iso = _to_iso_date(order.dt_fly)
+                _fill_field(page, "delivery_date", iso)
+                _s(f"delivery_date = {iso}")
+            if order.tx_awb:
+                _fill_field(page, "airway_bill", order.tx_awb)
+            if order.id_purchaseorder:
+                _fill_field(page, "order_number", order.id_purchaseorder)
+            if order.tx_hawb:
+                _fill_field(page, "container_number", order.tx_hawb)
 
-        _s(result["message"])
+            _s("Submitting batch form…")
+            _submit_form(page)
+            time.sleep(3)
 
-    except Exception as exc:
-        result["message"] = str(exc)
-        _s(f"Error: {exc}")
-        log.exception("create_batch_header failed")
+            batch_url = page.url
+            result["batch_url"] = batch_url
+            result["captured_post"] = captured_post
+            _s(f"After submit → {batch_url}")
+
+            batch_id = _extract_batch_id(page, cfg, order.id_invoice, supplier_id=supplier_fp_id)
+            if batch_id:
+                result["ok"] = True
+                result["batch_id"] = batch_id
+                result["message"] = f"Batch {order.id_invoice} created (ID: {batch_id})"
+            else:
+                result["message"] = (
+                    f"Form submitted but batch ID not found. "
+                    f"Current URL: {batch_url}. "
+                    f"Captured POST: {captured_post.get('url', 'none')}"
+                )
+            _s(result["message"])
+
+        except Exception as exc:
+            result["message"] = str(exc)
+            result["captured_post"] = captured_post
+            _s(f"Error: {exc}")
+            log.exception("create_batch_header failed")
+        finally:
+            ctx.close()
+            browser.close()
 
     return result
 
