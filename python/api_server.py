@@ -239,11 +239,13 @@ if _allowed_origins == ["*"]:
         "ALLOWED_ORIGINS is not set — CORS is open to all origins. "
         "Set ALLOWED_ORIGINS=https://your-app.vercel.app on Railway."
     )
+else:
+    log.info("CORS allowed origins: %s", _allowed_origins)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-FP-URL"],
 )
 
@@ -1912,6 +1914,7 @@ async def delivery_create_stream(
                 mny_rate_stem=float(l.get("mny_rate_stem") or 0),
                 id_floricode=l.get("id_floricode", ""),
                 nm_product=l.get("nm_product", ""),
+                nm_box=l.get("nm_box", ""),
                 fp_product_id=l.get("fp_product_id", ""),
                 match_method=l.get("match_method", "none"),
                 catalogue_nm_product=l.get("catalogue_nm_product", ""),
