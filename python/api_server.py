@@ -1720,60 +1720,102 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permissi
 
     Returns aggregated DeliveryOrder(s) with match results per line.
     """
+    log.info("[delivery/parse] starting — supplier=%s with_matching=%s", req.supplier_id, req.with_matching)
     try:
-        orders = parse_delivery_json(req.raw_json)
+        try:
+            orders = parse_delivery_json(req.raw_json)
+        except Exception as exc:
+            log.exception("[delivery/parse] parse_delivery_json failed")
+            raise HTTPException(400, f"Invalid delivery JSON: {exc}")
+
+        if not orders:
+            raise HTTPException(400, "No invoices found in JSON")
+
+        log.info("[delivery/parse] parsed %d order(s), loading catalogue…", len(orders))
+
+        catalogue = []
+        cached_matches: dict = {}
+        if req.with_matching:
+            catalogue = get_catalogue(req.supplier_id)
+            fp_url = get_ecuador_cfg().freshportal_url
+            cached_matches = get_delivery_matches(fp_url, req.supplier_id)
+            log.info("[delivery/parse] catalogue=%d items, cached_matches=%d", len(catalogue), len(cached_matches))
+
+        matched_count = 0
+        unmatched_count = 0
+        new_matches: list[dict] = []
+
+        result_orders = []
+        for order in orders:
+            if catalogue:
+                match_order(order, catalogue, cached_matches)
+            d = order_to_dict(order)
+            for line in d["lines"]:
+                if line.get("fp_product_id"):
+                    matched_count += 1
+                    key = delivery_key(line.get("nm_variety"), line.get("nu_length"))
+                    if key not in cached_matches:
+                        new_matches.append({
+                            "delivery_key": key,
+                            "nm_variety":   line.get("nm_variety"),
+                            "nu_length":    line.get("nu_length"),
+                            "id_floricode": line.get("id_floricode"),
+                            "fp_product_id": line["fp_product_id"],
+                            "nm_product":   line.get("catalogue_nm_product"),
+                            "match_type":   line.get("match_method", "auto"),
+                        })
+                else:
+                    unmatched_count += 1
+            result_orders.append(d)
+
+        if new_matches and req.with_matching:
+            try:
+                fp_url = get_ecuador_cfg().freshportal_url
+                save_delivery_matches(fp_url, req.supplier_id, new_matches)
+                log.info("[delivery/parse] saved %d new matches", len(new_matches))
+            except Exception as exc:
+                log.warning("[delivery/parse] save_delivery_matches failed (non-fatal): %s", exc)
+
+        log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
+        return {
+            "orders": result_orders,
+            "catalogue_count": len(catalogue),
+            "matched_count": matched_count,
+            "unmatched_count": unmatched_count,
+            "cached_matches_used": len(cached_matches),
+            "new_matches_saved": len(new_matches),
+        }
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(400, f"Invalid delivery JSON: {exc}")
+        log.exception("[delivery/parse] unexpected error")
+        raise HTTPException(500, f"Internal error: {exc}")
 
-    if not orders:
-        raise HTTPException(400, "No invoices found in JSON")
 
-    catalogue = []
-    cached_matches: dict = {}
-    if req.with_matching:
-        catalogue = get_catalogue(req.supplier_id)
-        fp_url = get_ecuador_cfg().freshportal_url
-        cached_matches = get_delivery_matches(fp_url, req.supplier_id)
+@app.post("/dev/token", tags=["dev"])
+def dev_token():
+    """Generate a short-lived JWT with all permissions for local/API testing.
 
-    matched_count = 0
-    unmatched_count = 0
-    new_matches: list[dict] = []
-
-    result_orders = []
-    for order in orders:
-        if catalogue:
-            match_order(order, catalogue, cached_matches)
-        d = order_to_dict(order)
-        for line in d["lines"]:
-            if line.get("fp_product_id"):
-                matched_count += 1
-                key = delivery_key(line.get("nm_variety"), line.get("nu_length"))
-                if key not in cached_matches:
-                    new_matches.append({
-                        "delivery_key": key,
-                        "nm_variety":   line.get("nm_variety"),
-                        "nu_length":    line.get("nu_length"),
-                        "id_floricode": line.get("id_floricode"),
-                        "fp_product_id": line["fp_product_id"],
-                        "nm_product":   line.get("catalogue_nm_product"),
-                        "match_type":   line.get("match_method", "auto"),
-                    })
-            else:
-                unmatched_count += 1
-        result_orders.append(d)
-
-    if new_matches and req.with_matching:
-        fp_url = get_ecuador_cfg().freshportal_url
-        save_delivery_matches(fp_url, req.supplier_id, new_matches)
-
-    return {
-        "orders": result_orders,
-        "catalogue_count": len(catalogue),
-        "matched_count": matched_count,
-        "unmatched_count": unmatched_count,
-        "cached_matches_used": len(cached_matches),
-        "new_matches_saved": len(new_matches),
+    Only works when DEV_ALLOW_TOKEN_ENDPOINT=true is set in the environment.
+    Never enable this on production without that guard.
+    """
+    if os.getenv("DEV_ALLOW_TOKEN_ENDPOINT", "").lower() != "true":
+        raise HTTPException(403, "DEV_ALLOW_TOKEN_ENDPOINT is not enabled")
+    secret = os.getenv("AUTH_SECRET", "")
+    if not secret:
+        raise HTTPException(500, "AUTH_SECRET is not set")
+    from jose import jwt as _jwt
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    payload = {
+        "sub": "dev",
+        "username": "dev",
+        "permissions": ["vbn:check", "vbn:fix", "products:create", "photos:upload", "admin:manage"],
+        "iat": int(now.timestamp()),
+        "exp": int((now + _dt.timedelta(hours=1)).timestamp()),
     }
+    token = _jwt.encode(payload, secret, algorithm="HS256")
+    return {"access_token": token, "token_type": "bearer", "expires_in": 3600}
 
 
 @app.post("/delivery/catalogue/sync")
