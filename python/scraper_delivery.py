@@ -234,7 +234,7 @@ def add_delivery(
             _s(f"Supplier: {order.tx_company}")
             sid = supplier_fp_id or _find_supplier_id(page, order.tx_company)
             if sid:
-                _select_supplier(page, sid)
+                _select_supplier(page, sid, supplier_text=order.tx_company)
                 _s(f"  → selected supplier ID: {sid}")
             else:
                 _s("  ⚠ Supplier not found in select — leaving unset")
@@ -514,8 +514,8 @@ def _fill_field(page: Page, name: str, value: str) -> bool:
     return False
 
 
-def _find_supplier_id(page: Page, company_name: str) -> str:
-    """Find supplier option value matching company_name."""
+def _find_supplier(page: Page, company_name: str) -> dict | None:
+    """Return {value, text} for the best matching supplier option, or None."""
     options: list[dict] = page.evaluate("""
         () => {
             const sel = document.querySelector("select[name='supplier[]'], select[name='supplier']");
@@ -524,30 +524,84 @@ def _find_supplier_id(page: Page, company_name: str) -> str:
         }
     """)
     if not options:
-        return ""
+        return None
     name_lower = company_name.lower()
     for opt in options:
         if name_lower in opt["text"].lower():
-            return opt["value"]
+            return opt
     first_word = name_lower.split()[0] if name_lower.split() else ""
     for opt in options:
         if first_word and first_word in opt["text"].lower():
-            return opt["value"]
-    return ""
+            return opt
+    return None
 
 
-def _select_supplier(page: Page, supplier_id: str) -> None:
-    for sel in ["select[name='supplier[]']", "select[name='supplier']"]:
-        el = page.locator(sel)
-        if el.count() > 0:
-            el.first.select_option(value=supplier_id)
+def _find_supplier_id(page: Page, company_name: str) -> str:
+    """Return supplier option value for company_name (legacy helper)."""
+    match = _find_supplier(page, company_name)
+    return match["value"] if match else ""
+
+
+def _select_supplier(page: Page, supplier_id: str, supplier_text: str = "") -> None:
+    """Select supplier in a jQuery Chosen multi-select.
+
+    Chosen hides the native <select> and renders its own searchable dropdown.
+    We click the Chosen search field, type the supplier name, then click the
+    matching result.  Falls back to a plain JS value-set if Chosen isn't found.
+    """
+    # Build search term: prefer display text, fall back to supplier_id
+    search_term = supplier_text.strip() if supplier_text.strip() else supplier_id
+
+    # 1. Locate the Chosen container that wraps supplier[]
+    chosen = page.locator(
+        "#cf_element_supplier_chosen, "
+        ".chosen-container:has(~ select[name='supplier[]']), "
+        ".chosen-container:has(~ select[name='supplier'])"
+    )
+    if chosen.count() == 0:
+        # Try by the id pattern Chosen generates: <select id="X"> → <div id="X_chosen">
+        chosen = page.locator("[id$='_supplier_chosen'], [id$='supplier_chosen']")
+
+    if chosen.count() > 0:
+        # Click to open the Chosen dropdown
+        chosen.first.click()
+        page.wait_for_timeout(300)
+
+        # Type into the Chosen search input (inside .chosen-search or .search-field)
+        search_inp = chosen.first.locator("input[type='text']")
+        if search_inp.count() > 0:
+            # Use first word of the search term so results narrow down
+            first_word = search_term.split()[0]
+            search_inp.first.fill(first_word)
+            page.wait_for_timeout(500)
+
+        # Click the first matching result
+        result = chosen.first.locator(f".chosen-results li:not(.disabled)")
+        if result.count() > 0:
+            result.first.click()
+            page.wait_for_timeout(300)
             return
 
-    for sel in ["fps-select[name='supplier[]']", "fps-select[name='supplier']"]:
-        el = page.locator(sel)
+    # 2. Fallback: set value directly via JS (works when form reads the hidden select)
+    page.evaluate("""
+        (sid) => {
+            const sel = document.querySelector("select[name='supplier[]'], select[name='supplier']");
+            if (!sel) return;
+            for (const opt of sel.options) { opt.selected = opt.value === sid; }
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            if (window.jQuery) { jQuery(sel).trigger('chosen:updated'); }
+        }
+    """, supplier_id)
+
+    # 3. fps-select fallback
+    for sel_str in ["fps-select[name='supplier[]']", "fps-select[name='supplier']"]:
+        el = page.locator(sel_str)
         if el.count() > 0:
-            el.first.select_option(value=supplier_id)
-            return
+            try:
+                el.first.select_option(value=supplier_id)
+                return
+            except Exception:
+                pass
 
 
 def _submit_form(page: Page) -> None:
