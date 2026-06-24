@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 # data-sort-field → our field mapping  (FreshPortal v2 canonical column IDs)
 # ---------------------------------------------------------------------------
 _SORT_FIELD_MAP: dict[str, str] = {
+    "STE_ID":              "fp_product_id",  # Lot/STE unique ID (fingerprint column)
     "STE_Description":     "nm_product",
     "PRO_Number":          "_pro_number",   # internal ID fallback
     "PRO_VbnNumber":       "id_floricode",
@@ -161,6 +162,11 @@ def _parse_rows(soup: BeautifulSoup, col_map: dict[int, str]) -> list[dict]:
 
         item.pop("_pro_number", None)  # not a reliable unique ID — discard
 
+        # STE_ID column (fingerprint icon) is the most reliable unique ID.
+        # Pop it from item here so we can set it cleanly via fp_id below.
+        cell_fp_id = (item.pop("fp_product_id", None) or "").strip()
+        fp_id = cell_fp_id or fp_id
+
         if not fp_id:
             # Hash ALL product fields so any two products that differ in ANY
             # attribute get a different ID, with no risk of collision from
@@ -267,7 +273,8 @@ def fetch_supplier_catalogue(
             # Parse first page
             items = _parse_rows(soup, col_map)
             results.extend(items)
-            _s(f"Page 1: {len(items)} products")
+            id_src = "STE_ID" if any(not v.startswith("h_") for v in (i.get("fp_product_id","") for i in items)) else "hash"
+            _s(f"Page 1: {len(items)} products (id source: {id_src})")
 
             # Remaining pages
             for p in range(2, last_page + 1):
