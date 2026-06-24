@@ -1995,42 +1995,45 @@ async def delivery_create_batch(
     except Exception as exc:
         raise HTTPException(400, f"Invalid order data: {exc}")
 
-    # Resolve supplier_fp_id: explicit override → DB lookup by company name → request default
+    # Resolve supplier_fp_id: explicit → DB lookup by tx_company → fallback to request default
     supplier_fp_id = req.supplier_fp_id
     if not supplier_fp_id:
         supplier_fp_id = find_supplier_fp_id(cfg.freshportal_url, order.tx_company)
     if not supplier_fp_id:
-        supplier_fp_id = req.supplier_id  # last resort (may be a catalogue ID, not form value)
+        supplier_fp_id = req.supplier_id
 
-    async def _stream():
-        import asyncio
-        queue: list[str] = []
+    q: Queue = Queue()
 
-        def on_status(msg: str):
-            queue.append(msg)
+    def _run():
+        try:
+            result = create_batch_header(
+                order=order,
+                cfg=cfg,
+                supplier_fp_id=supplier_fp_id,
+                on_status=lambda msg: q.put({"type": "status", "message": msg}),
+            )
+            q.put({"type": "result", "data": result})
+        except Exception as exc:
+            log.exception("delivery/create-batch failed")
+            q.put({"type": "error", "message": str(exc)})
 
-        loop = asyncio.get_event_loop()
-        result_holder: list[dict] = []
+    threading.Thread(target=_run, daemon=True).start()
 
-        def _run():
-            r = create_batch_header(order, cfg, supplier_fp_id=supplier_fp_id, on_status=on_status)
-            result_holder.append(r)
-
-        task = loop.run_in_executor(None, _run)
-
-        while not task.done():
-            while queue:
-                yield f"data: {queue.pop(0)}\n\n"
-            await asyncio.sleep(0.3)
-        while queue:
-            yield f"data: {queue.pop(0)}\n\n"
-
-        result = result_holder[0] if result_holder else {"ok": False, "message": "no result"}
-        import json as _json
-        yield f"data: DONE {_json.dumps(result)}\n\n"
+    async def _generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = q.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
 
     return StreamingResponse(
-        _stream(),
+        _generate(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
@@ -2147,6 +2150,53 @@ async def delivery_create_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
+
+
+@app.get("/delivery/debug-match")
+def delivery_debug_match(
+    variety: str,
+    nu_length: int = 0,
+    supplier_id: str = "27",
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Debug matching for a single variety name against the catalogue.
+
+    Returns top 5 catalogue entries with their _variety_sim() scores so you
+    can see why something matches or doesn't.
+
+    Example: GET /delivery/debug-match?variety=Veggie&nu_length=60&supplier_id=27
+    """
+    from parser_delivery import _variety_sim, _extract_variety, _norm
+
+    catalogue = get_catalogue(supplier_id)
+    if not catalogue:
+        return {"error": f"No catalogue for supplier_id={supplier_id}"}
+
+    scored = []
+    for e in catalogue:
+        nm = e.get("nm_product") or ""
+        s = _variety_sim(variety, nm)
+        scored.append({
+            "fp_product_id": e.get("fp_product_id"),
+            "nm_product": nm,
+            "nu_length": e.get("nu_length"),
+            "extracted_variety": _extract_variety(nm),
+            "delivery_norm": _norm(variety),
+            "sim": round(s, 4),
+        })
+
+    scored.sort(key=lambda x: -x["sim"])
+    top = scored[:10]
+    exact_len = [x for x in top if x["nu_length"] == nu_length]
+
+    return {
+        "delivery_variety": variety,
+        "nu_length": nu_length,
+        "catalogue_size": len(catalogue),
+        "top_10_by_sim": top,
+        "top_10_at_length": [x for x in scored if x["nu_length"] == nu_length][:10],
+        "would_match": exact_len[0] if exact_len and exact_len[0]["sim"] >= 0.80 else None,
+    }
 
 
 @app.get("/delivery/debug-form")
