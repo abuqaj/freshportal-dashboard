@@ -19,6 +19,7 @@ interface DeliveryLine {
   mny_total: number;
   id_floricode: string;
   nm_product: string;
+  nm_box: string;
   fp_product_id: string;
   match_method: MatchMethod;
   catalogue_nm_product: string;
@@ -309,11 +310,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           )}
 
           {/* Product lines table */}
-          <div className="overflow-x-auto rounded-2xl border border-border">
+          <div className="overflow-x-auto overflow-y-auto max-h-[420px] rounded-2xl border border-border">
             <table className="w-full text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
-                  {[td.colVariety, td.colLength, td.colStemsBunch, td.colBunches, td.colStemsTotal, td.colPrice, td.colTotal, td.colMatch].map(h => (
+                  {[td.colVariety, td.colBox, td.colLength, td.colStemsBunch, td.colBunches, td.colStemsTotal, td.colPrice, td.colTotal, td.colMatch].map(h => (
                     <th key={h} className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -329,6 +330,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         {line.catalogue_nm_product && line.catalogue_nm_product !== line.nm_variety && (
                           <div className="text-ink-3 font-normal">{line.catalogue_nm_product}</div>
                         )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {line.nm_box ? (
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium
+                            ${line.nm_box.startsWith("MB")
+                              ? "bg-purple-500/10 text-purple-600 border-purple-500/20"
+                              : "bg-muted text-ink-3 border-border"}`}>
+                            {line.nm_box}
+                          </span>
+                        ) : "—"}
                       </td>
                       <td className="px-3 py-2 text-ink-3">{line.nu_length > 0 ? `${line.nu_length}cm` : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.nu_stems_bunch || "—"}</td>

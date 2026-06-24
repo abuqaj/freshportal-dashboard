@@ -16,6 +16,9 @@ class DeliveryLine:
     mny_rate_stem: float
     id_floricode: str
     nm_product: str
+    # Box code: HB (or original tp_box) for single-variety boxes;
+    # MB1, MB2 … for mix-box products (sequential within the invoice)
+    nm_box: str = ""
     # Filled after catalogue matching
     fp_product_id: str = ""
     match_method: str = "none"
@@ -63,63 +66,88 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
     orders: list[DeliveryOrder] = []
 
     for inv in data.get("invoices", []):
-        # Aggregate product lines — separate single-product boxes from mix boxes
+        # Parsing rules:
+        #   • Single-variety box (1 unique gu_product): aggregate by gu_product + tp_box.
+        #     nm_box = tp_box (e.g. "HB", "QB").
+        #   • Multi-variety box (Mix box): each product becomes its own line.
+        #     All products in the same physical box share a sequential label MB1, MB2 …
+        #     assigned in encounter order across the invoice. nm_box = "MB1", "MB2", etc.
         merged: dict[str, DeliveryLine] = {}
-        mix_boxes: list[dict] = []   # boxes with multiple product types
+        mix_box_counter = 0
 
         for box in inv.get("boxes", []):
             products_in_box = box.get("products", [])
-            unique_guids = {(p.get("gu_product") or "").strip() for p in products_in_box if p.get("gu_product")}
-
-            if len(unique_guids) > 1:
-                # Multi-product box → handle as Mix
-                mix_boxes.append(box)
+            if not products_in_box:
                 continue
 
-            for prod in products_in_box:
-                key = (prod.get("gu_product") or "").strip()
-                if not key:
-                    key = f"{prod.get('nm_variety','')}_{prod.get('nu_length','')}_{prod.get('nu_stems_bunch','')}_{prod.get('mny_rate_stem','')}"
+            tp_box = (box.get("tp_box") or box.get("nm_box") or "").strip().upper()
 
-                nu_bunches = int(prod.get("nu_bunches") or 0)
-                if key in merged:
-                    merged[key].nu_bunches += nu_bunches
-                else:
-                    merged[key] = DeliveryLine(
-                        gu_product=key,
-                        nm_variety=(prod.get("nm_variety") or "").strip().title(),
-                        nm_species=(prod.get("nm_species") or "").strip().title(),
-                        nu_length=int(prod.get("nu_length") or 0),
-                        nu_stems_bunch=int(prod.get("nu_stems_bunch") or 0),
-                        nu_bunches=nu_bunches,
-                        mny_rate_stem=float(prod.get("mny_rate_stem") or 0),
-                        id_floricode=(prod.get("id_floricode") or "").strip(),
-                        nm_product=(prod.get("nm_product") or "").strip(),
-                    )
+            unique_guids = {
+                (p.get("gu_product") or "").strip()
+                for p in products_in_box
+                if (p.get("gu_product") or "").strip()
+            }
 
-        # Add one Mix line per box type (grouped by box name / tp_box)
-        mix_by_type: dict[str, list[dict]] = {}
-        for box in mix_boxes:
-            box_type = (box.get("nm_box") or box.get("tp_box") or "MIX").strip().upper()
-            mix_by_type.setdefault(box_type, []).append(box)
+            if len(unique_guids) > 1:
+                # Mix box — one line per product inside the box, all labeled MBn.
+                mix_box_counter += 1
+                box_code = f"MB{mix_box_counter}"
 
-        for box_type, boxes in mix_by_type.items():
-            mix_key = f"__MIX__{box_type}"
-            total_bunches = sum(
-                sum(int(p.get("nu_bunches") or 0) for p in b.get("products", []))
-                for b in boxes
-            )
-            merged[mix_key] = DeliveryLine(
-                gu_product=mix_key,
-                nm_variety=f"Mix {box_type}",
-                nm_species="Mix",
-                nu_length=0,
-                nu_stems_bunch=0,
-                nu_bunches=len(boxes),      # number of mix boxes
-                mny_rate_stem=0.0,
-                id_floricode="",
-                nm_product=f"Mix {box_type} ({len(boxes)} dozen)",
-            )
+                for prod in products_in_box:
+                    gu = (prod.get("gu_product") or "").strip()
+                    if not gu:
+                        gu = (
+                            f"{prod.get('nm_variety','')}_{prod.get('nu_length','')}"
+                            f"_{prod.get('nu_stems_bunch','')}_{prod.get('mny_rate_stem','')}"
+                        )
+                    # Within a mix box, same gu_product can appear in different rows —
+                    # merge them using a key that ties the product to this exact box.
+                    key = f"{gu}|{box_code}"
+                    nu_bunches = int(prod.get("nu_bunches") or 0)
+
+                    if key in merged:
+                        merged[key].nu_bunches += nu_bunches
+                    else:
+                        merged[key] = DeliveryLine(
+                            gu_product=gu,
+                            nm_variety=(prod.get("nm_variety") or "").strip().title(),
+                            nm_species=(prod.get("nm_species") or "").strip().title(),
+                            nu_length=int(prod.get("nu_length") or 0),
+                            nu_stems_bunch=int(prod.get("nu_stems_bunch") or 0),
+                            nu_bunches=nu_bunches,
+                            mny_rate_stem=float(prod.get("mny_rate_stem") or 0),
+                            id_floricode=(prod.get("id_floricode") or "").strip(),
+                            nm_product=(prod.get("nm_product") or "").strip(),
+                            nm_box=box_code,
+                        )
+            else:
+                # Single-variety box — aggregate by gu_product + box_type.
+                # Different box types (HBE vs QBE) stay as separate lines.
+                for prod in products_in_box:
+                    gu = (prod.get("gu_product") or "").strip()
+                    if not gu:
+                        gu = (
+                            f"{prod.get('nm_variety','')}_{prod.get('nu_length','')}"
+                            f"_{prod.get('nu_stems_bunch','')}_{prod.get('mny_rate_stem','')}"
+                        )
+                    key = f"{gu}|{tp_box}"
+                    nu_bunches = int(prod.get("nu_bunches") or 0)
+
+                    if key in merged:
+                        merged[key].nu_bunches += nu_bunches
+                    else:
+                        merged[key] = DeliveryLine(
+                            gu_product=gu,
+                            nm_variety=(prod.get("nm_variety") or "").strip().title(),
+                            nm_species=(prod.get("nm_species") or "").strip().title(),
+                            nu_length=int(prod.get("nu_length") or 0),
+                            nu_stems_bunch=int(prod.get("nu_stems_bunch") or 0),
+                            nu_bunches=nu_bunches,
+                            mny_rate_stem=float(prod.get("mny_rate_stem") or 0),
+                            id_floricode=(prod.get("id_floricode") or "").strip(),
+                            nm_product=(prod.get("nm_product") or "").strip(),
+                            nm_box=tp_box,
+                        )
 
         lines = sorted(
             merged.values(),
@@ -214,14 +242,6 @@ def match_line_to_catalogue(
            (cat_prod and variety in cat_prod):
             return entry["fp_product_id"], "fuzzy_variety", entry.get("nm_product") or cat_var or cat_prod
 
-    # 4. Mix box matching
-    if line.gu_product.startswith("__MIX__"):
-        box_type = line.gu_product.replace("__MIX__", "").replace(" ", "").upper()
-        for entry in catalogue:
-            cat_nm = (entry.get("nm_product") or "").upper()
-            if "MIX" in cat_nm and (not box_type or box_type in cat_nm):
-                return entry["fp_product_id"], "mix", entry.get("nm_product") or cat_nm
-
     return "", "none", ""
 
 
@@ -267,6 +287,7 @@ def order_to_dict(order: DeliveryOrder) -> dict:
                 "mny_total": l.mny_total,
                 "id_floricode": l.id_floricode,
                 "nm_product": l.nm_product,
+                "nm_box": l.nm_box,
                 "fp_product_id": l.fp_product_id,
                 "match_method": l.match_method,
                 "catalogue_nm_product": l.catalogue_nm_product,
