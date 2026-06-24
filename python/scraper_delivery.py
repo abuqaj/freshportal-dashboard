@@ -863,3 +863,344 @@ def _submit_form(page: Page) -> None:
                 return
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Add products to existing batch
+# ---------------------------------------------------------------------------
+
+_JS_FIND_ROW = """
+    ([catName, nuLength, nuSpb]) => {
+        const rows = document.querySelectorAll("table tbody tr");
+        const cat = catName.toLowerCase();
+        const lenStr = String(nuLength);
+        const spbStr = String(nuSpb);
+        let best = -1, bestScore = -1;
+
+        for (let i = 0; i < rows.length; i++) {
+            const cells = Array.from(rows[i].querySelectorAll("td"));
+            const texts = cells.map(c => c.textContent.trim());
+            const rowText = texts.join(" ").toLowerCase();
+
+            // Every word of the catalogue name must appear in the row
+            const catWords = cat.split(" ").filter(w => w.length > 2);
+            if (!catWords.every(w => rowText.includes(w))) continue;
+
+            let score = 1.0;
+
+            // Length must match exactly (skip row if wrong length)
+            if (nuLength > 0) {
+                const lenMatch = texts.some(t =>
+                    t === lenStr || t === lenStr + "cm" || t === lenStr + " cm"
+                );
+                if (!lenMatch) continue;
+                score += 2;
+            }
+
+            // SPB is a bonus
+            if (nuSpb > 0 && texts.some(t => t === spbStr)) score += 1;
+
+            if (score > bestScore) { bestScore = score; best = i; }
+        }
+        return best;
+    }
+"""
+
+_BUNCH_NAMES = ["nu_bunches", "quantity", "aantal", "bundels", "number_of_bunches", "bunches"]
+_PRICE_NAMES = ["mny_rate_stem", "price", "rate", "prijs", "rate_stem", "mny_rate"]
+
+
+def _fill_any(container, names: list[str], value: str) -> str:
+    """Fill first matching named input inside container. Returns name used or ''."""
+    for name in names:
+        for sel in [
+            f"input[name='{name}']",
+            f"fps-input[name='{name}'] input",
+            f"input[formcontrolname='{name}']",
+        ]:
+            inp = container.locator(sel)
+            if inp.count() > 0:
+                try:
+                    inp.first.fill(value)
+                    inp.first.dispatch_event("change")
+                    return name
+                except Exception:
+                    pass
+    return ""
+
+
+def _save_in(container, page: Page) -> bool:
+    """Click a save/submit button inside container."""
+    for sel in [
+        "fps-button[name='button_save'] button",
+        "fps-button[name='save'] button",
+        "button[type='submit']",
+        "input[type='submit']",
+    ]:
+        btn = container.locator(sel)
+        if btn.count() > 0:
+            try:
+                btn.first.click(force=True)
+                page.wait_for_timeout(2000)
+                return True
+            except Exception:
+                pass
+    for text in ["Save", "Opslaan", "Bewaar", "Toevoeg", "Add", "OK"]:
+        btn = container.locator(f"button:has-text('{text}')")
+        if btn.count() > 0:
+            try:
+                btn.first.click(force=True)
+                page.wait_for_timeout(2000)
+                return True
+            except Exception:
+                pass
+    return False
+
+
+def _add_one_product(
+    page: Page,
+    cfg: Config,
+    batch_id: str,
+    stock_url: str,
+    fp_product_id: str,
+    catalogue_nm: str,
+    nu_length: int,
+    nu_stems_bunch: int,
+    nu_bunches: str,
+    mny_rate: str,
+    on_status: Callable[[str], None],
+) -> bool:
+    """Add one product line. Returns True on success."""
+
+    # Ensure we are on the stock page
+    if not page.url.rstrip("/").endswith(batch_id):
+        page.goto(stock_url, wait_until="load", timeout=cfg.request_timeout)
+        try:
+            page.wait_for_selector("table tbody tr", timeout=12_000)
+        except Exception:
+            pass
+        time.sleep(1)
+
+    # ── Find the correct table row ────────────────────────────────────────
+    row_idx: int = page.evaluate(_JS_FIND_ROW, [catalogue_nm, nu_length, nu_stems_bunch])
+
+    if row_idx is None or row_idx < 0:
+        on_status(f"  Row not found: '{catalogue_nm}' {nu_length}cm ×{nu_stems_bunch}spb")
+        return _try_direct_add(page, cfg, batch_id, fp_product_id, nu_bunches, mny_rate, on_status)
+
+    on_status(f"  Found at row {row_idx}")
+
+    # Click the row (may open sidebar / inline form)
+    page.evaluate(f"() => document.querySelectorAll('table tbody tr')[{row_idx}].click()")
+    time.sleep(1.5)
+
+    # ── Try: sidebar / slide panel ────────────────────────────────────────
+    for sidebar_sel in [
+        ".sidebar", "#sidebar", ".side-form", "#crud-sidebar", ".crud-sidebar",
+        ".ui-dialog", ".modal-body", "[class*='sidebar']", "[id*='sidebar']",
+        ".right-panel", "[class*='slide-panel']",
+    ]:
+        container = page.locator(sidebar_sel).first
+        try:
+            if container.count() > 0 and container.is_visible():
+                on_status(f"  Panel: {sidebar_sel}")
+                bname = _fill_any(container, _BUNCH_NAMES, nu_bunches)
+                pname = _fill_any(container, _PRICE_NAMES, mny_rate)
+                on_status(f"  Filled: bunches={bname or '?'}={nu_bunches}, price={pname or '?'}={mny_rate}")
+                if _save_in(container, page):
+                    time.sleep(1.5)
+                    return True
+        except Exception:
+            pass
+
+    # ── Try: inline inputs inside the row ────────────────────────────────
+    row_loc = page.locator("table tbody tr").nth(row_idx)
+    visible_inputs = row_loc.locator("input:visible")
+    if visible_inputs.count() > 0:
+        on_status("  Inline row inputs")
+        bname = _fill_any(row_loc, _BUNCH_NAMES, nu_bunches)
+        pname = _fill_any(row_loc, _PRICE_NAMES, mny_rate)
+        if not bname:  # fallback: fill first input
+            try:
+                visible_inputs.first.fill(nu_bunches)
+                visible_inputs.first.dispatch_event("change")
+            except Exception:
+                pass
+        on_status(f"  Filled: bunches={bname or 'first'}={nu_bunches}, price={pname or '?'}={mny_rate}")
+        if _save_in(row_loc, page) or _save_in(page.locator("body"), page):
+            time.sleep(1.5)
+            return True
+
+    on_status("  No form found after row click — trying direct URL")
+    return _try_direct_add(page, cfg, batch_id, fp_product_id, nu_bunches, mny_rate, on_status)
+
+
+def _try_direct_add(
+    page: Page,
+    cfg: Config,
+    batch_id: str,
+    fp_product_id: str,
+    nu_bunches: str,
+    mny_rate: str,
+    on_status: Callable[[str], None],
+) -> bool:
+    """Fallback: navigate to add-stock URL with fp_product_id."""
+    url = (
+        f"{cfg.freshportal_url}/company_product_add_stock/index/add/"
+        f"BAT_ID/{batch_id}/company_product_id/{fp_product_id}/"
+    )
+    on_status(f"  Direct URL: {url}")
+    page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+    time.sleep(1)
+    if "login" in page.url.lower():
+        return False
+    body = page.locator("body")
+    bname = _fill_any(body, _BUNCH_NAMES, nu_bunches)
+    pname = _fill_any(body, _PRICE_NAMES, mny_rate)
+    on_status(f"  Filled: bunches={bname or '?'}={nu_bunches}, price={pname or '?'}={mny_rate}")
+    _submit_form(page)
+    time.sleep(2)
+    return True
+
+
+def add_products_to_batch(
+    batch_id: str,
+    matched_lines: list[dict],
+    cfg: Config,
+    on_status: Callable[[str], None] | None = None,
+) -> dict:
+    """Add matched product lines to an existing FreshPortal batch via Playwright.
+
+    Navigates to /company_product_add_stock/index/index/BAT_ID/{batch_id}/,
+    finds each product row by catalogue name + length + stems-per-bunch,
+    clicks the row (opens sidebar), fills quantity + price, saves.
+    Intercepts network requests to log the actual POST URL/body.
+
+    Returns {"ok", "lines_added", "lines_skipped", "lines_failed", "message", "details"}
+    """
+    from scraper_fp import _launch_browser, _login
+
+    def _s(msg: str) -> None:
+        log.info(msg)
+        if on_status:
+            on_status(msg)
+
+    result: dict = {
+        "ok": False,
+        "lines_added": 0,
+        "lines_skipped": 0,
+        "lines_failed": 0,
+        "message": "",
+        "details": [],
+    }
+
+    lines_to_add = [l for l in matched_lines if l.get("fp_product_id")]
+    result["lines_skipped"] = len(matched_lines) - len(lines_to_add)
+
+    if not lines_to_add:
+        result["message"] = (
+            f"No matched lines to add — {result['lines_skipped']} unmatched"
+        )
+        return result
+
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        ctx = browser.new_context()
+        page = ctx.new_page()
+        page.route(
+            "**/*",
+            lambda r: r.abort()
+            if r.request.resource_type in ("image", "font", "media")
+            else r.continue_(),
+        )
+
+        def _on_request(req):
+            if req.method.upper() in ("POST", "PUT", "PATCH"):
+                body = ""
+                try:
+                    body = req.post_data or ""
+                except Exception:
+                    pass
+                _s(f"[NET] {req.method} → {req.url}")
+                if body:
+                    _s(f"[NET] body: {body[:300]}")
+
+        page.on("request", _on_request)
+
+        try:
+            _s("Logging in…")
+            _login(page, cfg)
+
+            stock_url = (
+                f"{cfg.freshportal_url}"
+                f"/company_product_add_stock/index/index/BAT_ID/{batch_id}/"
+            )
+            _s(f"Loading stock page for batch {batch_id}…")
+            page.goto(stock_url, wait_until="load", timeout=cfg.request_timeout)
+            try:
+                page.wait_for_selector("table tbody tr", timeout=15_000)
+            except Exception:
+                _s("Warning: table rows not found — page may still be loading")
+            time.sleep(1.5)
+
+            row_count = page.locator("table tbody tr").count()
+            _s(f"Table has {row_count} rows")
+
+            lines_added = 0
+            lines_failed = 0
+            details: list[dict] = []
+
+            for i, line in enumerate(lines_to_add, 1):
+                catalogue_nm = line.get("catalogue_nm_product") or line.get("nm_variety", "")
+                nu_length = int(line.get("nu_length") or 0)
+                nu_stems_bunch = int(line.get("nu_stems_bunch") or 0)
+                nu_bunches = str(int(line.get("nu_bunches") or 0))
+                mny_rate = str(line.get("mny_rate_stem", ""))
+                fp_product_id = str(line.get("fp_product_id", ""))
+
+                _s(
+                    f"\n[{i}/{len(lines_to_add)}] {catalogue_nm} {nu_length}cm "
+                    f"×{nu_stems_bunch}spb → {nu_bunches} bunches @ {mny_rate}"
+                )
+
+                try:
+                    ok = _add_one_product(
+                        page, cfg, batch_id, stock_url,
+                        fp_product_id, catalogue_nm, nu_length, nu_stems_bunch,
+                        nu_bunches, mny_rate, _s,
+                    )
+                except Exception as exc:
+                    _s(f"  Exception: {exc}")
+                    ok = False
+
+                if ok:
+                    lines_added += 1
+                    _s("  ✓ added")
+                    details.append({"product": catalogue_nm, "status": "added"})
+                else:
+                    lines_failed += 1
+                    _s("  ✗ failed")
+                    details.append({"product": catalogue_nm, "status": "failed"})
+
+                time.sleep(0.3)
+
+            result["ok"] = lines_added > 0
+            result["lines_added"] = lines_added
+            result["lines_failed"] = lines_failed
+            result["details"] = details
+            skipped = result["lines_skipped"]
+            result["message"] = (
+                f"{lines_added}/{len(lines_to_add)} lines added to batch {batch_id}"
+                + (f", {skipped} unmatched skipped" if skipped else "")
+                + (f", {lines_failed} failed" if lines_failed else "")
+            )
+            _s(result["message"])
+
+        except Exception as exc:
+            result["message"] = str(exc)
+            log.exception("add_products_to_batch failed")
+        finally:
+            ctx.close()
+            browser.close()
+
+    return result

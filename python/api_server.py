@@ -2039,6 +2039,84 @@ async def delivery_create_batch(
     )
 
 
+class AddProductsRequest(BaseModel):
+    batch_id: str
+    order: dict
+
+
+@app.post("/delivery/add-products")
+async def delivery_add_products(
+    req: AddProductsRequest,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """SSE stream: add matched product lines to an existing FreshPortal batch.
+
+    Request body:
+      { batch_id: "12345", order: <order dict with matched lines> }
+
+    Each line in order.lines must have: fp_product_id, catalogue_nm_product,
+    nu_length, nu_stems_bunch, nu_bunches, mny_rate_stem.
+    Lines without fp_product_id are skipped (unmatched).
+    """
+    from scraper_delivery import add_products_to_batch
+
+    cfg = get_ecuador_cfg()
+    try:
+        cfg.validate()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    raw = req.order
+    matched_lines = [
+        {
+            "fp_product_id":       l.get("fp_product_id", ""),
+            "nm_variety":          l.get("nm_variety", ""),
+            "catalogue_nm_product": l.get("catalogue_nm_product", ""),
+            "nu_length":           int(l.get("nu_length") or 0),
+            "nu_stems_bunch":      int(l.get("nu_stems_bunch") or 0),
+            "nu_bunches":          int(l.get("nu_bunches") or 0),
+            "mny_rate_stem":       float(l.get("mny_rate_stem") or 0),
+        }
+        for l in raw.get("lines", [])
+    ]
+
+    q: Queue = Queue()
+
+    def _run():
+        try:
+            result = add_products_to_batch(
+                batch_id=req.batch_id,
+                matched_lines=matched_lines,
+                cfg=cfg,
+                on_status=lambda msg: q.put({"type": "status", "message": msg}),
+            )
+            q.put({"type": "result", "data": result})
+        except Exception as exc:
+            log.exception("delivery/add-products failed")
+            q.put({"type": "error", "message": str(exc)})
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    async def _generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = q.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
 @app.post("/delivery/create/stream")
 async def delivery_create_stream(
     req: DeliveryCreateRequest,

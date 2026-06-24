@@ -75,6 +75,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [importResult, setImportResult] = useState<{ ok: boolean; batch_id: string; batch_url: string; lines_added: number; message: string } | null>(null);
   const [error, setError] = useState("");
   const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // ── Add-products step (separate from batch creation) ──
+  type AddStage = "idle" | "running" | "done" | "error";
+  const [addStage, setAddStage] = useState<AddStage>("idle");
+  const [addLogs, setAddLogs] = useState<string[]>([]);
+  const [addResult, setAddResult] = useState<{ ok: boolean; lines_added: number; lines_skipped: number; lines_failed: number; message: string; details: { product: string; status: string }[] } | null>(null);
+  const addLogsEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const addLog = useCallback((msg: string) => {
@@ -199,6 +206,55 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     }
   }
 
+  async function handleAddProducts() {
+    if (!importResult?.batch_id || !parseResult) return;
+    const order = parseResult.orders[activeOrderIdx];
+    if (!order) return;
+
+    setAddStage("running");
+    setAddLogs([]);
+    setAddResult(null);
+
+    const res = await fetch(`${RAILWAY}/delivery/add-products`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ batch_id: importResult.batch_id, order }),
+    });
+
+    if (!res.ok || !res.body) {
+      setAddLogs([await res.text()]);
+      setAddStage("error");
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part.replace(/^data: /, "").trim();
+        if (!line || line.startsWith(":")) continue;
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === "status") setAddLogs(prev => [...prev, ev.message]);
+          if (ev.type === "result") {
+            setAddResult(ev.data);
+            setAddStage("done");
+          }
+          if (ev.type === "error") {
+            setAddLogs(prev => [...prev, `Error: ${ev.message}`]);
+            setAddStage("error");
+          }
+        } catch {}
+      }
+    }
+  }
+
   function reset() {
     setStage("idle");
     setJsonText("");
@@ -206,6 +262,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLogs([]);
     setError("");
     setImportResult(null);
+    setAddStage("idle");
+    setAddLogs([]);
+    setAddResult(null);
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -395,13 +454,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── DONE ── */}
       {stage === "done" && importResult && (
         <div className="flex flex-col gap-4">
+
+          {/* Batch creation result */}
           <div className={`p-4 rounded-2xl border ${importResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-red-500/8 border-red-500/20"}`}>
             <p className={`font-semibold text-sm ${importResult.ok ? "text-emerald" : "text-red-500"}`}>
-              {importResult.ok ? td.importDone(importResult.lines_added) : td.importFailed}
+              {importResult.ok ? "Przesyłka stworzona" : td.importFailed}
             </p>
             <p className="text-xs text-ink-3 mt-1">{importResult.message}</p>
             {importResult.batch_id && (
-              <p className="text-xs text-ink-3 mt-0.5">{td.batchId}: {importResult.batch_id}</p>
+              <p className="text-xs text-ink-3 mt-0.5">{td.batchId}: <span className="font-mono font-semibold">{importResult.batch_id}</span></p>
             )}
             {importResult.batch_url && (
               <a href={importResult.batch_url} target="_blank" rel="noopener noreferrer"
@@ -411,8 +472,64 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             )}
           </div>
 
+          {/* Add Products step — only when batch was created */}
+          {importResult.ok && importResult.batch_id && (
+            <div className="flex flex-col gap-3">
+              {addStage === "idle" && (
+                <button
+                  onClick={handleAddProducts}
+                  className="h-10 px-6 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 transition-colors"
+                >
+                  Dodaj produkty do przesyłki #{importResult.batch_id}
+                </button>
+              )}
+
+              {addStage === "running" && (
+                <ProgressLog title="Dodawanie produktów…" logs={addLogs} logsEndRef={addLogsEndRef} />
+              )}
+
+              {addStage === "done" && addResult && (
+                <div className={`p-4 rounded-2xl border ${addResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-amber-500/8 border-amber-500/20"}`}>
+                  <p className={`font-semibold text-sm ${addResult.ok ? "text-emerald" : "text-amber-600"}`}>
+                    {addResult.lines_added} produktów dodanych
+                    {addResult.lines_failed > 0 && `, ${addResult.lines_failed} failed`}
+                    {addResult.lines_skipped > 0 && `, ${addResult.lines_skipped} bez dopasowania`}
+                  </p>
+                  <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
+                  {addResult.details.length > 0 && (
+                    <div className="mt-2 space-y-0.5">
+                      {addResult.details.map((d, i) => (
+                        <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : "text-red-400"}`}>
+                          {d.status === "added" ? "✓" : "✗"} {d.product}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <details className="mt-2 text-xs">
+                    <summary className="cursor-pointer text-ink-3 hover:text-ink">Show log ({addLogs.length})</summary>
+                    <div className="mt-1 bg-muted rounded-xl p-2 max-h-40 overflow-y-auto font-mono space-y-0.5">
+                      {addLogs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
+                    </div>
+                  </details>
+                </div>
+              )}
+
+              {addStage === "error" && (
+                <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20">
+                  <p className="text-sm font-semibold text-red-500">Błąd dodawania produktów</p>
+                  <div className="mt-1 font-mono text-xs text-red-400 space-y-0.5">
+                    {addLogs.map((l, i) => <div key={i}>{l}</div>)}
+                  </div>
+                  <button onClick={() => setAddStage("idle")} className="mt-2 text-xs text-ink-3 underline">
+                    Spróbuj ponownie
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <details className="text-xs">
-            <summary className="cursor-pointer text-ink-3 hover:text-ink">Show log ({logs.length} messages)</summary>
+            <summary className="cursor-pointer text-ink-3 hover:text-ink">Log tworzenia przesyłki ({logs.length})</summary>
             <div className="mt-2 bg-muted rounded-xl p-3 max-h-48 overflow-y-auto font-mono space-y-0.5">
               {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
             </div>
