@@ -188,6 +188,19 @@ def delivery_key(nm_variety: str | None, nu_length: int | None) -> str:
     return f"{(nm_variety or '').lower().strip()}|{nu_length or ''}"
 
 
+def _catalogue_variety(entry: dict) -> str:
+    """Extract variety from a catalogue entry.
+
+    Prefers nm_variety when present.  Falls back to the first word of nm_product
+    (FreshPortal stores products as "FREEDOM 60CM 5S" — the first token is the variety).
+    """
+    var = (entry.get("nm_variety") or "").lower().strip()
+    if var:
+        return var
+    nm = (entry.get("nm_product") or "").lower().strip()
+    return nm.split()[0] if nm else ""
+
+
 def match_line_to_catalogue(
     line: "DeliveryLine",
     catalogue: list[dict],
@@ -197,10 +210,10 @@ def match_line_to_catalogue(
 
     Matching priority:
     0. Cache hit (delivery_product_map)
-    1. Exact nm_variety + nu_length  (via cat.nm_variety or cat.nm_product prefix)
-    2. Exact id_floricode
-    3. Fuzzy nm_variety in cat.nm_product + nu_length
-    4. Mix box
+    1. Exact variety + length  (nm_variety field, or first word of nm_product)
+    2. Variety substring in nm_product + length
+    3. Exact id_floricode
+    4. Fuzzy variety substring + length (no length required if delivery length=0)
     """
     key = delivery_key(line.nm_variety, line.nu_length)
 
@@ -212,35 +225,42 @@ def match_line_to_catalogue(
     variety = (line.nm_variety or "").lower().strip()
     length = line.nu_length
 
-    # 1. Exact variety + length — check nm_variety first, then nm_product prefix
+    # 1. Exact variety + exact length
     for entry in catalogue:
         cat_len = entry.get("nu_length")
         if cat_len != length:
             continue
-        cat_var = (entry.get("nm_variety") or "").lower().strip()
-        if cat_var and cat_var == variety:
+        cat_var = _catalogue_variety(entry)
+        if variety and cat_var and cat_var == variety:
             return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_var
-        # FP catalogue stores STE_Description like "FREEDOM 60CM 5S" — variety is the first word
+
+    # 2. Variety substring in nm_product + exact length
+    for entry in catalogue:
+        cat_len = entry.get("nu_length")
+        if cat_len != length or not variety:
+            continue
         cat_prod = (entry.get("nm_product") or "").lower()
-        if variety and cat_prod.startswith(variety):
+        if variety in cat_prod or cat_prod.startswith(variety):
             return entry["fp_product_id"], "variety_length", entry.get("nm_product") or cat_prod
 
-    # 2. Floricode / VBN match
+    # 3. Floricode / VBN match
     if line.id_floricode:
         for entry in catalogue:
             if entry.get("id_floricode") == line.id_floricode:
                 return entry["fp_product_id"], "floricode", entry.get("nm_product") or ""
 
-    # 3. Fuzzy variety in nm_product + length
+    # 4. Fuzzy: variety substring in nm_product or nm_variety; relax length when delivery has 0
     for entry in catalogue:
         cat_len = entry.get("nu_length")
-        if cat_len != length or not variety:
+        len_ok = (cat_len == length) or (length == 0)
+        if not len_ok or not variety:
             continue
-        cat_var = (entry.get("nm_variety") or "").lower().strip()
+        cat_var = _catalogue_variety(entry)
         cat_prod = (entry.get("nm_product") or "").lower()
         if (cat_var and (variety in cat_var or cat_var in variety)) or \
            (cat_prod and variety in cat_prod):
-            return entry["fp_product_id"], "fuzzy_variety", entry.get("nm_product") or cat_var or cat_prod
+            method = "fuzzy_variety" if (cat_len == length) else "fuzzy_variety_nolen"
+            return entry["fp_product_id"], method, entry.get("nm_product") or cat_prod
 
     return "", "none", ""
 
