@@ -870,50 +870,77 @@ def _submit_form(page: Page) -> None:
 # Add products to existing batch
 # ---------------------------------------------------------------------------
 
-def _find_desc_col_and_row(page: Page, catalogue_nm: str) -> int:
-    """Return index of best-matching table row in the STE_Description column.
+def _find_desc_col_and_row(page: Page, catalogue_nm: str, nu_length: int = 0) -> int:
+    """Return index of best-matching table row using the same variety-similarity
+    logic as parser_delivery (word-set containment + difflib SequenceMatcher).
 
-    When multiple rows match the catalogue name words, prefers:
-      EC > Col > (default) > Garden
-    Returns -1 if no row matches.
+    Prefers EC > Col > Garden when scores are equal; optionally matches length.
+    Returns -1 if no row has similarity >= 0.3.
     """
-    return page.evaluate("""
-        ([targetName]) => {
-            // Locate STE_Description column
-            const ths = document.querySelectorAll("table thead th");
-            let descCol = 0;
-            for (let i = 0; i < ths.length; i++) {
-                if ((ths[i].dataset || {}).sortField === "STE_Description") {
-                    descCol = i; break;
-                }
+    import difflib
+    from parser_delivery import _extract_variety, _norm
+
+    def _ext(s: str) -> str:
+        return _extract_variety(re.sub(r"[+!]", "", s))
+
+    target_var = _ext(catalogue_nm)
+    if not target_var:
+        return -1
+    target_words = set(target_var.split())
+
+    rows_data: list[dict] = page.evaluate("""() => {
+        const ths = document.querySelectorAll("table thead th");
+        let descCol = 0;
+        for (let i = 0; i < ths.length; i++) {
+            if ((ths[i].dataset || {}).sortField === "STE_Description") {
+                descCol = i; break;
             }
-            const rows = document.querySelectorAll("table tbody tr");
-            const words = targetName.toLowerCase().split(" ").filter(w => w.length > 2);
-
-            let bestRow = -1, bestScore = -Infinity;
-            for (let i = 0; i < rows.length; i++) {
-                const cells = rows[i].querySelectorAll("td");
-                const cell = cells[descCol] || cells[0];
-                if (!cell) continue;
-                const desc = " " + cell.textContent.trim().toLowerCase() + " ";
-
-                // All words from catalogue name must appear in the description
-                if (!words.every(w => desc.includes(w))) continue;
-
-                // Origin preference: EC > Col > (other) > Garden
-                let score = 0;
-                if (/ ec /.test(desc))     score += 2;
-                if (/ col /.test(desc))    score += 1;
-                if (/ garden /.test(desc)) score -= 1;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestRow = i;
-                }
-            }
-            return bestRow;
         }
-    """, [catalogue_nm])
+        return Array.from(document.querySelectorAll("table tbody tr")).map((row, i) => {
+            const cells = row.querySelectorAll("td");
+            const cell = cells[descCol] || cells[0];
+            return { idx: i, text: cell ? cell.textContent.trim() : "" };
+        });
+    }""")
+
+    if not rows_data:
+        return -1
+
+    best_idx = -1
+    best_score = -1.0
+
+    for row in rows_data:
+        text = row.get("text", "")
+        if not text:
+            continue
+
+        row_var = _ext(text)
+        if not row_var:
+            continue
+
+        row_words = set(row_var.split())
+
+        if target_words and (target_words.issubset(row_words) or row_words.issubset(target_words)):
+            sim = 1.0
+        else:
+            sim = difflib.SequenceMatcher(None, target_var, row_var).ratio()
+
+        normed = _norm(text)
+        if " ec " in f" {normed} ":
+            sim += 0.002
+        elif " col " in f" {normed} ":
+            sim += 0.001
+        elif " garden " in f" {normed} ":
+            sim -= 0.001
+
+        if nu_length and f"{nu_length}cm" in normed.replace(" ", ""):
+            sim += 0.003
+
+        if sim > best_score:
+            best_score = sim
+            best_idx = row["idx"]
+
+    return best_idx if best_score >= 0.3 else -1
 
 
 _FORM_PREFIX = "company_product_add_stock_side_bottom_create_form_"
@@ -1080,7 +1107,9 @@ def _add_one_product(
     from db import get_fust_id_for_box
 
     # ── Navigate to filtered stock page ──────────────────────────────────
-    desc_encoded = urllib.parse.quote(catalogue_nm)
+    # Strip special chars that confuse FP server-side filtering (+, !, ', etc.)
+    search_nm = re.sub(r"[+!\'\"\(\)&]", "", catalogue_nm).strip()
+    desc_encoded = urllib.parse.quote(search_nm)
     search_url = (
         f"{cfg.freshportal_url}/company_product_add_stock/index/index/"
         f"?1=1&BAT_ID={batch_id}&description={desc_encoded}&page=1"
@@ -1098,8 +1127,8 @@ def _add_one_product(
     row_count = page.locator("table tbody tr").count()
     on_status(f"  {row_count} row(s) after filter")
 
-    # ── Find best row (EC > Col > other > Garden) ─────────────────────────
-    row_idx = _find_desc_col_and_row(page, catalogue_nm)
+    # ── Find best row (variety similarity + EC/Col/len preference) ───────
+    row_idx = _find_desc_col_and_row(page, catalogue_nm, nu_length)
     if row_idx is None or int(row_idx) < 0:
         if row_count > 0:
             row_idx = 0
