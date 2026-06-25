@@ -2071,13 +2071,14 @@ async def delivery_add_products(
     raw = req.order
     matched_lines = [
         {
-            "fp_product_id":       l.get("fp_product_id", ""),
-            "nm_variety":          l.get("nm_variety", ""),
+            "fp_product_id":        l.get("fp_product_id", ""),
+            "nm_variety":           l.get("nm_variety", ""),
             "catalogue_nm_product": l.get("catalogue_nm_product", ""),
-            "nu_length":           int(l.get("nu_length") or 0),
-            "nu_stems_bunch":      int(l.get("nu_stems_bunch") or 0),
-            "nu_bunches":          int(l.get("nu_bunches") or 0),
-            "mny_rate_stem":       float(l.get("mny_rate_stem") or 0),
+            "nu_length":            int(l.get("nu_length") or 0),
+            "nu_stems_bunch":       int(l.get("nu_stems_bunch") or 0),
+            "nu_bunches":           int(l.get("nu_bunches") or 0),
+            "mny_rate_stem":        float(l.get("mny_rate_stem") or 0),
+            "nm_box":               l.get("nm_box", ""),
         }
         for l in raw.get("lines", [])
     ]
