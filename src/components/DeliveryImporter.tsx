@@ -76,6 +76,42 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [error, setError] = useState("");
   const logsEndRef = useRef<HTMLDivElement>(null);
 
+  // ── Fust (packaging) sync ─────────────────────────────
+  const [fustSyncing, setFustSyncing] = useState(false);
+  const [fustCount, setFustCount] = useState<number | null>(null);
+  const [fustLogs, setFustLogs] = useState<string[]>([]);
+
+  async function handleSyncFust() {
+    setFustSyncing(true);
+    setFustLogs([]);
+    try {
+      const res = await fetch(`${RAILWAY}/fust/sync`, { method: "POST" });
+      if (!res.ok || !res.body) { setFustLogs([await res.text()]); return; }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() ?? "";
+        for (const part of parts) {
+          const line = part.replace(/^data: /, "").trim();
+          if (!line || line.startsWith(":")) continue;
+          try {
+            const ev = JSON.parse(line);
+            if (ev.type === "status") setFustLogs(prev => [...prev, ev.message]);
+            if (ev.type === "result") setFustCount(ev.data.entries_saved);
+            if (ev.type === "error") setFustLogs(prev => [...prev, `Błąd: ${ev.message}`]);
+          } catch {}
+        }
+      }
+    } finally {
+      setFustSyncing(false);
+    }
+  }
+
   // ── Add-products step (separate from batch creation) ──
   type AddStage = "idle" | "running" | "done" | "error";
   const [addStage, setAddStage] = useState<AddStage>("idle");
@@ -418,13 +454,40 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 {parseResult!.unmatched_count} {td.unmatched}
               </span>
             )}
-            <button
-              onClick={handleSyncCatalogue}
-              className="ml-auto h-7 px-3 rounded-lg text-xs font-medium border border-border text-ink-3 hover:text-ink hover:border-emerald/40 transition-colors"
-            >
-              {td.syncCatalogueBtn}
-            </button>
+            <div className="ml-auto flex gap-2">
+              {/* Fust (packaging) sync — one-time setup per FP system */}
+              <button
+                onClick={handleSyncFust}
+                disabled={fustSyncing}
+                title={fustCount !== null ? `Ostatnia synchronizacja: ${fustCount} typów opakowań` : "Synchronizuj typy opakowań (jednorazowo)"}
+                className={`h-7 px-3 rounded-lg text-xs font-medium border transition-colors
+                  ${fustCount !== null
+                    ? "border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15"
+                    : "border-border text-ink-3 hover:text-ink hover:border-border-hover"}
+                  disabled:opacity-40`}
+              >
+                {fustSyncing ? "Syncing…" : fustCount !== null ? `Opakowania ✓ ${fustCount}` : "Sync opakowania"}
+              </button>
+              <button
+                onClick={handleSyncCatalogue}
+                className="h-7 px-3 rounded-lg text-xs font-medium border border-border text-ink-3 hover:text-ink hover:border-emerald/40 transition-colors"
+              >
+                {td.syncCatalogueBtn}
+              </button>
+            </div>
           </div>
+
+          {/* Fust sync progress log (collapses when done) */}
+          {fustLogs.length > 0 && (
+            <details open={fustSyncing}>
+              <summary className="cursor-pointer text-xs text-ink-3 hover:text-ink">
+                Log sync opakowań ({fustLogs.length} linii)
+              </summary>
+              <div className="mt-1 bg-muted rounded-xl p-2 max-h-40 overflow-y-auto font-mono text-xs space-y-0.5">
+                {fustLogs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
+              </div>
+            </details>
+          )}
 
           {parseResult!.unmatched_count > 0 && (
             <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">

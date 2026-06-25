@@ -148,6 +148,20 @@ def fetch_fust_catalogue(
     results: list[dict] = []
     col_map: dict[int, str] = {}
 
+    # Global dedup: tracks fust_ids already collected across ALL pages.
+    # The FP AJAX table often returns the same page content regardless of ?page=N,
+    # so we stop as soon as a page adds zero new entries.
+    global_seen: set[str] = set()
+
+    def _new_items(raw_items: list[dict]) -> list[dict]:
+        new: list[dict] = []
+        for item in raw_items:
+            fid = item.get("fust_id", "")
+            if fid and fid not in global_seen:
+                global_seen.add(fid)
+                new.append(item)
+        return new
+
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         ctx = browser.new_context()
@@ -169,16 +183,15 @@ def fetch_fust_catalogue(
             col_map = _detect_columns(soup)
             _s(f"Detected columns: {col_map}")
 
+            # Determine last page from pagination links, capped at 300
             last_page = page.evaluate(_LAST_PAGE_JS)
             if last_page <= 1:
-                # FP may not put page links on page 1 when there's only 1 page
-                # or when JS-driven. Probe up to 200 pages; empty-stop guard below.
-                last_page = 200
-            _s(f"Max page detected: {last_page} (will stop early on empty page)")
+                last_page = 300
+            _s(f"Max page from links: {last_page}")
 
-            items = _parse_rows(soup, col_map)
+            items = _new_items(_parse_rows(soup, col_map))
             results.extend(items)
-            _s(f"Page 1: {len(items)} fust entries")
+            _s(f"Page 1: {len(items)} new fust entries")
 
             for p in range(2, last_page + 1):
                 page.goto(f"{base_url}&page={p}", wait_until="domcontentloaded", timeout=cfg.request_timeout)
@@ -188,14 +201,17 @@ def fetch_fust_catalogue(
                     pass
                 html = page.evaluate(_EXTRACT_JS)
                 soup = BeautifulSoup(html or "", "lxml")
-                items = _parse_rows(soup, col_map)
+                raw = _parse_rows(soup, col_map)
+                items = _new_items(raw)
                 if not items:
-                    _s(f"Page {p}: empty — stopping")
+                    # All entries on this page already seen → server is returning the same
+                    # content (pagination exhausted or AJAX ignores page param)
+                    _s(f"Page {p}: no new entries ({len(raw)} seen already) — stopping")
                     break
                 results.extend(items)
-                _s(f"Page {p}: {len(items)} fust entries (total so far: {len(results)})")
+                _s(f"Page {p}: {len(items)} new entries (total: {len(results)})")
 
-            _s(f"Fust scrape complete: {len(results)} entries")
+            _s(f"Fust scrape complete: {len(results)} unique entries")
 
         except Exception as exc:
             log.exception("fetch_fust_catalogue failed")
