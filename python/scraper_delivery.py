@@ -1086,7 +1086,7 @@ def _add_one_product(
         f"?1=1&BAT_ID={batch_id}&description={desc_encoded}&page=1"
     )
     on_status(f"  → {search_url}")
-    page.goto(search_url, wait_until="load", timeout=cfg.request_timeout)
+    page.goto(search_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
 
     try:
         page.wait_for_selector("table tbody tr", timeout=12_000)
@@ -1133,6 +1133,9 @@ def _add_one_product(
     )
 
 
+_BROWSER_RESTART_EVERY = 15  # restart Chromium every N products to prevent OOM
+
+
 def add_products_to_batch(
     batch_id: str,
     matched_lines: list[dict],
@@ -1141,14 +1144,13 @@ def add_products_to_batch(
 ) -> dict:
     """Add matched product lines to an existing FreshPortal batch via Playwright.
 
-    Navigates to /company_product_add_stock/index/index/BAT_ID/{batch_id}/,
-    finds each product row by catalogue name + length + stems-per-bunch,
-    clicks the row (opens sidebar), fills quantity + price, saves.
-    Intercepts network requests to log the actual POST URL/body.
+    Restarts the Chromium browser every _BROWSER_RESTART_EVERY products to
+    prevent Railway OOM — each AJAX page navigation leaks ~3-5 MB of JS heap
+    that Chromium never releases within the same session.
 
     Returns {"ok", "lines_added", "lines_skipped", "lines_failed", "message", "details"}
     """
-    from scraper_fp import _launch_browser, _login
+    from scraper_fp import _launch_browser, _login, _block_resources
 
     def _s(msg: str) -> None:
         log.info(msg)
@@ -1168,21 +1170,15 @@ def add_products_to_batch(
     result["lines_skipped"] = len(matched_lines) - len(lines_to_add)
 
     if not lines_to_add:
-        result["message"] = (
-            f"No matched lines to add — {result['lines_skipped']} unmatched"
-        )
+        result["message"] = f"No matched lines to add — {result['lines_skipped']} unmatched"
         return result
 
-    with sync_playwright() as pw:
+    def _new_session(pw):
+        """Create a fresh browser + logged-in page. Returns (browser, ctx, page)."""
         browser = _launch_browser(pw)
         ctx = browser.new_context()
         page = ctx.new_page()
-        page.route(
-            "**/*",
-            lambda r: r.abort()
-            if r.request.resource_type in ("image", "font", "media")
-            else r.continue_(),
-        )
+        _block_resources(page)
 
         def _on_request(req):
             if req.method.upper() in ("POST", "PUT", "PATCH"):
@@ -1196,31 +1192,36 @@ def add_products_to_batch(
                     _s(f"[NET] body: {body[:300]}")
 
         page.on("request", _on_request)
+        _login(page, cfg)
+        return browser, ctx, page
+
+    def _close_session(browser, ctx):
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        try:
+            browser.close()
+        except Exception:
+            pass
+
+    lines_added = 0
+    lines_failed = 0
+    details: list[dict] = []
+
+    with sync_playwright() as pw:
+        browser, ctx, page = _new_session(pw)
+        _s(f"Browser session started (restart every {_BROWSER_RESTART_EVERY} products)")
 
         try:
-            _s("Logging in…")
-            _login(page, cfg)
-
-            stock_url = (
-                f"{cfg.freshportal_url}"
-                f"/company_product_add_stock/index/index/BAT_ID/{batch_id}/"
-            )
-            _s(f"Loading stock page for batch {batch_id}…")
-            page.goto(stock_url, wait_until="load", timeout=cfg.request_timeout)
-            try:
-                page.wait_for_selector("table tbody tr", timeout=15_000)
-            except Exception:
-                _s("Warning: table rows not found — page may still be loading")
-            time.sleep(1.5)
-
-            row_count = page.locator("table tbody tr").count()
-            _s(f"Table has {row_count} rows")
-
-            lines_added = 0
-            lines_failed = 0
-            details: list[dict] = []
-
             for i, line in enumerate(lines_to_add, 1):
+                # ── Periodic restart to prevent Chromium OOM ─────────────────
+                if i > 1 and (i - 1) % _BROWSER_RESTART_EVERY == 0:
+                    _s(f"  [mem] Restarting browser after {_BROWSER_RESTART_EVERY} products…")
+                    _close_session(browser, ctx)
+                    browser, ctx, page = _new_session(pw)
+                    _s("  [mem] Browser restarted, logged in")
+
                 catalogue_nm = line.get("catalogue_nm_product") or line.get("nm_variety", "")
                 nu_length = int(line.get("nu_length") or 0)
                 nu_stems_bunch = int(line.get("nu_stems_bunch") or 0)
@@ -1233,6 +1234,7 @@ def add_products_to_batch(
                     f"×{nu_stems_bunch}spb → {nu_bunches} bunches @ {mny_rate}"
                 )
 
+                ok = False
                 try:
                     ok = _add_one_product(
                         page, cfg, batch_id,
@@ -1240,8 +1242,22 @@ def add_products_to_batch(
                         nu_bunches, mny_rate, nm_box, _s,
                     )
                 except Exception as exc:
-                    _s(f"  Exception: {exc}")
-                    ok = False
+                    err = str(exc)
+                    _s(f"  Exception: {err[:200]}")
+                    # Page crash = Chromium OOM → restart immediately and retry once
+                    if "crashed" in err.lower():
+                        _s("  [mem] Page crashed — restarting browser and retrying…")
+                        _close_session(browser, ctx)
+                        browser, ctx, page = _new_session(pw)
+                        try:
+                            ok = _add_one_product(
+                                page, cfg, batch_id,
+                                catalogue_nm, nu_length, nu_stems_bunch,
+                                nu_bunches, mny_rate, nm_box, _s,
+                            )
+                        except Exception as exc2:
+                            _s(f"  Retry failed: {str(exc2)[:200]}")
+                            ok = False
 
                 if ok:
                     lines_added += 1
@@ -1254,23 +1270,22 @@ def add_products_to_batch(
 
                 time.sleep(0.3)
 
-            result["ok"] = lines_added > 0
-            result["lines_added"] = lines_added
-            result["lines_failed"] = lines_failed
-            result["details"] = details
-            skipped = result["lines_skipped"]
-            result["message"] = (
-                f"{lines_added}/{len(lines_to_add)} lines added to batch {batch_id}"
-                + (f", {skipped} unmatched skipped" if skipped else "")
-                + (f", {lines_failed} failed" if lines_failed else "")
-            )
-            _s(result["message"])
-
         except Exception as exc:
             result["message"] = str(exc)
             log.exception("add_products_to_batch failed")
         finally:
-            ctx.close()
-            browser.close()
+            _close_session(browser, ctx)
+
+    result["ok"] = lines_added > 0
+    result["lines_added"] = lines_added
+    result["lines_failed"] = lines_failed
+    result["details"] = details
+    skipped = result["lines_skipped"]
+    result["message"] = (
+        f"{lines_added}/{len(lines_to_add)} lines added to batch {batch_id}"
+        + (f", {skipped} unmatched skipped" if skipped else "")
+        + (f", {lines_failed} failed" if lines_failed else "")
+    )
+    _s(result["message"])
 
     return result
