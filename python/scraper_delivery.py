@@ -869,91 +869,121 @@ def _submit_form(page: Page) -> None:
 # Add products to existing batch
 # ---------------------------------------------------------------------------
 
-_JS_FIND_ROW = """
-    ([catName, nuLength, nuSpb]) => {
-        const rows = document.querySelectorAll("table tbody tr");
-        const cat = catName.toLowerCase();
-        const lenStr = String(nuLength);
-        const spbStr = String(nuSpb);
-        let best = -1, bestScore = -1;
+def _find_desc_col_and_row(page: Page, catalogue_nm: str) -> int:
+    """Return index of first table row whose STE_Description cell matches catalogue_nm.
 
-        for (let i = 0; i < rows.length; i++) {
-            const cells = Array.from(rows[i].querySelectorAll("td"));
-            const texts = cells.map(c => c.textContent.trim());
-            const rowText = texts.join(" ").toLowerCase();
-
-            // Every word of the catalogue name must appear in the row
-            const catWords = cat.split(" ").filter(w => w.length > 2);
-            if (!catWords.every(w => rowText.includes(w))) continue;
-
-            let score = 1.0;
-
-            // Length must match exactly (skip row if wrong length)
-            if (nuLength > 0) {
-                const lenMatch = texts.some(t =>
-                    t === lenStr || t === lenStr + "cm" || t === lenStr + " cm"
-                );
-                if (!lenMatch) continue;
-                score += 2;
+    Uses data-sort-field="STE_Description" to identify the right column.
+    Returns -1 if not found.
+    """
+    return page.evaluate("""
+        ([targetName]) => {
+            const ths = document.querySelectorAll("table thead th");
+            let descCol = 0;
+            for (let i = 0; i < ths.length; i++) {
+                if ((ths[i].dataset || {}).sortField === "STE_Description") {
+                    descCol = i; break;
+                }
             }
-
-            // SPB is a bonus
-            if (nuSpb > 0 && texts.some(t => t === spbStr)) score += 1;
-
-            if (score > bestScore) { bestScore = score; best = i; }
+            const rows = document.querySelectorAll("table tbody tr");
+            const words = targetName.toLowerCase().split(" ").filter(w => w.length > 2);
+            for (let i = 0; i < rows.length; i++) {
+                const cells = rows[i].querySelectorAll("td");
+                const cell = cells[descCol] || cells[0];
+                if (!cell) continue;
+                const desc = cell.textContent.trim().toLowerCase();
+                if (words.every(w => desc.includes(w))) return i;
+            }
+            return -1;
         }
-        return best;
-    }
-"""
-
-_BUNCH_NAMES = ["nu_bunches", "quantity", "aantal", "bundels", "number_of_bunches", "bunches"]
-_PRICE_NAMES = ["mny_rate_stem", "price", "rate", "prijs", "rate_stem", "mny_rate"]
+    """, [catalogue_nm])
 
 
-def _fill_any(container, names: list[str], value: str) -> str:
-    """Fill first matching named input inside container. Returns name used or ''."""
-    for name in names:
-        for sel in [
-            f"input[name='{name}']",
-            f"fps-input[name='{name}'] input",
-            f"input[formcontrolname='{name}']",
-        ]:
-            inp = container.locator(sel)
-            if inp.count() > 0:
-                try:
-                    inp.first.fill(value)
-                    inp.first.dispatch_event("change")
-                    return name
-                except Exception:
-                    pass
-    return ""
+def _inspect_sidebar_inputs(page: Page) -> list[dict]:
+    """Return all inputs near #btn_company_product_add_stock_form (for debug logging)."""
+    return page.evaluate("""
+        () => {
+            const btn = document.getElementById("btn_company_product_add_stock_form");
+            if (!btn) return [];
+            let container = btn;
+            for (let i = 0; i < 8; i++) {
+                if (!container.parentElement) break;
+                container = container.parentElement;
+                if (container.querySelectorAll("input").length > 1) break;
+            }
+            return Array.from(container.querySelectorAll("input")).map(inp => ({
+                name: inp.name, id: inp.id, type: inp.type,
+                value: inp.value, placeholder: inp.placeholder
+            }));
+        }
+    """)
 
 
-def _save_in(container, page: Page) -> bool:
-    """Click a save/submit button inside container."""
-    for sel in [
-        "fps-button[name='button_save'] button",
-        "fps-button[name='save'] button",
-        "button[type='submit']",
-        "input[type='submit']",
-    ]:
-        btn = container.locator(sel)
-        if btn.count() > 0:
+def _fill_sidebar_and_create(
+    page: Page,
+    nu_length: int,
+    nu_bunches: str,
+    mny_rate: str,
+    on_status: Callable[[str], None],
+) -> bool:
+    """Fill the create-stock sidebar and click #btn_company_product_add_stock_form."""
+    all_inputs = _inspect_sidebar_inputs(page)
+    on_status(
+        f"  Sidebar inputs: {[i.get('name') or i.get('placeholder','?') for i in all_inputs]}"
+    )
+
+    filled: list[str] = []
+
+    # ── Length (adjustable) ──────────────────────────────────────────────
+    len_inp = page.locator("input[name*='length_adjustable']")
+    if len_inp.count() > 0:
+        current = len_inp.first.input_value()
+        if str(nu_length) != current:
+            len_inp.first.fill(str(nu_length))
+            len_inp.first.dispatch_event("change")
+            len_inp.first.dispatch_event("blur")
+            time.sleep(0.3)
+        filled.append(f"length={nu_length}")
+
+    # ── Bunches ──────────────────────────────────────────────────────────
+    for suf in ["nu_bunches", "quantity", "aantal", "bundels", "number_of_bunches", "bunches"]:
+        inp = page.locator(
+            f"input[name*='{suf}']:not([name*='length']):not([name*='stem'])"
+        )
+        if inp.count() > 0:
             try:
-                btn.first.click(force=True)
-                page.wait_for_timeout(2000)
-                return True
+                inp.first.fill(nu_bunches)
+                inp.first.dispatch_event("change")
+                filled.append(f"bunches({suf})={nu_bunches}")
+                break
             except Exception:
                 pass
-    for text in ["Save", "Opslaan", "Bewaar", "Toevoeg", "Add", "OK"]:
-        btn = container.locator(f"button:has-text('{text}')")
-        if btn.count() > 0:
+
+    # ── Price ────────────────────────────────────────────────────────────
+    for suf in ["mny_rate_stem", "price", "rate_stem", "rate", "prijs", "mny_rate"]:
+        inp = page.locator(
+            f"input[name*='{suf}']:not([name*='length']):not([name*='bunch'])"
+            f":not([name*='quantity']):not([name*='aantal'])"
+        )
+        if inp.count() > 0:
             try:
-                btn.first.click(force=True)
-                page.wait_for_timeout(2000)
-                return True
+                inp.first.fill(mny_rate)
+                inp.first.dispatch_event("change")
+                filled.append(f"price({suf})={mny_rate}")
+                break
             except Exception:
                 pass
+
+    on_status(f"  Filled: {', '.join(filled) or 'nothing'}")
+
+    # ── Click Create stock ────────────────────────────────────────────────
+    btn = page.locator("#btn_company_product_add_stock_form")
+    if btn.count() > 0:
+        btn.first.click()
+        page.wait_for_timeout(2000)
+        on_status("  Clicked 'Create stock'")
+        return True
+
+    on_status("  #btn_company_product_add_stock_form not found after fill")
     return False
 
 
@@ -970,10 +1000,17 @@ def _add_one_product(
     mny_rate: str,
     on_status: Callable[[str], None],
 ) -> bool:
-    """Add one product line. Returns True on success."""
+    """Add one product line. Returns True on success.
 
-    # Ensure we are on the stock page
-    if not page.url.rstrip("/").endswith(batch_id):
+    Flow:
+      1. Ensure we are on the stock page.
+      2. Find row by STE_Description column using catalogue_nm.
+      3. Click the row → wait for sidebar (detected by #btn_company_product_add_stock_form).
+      4. Fill length_adjustable / bunches / price fields.
+      5. Click "Create stock" button.
+    """
+    # Ensure we are on the stock page (reload if navigated away)
+    if stock_url.rstrip("/") not in page.url.rstrip("/"):
         page.goto(stock_url, wait_until="load", timeout=cfg.request_timeout)
         try:
             page.wait_for_selector("table tbody tr", timeout=12_000)
@@ -981,86 +1018,27 @@ def _add_one_product(
             pass
         time.sleep(1)
 
-    # ── Find the correct table row ────────────────────────────────────────
-    row_idx: int = page.evaluate(_JS_FIND_ROW, [catalogue_nm, nu_length, nu_stems_bunch])
-
-    if row_idx is None or row_idx < 0:
-        on_status(f"  Row not found: '{catalogue_nm}' {nu_length}cm ×{nu_stems_bunch}spb")
-        return _try_direct_add(page, cfg, batch_id, fp_product_id, nu_bunches, mny_rate, on_status)
-
-    on_status(f"  Found at row {row_idx}")
-
-    # Click the row (may open sidebar / inline form)
-    page.evaluate(f"() => document.querySelectorAll('table tbody tr')[{row_idx}].click()")
-    time.sleep(1.5)
-
-    # ── Try: sidebar / slide panel ────────────────────────────────────────
-    for sidebar_sel in [
-        ".sidebar", "#sidebar", ".side-form", "#crud-sidebar", ".crud-sidebar",
-        ".ui-dialog", ".modal-body", "[class*='sidebar']", "[id*='sidebar']",
-        ".right-panel", "[class*='slide-panel']",
-    ]:
-        container = page.locator(sidebar_sel).first
-        try:
-            if container.count() > 0 and container.is_visible():
-                on_status(f"  Panel: {sidebar_sel}")
-                bname = _fill_any(container, _BUNCH_NAMES, nu_bunches)
-                pname = _fill_any(container, _PRICE_NAMES, mny_rate)
-                on_status(f"  Filled: bunches={bname or '?'}={nu_bunches}, price={pname or '?'}={mny_rate}")
-                if _save_in(container, page):
-                    time.sleep(1.5)
-                    return True
-        except Exception:
-            pass
-
-    # ── Try: inline inputs inside the row ────────────────────────────────
-    row_loc = page.locator("table tbody tr").nth(row_idx)
-    visible_inputs = row_loc.locator("input:visible")
-    if visible_inputs.count() > 0:
-        on_status("  Inline row inputs")
-        bname = _fill_any(row_loc, _BUNCH_NAMES, nu_bunches)
-        pname = _fill_any(row_loc, _PRICE_NAMES, mny_rate)
-        if not bname:  # fallback: fill first input
-            try:
-                visible_inputs.first.fill(nu_bunches)
-                visible_inputs.first.dispatch_event("change")
-            except Exception:
-                pass
-        on_status(f"  Filled: bunches={bname or 'first'}={nu_bunches}, price={pname or '?'}={mny_rate}")
-        if _save_in(row_loc, page) or _save_in(page.locator("body"), page):
-            time.sleep(1.5)
-            return True
-
-    on_status("  No form found after row click — trying direct URL")
-    return _try_direct_add(page, cfg, batch_id, fp_product_id, nu_bunches, mny_rate, on_status)
-
-
-def _try_direct_add(
-    page: Page,
-    cfg: Config,
-    batch_id: str,
-    fp_product_id: str,
-    nu_bunches: str,
-    mny_rate: str,
-    on_status: Callable[[str], None],
-) -> bool:
-    """Fallback: navigate to add-stock URL with fp_product_id."""
-    url = (
-        f"{cfg.freshportal_url}/company_product_add_stock/index/add/"
-        f"BAT_ID/{batch_id}/company_product_id/{fp_product_id}/"
-    )
-    on_status(f"  Direct URL: {url}")
-    page.goto(url, wait_until="load", timeout=cfg.request_timeout)
-    time.sleep(1)
-    if "login" in page.url.lower():
+    # ── Find row by STE_Description column ───────────────────────────────
+    row_idx = _find_desc_col_and_row(page, catalogue_nm)
+    if row_idx is None or int(row_idx) < 0:
+        on_status(f"  Not found in STE_Description: '{catalogue_nm}'")
         return False
-    body = page.locator("body")
-    bname = _fill_any(body, _BUNCH_NAMES, nu_bunches)
-    pname = _fill_any(body, _PRICE_NAMES, mny_rate)
-    on_status(f"  Filled: bunches={bname or '?'}={nu_bunches}, price={pname or '?'}={mny_rate}")
-    _submit_form(page)
-    time.sleep(2)
-    return True
+
+    row_idx = int(row_idx)
+    on_status(f"  Row {row_idx}: {catalogue_nm}")
+
+    # ── Click row (opens create-stock sidebar) ────────────────────────────
+    page.locator("table tbody tr").nth(row_idx).click()
+
+    # ── Wait for sidebar "Create stock" button ────────────────────────────
+    try:
+        page.wait_for_selector("#btn_company_product_add_stock_form", timeout=8_000)
+    except Exception:
+        on_status("  Sidebar did not open — #btn_company_product_add_stock_form not found")
+        return False
+
+    # ── Fill sidebar form and submit ─────────────────────────────────────
+    return _fill_sidebar_and_create(page, nu_length, nu_bunches, mny_rate, on_status)
 
 
 def add_products_to_batch(
