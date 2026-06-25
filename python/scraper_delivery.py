@@ -871,13 +871,15 @@ def _submit_form(page: Page) -> None:
 # ---------------------------------------------------------------------------
 
 def _find_desc_col_and_row(page: Page, catalogue_nm: str) -> int:
-    """Return index of first table row whose STE_Description cell matches catalogue_nm.
+    """Return index of best-matching table row in the STE_Description column.
 
-    Uses data-sort-field="STE_Description" to identify the right column.
-    Returns -1 if not found.
+    When multiple rows match the catalogue name words, prefers:
+      EC > Col > (default) > Garden
+    Returns -1 if no row matches.
     """
     return page.evaluate("""
         ([targetName]) => {
+            // Locate STE_Description column
             const ths = document.querySelectorAll("table thead th");
             let descCol = 0;
             for (let i = 0; i < ths.length; i++) {
@@ -887,14 +889,29 @@ def _find_desc_col_and_row(page: Page, catalogue_nm: str) -> int:
             }
             const rows = document.querySelectorAll("table tbody tr");
             const words = targetName.toLowerCase().split(" ").filter(w => w.length > 2);
+
+            let bestRow = -1, bestScore = -Infinity;
             for (let i = 0; i < rows.length; i++) {
                 const cells = rows[i].querySelectorAll("td");
                 const cell = cells[descCol] || cells[0];
                 if (!cell) continue;
-                const desc = cell.textContent.trim().toLowerCase();
-                if (words.every(w => desc.includes(w))) return i;
+                const desc = " " + cell.textContent.trim().toLowerCase() + " ";
+
+                // All words from catalogue name must appear in the description
+                if (!words.every(w => desc.includes(w))) continue;
+
+                // Origin preference: EC > Col > (other) > Garden
+                let score = 0;
+                if (/ ec /.test(desc))     score += 2;
+                if (/ col /.test(desc))    score += 1;
+                if (/ garden /.test(desc)) score -= 1;
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestRow = i;
+                }
             }
-            return -1;
+            return bestRow;
         }
     """, [catalogue_nm])
 

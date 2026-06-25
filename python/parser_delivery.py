@@ -292,11 +292,23 @@ def match_line_to_catalogue(
     if not variety:
         return "", "none", ""
 
+    def _origin_bonus(nm_product: str) -> float:
+        """Small bonus so EC > Col > default > Garden when sim scores tie."""
+        nm = f" {(nm_product or '').lower()} "
+        if " ec " in nm:   return 0.002
+        if " col " in nm:  return 0.001
+        if " garden " in nm: return -0.001
+        return 0.0
+
     def _scan(entries: list[dict], min_sim: float) -> tuple[dict | None, float]:
-        """Return (best_entry, best_sim) from entries above min_sim threshold."""
+        """Return (best_entry, best_sim) from entries above min_sim threshold.
+
+        EC entries beat Garden entries when variety similarity is equal.
+        """
         best_e, best_s = None, 0.0
         for e in entries:
-            s = _variety_sim(variety, e.get("nm_product") or "")
+            nm = e.get("nm_product") or ""
+            s = _variety_sim(variety, nm) + _origin_bonus(nm)
             if s >= min_sim and s > best_s:
                 best_e, best_s = e, s
         return best_e, best_s
