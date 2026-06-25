@@ -131,28 +131,80 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Sync catalogue ──────────────────────────────────────────────────────
 
   async function handleSyncCatalogue() {
+    const order = parseResult?.orders[activeOrderIdx];
     setStage("syncing");
     setLogs([]);
-    const es = new EventSource(
-      `${RAILWAY}/delivery/catalogue/sync/stream?supplier_id=27`
+
+    // Resolve fp_supplier_id from the company name in the parsed order
+    let supplierId = "";
+    let supplierName = order?.tx_company ?? "";
+    try {
+      const suppRes = await fetch(`${RAILWAY}/catalogue/suppliers`);
+      if (suppRes.ok) {
+        const suppData = await suppRes.json();
+        const list: Array<{ fp_supplier_id: string; nm_supplier: string }> =
+          suppData.suppliers ?? [];
+        const needle = supplierName.toLowerCase();
+        const match =
+          list.find(s => s.nm_supplier.toLowerCase().includes(needle)) ||
+          list.find(s => {
+            const firstWord = needle.split(" ")[0];
+            return firstWord && s.nm_supplier.toLowerCase().includes(firstWord);
+          });
+        if (match) {
+          supplierId = match.fp_supplier_id;
+          supplierName = match.nm_supplier;
+        }
+      }
+    } catch {}
+
+    if (!supplierId) {
+      addLog(`Supplier '${supplierName}' not found — cannot sync`);
+      setStage("preview");
+      return;
+    }
+
+    addLog(`Syncing catalogue for ${supplierName} (#${supplierId})…`);
+
+    const params = new URLSearchParams({ nm_supplier: supplierName });
+    const res = await fetch(
+      `${RAILWAY}/catalogue/sync/${supplierId}/stream?${params}`,
+      { method: "POST" }
     );
-    es.onmessage = e => {
-      const ev = JSON.parse(e.data);
-      if (ev.type === "status") addLog(ev.message);
-      if (ev.type === "result") {
-        setCatalogueCount(ev.data.items_saved);
-        es.close();
-        // Re-parse with new catalogue
-        setStage("preview");
-        handleParse();
+
+    if (!res.ok || !res.body) {
+      addLog(await res.text());
+      setStage("preview");
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part.replace(/^data: /, "").trim();
+        if (!line || line.startsWith(":")) continue;
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === "status") addLog(ev.message);
+          if (ev.type === "result") {
+            setCatalogueCount(ev.data.items_saved);
+            setStage("preview");
+            handleParse();
+          }
+          if (ev.type === "error") {
+            addLog(`Error: ${ev.message}`);
+            setStage("preview");
+          }
+        } catch {}
       }
-      if (ev.type === "error") {
-        setError(ev.message);
-        es.close();
-        setStage("error");
-      }
-    };
-    es.onerror = () => { es.close(); setStage("preview"); };
+    }
   }
 
   // ── Import to FreshPortal ───────────────────────────────────────────────
