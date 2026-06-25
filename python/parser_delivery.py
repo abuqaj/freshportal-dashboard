@@ -234,16 +234,11 @@ def _extract_variety(nm_product: str) -> str:
 def _variety_sim(delivery_variety: str, catalogue_nm_product: str) -> float:
     """Similarity between a delivery variety name and a FP catalogue product name.
 
-    Uses the same approach as product_creator._similarity:
-    1. Extract variety from catalogue product (strip genus + origin tokens)
-    2. Compare with difflib.SequenceMatcher
-    Also does word-level containment check first (exact match despite prefixes).
+    Handles two forms of delivery_variety:
+    - Short variety name only:   "Veggie", "Country Candy", "Carpe Diem+"
+    - Full FP-style product name: "Rosa Ec Veggie", "Rosa EC Country Candy 50CM"
 
-    "Country Candy"  vs "Rosa Garden Country Candy 60CM 5S" → 1.0
-    "Pomarosa"       vs "Rosa Premium Pomarosa 60CM 5S"     → 1.0
-    "Pomarosa"       vs "Rosa Premium Alba 60CM 5S"         → ~0.2 (no match)
-    "Veggie"         vs "Veggie 60CM 5S"                    → 1.0
-    "Cotton Xpress." vs "Rosa EC Cotton Xpression 60CM 5S"  → ~0.93 (typo-tolerant)
+    In both cases compares against the variety extracted from catalogue_nm_product.
     """
     d = _norm(delivery_variety)
     cat_var = _extract_variety(catalogue_nm_product)
@@ -251,14 +246,26 @@ def _variety_sim(delivery_variety: str, catalogue_nm_product: str) -> float:
     if not d or not cat_var:
         return 0.0
 
-    # Fast path: all delivery words appear in extracted variety word-set
-    d_words = set(d.split())
     c_words = set(cat_var.split())
+
+    # Fast path: delivery words are a subset of catalogue variety words
+    d_words = set(d.split())
     if d_words and d_words.issubset(c_words):
         return 1.0
 
-    # Difflib on (delivery variety, extracted catalogue variety)
-    return difflib.SequenceMatcher(None, d, cat_var).ratio()
+    # Delivery variety may be a full product name ("Rosa Ec Veggie") —
+    # extract its variety part too and compare that against cat_var
+    d_var = _extract_variety(delivery_variety)
+    if d_var:
+        d_var_words = set(d_var.split())
+        if d_var_words and d_var_words.issubset(c_words):
+            return 1.0
+        sim_extracted = difflib.SequenceMatcher(None, d_var, cat_var).ratio()
+    else:
+        sim_extracted = 0.0
+
+    sim_raw = difflib.SequenceMatcher(None, d, cat_var).ratio()
+    return max(sim_raw, sim_extracted)
 
 
 def match_line_to_catalogue(
@@ -314,11 +321,16 @@ def match_line_to_catalogue(
         return best_e, best_s
 
     exact_len = [e for e in catalogue if e.get("nu_length") == length]
+    # If no catalogue entries match the exact length it likely means the catalogue
+    # was scraped from a view that doesn't include a length column (nu_length=None).
+    # In that case treat it as length-agnostic so variety matching still works.
+    len_pool = exact_len if exact_len else catalogue
 
-    # 1. Perfect match + exact length
-    e, _ = _scan(exact_len, 1.0)
+    # 1. Perfect variety match + exact length (or length-agnostic when pool=catalogue)
+    e, _ = _scan(len_pool, 1.0)
     if e:
-        return e["fp_product_id"], "variety_length", e.get("nm_product") or ""
+        method = "variety_length" if exact_len else "variety_anylength"
+        return e["fp_product_id"], method, e.get("nm_product") or ""
 
     # 2. Floricode / VBN (length-agnostic)
     if line.id_floricode:
@@ -326,12 +338,13 @@ def match_line_to_catalogue(
             if e.get("id_floricode") == line.id_floricode:
                 return e["fp_product_id"], "floricode", e.get("nm_product") or ""
 
-    # 3. Fuzzy (≥ 0.80) + exact length
-    e, _ = _scan(exact_len, 0.80)
+    # 3. Fuzzy (≥ 0.80) + length pool
+    e, _ = _scan(len_pool, 0.80)
     if e:
-        return e["fp_product_id"], "fuzzy_variety", e.get("nm_product") or ""
+        method = "fuzzy_variety" if exact_len else "fuzzy_anylength"
+        return e["fp_product_id"], method, e.get("nm_product") or ""
 
-    # 4. Relax length when delivery has nu_length == 0 (mix-box or missing)
+    # 4. Relax length fully: delivery has nu_length == 0 OR pool was already full catalogue
     if length == 0:
         e, _ = _scan(catalogue, 1.0)
         if e:

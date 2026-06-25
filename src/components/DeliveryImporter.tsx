@@ -6,9 +6,9 @@ import { translations, Lang } from "@/lib/i18n";
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
 type MatchMethod =
-  | "variety_length" | "variety_nolen"
+  | "variety_length" | "variety_nolen" | "variety_anylength"
   | "floricode"
-  | "fuzzy_variety" | "fuzzy_variety_nolen" | "fuzzy_nolen"
+  | "fuzzy_variety" | "fuzzy_variety_nolen" | "fuzzy_nolen" | "fuzzy_anylength"
   | "none";
 
 interface DeliveryLine {
@@ -54,13 +54,15 @@ interface ParseResult {
 type Stage = "idle" | "parsing" | "preview" | "syncing" | "importing" | "done" | "error";
 
 const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
-  variety_length:       { label: "exact",       cls: "bg-emerald/15 text-emerald border-emerald/20" },
-  variety_nolen:        { label: "exact~len",   cls: "bg-emerald/10 text-emerald border-emerald/15" },
-  floricode:            { label: "VBN",         cls: "bg-blue-500/15 text-blue-600 border-blue-500/20" },
-  fuzzy_variety:        { label: "fuzzy",       cls: "bg-amber-500/15 text-amber-600 border-amber-500/20" },
-  fuzzy_variety_nolen:  { label: "fuzzy~len",   cls: "bg-amber-500/10 text-amber-600 border-amber-500/15" },
-  fuzzy_nolen:          { label: "fuzzy~",      cls: "bg-orange-500/15 text-orange-600 border-orange-500/20" },
-  none:                 { label: "no match",    cls: "bg-red-500/10 text-red-500 border-red-500/20" },
+  variety_length:       { label: "exact",        cls: "bg-emerald/15 text-emerald border-emerald/20" },
+  variety_nolen:        { label: "exact~len",    cls: "bg-emerald/10 text-emerald border-emerald/15" },
+  variety_anylength:    { label: "exact~len",    cls: "bg-emerald/10 text-emerald border-emerald/15" },
+  floricode:            { label: "VBN",          cls: "bg-blue-500/15 text-blue-600 border-blue-500/20" },
+  fuzzy_variety:        { label: "fuzzy",        cls: "bg-amber-500/15 text-amber-600 border-amber-500/20" },
+  fuzzy_variety_nolen:  { label: "fuzzy~len",    cls: "bg-amber-500/10 text-amber-600 border-amber-500/15" },
+  fuzzy_nolen:          { label: "fuzzy~",       cls: "bg-orange-500/15 text-orange-600 border-orange-500/20" },
+  fuzzy_anylength:      { label: "fuzzy~len",    cls: "bg-orange-500/10 text-orange-600 border-orange-500/15" },
+  none:                 { label: "no match",     cls: "bg-red-500/10 text-red-500 border-red-500/20" },
 };
 
 export default function DeliveryImporter({ lang }: { lang: Lang }) {
