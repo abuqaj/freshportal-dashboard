@@ -1276,6 +1276,126 @@ def get_catalogue_last_sync(supplier_id: str) -> str | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Fust (packaging) catalogue  (fp_fust)
+# ---------------------------------------------------------------------------
+
+def ensure_fust_table() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS fp_fust (
+                    fp_url       TEXT NOT NULL,
+                    fust_id      TEXT NOT NULL,
+                    nm_fust_code TEXT,
+                    nm_fust_desc TEXT,
+                    synced_at    TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (fp_url, fust_id)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS fp_fust_code_idx
+                ON fp_fust(fp_url, UPPER(nm_fust_code))
+            """)
+
+
+def upsert_fust_entries(fp_url: str, entries: list[dict]) -> int:
+    """Full re-sync: replace all fust rows for this fp_url. Returns row count."""
+    if not entries:
+        return 0
+    ensure_fust_table()
+    now = datetime.now(timezone.utc)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM fp_fust WHERE fp_url = %s", (fp_url,))
+            rows = [
+                (fp_url, e["fust_id"], e.get("nm_fust_code"), e.get("nm_fust_desc"), now)
+                for e in entries
+                if e.get("fust_id")
+            ]
+            psycopg2.extras.execute_values(cur, """
+                INSERT INTO fp_fust (fp_url, fust_id, nm_fust_code, nm_fust_desc, synced_at)
+                VALUES %s
+                ON CONFLICT (fp_url, fust_id) DO UPDATE SET
+                    nm_fust_code = EXCLUDED.nm_fust_code,
+                    nm_fust_desc = EXCLUDED.nm_fust_desc,
+                    synced_at    = EXCLUDED.synced_at
+            """, rows)
+        conn.commit()
+    return len(rows)
+
+
+def get_fust_id_for_box(fp_url: str, nm_box: str) -> str:
+    """Return fust_id (numeric string) for a delivery box type code.
+
+    nm_box: "HB", "QB", "HBE", "MB1", "MB2" etc.
+    Strips trailing digits before lookup so MB1→MB, MB2→MB.
+    Returns "" if not found or fust table not synced.
+    """
+    if not nm_box:
+        return ""
+    box_code = re.sub(r"\d+$", "", nm_box.strip()).upper()
+    try:
+        ensure_fust_table()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                # 1. Exact code match (case-insensitive)
+                cur.execute(
+                    "SELECT fust_id FROM fp_fust "
+                    "WHERE fp_url = %s AND UPPER(nm_fust_code) = %s LIMIT 1",
+                    (fp_url, box_code),
+                )
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+                # 2. Code contains box_code
+                cur.execute(
+                    "SELECT fust_id FROM fp_fust "
+                    "WHERE fp_url = %s AND nm_fust_code ILIKE %s "
+                    "ORDER BY fust_id LIMIT 1",
+                    (fp_url, f"%{box_code}%"),
+                )
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+    except Exception as exc:
+        logger.warning("get_fust_id_for_box(%s): %s", nm_box, exc)
+    return ""
+
+
+def get_all_fust(fp_url: str) -> list[dict]:
+    try:
+        ensure_fust_table()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT fust_id, nm_fust_code, nm_fust_desc, synced_at
+                    FROM fp_fust WHERE fp_url = %s
+                    ORDER BY nm_fust_code
+                """, (fp_url,))
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(r)
+                    if d.get("synced_at") and hasattr(d["synced_at"], "isoformat"):
+                        d["synced_at"] = d["synced_at"].isoformat()
+                    rows.append(d)
+                return rows
+    except Exception as exc:
+        logger.warning("get_all_fust failed: %s", exc)
+        return []
+
+
+def get_fust_count(fp_url: str) -> int:
+    try:
+        ensure_fust_table()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM fp_fust WHERE fp_url = %s", (fp_url,))
+                return cur.fetchone()[0]
+    except Exception:
+        return 0
+
+
 def get_vbn_auto_history(limit: int = 10, offset: int = 0) -> list[dict]:
     try:
         ensure_tables()

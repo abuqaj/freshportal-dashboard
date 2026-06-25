@@ -42,12 +42,14 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                upsert_suppliers, get_suppliers, get_suppliers_count,
                find_supplier_fp_id,
                get_delivery_matches, save_delivery_matches,
-               set_delivery_match, delete_delivery_match)
+               set_delivery_match, delete_delivery_match,
+               upsert_fust_entries, get_all_fust, get_fust_count)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, match_order, delivery_key
 from scraper_catalogue import fetch_supplier_catalogue, fetch_supplier_list
 from scraper_delivery import add_delivery, explore_delivery_form, explore_stock_add_form
+from scraper_fust import fetch_fust_catalogue
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -2464,6 +2466,70 @@ def catalogue_items(
     return {"supplier_id": supplier_id, "items": items, "count": len(items)}
 
 
+
+
+# ---------------------------------------------------------------------------
+# Fust (packaging) catalogue  (/fust/...)
+# ---------------------------------------------------------------------------
+
+@app.post("/fust/sync")
+async def fust_sync(
+    _: dict = Depends(require_permission("admin:manage")),
+    cfg: Config = Depends(get_cfg),
+):
+    """SSE stream: scrape all fust (packaging) entries from /fust/index/index/ and save to DB."""
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            def on_status(msg: str) -> None:
+                queue.put({"type": "status", "message": msg})
+
+            on_status("Scraping fust catalogue…")
+            entries = fetch_fust_catalogue(cfg, on_status=on_status)
+            on_status(f"Saving {len(entries)} fust entries to database…")
+            saved = upsert_fust_entries(cfg.freshportal_url, entries)
+            queue.put({"type": "result", "data": {
+                "fp_url": cfg.freshportal_url,
+                "entries_saved": saved,
+            }})
+        except Exception as exc:
+            log.exception("fust/sync failed")
+            queue.put({"type": "error", "message": str(exc)})
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    async def generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+        thread.join(timeout=10)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+@app.get("/fust/list")
+def fust_list(
+    _: dict = Depends(require_permission("admin:manage")),
+    cfg: Config = Depends(get_cfg),
+):
+    """Return all fust entries for this FreshPortal instance from DB."""
+    fp_url = cfg.freshportal_url
+    entries = get_all_fust(fp_url)
+    return {"fp_url": fp_url, "entries": entries, "count": len(entries)}
 
 
 # ---------------------------------------------------------------------------
