@@ -193,7 +193,7 @@ def delivery_key(nm_variety: str | None, nu_length: int | None) -> str:
 
 # Origin tokens that appear between genus and variety in FP catalogue names.
 # Same list as product_creator._ORIGIN_TOKENS — keep in sync.
-_ORIGIN_TOKENS = {"ec", "col", "co", "ke", "ken", "nl", "et", "zim", "sa", "tz", "be", "de",
+_ORIGIN_TOKENS = {"ec", "col", "co", "ke", "ken", "nl", "et", "zim", "sa", "tz", "be",
                   "garden", "premium", "special", "select"}
 
 
@@ -290,10 +290,11 @@ def match_line_to_catalogue(
 
     Priority:
     0. Cache hit (delivery_product_map)
-    1. sim == 1.0 + exact length   — perfect variety word-match
-    2. Floricode / VBN             — length-agnostic
-    3. sim ≥ 0.80 + exact length   — typo-tolerant (difflib)
-    4. Steps 1 & 3 without length  — for mix-box lines where nu_length == 0
+    1. sim == 1.0 — perfect variety word-match (full catalogue, length ignored)
+    2. Floricode / VBN
+    3. sim ≥ 0.80 — typo-tolerant difflib match (full catalogue)
+
+    Length is intentionally ignored — it is adjusted manually during stock creation.
     """
     key = delivery_key(line.nm_variety, line.nu_length)
 
@@ -303,7 +304,6 @@ def match_line_to_catalogue(
         return m["fp_product_id"], m["match_type"], m.get("nm_product") or ""
 
     variety = (line.nm_variety or "").strip()
-    length  = line.nu_length
 
     if not variety:
         return "", "none", ""
@@ -329,38 +329,24 @@ def match_line_to_catalogue(
                 best_e, best_s = e, s
         return best_e, best_s
 
-    exact_len = [e for e in catalogue if e.get("nu_length") == length]
-    # If no catalogue entries match the exact length it likely means the catalogue
-    # was scraped from a view that doesn't include a length column (nu_length=None).
-    # In that case treat it as length-agnostic so variety matching still works.
-    len_pool = exact_len if exact_len else catalogue
+    # Length is adjusted manually during creation — match only by variety name,
+    # scanning the full catalogue regardless of nu_length.
 
-    # 1. Perfect variety match + exact length (or length-agnostic when pool=catalogue)
-    e, _ = _scan(len_pool, 1.0)
+    # 1. Perfect variety match (sim == 1.0)
+    e, _ = _scan(catalogue, 1.0)
     if e:
-        method = "variety_length" if exact_len else "variety_anylength"
-        return e["fp_product_id"], method, e.get("nm_product") or ""
+        return e["fp_product_id"], "variety_anylength", e.get("nm_product") or ""
 
-    # 2. Floricode / VBN (length-agnostic)
+    # 2. Floricode / VBN
     if line.id_floricode:
         for e in catalogue:
             if e.get("id_floricode") == line.id_floricode:
                 return e["fp_product_id"], "floricode", e.get("nm_product") or ""
 
-    # 3. Fuzzy (≥ 0.80) + length pool
-    e, _ = _scan(len_pool, 0.80)
+    # 3. Fuzzy match (sim ≥ 0.80)
+    e, _ = _scan(catalogue, 0.80)
     if e:
-        method = "fuzzy_variety" if exact_len else "fuzzy_anylength"
-        return e["fp_product_id"], method, e.get("nm_product") or ""
-
-    # 4. Relax length fully: delivery has nu_length == 0 OR pool was already full catalogue
-    if length == 0:
-        e, _ = _scan(catalogue, 1.0)
-        if e:
-            return e["fp_product_id"], "variety_nolen", e.get("nm_product") or ""
-        e, _ = _scan(catalogue, 0.80)
-        if e:
-            return e["fp_product_id"], "fuzzy_nolen", e.get("nm_product") or ""
+        return e["fp_product_id"], "fuzzy_anylength", e.get("nm_product") or ""
 
     return "", "none", ""
 
