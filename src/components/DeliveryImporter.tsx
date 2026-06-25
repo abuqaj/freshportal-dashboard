@@ -74,7 +74,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [logs, setLogs] = useState<string[]>([]);
   const [importResult, setImportResult] = useState<{ ok: boolean; batch_id: string; batch_url: string; lines_added: number; message: string } | null>(null);
   const [error, setError] = useState("");
-  const logsEndRef = useRef<HTMLDivElement>(null);
 
   // ── Fust (packaging) sync ─────────────────────────────
   const [fustSyncing, setFustSyncing] = useState(false);
@@ -117,17 +116,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [addStage, setAddStage] = useState<AddStage>("idle");
   const [addLogs, setAddLogs] = useState<string[]>([]);
   const [addResult, setAddResult] = useState<{ ok: boolean; lines_added: number; lines_skipped: number; lines_failed: number; message: string; details: { product: string; status: string }[] } | null>(null);
-  const addLogsEndRef = useRef<HTMLDivElement>(null);
-
-  // Auto-scroll add-products log to bottom whenever a new line arrives
-  useEffect(() => {
-    addLogsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [addLogs]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev, msg]);
-    setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
   }, []);
 
   // ── File drop / select ──────────────────────────────────────────────────
@@ -563,12 +555,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       {/* ── SYNCING ── */}
       {stage === "syncing" && (
-        <ProgressLog title={td.syncing} logs={logs} logsEndRef={logsEndRef} />
+        <ProgressLog title={td.syncing} logs={logs} />
       )}
 
       {/* ── IMPORTING ── */}
       {stage === "importing" && (
-        <ProgressLog title={td.importing} logs={logs} logsEndRef={logsEndRef} />
+        <ProgressLog title={td.importing} logs={logs} />
       )}
 
       {/* ── DONE ── */}
@@ -605,7 +597,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               )}
 
               {addStage === "running" && (
-                <ProgressLog title="Dodawanie produktów…" logs={addLogs} logsEndRef={addLogsEndRef} />
+                <ProgressLog title="Dodawanie produktów…" logs={addLogs} />
               )}
 
               {addStage === "done" && addResult && (
@@ -688,11 +680,14 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ProgressLog({ title, logs, logsEndRef }: {
-  title: string;
-  logs: string[];
-  logsEndRef: React.RefObject<HTMLDivElement | null>;
-}) {
+function ProgressLog({ title, logs }: { title: string; logs: string[] }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logs]);
+
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
@@ -702,13 +697,12 @@ function ProgressLog({ title, logs, logsEndRef }: {
         </svg>
         <span className="text-sm font-semibold text-ink">{title}</span>
       </div>
-      <div className="bg-muted rounded-2xl p-4 h-72 overflow-y-auto font-mono text-xs space-y-0.5">
+      <div ref={containerRef} className="bg-muted rounded-2xl p-4 h-72 overflow-y-auto font-mono text-xs space-y-0.5">
         {logs.map((l, i) => (
           <div key={i} className={`${l.startsWith("  ⚠") || l.startsWith("Error") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}>
             {l}
           </div>
         ))}
-        <div ref={logsEndRef} />
       </div>
     </div>
   );

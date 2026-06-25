@@ -916,8 +916,11 @@ def _find_desc_col_and_row(page: Page, catalogue_nm: str) -> int:
     """, [catalogue_nm])
 
 
+_FORM_PREFIX = "company_product_add_stock_side_bottom_create_form_"
+
+
 def _inspect_sidebar_inputs(page: Page) -> list[str]:
-    """Return input names near #btn_company_product_add_stock_form (for debug logging)."""
+    """Return input+select names near #btn_company_product_add_stock_form (for debug)."""
     return page.evaluate("""
         () => {
             const btn = document.getElementById("btn_company_product_add_stock_form");
@@ -926,22 +929,15 @@ def _inspect_sidebar_inputs(page: Page) -> list[str]:
             for (let i = 0; i < 8; i++) {
                 if (!container.parentElement) break;
                 container = container.parentElement;
-                if (container.querySelectorAll("input").length > 1) break;
+                if (container.querySelectorAll("input, select").length > 1) break;
             }
-            return Array.from(container.querySelectorAll("input")).map(inp => inp.name);
+            return Array.from(container.querySelectorAll("input, select")).map(el => el.name);
         }
     """)
 
 
-_FORM_PREFIX = "company_product_add_stock_side_bottom_create_form_"
-
-
-def _post_create_stock(
-    cfg: Config,
-    session_cookies: dict[str, str],
-    batch_id: str,
-    ste_id: str,
-    description: str,
+def _fill_sidebar_and_create(
+    page: Page,
     nu_length: int,
     nu_stems_bunch: int,
     nu_bunches: int,
@@ -949,54 +945,119 @@ def _post_create_stock(
     fust_id: str,
     on_status: Callable[[str], None],
 ) -> bool:
-    """POST directly to /company_product_add_stock/side/create_stock/ with httpx.
+    """Fill the create-stock sidebar and click #btn_company_product_add_stock_form.
 
-    Quantity logic:
-      quantity_adjustable     = 1          (number of packs/boxes)
+    Quantity logic (as expected by FreshPortal):
+      quantity_adjustable          = 1                          (boxes/packs)
       quantity_per_pack_adjustable = nu_stems_bunch * nu_bunches  (total stems)
       stems_per_bunch_adjustable   = nu_stems_bunch
     """
-    qty_per_pack = nu_stems_bunch * nu_bunches
+    field_names = _inspect_sidebar_inputs(page)
+    on_status(f"  Sidebar inputs: {field_names}")
+
     p = _FORM_PREFIX
-    body = {
-        f"{p}description_adjustable":     description,
-        f"{p}length_adjustable":          str(nu_length),
-        f"{p}fust_code_adjustable":       fust_id,
-        f"{p}quantity_adjustable":        "1",
-        f"{p}quantity_per_pack_adjustable": str(qty_per_pack),
-        f"{p}total_quantity":             str(qty_per_pack),
-        f"{p}stems_per_bunch_adjustable": str(nu_stems_bunch),
-        f"{p}price_supplier_currency":    str(mny_rate),
-    }
-    post_url = (
-        f"{cfg.freshportal_url}/company_product_add_stock/side/create_stock/"
-        f"STE_ID/{ste_id}/BAT_ID/{batch_id}/"
-    )
-    on_status(f"  POST {post_url}")
-    on_status(f"  fust={fust_id} qty_per_pack={qty_per_pack} spb={nu_stems_bunch}")
-    try:
-        resp = httpx.post(
-            post_url,
-            data=body,
-            cookies=session_cookies,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": f"{cfg.freshportal_url}/company_product_add_stock/index/index/",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            follow_redirects=True,
-            timeout=20,
-        )
-        on_status(f"  → HTTP {resp.status_code}")
-        return resp.status_code in (200, 201, 302)
-    except Exception as exc:
-        on_status(f"  POST failed: {exc}")
-        return False
+    qty_per_pack = nu_stems_bunch * nu_bunches
+    filled: list[str] = []
+
+    # ── Length ───────────────────────────────────────────────────────────
+    inp = page.locator(f"input[name='{p}length_adjustable']")
+    if inp.count() > 0:
+        current = inp.first.input_value()
+        if str(nu_length) != current:
+            inp.first.fill(str(nu_length))
+            inp.first.dispatch_event("change")
+            inp.first.dispatch_event("blur")
+            time.sleep(0.2)
+        filled.append(f"length={nu_length}")
+
+    # ── Quantity per pack (total stems) ──────────────────────────────────
+    inp = page.locator(f"input[name='{p}quantity_per_pack_adjustable']")
+    if inp.count() > 0:
+        inp.first.fill(str(qty_per_pack))
+        inp.first.dispatch_event("change")
+        filled.append(f"qty_per_pack={qty_per_pack}")
+
+    # ── Quantity (number of boxes = 1) ───────────────────────────────────
+    inp = page.locator(f"input[name='{p}quantity_adjustable']")
+    if inp.count() > 0:
+        inp.first.fill("1")
+        inp.first.dispatch_event("change")
+        filled.append("quantity=1")
+
+    # ── Stems per bunch ──────────────────────────────────────────────────
+    inp = page.locator(f"input[name='{p}stems_per_bunch_adjustable']")
+    if inp.count() > 0:
+        inp.first.fill(str(nu_stems_bunch))
+        inp.first.dispatch_event("change")
+        filled.append(f"spb={nu_stems_bunch}")
+
+    # ── Price ────────────────────────────────────────────────────────────
+    inp = page.locator(f"input[name='{p}price_supplier_currency']")
+    if inp.count() > 0:
+        inp.first.fill(str(mny_rate))
+        inp.first.dispatch_event("change")
+        filled.append(f"price={mny_rate}")
+    else:
+        # fallback name variants
+        for suf in ["mny_rate_stem", "price", "rate_stem", "rate", "prijs"]:
+            fb = page.locator(f"input[name*='{suf}']:not([name*='length']):not([name*='bunch']):not([name*='quantity'])")
+            if fb.count() > 0:
+                fb.first.fill(str(mny_rate))
+                fb.first.dispatch_event("change")
+                filled.append(f"price({suf})={mny_rate}")
+                break
+
+    # ── Packaging (fust) ─────────────────────────────────────────────────
+    if fust_id:
+        sel = page.locator(f"select[name='{p}fust_code_adjustable']")
+        if sel.count() > 0:
+            try:
+                sel.first.select_option(value=fust_id)
+                sel.first.dispatch_event("change")
+                filled.append(f"fust={fust_id}")
+            except Exception as exc:
+                on_status(f"  ⚠ fust select_option failed: {exc}")
+        else:
+            # Might be a hidden input or Chosen widget — set via JS
+            set_ok = page.evaluate("""
+                ([prefix, fustId]) => {
+                    const name = prefix + 'fust_code_adjustable';
+                    const sel = document.querySelector(`select[name='${name}']`);
+                    if (sel) {
+                        sel.value = fustId;
+                        sel.dispatchEvent(new Event('change', {bubbles: true}));
+                        if (window.jQuery) jQuery(sel).trigger('chosen:updated');
+                        return 'select:' + fustId;
+                    }
+                    const inp = document.querySelector(`input[name='${name}']`);
+                    if (inp) {
+                        inp.value = fustId;
+                        inp.dispatchEvent(new Event('change', {bubbles: true}));
+                        return 'input:' + fustId;
+                    }
+                    return 'not found';
+                }
+            """, [p, fust_id])
+            filled.append(f"fust(js)={fust_id}→{set_ok}")
+    else:
+        on_status("  ⚠ fust_id unknown — keeping pre-filled packaging")
+
+    on_status(f"  Filled: {', '.join(filled) or 'nothing'}")
+
+    # ── Click Create stock ────────────────────────────────────────────────
+    btn = page.locator("#btn_company_product_add_stock_form")
+    if btn.count() > 0:
+        btn.first.click()
+        page.wait_for_timeout(2000)
+        on_status("  ✓ Clicked 'Create stock'")
+        return True
+
+    on_status("  ✗ #btn_company_product_add_stock_form not found")
+    return False
 
 
 def _add_one_product(
-    page,
-    ctx,
+    page: Page,
     cfg: Config,
     batch_id: str,
     catalogue_nm: str,
@@ -1007,14 +1068,14 @@ def _add_one_product(
     nm_box: str,
     on_status: Callable[[str], None],
 ) -> bool:
-    """Add one product line. Returns True on success.
+    """Add one product line via form-filling. Returns True on success.
 
     Flow:
-      1. Navigate to URL-filtered stock page with description= param.
+      1. Navigate to URL-filtered stock page (?description=...).
       2. Pick best matching row (EC > Garden preference).
-      3. Click row → wait for #btn_company_product_add_stock_form.
-      4. Extract STE_ID from button data-stock-entry-id.
-      5. POST directly via httpx (faster & more reliable than filling inputs).
+      3. Click row → sidebar opens.
+      4. Fill quantity/price/packaging inputs.
+      5. Click Create stock button.
     """
     from db import get_fust_id_for_box
 
@@ -1059,34 +1120,16 @@ def _add_one_product(
         on_status("  Sidebar did not open")
         return False
 
-    # ── Log sidebar inputs (debug) ────────────────────────────────────────
-    input_names = _inspect_sidebar_inputs(page)
-    on_status(f"  Sidebar inputs: {input_names}")
-
-    # ── Extract STE_ID and sidebar description ────────────────────────────
-    ste_id = (
-        page.locator("#btn_company_product_add_stock_form")
-        .first.get_attribute("data-stock-entry-id") or ""
-    )
-    if not ste_id:
-        on_status("  data-stock-entry-id not found on button — falling back to form fill")
-        return False
-
-    # Read actual description from sidebar input (what FP pre-fills)
-    desc_inp = page.locator(f"input[name='{_FORM_PREFIX}description_adjustable']")
-    description = desc_inp.first.input_value() if desc_inp.count() > 0 else catalogue_nm
-
     # ── Lookup packaging fust_id ─────────────────────────────────────────
     fust_id = get_fust_id_for_box(cfg.freshportal_url, nm_box)
-    if not fust_id:
-        on_status(f"  ⚠ fust_id not found for nm_box='{nm_box}' — fust field will be empty")
+    if fust_id:
+        on_status(f"  Packaging: nm_box={nm_box} → fust_id={fust_id}")
+    else:
+        on_status(f"  Packaging: nm_box={nm_box} → not found in fp_fust, keeping pre-filled")
 
-    # ── Direct POST (skip form-filling, more reliable) ───────────────────
-    session_cookies = {c["name"]: c["value"] for c in ctx.cookies()}
-    return _post_create_stock(
-        cfg, session_cookies, batch_id, ste_id,
-        description, nu_length, nu_stems_bunch, nu_bunches, mny_rate,
-        fust_id, on_status,
+    # ── Fill form + click submit ──────────────────────────────────────────
+    return _fill_sidebar_and_create(
+        page, nu_length, nu_stems_bunch, nu_bunches, mny_rate, fust_id, on_status,
     )
 
 
@@ -1192,7 +1235,7 @@ def add_products_to_batch(
 
                 try:
                     ok = _add_one_product(
-                        page, ctx, cfg, batch_id,
+                        page, cfg, batch_id,
                         catalogue_nm, nu_length, nu_stems_bunch,
                         nu_bunches, mny_rate, nm_box, _s,
                     )

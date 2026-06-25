@@ -1329,35 +1329,50 @@ def get_fust_id_for_box(fp_url: str, nm_box: str) -> str:
     """Return fust_id (numeric string) for a delivery box type code.
 
     nm_box: "HB", "QB", "HBE", "MB1", "MB2" etc.
-    Strips trailing digits before lookup so MB1→MB, MB2→MB.
+    Priority:
+      1. Exact match on nm_fust_code (MB1 → fust_id 782)
+      2. Strip trailing digits, exact match (HBE → HB fallback)
+      3. ILIKE contains stripped code
     Returns "" if not found or fust table not synced.
     """
     if not nm_box:
         return ""
-    box_code = re.sub(r"\d+$", "", nm_box.strip()).upper()
+    raw = nm_box.strip().upper()
+    stripped = re.sub(r"\d+$", "", raw)
     try:
         ensure_fust_table()
         with _conn() as conn:
             with conn.cursor() as cur:
-                # 1. Exact code match (case-insensitive)
+                # 1. Exact match (handles MB1, MB2, HB, QB directly)
                 cur.execute(
                     "SELECT fust_id FROM fp_fust "
                     "WHERE fp_url = %s AND UPPER(nm_fust_code) = %s LIMIT 1",
-                    (fp_url, box_code),
+                    (fp_url, raw),
                 )
                 row = cur.fetchone()
                 if row:
                     return row[0]
-                # 2. Code contains box_code
-                cur.execute(
-                    "SELECT fust_id FROM fp_fust "
-                    "WHERE fp_url = %s AND nm_fust_code ILIKE %s "
-                    "ORDER BY fust_id LIMIT 1",
-                    (fp_url, f"%{box_code}%"),
-                )
-                row = cur.fetchone()
-                if row:
-                    return row[0]
+                # 2. Stripped exact match (e.g. HBE → HB, HBTE → HBT)
+                if stripped and stripped != raw:
+                    cur.execute(
+                        "SELECT fust_id FROM fp_fust "
+                        "WHERE fp_url = %s AND UPPER(nm_fust_code) = %s LIMIT 1",
+                        (fp_url, stripped),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return row[0]
+                # 3. ILIKE on stripped code (broadest fallback)
+                if stripped:
+                    cur.execute(
+                        "SELECT fust_id FROM fp_fust "
+                        "WHERE fp_url = %s AND nm_fust_code ILIKE %s "
+                        "ORDER BY LENGTH(nm_fust_code), fust_id LIMIT 1",
+                        (fp_url, f"{stripped}%"),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return row[0]
     except Exception as exc:
         logger.warning("get_fust_id_for_box(%s): %s", nm_box, exc)
     return ""
