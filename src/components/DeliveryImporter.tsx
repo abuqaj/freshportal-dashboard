@@ -609,7 +609,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   </p>
                   <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
                   {addResult.details.length > 0 && (
-                    <div className="mt-2 space-y-0.5">
+                    <div className="mt-2 max-h-52 overflow-y-auto space-y-0.5 pr-1">
                       {addResult.details.map((d, i) => (
                         <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : "text-red-400"}`}>
                           {d.status === "added" ? "✓" : "✗"} {d.product}
