@@ -271,8 +271,13 @@ def _variety_sim(delivery_variety: str, catalogue_nm_product: str) -> float:
     d_words = set(d.split())
     c_words = set(cat_var.split())
 
-    if d_words and d_words.issubset(c_words):
+    if d_words and d_words == c_words:
         return 1.0
+    # Subset match (delivery words ⊂ catalogue variety) scores just below 1.0
+    # so that an exact match always wins over a partial match.
+    # e.g. "Shimmer" ⊂ "Cream Shimmer" → 0.95, but "Shimmer"=="Shimmer" → 1.0
+    if d_words and d_words.issubset(c_words):
+        return 0.95
 
     return difflib.SequenceMatcher(None, d, cat_var).ratio()
 
@@ -337,11 +342,14 @@ def match_line_to_catalogue(
     if e:
         return e["fp_product_id"], "variety_anylength", e.get("nm_product") or ""
 
-    # 2. Floricode / VBN
+    # 2. Floricode / VBN — guard with min variety similarity to reject catalogue
+    #    entries whose floricode matches but whose variety name is unrelated.
+    #    (Floricodes in delivery JSONs are sometimes wrong or map to wrong products.)
     if line.id_floricode:
         for e in catalogue:
             if e.get("id_floricode") == line.id_floricode:
-                return e["fp_product_id"], "floricode", e.get("nm_product") or ""
+                if _variety_sim(variety, e.get("nm_product") or "") >= 0.40:
+                    return e["fp_product_id"], "floricode", e.get("nm_product") or ""
 
     # 3. Fuzzy match (sim ≥ 0.80)
     e, _ = _scan(catalogue, 0.80)
