@@ -417,16 +417,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           >
             {stage === "parsing" ? td.parsing : td.parseBtn}
           </button>
-          {parseResult?.supplier_id && (
-            <button
-              onClick={handleClearCache}
-              disabled={clearingCache}
-              title="Usuń zcachowane matche — następny parse użyje świeżego algorytmu"
-              className="self-end h-9 px-4 rounded-xl text-sm font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
-            >
-              {clearingCache ? "Czyszczę…" : "Wyczyść cache matchów"}
-            </button>
-          )}
         </div>
       )}
 
@@ -495,6 +485,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 className="h-7 px-3 rounded-lg text-xs font-medium border border-border text-ink-3 hover:text-ink hover:border-emerald/40 transition-colors"
               >
                 {td.syncCatalogueBtn}
+              </button>
+              <button
+                onClick={handleClearCache}
+                disabled={clearingCache}
+                title="Usuń zcachowane matche — następny parse użyje świeżego algorytmu"
+                className="h-7 px-3 rounded-lg text-xs font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+              >
+                {clearingCache ? "Czyszczę…" : "Wyczyść cache"}
               </button>
             </div>
           </div>
