@@ -139,6 +139,23 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (f && f.name.endsWith(".json")) handleFile(f);
   }
 
+  // ── Clear match cache ──────────────────────────────────────────────────
+
+  const [clearingCache, setClearingCache] = useState(false);
+
+  async function handleClearCache() {
+    const supplierId = parseResult?.supplier_id;
+    if (!supplierId) { alert("Najpierw sparsuj JSON żeby poznać dostawcę."); return; }
+    if (!confirm(`Wyczyścić wszystkie cache'd matche dla supplier ${supplierId}?`)) return;
+    setClearingCache(true);
+    try {
+      const res = await fetch(`${RAILWAY}/catalogue/${supplierId}/matches`, { method: "DELETE" });
+      const data = await res.json();
+      alert(`Usunięto ${data.deleted} wpisów z cache. Parsuj ponownie.`);
+    } catch { alert("Błąd podczas czyszczenia cache."); }
+    finally { setClearingCache(false); }
+  }
+
   // ── Parse & match ──────────────────────────────────────────────────────
 
   async function handleParse() {
@@ -400,6 +417,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           >
             {stage === "parsing" ? td.parsing : td.parseBtn}
           </button>
+          {parseResult?.supplier_id && (
+            <button
+              onClick={handleClearCache}
+              disabled={clearingCache}
+              title="Usuń zcachowane matche — następny parse użyje świeżego algorytmu"
+              className="self-end h-9 px-4 rounded-xl text-sm font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+            >
+              {clearingCache ? "Czyszczę…" : "Wyczyść cache matchów"}
+            </button>
+          )}
         </div>
       )}
 

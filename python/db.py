@@ -1260,6 +1260,22 @@ def delete_delivery_match(fp_url: str, fp_supplier_id: str, delivery_key: str) -
         return False
 
 
+def clear_delivery_matches(fp_url: str, fp_supplier_id: str) -> int:
+    """Delete ALL cached matches for a supplier. Returns number of rows deleted."""
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    DELETE FROM delivery_product_map
+                    WHERE fp_url = %s AND fp_supplier_id = %s
+                """, (fp_url, fp_supplier_id))
+                deleted = cur.rowcount
+            conn.commit()
+        return deleted
+    except Exception:
+        return 0
+
+
 def get_catalogue_last_sync(supplier_id: str) -> str | None:
     try:
         ensure_catalogue_table()

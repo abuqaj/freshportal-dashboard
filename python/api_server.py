@@ -42,7 +42,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                upsert_suppliers, get_suppliers, get_suppliers_count,
                find_supplier_fp_id,
                get_delivery_matches, save_delivery_matches,
-               set_delivery_match, delete_delivery_match,
+               set_delivery_match, delete_delivery_match, clear_delivery_matches,
                upsert_fust_entries, get_all_fust, get_fust_count)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
@@ -2339,6 +2339,17 @@ def catalogue_set_match(
     set_delivery_match(fp_url, supplier_id, req.delivery_key,
                        req.nm_variety, req.nu_length, req.fp_product_id, req.nm_product)
     return {"ok": True}
+
+
+@app.delete("/catalogue/{supplier_id}/matches")
+def catalogue_clear_all_matches(
+    supplier_id: str,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Delete ALL cached delivery→catalogue matches for a supplier."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    deleted = clear_delivery_matches(fp_url, supplier_id)
+    return {"deleted": deleted}
 
 
 @app.delete("/catalogue/{supplier_id}/matches/{delivery_key}")

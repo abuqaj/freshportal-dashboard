@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import difflib
 import re as _re
+import unicodedata as _ud
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -197,14 +198,24 @@ _ORIGIN_TOKENS = {"ec", "col", "co", "ke", "ken", "nl", "et", "zim", "sa", "tz",
 
 
 def _norm(s: str) -> str:
-    """Lowercase, strip hyphens/dots, collapse spaces.
+    """Lowercase, strip diacritics/hyphens/dots, collapse spaces.
 
-    "x-pression" → "xpression"  |  "Rosa EC" → "rosa ec"
+    "x-pression" → "xpression"  |  "Crème" → "creme"  |  "Rosa EC" → "rosa ec"
     """
     s = s.lower().strip()
+    # strip diacritics: crème → creme, ñ → n, etc.
+    s = _ud.normalize("NFD", s)
+    s = "".join(c for c in s if _ud.category(c) != "Mn")
     s = _re.sub(r"[-.'`]", "", s)
     s = _re.sub(r"\s+", " ", s).strip()
     return s
+
+
+# Known floral genera — delivery nm_variety starting with one of these is
+# treated as a full product name and variety is extracted from it.
+_GENERA = {"rosa", "dianthus", "tulipa", "chrysanthemum", "gerbera", "lisianthus",
+           "anthurium", "alstroemeria", "freesia", "gypsophila", "lilium", "iris",
+           "ranunculus", "eustoma", "helianthus", "hydrangea"}
 
 
 def _extract_variety(nm_product: str) -> str:
@@ -235,37 +246,35 @@ def _variety_sim(delivery_variety: str, catalogue_nm_product: str) -> float:
     """Similarity between a delivery variety name and a FP catalogue product name.
 
     Handles two forms of delivery_variety:
-    - Short variety name only:   "Veggie", "Country Candy", "Carpe Diem+"
-    - Full FP-style product name: "Rosa Ec Veggie", "Rosa EC Country Candy 50CM"
+    - Short variety name:       "Veggie", "Country Candy", "Cotton X-Pression"
+    - Full FP product name:     "Rosa Ec Veggie", "Rosa EC Country Candy 50CM"
 
-    In both cases compares against the variety extracted from catalogue_nm_product.
+    For the full-name case the variety is extracted only when the first word is
+    a known floral genus (rosa, dianthus, …), so "Pink Mondial" is never confused
+    with "Mondial" and "Cotton X-Pression" is never reduced to just "xpression".
     """
-    d = _norm(delivery_variety)
     cat_var = _extract_variety(catalogue_nm_product)
-
-    if not d or not cat_var:
+    if not cat_var:
         return 0.0
 
+    # Decide how to normalise the delivery side
+    first = _norm(delivery_variety).split()
+    if first and first[0] in _GENERA:
+        # Full product name starting with genus → extract variety part
+        d = _extract_variety(delivery_variety)
+    else:
+        d = _norm(delivery_variety)
+
+    if not d:
+        return 0.0
+
+    d_words = set(d.split())
     c_words = set(cat_var.split())
 
-    # Fast path: delivery words are a subset of catalogue variety words
-    d_words = set(d.split())
     if d_words and d_words.issubset(c_words):
         return 1.0
 
-    # Delivery variety may be a full product name ("Rosa Ec Veggie") —
-    # extract its variety part too and compare that against cat_var
-    d_var = _extract_variety(delivery_variety)
-    if d_var:
-        d_var_words = set(d_var.split())
-        if d_var_words and d_var_words.issubset(c_words):
-            return 1.0
-        sim_extracted = difflib.SequenceMatcher(None, d_var, cat_var).ratio()
-    else:
-        sim_extracted = 0.0
-
-    sim_raw = difflib.SequenceMatcher(None, d, cat_var).ratio()
-    return max(sim_raw, sim_extracted)
+    return difflib.SequenceMatcher(None, d, cat_var).ratio()
 
 
 def match_line_to_catalogue(
