@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import urllib.parse
 from typing import Callable
 
 import httpx
@@ -1003,29 +1004,49 @@ def _add_one_product(
     """Add one product line. Returns True on success.
 
     Flow:
-      1. Ensure we are on the stock page.
-      2. Find row by STE_Description column using catalogue_nm.
-      3. Click the row → wait for sidebar (detected by #btn_company_product_add_stock_form).
+      1. Navigate to URL-filtered stock page:
+         /company_product_add_stock/index/index/?1=1&BAT_ID={id}&description={name}&page=1
+         This filters the AJAX table to show only matching products.
+      2. Find row by STE_Description column in the filtered results.
+      3. Click the row → wait for sidebar (#btn_company_product_add_stock_form).
       4. Fill length_adjustable / bunches / price fields.
       5. Click "Create stock" button.
     """
-    # Ensure we are on the stock page (reload if navigated away)
-    if stock_url.rstrip("/") not in page.url.rstrip("/"):
-        page.goto(stock_url, wait_until="load", timeout=cfg.request_timeout)
-        try:
-            page.wait_for_selector("table tbody tr", timeout=12_000)
-        except Exception:
-            pass
-        time.sleep(1)
+    # ── Navigate to filtered stock page ──────────────────────────────────
+    desc_encoded = urllib.parse.quote(catalogue_nm)
+    search_url = (
+        f"{cfg.freshportal_url}/company_product_add_stock/index/index/"
+        f"?1=1&BAT_ID={batch_id}&description={desc_encoded}&page=1"
+    )
+    on_status(f"  → {search_url}")
+    page.goto(search_url, wait_until="load", timeout=cfg.request_timeout)
 
-    # ── Find row by STE_Description column ───────────────────────────────
+    # AJAX table may load after page-load event — wait for rows
+    try:
+        page.wait_for_selector("table tbody tr", timeout=12_000)
+    except Exception:
+        on_status("  No rows found after description filter")
+        return False
+    time.sleep(0.8)
+
+    row_count = page.locator("table tbody tr").count()
+    on_status(f"  {row_count} row(s) after filter")
+
+    # ── Find best row in filtered results ─────────────────────────────────
+    # With description filter the table should have 1–few rows; pick the one
+    # whose STE_Description best matches catalogue_nm.
     row_idx = _find_desc_col_and_row(page, catalogue_nm)
     if row_idx is None or int(row_idx) < 0:
-        on_status(f"  Not found in STE_Description: '{catalogue_nm}'")
-        return False
+        # Fallback: just take the first row if description filter returned results
+        if row_count > 0:
+            row_idx = 0
+            on_status(f"  STE_Description match failed — using first row")
+        else:
+            on_status(f"  No rows for '{catalogue_nm}'")
+            return False
 
     row_idx = int(row_idx)
-    on_status(f"  Row {row_idx}: {catalogue_nm}")
+    on_status(f"  Clicking row {row_idx}")
 
     # ── Click row (opens create-stock sidebar) ────────────────────────────
     page.locator("table tbody tr").nth(row_idx).click()
@@ -1037,7 +1058,7 @@ def _add_one_product(
         on_status("  Sidebar did not open — #btn_company_product_add_stock_form not found")
         return False
 
-    # ── Fill sidebar form and submit ─────────────────────────────────────
+    # ── Fill sidebar form and submit ──────────────────────────────────────
     return _fill_sidebar_and_create(page, nu_length, nu_bunches, mny_rate, on_status)
 
 

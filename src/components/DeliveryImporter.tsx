@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { translations, Lang } from "@/lib/i18n";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
@@ -82,6 +82,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [addLogs, setAddLogs] = useState<string[]>([]);
   const [addResult, setAddResult] = useState<{ ok: boolean; lines_added: number; lines_skipped: number; lines_failed: number; message: string; details: { product: string; status: string }[] } | null>(null);
   const addLogsEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll add-products log to bottom whenever a new line arrives
+  useEffect(() => {
+    addLogsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [addLogs]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const addLog = useCallback((msg: string) => {
@@ -557,10 +562,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       ))}
                     </div>
                   )}
-                  <details className="mt-2 text-xs">
-                    <summary className="cursor-pointer text-ink-3 hover:text-ink">Show log ({addLogs.length})</summary>
-                    <div className="mt-1 bg-muted rounded-xl p-2 max-h-40 overflow-y-auto font-mono space-y-0.5">
-                      {addLogs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
+                  <details className="mt-3 text-xs">
+                    <summary className="cursor-pointer text-ink-3 hover:text-ink">Pełny log ({addLogs.length} linii)</summary>
+                    <div className="mt-1 bg-muted rounded-xl p-2 max-h-64 overflow-y-auto font-mono space-y-0.5">
+                      {addLogs.map((l, i) => (
+                        <div key={i} className={l.startsWith("  ✓") ? "text-emerald" : l.startsWith("  ✗") ? "text-red-400" : "text-ink-3"}>{l}</div>
+                      ))}
                     </div>
                   </details>
                 </div>
@@ -632,7 +639,7 @@ function ProgressLog({ title, logs, logsEndRef }: {
         </svg>
         <span className="text-sm font-semibold text-ink">{title}</span>
       </div>
-      <div className="bg-muted rounded-2xl p-4 h-48 overflow-y-auto font-mono text-xs space-y-0.5">
+      <div className="bg-muted rounded-2xl p-4 h-72 overflow-y-auto font-mono text-xs space-y-0.5">
         {logs.map((l, i) => (
           <div key={i} className={`${l.startsWith("  ⚠") || l.startsWith("Error") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}>
             {l}
