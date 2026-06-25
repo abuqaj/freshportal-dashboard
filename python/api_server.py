@@ -1703,13 +1703,13 @@ def get_ecuador_cfg() -> Config:
 
 class DeliveryParseRequest(BaseModel):
     raw_json: dict
-    supplier_id: str = "27"
+    supplier_id: str = ""
     with_matching: bool = True
 
 
 class DeliveryCreateRequest(BaseModel):
     order: dict
-    supplier_id: str = "27"
+    supplier_id: str = ""
     supplier_fp_id: str = ""
     lang: str = "en"
 
@@ -1736,13 +1736,24 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permissi
 
         log.info("[delivery/parse] parsed %d order(s), loading catalogue…", len(orders))
 
+        # Resolve supplier_id from the parsed order's company name.
+        # This ensures we never rely on a hardcoded value from the UI.
+        fp_url = get_ecuador_cfg().freshportal_url
+        supplier_id = req.supplier_id
+        if orders:
+            resolved = find_supplier_fp_id(fp_url, orders[0].tx_company)
+            if resolved:
+                supplier_id = resolved
+                log.info("[delivery/parse] resolved supplier_id=%s from tx_company=%r", supplier_id, orders[0].tx_company)
+            elif not supplier_id:
+                log.warning("[delivery/parse] could not resolve supplier from tx_company=%r", orders[0].tx_company)
+
         catalogue = []
         cached_matches: dict = {}
-        if req.with_matching:
-            catalogue = get_catalogue(req.supplier_id)
-            fp_url = get_ecuador_cfg().freshportal_url
-            cached_matches = get_delivery_matches(fp_url, req.supplier_id)
-            log.info("[delivery/parse] catalogue=%d items, cached_matches=%d", len(catalogue), len(cached_matches))
+        if req.with_matching and supplier_id:
+            catalogue = get_catalogue(supplier_id)
+            cached_matches = get_delivery_matches(fp_url, supplier_id)
+            log.info("[delivery/parse] supplier=%s catalogue=%d items, cached_matches=%d", supplier_id, len(catalogue), len(cached_matches))
 
         matched_count = 0
         unmatched_count = 0
@@ -1771,10 +1782,9 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permissi
                     unmatched_count += 1
             result_orders.append(d)
 
-        if new_matches and req.with_matching:
+        if new_matches and req.with_matching and supplier_id:
             try:
-                fp_url = get_ecuador_cfg().freshportal_url
-                save_delivery_matches(fp_url, req.supplier_id, new_matches)
+                save_delivery_matches(fp_url, supplier_id, new_matches)
                 log.info("[delivery/parse] saved %d new matches", len(new_matches))
             except Exception as exc:
                 log.warning("[delivery/parse] save_delivery_matches failed (non-fatal): %s", exc)
@@ -1782,6 +1792,7 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permissi
         log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
         return {
             "orders": result_orders,
+            "supplier_id": supplier_id,
             "catalogue_count": len(catalogue),
             "matched_count": matched_count,
             "unmatched_count": unmatched_count,
@@ -1927,7 +1938,7 @@ def delivery_catalogue_get(
 
 class BatchCreateRequest(BaseModel):
     order: dict
-    supplier_id: str = "27"
+    supplier_id: str = ""
     supplier_fp_id: str = ""
 
 

@@ -45,6 +45,7 @@ interface DeliveryOrder {
 
 interface ParseResult {
   orders: DeliveryOrder[];
+  supplier_id: string;
   catalogue_count: number;
   matched_count: number;
   unmatched_count: number;
@@ -147,7 +148,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const res = await fetch(`${RAILWAY}/delivery/parse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw_json: body, supplier_id: "27", with_matching: true }),
+        body: JSON.stringify({ raw_json: body, with_matching: true }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data: ParseResult = await res.json();
@@ -254,7 +255,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const res = await fetch(`${RAILWAY}/delivery/create-batch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ order, supplier_id: "27" }),
+      body: JSON.stringify({ order }),
     });
 
     if (!res.ok || !res.body) {
