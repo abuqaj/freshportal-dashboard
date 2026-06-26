@@ -1107,8 +1107,10 @@ def _add_one_product(
     from db import get_fust_id_for_box
 
     # ── Navigate to filtered stock page ──────────────────────────────────
-    # Strip special chars that confuse FP server-side filtering (+, !, ', etc.)
-    search_nm = re.sub(r"[+!\'\"\(\)&]", "", catalogue_nm).strip()
+    # Strip chars that confuse FP server-side filtering.
+    # + → treated as space by some servers, causing too many results.
+    # ' → must NOT be stripped; FP searches correctly with %27 (urllib encodes it).
+    search_nm = re.sub(r"[+!\"\(\)&]", "", catalogue_nm).strip()
     desc_encoded = urllib.parse.quote(search_nm)
     search_url = (
         f"{cfg.freshportal_url}/company_product_add_stock/index/index/"
