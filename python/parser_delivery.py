@@ -342,13 +342,18 @@ def match_line_to_catalogue(
     if e:
         return e["fp_product_id"], "variety_anylength", e.get("nm_product") or ""
 
-    # 2. Floricode / VBN — guard with min variety similarity to reject catalogue
-    #    entries whose floricode matches but whose variety name is unrelated.
-    #    (Floricodes in delivery JSONs are sometimes wrong or map to wrong products.)
+    # 2. Floricode / VBN — guard: at least one word must overlap between the
+    #    delivery variety and the catalogue entry's extracted variety.
+    #    Floricodes in delivery JSONs are sometimes wrong/stale and would
+    #    otherwise produce absurd matches (e.g. "Powder Puff" → "Deep Purple").
     if line.id_floricode:
+        first = _norm(variety).split()
+        d_w = set((_extract_variety(variety) if first and first[0] in _GENERA
+                   else _norm(variety)).split())
         for e in catalogue:
             if e.get("id_floricode") == line.id_floricode:
-                if _variety_sim(variety, e.get("nm_product") or "") >= 0.40:
+                c_w = set(_extract_variety(e.get("nm_product") or "").split())
+                if d_w and c_w and d_w & c_w:
                     return e["fp_product_id"], "floricode", e.get("nm_product") or ""
 
     # 3. Fuzzy match (sim ≥ 0.80)
