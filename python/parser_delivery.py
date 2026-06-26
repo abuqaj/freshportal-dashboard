@@ -288,15 +288,20 @@ def _variety_sim(delivery_variety: str, catalogue_nm_product: str) -> float:
     if d_words and d_words == c_words:
         return 1.0
 
-    # Apostrophe-space mismatch: delivery "O Hara" vs catalogue "ohara" (apostrophe
-    # stripped by _norm turns "O'Hara" into one token).  Check if the space-free
-    # version of d matches any single word in c_words.
-    # Guard: only when d is multi-word — for single words d_nospace == d which
-    # would falsely match "shimmer" inside {"cream","shimmer"}.
-    if " " in d:
-        d_nospace = d.replace(" ", "")
-        if len(d_nospace) > 2 and d_nospace in c_words:
-            return 1.0
+    # Space-removal exact match (handles apostrophe/hyphen space mismatches):
+    #   "O Hara"    (d) vs "ohara"      (cat_var) → d_nospace == cat_nospace ✓
+    #   "Carpediem" (d) vs "carpe diem" (cat_var) → d_nospace == cat_nospace ✓
+    # Guard: only when d and cat_var differ in space structure but are otherwise
+    # the same characters (not a subset like "shimmer" vs "cream shimmer").
+    d_nospace = d.replace(" ", "")
+    cat_nospace = cat_var.replace(" ", "")
+    if len(d_nospace) > 2 and d_nospace == cat_nospace:
+        return 1.0
+    # Also: multi-word d collapses to a single word found in c_words
+    # ("O Hara" → "ohara" ∈ {"pink","ohara"}).  Not for single-word d to avoid
+    # "shimmer" falsely matching {"cream","shimmer"}.
+    if " " in d and d_nospace in c_words:
+        return 1.0
 
     # Subset match scores just below 1.0 so an exact match always wins.
     # e.g. "Shimmer" ⊂ "Cream Shimmer" → 0.95, but "Shimmer"=="Shimmer" → 1.0
