@@ -273,8 +273,15 @@ def _variety_sim(delivery_variety: str, catalogue_nm_product: str) -> float:
 
     if d_words and d_words == c_words:
         return 1.0
-    # Subset match (delivery words ⊂ catalogue variety) scores just below 1.0
-    # so that an exact match always wins over a partial match.
+
+    # Apostrophe-space mismatch: delivery "O Hara" vs catalogue "ohara" (apostrophe
+    # stripped by _norm turns "O'Hara" into one token).  Check if the space-free
+    # version of d matches any single word in c_words.
+    d_nospace = d.replace(" ", "")
+    if len(d_nospace) > 2 and d_nospace in c_words:
+        return 1.0
+
+    # Subset match scores just below 1.0 so an exact match always wins.
     # e.g. "Shimmer" ⊂ "Cream Shimmer" → 0.95, but "Shimmer"=="Shimmer" → 1.0
     if d_words and d_words.issubset(c_words):
         return 0.95
