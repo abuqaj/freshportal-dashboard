@@ -22,6 +22,10 @@ class DeliveryLine:
     # Box code: HB (or original tp_box) for single-variety boxes;
     # MB1, MB2 … for mix-box products (sequential within the invoice)
     nm_box: str = ""
+    # Number of physical boxes merged into this line (≥1).
+    # Two boxes of the same product with the same box type share one DeliveryLine
+    # but each box must become a separate FP stock entry.
+    nu_physical_boxes: int = 1
     # Filled after catalogue matching
     fp_product_id: str = ""
     match_method: str = "none"
@@ -91,6 +95,10 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
                 if (p.get("gu_product") or "").strip()
             }
 
+            # Track which keys are first seen in this physical box.
+            # Used to increment nu_physical_boxes exactly once per box.
+            keys_new_in_this_box: set[str] = set()
+
             if len(unique_guids) > 1:
                 # Mix box — one line per product inside the box, all labeled MBn.
                 mix_box_counter += 1
@@ -110,6 +118,8 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
 
                     if key in merged:
                         merged[key].nu_bunches += nu_bunches
+                        if key not in keys_new_in_this_box:
+                            merged[key].nu_physical_boxes += 1
                     else:
                         merged[key] = DeliveryLine(
                             gu_product=gu,
@@ -123,6 +133,7 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=box_code,
                         )
+                    keys_new_in_this_box.add(key)
             else:
                 # Single-variety box — aggregate by gu_product + box_type.
                 # Different box types (HBE vs QBE) stay as separate lines.
@@ -138,6 +149,8 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
 
                     if key in merged:
                         merged[key].nu_bunches += nu_bunches
+                        if key not in keys_new_in_this_box:
+                            merged[key].nu_physical_boxes += 1
                     else:
                         merged[key] = DeliveryLine(
                             gu_product=gu,
@@ -151,6 +164,7 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=tp_box,
                         )
+                    keys_new_in_this_box.add(key)
 
         lines = sorted(
             merged.values(),
@@ -206,7 +220,7 @@ def _norm(s: str) -> str:
     # strip diacritics: crème → creme, ñ → n, etc.
     s = _ud.normalize("NFD", s)
     s = "".join(c for c in s if _ud.category(c) != "Mn")
-    s = _re.sub(r"[-.'`]", "", s)
+    s = _re.sub(r"[-.'`+]", "", s)
     s = _re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -277,9 +291,12 @@ def _variety_sim(delivery_variety: str, catalogue_nm_product: str) -> float:
     # Apostrophe-space mismatch: delivery "O Hara" vs catalogue "ohara" (apostrophe
     # stripped by _norm turns "O'Hara" into one token).  Check if the space-free
     # version of d matches any single word in c_words.
-    d_nospace = d.replace(" ", "")
-    if len(d_nospace) > 2 and d_nospace in c_words:
-        return 1.0
+    # Guard: only when d is multi-word — for single words d_nospace == d which
+    # would falsely match "shimmer" inside {"cream","shimmer"}.
+    if " " in d:
+        d_nospace = d.replace(" ", "")
+        if len(d_nospace) > 2 and d_nospace in c_words:
+            return 1.0
 
     # Subset match scores just below 1.0 so an exact match always wins.
     # e.g. "Shimmer" ⊂ "Cream Shimmer" → 0.95, but "Shimmer"=="Shimmer" → 1.0
@@ -414,6 +431,7 @@ def order_to_dict(order: DeliveryOrder) -> dict:
                 "id_floricode": l.id_floricode,
                 "nm_product": l.nm_product,
                 "nm_box": l.nm_box,
+                "nu_physical_boxes": l.nu_physical_boxes,
                 "fp_product_id": l.fp_product_id,
                 "match_method": l.match_method,
                 "catalogue_nm_product": l.catalogue_nm_product,

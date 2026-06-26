@@ -968,22 +968,22 @@ def _fill_sidebar_and_create(
     nu_length: int,
     nu_stems_bunch: int,
     nu_bunches: int,
+    nu_physical_boxes: int,
     mny_rate: str,
     fust_id: str,
     on_status: Callable[[str], None],
 ) -> bool:
     """Fill the create-stock sidebar and click #btn_company_product_add_stock_form.
 
-    Quantity logic (as expected by FreshPortal):
-      quantity_adjustable          = 1                          (boxes/packs)
-      quantity_per_pack_adjustable = nu_stems_bunch * nu_bunches  (total stems)
+    Quantity logic:
+      quantity_adjustable          = nu_physical_boxes  (one FP entry per physical box)
+      quantity_per_pack_adjustable = (nu_bunches / nu_physical_boxes) * nu_stems_bunch
       stems_per_bunch_adjustable   = nu_stems_bunch
     """
     field_names = _inspect_sidebar_inputs(page)
     on_status(f"  Sidebar inputs: {field_names}")
 
     p = _FORM_PREFIX
-    qty_per_pack = nu_stems_bunch * nu_bunches
     filled: list[str] = []
 
     # ── Length ───────────────────────────────────────────────────────────
@@ -997,19 +997,21 @@ def _fill_sidebar_and_create(
             time.sleep(0.2)
         filled.append(f"length={nu_length}")
 
-    # ── Quantity per pack (total stems) ──────────────────────────────────
+    # ── Quantity per pack (stems per physical box) ────────────────────────
+    bunches_per_box = max(1, nu_bunches // max(1, nu_physical_boxes))
+    qty_per_pack = bunches_per_box * nu_stems_bunch
     inp = page.locator(f"input[name='{p}quantity_per_pack_adjustable']")
     if inp.count() > 0:
         inp.first.fill(str(qty_per_pack))
         inp.first.dispatch_event("change")
         filled.append(f"qty_per_pack={qty_per_pack}")
 
-    # ── Quantity (number of boxes = 1) ───────────────────────────────────
+    # ── Quantity (number of physical boxes) ──────────────────────────────
     inp = page.locator(f"input[name='{p}quantity_adjustable']")
     if inp.count() > 0:
-        inp.first.fill("1")
+        inp.first.fill(str(nu_physical_boxes))
         inp.first.dispatch_event("change")
-        filled.append("quantity=1")
+        filled.append(f"quantity={nu_physical_boxes}")
 
     # ── Stems per bunch ──────────────────────────────────────────────────
     inp = page.locator(f"input[name='{p}stems_per_bunch_adjustable']")
@@ -1091,6 +1093,7 @@ def _add_one_product(
     nu_length: int,
     nu_stems_bunch: int,
     nu_bunches: int,
+    nu_physical_boxes: int,
     mny_rate: str,
     nm_box: str,
     on_status: Callable[[str], None],
@@ -1160,7 +1163,7 @@ def _add_one_product(
 
     # ── Fill form + click submit ──────────────────────────────────────────
     return _fill_sidebar_and_create(
-        page, nu_length, nu_stems_bunch, nu_bunches, mny_rate, fust_id, on_status,
+        page, nu_length, nu_stems_bunch, nu_bunches, nu_physical_boxes, mny_rate, fust_id, on_status,
     )
 
 
@@ -1257,8 +1260,11 @@ def add_products_to_batch(
                 nu_length = int(line.get("nu_length") or 0)
                 nu_stems_bunch = int(line.get("nu_stems_bunch") or 0)
                 nu_bunches = int(line.get("nu_bunches") or 0)
+                nu_physical_boxes = int(line.get("nu_physical_boxes") or 1)
                 mny_rate = str(line.get("mny_rate_stem", ""))
                 nm_box = str(line.get("nm_box") or "")
+
+
 
                 _s(
                     f"\n[{i}/{len(lines_to_add)}] {catalogue_nm} {nu_length}cm "
@@ -1270,7 +1276,7 @@ def add_products_to_batch(
                     ok = _add_one_product(
                         page, cfg, batch_id,
                         catalogue_nm, nu_length, nu_stems_bunch,
-                        nu_bunches, mny_rate, nm_box, _s,
+                        nu_bunches, nu_physical_boxes, mny_rate, nm_box, _s,
                     )
                 except Exception as exc:
                     err = str(exc)
