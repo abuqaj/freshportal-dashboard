@@ -24,6 +24,7 @@ interface DeliveryLine {
   id_floricode: string;
   nm_product: string;
   nm_box: string;
+  nu_physical_boxes: number;
   fp_product_id: string;
   match_method: MatchMethod;
   catalogue_nm_product: string;
