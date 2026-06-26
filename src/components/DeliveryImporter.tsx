@@ -521,7 +521,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
-                  {[td.colVariety, td.colBox, td.colBoxQty, td.colLength, td.colStemsBunch, td.colBunches, td.colStemsTotal, td.colPrice, td.colTotal, td.colMatch].map(h => (
+                  {[td.colVariety, td.colBox, td.colBoxQty, td.colContent, td.colLength, td.colStemsBunch, td.colBunches, td.colStemsTotal, td.colPrice, td.colTotal, td.colMatch].map(h => (
                     <th key={h} className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -556,6 +556,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         ) : (
                           <span className="text-ink-3">{line.nu_physical_boxes ?? 1}</span>
                         )}
+                      </td>
+                      <td className="px-3 py-2 text-ink-3 text-center">
+                        {Math.floor(line.nu_bunches / Math.max(1, line.nu_physical_boxes ?? 1)) * line.nu_stems_bunch}
                       </td>
                       <td className="px-3 py-2 text-ink-3">{line.nu_length > 0 ? `${line.nu_length}cm` : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.nu_stems_bunch || "—"}</td>
