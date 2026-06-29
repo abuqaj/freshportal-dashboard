@@ -41,7 +41,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                get_supplier_meta_one,
                upsert_suppliers, get_suppliers, get_suppliers_count,
                find_supplier_fp_id,
-               get_delivery_matches, save_delivery_matches,
+               get_delivery_matches, save_delivery_matches, approve_delivery_matches,
                set_delivery_match, delete_delivery_match, clear_delivery_matches,
                upsert_fust_entries, get_all_fust, get_fust_count)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
@@ -1782,22 +1782,21 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permissi
                     unmatched_count += 1
             result_orders.append(d)
 
-        if new_matches and req.with_matching and supplier_id:
-            try:
-                save_delivery_matches(fp_url, supplier_id, new_matches)
-                log.info("[delivery/parse] saved %d new matches", len(new_matches))
-            except Exception as exc:
-                log.warning("[delivery/parse] save_delivery_matches failed (non-fatal): %s", exc)
-
         log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
+        # Catalogue sent to frontend for inline-edit search (fp_product_id + nm_product only)
+        catalogue_slim = [
+            {"fp_product_id": e["fp_product_id"], "nm_product": e.get("nm_product") or ""}
+            for e in catalogue
+            if e.get("fp_product_id") and e.get("nm_product")
+        ]
         return {
             "orders": result_orders,
             "supplier_id": supplier_id,
             "catalogue_count": len(catalogue),
+            "catalogue": catalogue_slim,
             "matched_count": matched_count,
             "unmatched_count": unmatched_count,
             "cached_matches_used": len(cached_matches),
-            "new_matches_saved": len(new_matches),
         }
     except HTTPException:
         raise
@@ -2339,6 +2338,27 @@ def catalogue_set_match(
     set_delivery_match(fp_url, supplier_id, req.delivery_key,
                        req.nm_variety, req.nu_length, req.fp_product_id, req.nm_product)
     return {"ok": True}
+
+
+class ApproveMatchesRequest(BaseModel):
+    matches: list[dict]  # [{delivery_key, nm_variety, nu_length, id_floricode, fp_product_id, nm_product, match_type}]
+
+
+@app.post("/catalogue/{supplier_id}/matches/approve")
+def catalogue_approve_matches(
+    supplier_id: str,
+    req: ApproveMatchesRequest,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Save a batch of user-approved delivery→product matches to cache.
+
+    Called after user reviews the preview table and approves individual rows or
+    after a successful add-products import. Approved matches are used as cache
+    hits in future parses (shown with 'cached' badge, skip algorithm).
+    """
+    fp_url = get_ecuador_cfg().freshportal_url
+    saved = save_delivery_matches(fp_url, supplier_id, req.matches, approved=True)
+    return {"saved": saved}
 
 
 @app.delete("/catalogue/{supplier_id}/matches")

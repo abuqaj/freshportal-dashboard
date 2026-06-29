@@ -9,7 +9,13 @@ type MatchMethod =
   | "variety_length" | "variety_nolen" | "variety_anylength"
   | "floricode"
   | "fuzzy_variety" | "fuzzy_variety_nolen" | "fuzzy_nolen" | "fuzzy_anylength"
+  | "cached"
   | "none";
+
+interface CatalogueProduct {
+  fp_product_id: string;
+  nm_product: string;
+}
 
 interface DeliveryLine {
   gu_product: string;
@@ -48,6 +54,7 @@ interface ParseResult {
   orders: DeliveryOrder[];
   supplier_id: string;
   catalogue_count: number;
+  catalogue: CatalogueProduct[];
   matched_count: number;
   unmatched_count: number;
 }
@@ -63,6 +70,7 @@ const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   fuzzy_variety_nolen:  { label: "fuzzy~len",    cls: "bg-amber-500/10 text-amber-600 border-amber-500/15" },
   fuzzy_nolen:          { label: "fuzzy~",       cls: "bg-orange-500/15 text-orange-600 border-orange-500/20" },
   fuzzy_anylength:      { label: "fuzzy~len",    cls: "bg-orange-500/10 text-orange-600 border-orange-500/15" },
+  cached:               { label: "cached ✓",     cls: "bg-green-500/15 text-green-700 border-green-500/25" },
   none:                 { label: "no match",     cls: "bg-red-500/10 text-red-500 border-red-500/20" },
 };
 
@@ -122,6 +130,19 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [addResult, setAddResult] = useState<{ ok: boolean; lines_added: number; lines_skipped: number; lines_failed: number; message: string; details: { product: string; status: string }[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── Match approval & inline edit ──────────────────────────────────────────
+  const [approvedKeys, setApprovedKeys] = useState<Set<string>>(new Set());
+  const [lineEdits, setLineEdits] = useState<Record<string, { fp_product_id: string; catalogue_nm_product: string }>>({});
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editSearch, setEditSearch] = useState("");
+  const [savingApproved, setSavingApproved] = useState(false);
+  const [showCacheManager, setShowCacheManager] = useState(false);
+  const [cachedMatchesList, setCachedMatchesList] = useState<Array<{ delivery_key: string; nm_variety: string; nm_product: string; match_type: string; approved: boolean }>>([]);
+
+  function deliveryKey(line: DeliveryLine): string {
+    return `${(line.nm_variety ?? "").toLowerCase().trim()}|${line.nu_length || ""}`;
+  }
+
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev, msg]);
   }, []);
@@ -175,6 +196,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setParseResult(data);
       setCatalogueCount(data.catalogue_count);
       setActiveOrderIdx(0);
+      setLineEdits({});
+      setEditingKey(null);
+      // Pre-approve lines that are already cached from DB
+      const preApproved = new Set<string>();
+      for (const order of data.orders) {
+        for (const line of order.lines) {
+          if (line.match_method === "cached") preApproved.add(deliveryKey(line));
+        }
+      }
+      setApprovedKeys(preApproved);
       setStage("preview");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -312,6 +343,41 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     }
   }
 
+  async function handleApproveMatches(keys?: Set<string>) {
+    if (!parseResult) return;
+    const supplierId = parseResult.supplier_id;
+    if (!supplierId) return;
+    const order = parseResult.orders[activeOrderIdx];
+    if (!order) return;
+    const keysToSave = keys ?? approvedKeys;
+    const matches = order.lines
+      .filter(line => line.fp_product_id && keysToSave.has(deliveryKey(line)))
+      .map(line => {
+        const dk = deliveryKey(line);
+        const edit = lineEdits[dk];
+        return {
+          delivery_key:         dk,
+          nm_variety:           line.nm_variety,
+          nu_length:            line.nu_length,
+          id_floricode:         line.id_floricode,
+          fp_product_id:        edit?.fp_product_id ?? line.fp_product_id,
+          nm_product:           edit?.catalogue_nm_product ?? line.catalogue_nm_product,
+          match_type:           line.match_method === "cached" ? "cached" : "approved",
+        };
+      });
+    if (!matches.length) return;
+    setSavingApproved(true);
+    try {
+      await fetch(`${RAILWAY}/catalogue/${supplierId}/matches/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ matches }),
+      });
+    } finally {
+      setSavingApproved(false);
+    }
+  }
+
   async function handleAddProducts() {
     if (!importResult?.batch_id || !parseResult) return;
     const order = parseResult.orders[activeOrderIdx];
@@ -321,10 +387,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setAddLogs([]);
     setAddResult(null);
 
+    // Build order with any inline edits applied
+    const orderWithEdits = {
+      ...order,
+      lines: order.lines.map(line => {
+        const dk = deliveryKey(line);
+        const edit = lineEdits[dk];
+        if (!edit) return line;
+        return { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product };
+      }),
+    };
+
     const res = await fetch(`${RAILWAY}/delivery/add-products`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ batch_id: importResult.batch_id, order }),
+      body: JSON.stringify({ batch_id: importResult.batch_id, order: orderWithEdits }),
     });
 
     if (!res.ok || !res.body) {
@@ -351,6 +428,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           if (ev.type === "result") {
             setAddResult(ev.data);
             setAddStage("done");
+            // Auto-approve all matched lines after successful import
+            const allMatchedKeys = new Set(
+              orderWithEdits.lines
+                .filter(l => l.fp_product_id)
+                .map(l => deliveryKey(l))
+            );
+            handleApproveMatches(allMatchedKeys);
           }
           if (ev.type === "error") {
             setAddLogs(prev => [...prev, `Error: ${ev.message}`]);
@@ -359,6 +443,26 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         } catch {}
       }
     }
+  }
+
+  async function loadCacheManager() {
+    const supplierId = parseResult?.supplier_id;
+    if (!supplierId) return;
+    try {
+      const res = await fetch(`${RAILWAY}/catalogue/${supplierId}/matches`);
+      if (res.ok) {
+        const data = await res.json();
+        setCachedMatchesList(data.matches ?? []);
+        setShowCacheManager(true);
+      }
+    } catch {}
+  }
+
+  async function deleteCachedMatch(dk: string) {
+    const supplierId = parseResult?.supplier_id;
+    if (!supplierId) return;
+    await fetch(`${RAILWAY}/catalogue/${supplierId}/matches/${encodeURIComponent(dk)}`, { method: "DELETE" });
+    setCachedMatchesList(prev => prev.filter(m => m.delivery_key !== dk));
   }
 
   function reset() {
@@ -371,6 +475,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setAddStage("idle");
     setAddLogs([]);
     setAddResult(null);
+    setApprovedKeys(new Set());
+    setLineEdits({});
+    setEditingKey(null);
+    setShowCacheManager(false);
+    setCachedMatchesList([]);
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -516,11 +625,47 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </p>
           )}
 
+          {/* Approve toolbar */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-ink-3">
+              {approvedKeys.size} / {order.lines.filter(l => l.fp_product_id).length} zatwierdzone
+            </span>
+            <button
+              onClick={() => {
+                const all = new Set(order.lines.filter(l => l.fp_product_id).map(l => deliveryKey(l)));
+                setApprovedKeys(all);
+              }}
+              className="h-6 px-2 rounded-md text-[11px] border border-emerald/40 text-emerald hover:bg-emerald/8 transition-colors"
+            >
+              Zatwierdź wszystkie
+            </button>
+            <button
+              onClick={() => setApprovedKeys(new Set())}
+              className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink transition-colors"
+            >
+              Odznacz wszystkie
+            </button>
+            <button
+              onClick={() => handleApproveMatches()}
+              disabled={approvedKeys.size === 0 || savingApproved}
+              className="h-6 px-3 rounded-md text-[11px] font-semibold border border-green-500/40 text-green-700 bg-green-500/8 hover:bg-green-500/15 disabled:opacity-40 transition-colors"
+            >
+              {savingApproved ? "Zapisuję…" : `Zapisz zatwierdzone (${approvedKeys.size})`}
+            </button>
+            <button
+              onClick={loadCacheManager}
+              className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink ml-auto transition-colors"
+            >
+              Pamięć systemu
+            </button>
+          </div>
+
           {/* Product lines table */}
           <div className="overflow-x-auto overflow-y-auto max-h-[420px] rounded-2xl border border-border">
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
+                  <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8">✓</th>
                   {[td.colVariety, td.colBox, td.colBoxQty, td.colContent, td.colLength, td.colStemsBunch, td.colBunches, td.colStemsTotal, td.colPrice, td.colTotal, td.colMatch].map(h => (
                     <th key={h} className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{h}</th>
                   ))}
@@ -528,14 +673,45 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </thead>
               <tbody>
                 {order.lines.map((line, i) => {
+                  const dk = deliveryKey(line);
+                  const edit = lineEdits[dk];
+                  const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
+                  const isApproved = approvedKeys.has(dk);
+                  const isEditing = editingKey === dk;
+                  const hasMatch = !!line.fp_product_id;
                   const badge = MATCH_BADGE[line.match_method] ?? MATCH_BADGE.none;
+                  const catalogueForSearch = parseResult?.catalogue ?? [];
+                  const searchResults = isEditing && editSearch.length >= 2
+                    ? catalogueForSearch.filter(p =>
+                        p.nm_product.toLowerCase().includes(editSearch.toLowerCase())
+                      ).slice(0, 8)
+                    : [];
+
                   return (
                     <tr key={i} className={`border-b border-border/60 transition-colors hover:bg-muted/50
-                      ${line.match_method === "none" ? "opacity-60" : ""}`}>
+                      ${line.match_method === "none" ? "opacity-60" : ""}
+                      ${isApproved ? "bg-green-500/5" : ""}`}>
+                      {/* Approve checkbox */}
+                      <td className="px-2 py-2 text-center">
+                        {hasMatch && (
+                          <input
+                            type="checkbox"
+                            checked={isApproved}
+                            onChange={e => {
+                              setApprovedKeys(prev => {
+                                const next = new Set(prev);
+                                if (e.target.checked) next.add(dk); else next.delete(dk);
+                                return next;
+                              });
+                            }}
+                            className="w-3.5 h-3.5 accent-emerald cursor-pointer"
+                          />
+                        )}
+                      </td>
                       <td className="px-3 py-2 font-medium text-ink">
                         {line.nm_variety}
-                        {line.catalogue_nm_product && line.catalogue_nm_product !== line.nm_variety && (
-                          <div className="text-ink-3 font-normal">{line.catalogue_nm_product}</div>
+                        {displayCatName && displayCatName !== line.nm_variety && (
+                          <div className="text-ink-3 font-normal">{displayCatName}</div>
                         )}
                       </td>
                       <td className="px-3 py-2">
@@ -566,10 +742,57 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       <td className="px-3 py-2 text-ink-3">{line.nu_stems_total > 0 ? line.nu_stems_total.toLocaleString() : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.mny_rate_stem > 0 ? `€${line.mny_rate_stem.toFixed(4)}` : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.mny_total > 0 ? `€${line.mny_total.toFixed(2)}` : "—"}</td>
+                      {/* Match badge + inline edit */}
                       <td className="px-3 py-2">
-                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium ${badge.cls}`}>
-                          {badge.label}
-                        </span>
+                        {isEditing ? (
+                          <div className="relative">
+                            <input
+                              autoFocus
+                              value={editSearch}
+                              onChange={e => setEditSearch(e.target.value)}
+                              onKeyDown={e => { if (e.key === "Escape") { setEditingKey(null); setEditSearch(""); } }}
+                              placeholder="Szukaj produktu…"
+                              className="w-48 px-2 py-1 text-[11px] border border-emerald/50 rounded-md bg-background outline-none"
+                            />
+                            {searchResults.length > 0 && (
+                              <div className="absolute left-0 top-full mt-1 z-50 w-72 bg-background border border-border rounded-xl shadow-lg overflow-hidden">
+                                {searchResults.map(p => (
+                                  <button
+                                    key={p.fp_product_id}
+                                    onClick={() => {
+                                      setLineEdits(prev => ({ ...prev, [dk]: { fp_product_id: p.fp_product_id, catalogue_nm_product: p.nm_product } }));
+                                      setApprovedKeys(prev => { const n = new Set(prev); n.add(dk); return n; });
+                                      setEditingKey(null);
+                                      setEditSearch("");
+                                    }}
+                                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-muted border-b border-border/50 last:border-0 truncate"
+                                  >
+                                    {p.nm_product}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            <button onClick={() => { setEditingKey(null); setEditSearch(""); }} className="ml-1 text-ink-3 hover:text-ink text-[11px]">✕</button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium ${badge.cls}`}>
+                              {badge.label}
+                            </span>
+                            {hasMatch && (
+                              <button
+                                onClick={() => { setEditingKey(dk); setEditSearch(""); }}
+                                title="Zmień dopasowanie"
+                                className="text-ink-3 hover:text-ink opacity-50 hover:opacity-100 transition-opacity"
+                              >
+                                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -577,6 +800,54 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </tbody>
             </table>
           </div>
+
+          {/* Cache manager panel */}
+          {showCacheManager && (
+            <div className="rounded-2xl border border-border bg-muted/40 p-4 flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-ink">Pamięć systemu ({cachedMatchesList.length} wpisów)</span>
+                <button onClick={() => setShowCacheManager(false)} className="text-xs text-ink-3 hover:text-ink">Zamknij ✕</button>
+              </div>
+              {cachedMatchesList.length === 0 ? (
+                <p className="text-xs text-ink-3">Brak zapisanych dopasowań.</p>
+              ) : (
+                <div className="overflow-y-auto max-h-64 rounded-xl border border-border bg-background">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-muted">
+                      <tr className="border-b border-border">
+                        <th className="px-3 py-1.5 text-left text-ink-3 font-semibold">Odmiana</th>
+                        <th className="px-3 py-1.5 text-left text-ink-3 font-semibold">Produkt FP</th>
+                        <th className="px-3 py-1.5 text-left text-ink-3 font-semibold">Typ</th>
+                        <th className="px-3 py-1.5 text-center text-ink-3 font-semibold">Zatw.</th>
+                        <th className="px-1 py-1.5"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cachedMatchesList.map(m => (
+                        <tr key={m.delivery_key} className="border-b border-border/60 hover:bg-muted/50">
+                          <td className="px-3 py-1.5 font-mono text-ink-3">{m.nm_variety || m.delivery_key}</td>
+                          <td className="px-3 py-1.5 text-ink">{m.nm_product || "—"}</td>
+                          <td className="px-3 py-1.5 text-ink-3">{m.match_type}</td>
+                          <td className="px-3 py-1.5 text-center">{m.approved ? "✓" : "—"}</td>
+                          <td className="px-1 py-1.5">
+                            <button
+                              onClick={() => deleteCachedMatch(m.delivery_key)}
+                              title="Usuń z pamięci"
+                              className="text-red-400 hover:text-red-600 transition-colors"
+                            >
+                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
+                              </svg>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Actions */}
           <div className="flex gap-3 justify-end">

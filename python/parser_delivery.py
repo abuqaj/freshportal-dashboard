@@ -332,10 +332,11 @@ def match_line_to_catalogue(
     """
     key = delivery_key(line.nm_variety, line.nu_length)
 
-    # 0. Cache lookup
+    # 0. Cache lookup — only use approved or manual entries as authoritative
     if cached_matches and key in cached_matches:
         m = cached_matches[key]
-        return m["fp_product_id"], m["match_type"], m.get("nm_product") or ""
+        if m.get("approved") or m.get("match_type") == "manual":
+            return m["fp_product_id"], "cached", m.get("nm_product") or ""
 
     variety = (line.nm_variety or "").strip()
 

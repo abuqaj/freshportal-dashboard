@@ -1154,10 +1154,16 @@ def ensure_delivery_product_map() -> None:
                     fp_product_id   TEXT NOT NULL,
                     nm_product      TEXT,
                     match_type      TEXT,
+                    approved        BOOLEAN NOT NULL DEFAULT FALSE,
                     created_at      TIMESTAMPTZ DEFAULT NOW(),
                     updated_at      TIMESTAMPTZ DEFAULT NOW(),
                     PRIMARY KEY (fp_url, fp_supplier_id, delivery_key)
                 )
+            """)
+            # Migration: add approved column to existing tables
+            cur.execute("""
+                ALTER TABLE delivery_product_map
+                ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE
             """)
         conn.commit()
 
@@ -1170,7 +1176,7 @@ def get_delivery_matches(fp_url: str, fp_supplier_id: str) -> dict[str, dict]:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
                     SELECT delivery_key, nm_variety, nu_length, id_floricode,
-                           fp_product_id, nm_product, match_type
+                           fp_product_id, nm_product, match_type, approved
                     FROM delivery_product_map
                     WHERE fp_url = %s AND fp_supplier_id = %s
                 """, (fp_url, fp_supplier_id))
@@ -1179,8 +1185,14 @@ def get_delivery_matches(fp_url: str, fp_supplier_id: str) -> dict[str, dict]:
         return {}
 
 
-def save_delivery_matches(fp_url: str, fp_supplier_id: str, matches: list[dict]) -> int:
-    """Upsert matched delivery lines. Only updates existing cache if match_type != 'manual'."""
+def save_delivery_matches(fp_url: str, fp_supplier_id: str, matches: list[dict],
+                          approved: bool = False) -> int:
+    """Upsert matched delivery lines.
+
+    approved=True marks them as user-confirmed — these are used as cache hits
+    and shown with the 'cached' badge in the UI.
+    Manual overrides (match_type='manual') are never downgraded.
+    """
     if not matches:
         return 0
     ensure_delivery_product_map()
@@ -1195,6 +1207,7 @@ def save_delivery_matches(fp_url: str, fp_supplier_id: str, matches: list[dict])
             m["fp_product_id"],
             m.get("nm_product"),
             m.get("match_type", "auto"),
+            approved,
             now, now,
         )
         for m in matches if m.get("fp_product_id")
@@ -1207,7 +1220,7 @@ def save_delivery_matches(fp_url: str, fp_supplier_id: str, matches: list[dict])
                 INSERT INTO delivery_product_map
                     (fp_url, fp_supplier_id, delivery_key, nm_variety, nu_length,
                      id_floricode, fp_product_id, nm_product, match_type,
-                     created_at, updated_at)
+                     approved, created_at, updated_at)
                 VALUES %s
                 ON CONFLICT (fp_url, fp_supplier_id, delivery_key) DO UPDATE SET
                     fp_product_id = EXCLUDED.fp_product_id,
@@ -1215,16 +1228,40 @@ def save_delivery_matches(fp_url: str, fp_supplier_id: str, matches: list[dict])
                     match_type    = CASE
                         WHEN delivery_product_map.match_type = 'manual' THEN 'manual'
                         ELSE EXCLUDED.match_type END,
+                    approved      = CASE
+                        WHEN delivery_product_map.match_type = 'manual' THEN TRUE
+                        ELSE (delivery_product_map.approved OR EXCLUDED.approved) END,
                     updated_at    = EXCLUDED.updated_at
             """, rows)
         conn.commit()
     return len(rows)
 
 
+def approve_delivery_matches(fp_url: str, fp_supplier_id: str,
+                             delivery_keys: list[str]) -> int:
+    """Mark existing cached matches as approved. Returns number of rows updated."""
+    if not delivery_keys:
+        return 0
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE delivery_product_map
+                    SET approved = TRUE, updated_at = NOW()
+                    WHERE fp_url = %s AND fp_supplier_id = %s
+                      AND delivery_key = ANY(%s)
+                """, (fp_url, fp_supplier_id, delivery_keys))
+                updated = cur.rowcount
+            conn.commit()
+        return updated
+    except Exception:
+        return 0
+
+
 def set_delivery_match(fp_url: str, fp_supplier_id: str, delivery_key: str,
                        nm_variety: str | None, nu_length: int | None,
                        fp_product_id: str, nm_product: str | None) -> None:
-    """Manually override (or create) a single cached match, marked as 'manual'."""
+    """Manually override (or create) a single cached match — always approved."""
     ensure_delivery_product_map()
     now = datetime.now(timezone.utc)
     with _conn() as conn:
@@ -1232,12 +1269,14 @@ def set_delivery_match(fp_url: str, fp_supplier_id: str, delivery_key: str,
             cur.execute("""
                 INSERT INTO delivery_product_map
                     (fp_url, fp_supplier_id, delivery_key, nm_variety, nu_length,
-                     fp_product_id, nm_product, match_type, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'manual', %s, %s)
+                     fp_product_id, nm_product, match_type, approved,
+                     created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'manual', TRUE, %s, %s)
                 ON CONFLICT (fp_url, fp_supplier_id, delivery_key) DO UPDATE SET
                     fp_product_id = EXCLUDED.fp_product_id,
                     nm_product    = EXCLUDED.nm_product,
                     match_type    = 'manual',
+                    approved      = TRUE,
                     updated_at    = EXCLUDED.updated_at
             """, (fp_url, fp_supplier_id, delivery_key, nm_variety, nu_length,
                   fp_product_id, nm_product, now, now))
