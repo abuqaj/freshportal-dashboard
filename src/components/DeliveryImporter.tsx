@@ -220,17 +220,45 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Sync catalogue ──────────────────────────────────────────────────────
 
   async function handleSyncCatalogue() {
-    // Use supplier_id already resolved during parse — no need for a second lookup
-    const supplierId = parseResult?.supplier_id;
     const supplierName = parseResult?.orders[activeOrderIdx]?.tx_company ?? "";
-
-    if (!supplierId) {
-      addLog("Cannot sync — supplier not identified from this delivery.");
-      return;
-    }
+    let supplierId = parseResult?.supplier_id ?? "";
 
     setStage("syncing");
     setLogs([]);
+
+    // If supplier wasn't resolved during parse (e.g. first-time supplier, not yet in DB),
+    // fetch the live supplier list from FreshPortal and match by any significant word
+    if (!supplierId) {
+      addLog("Supplier not in local DB — fetching live supplier list from FreshPortal…");
+      try {
+        const suppRes = await fetch(`${RAILWAY}/catalogue/suppliers?refresh=true`);
+        if (suppRes.ok) {
+          const suppData = await suppRes.json();
+          const list: Array<{ fp_supplier_id: string; nm_supplier: string }> = suppData.suppliers ?? [];
+          // Try each significant word (>3 chars) from the company name
+          const words = supplierName.toUpperCase().split(/\s+/).filter(w => w.length > 3 && !/^(S\.A\.|B\.V\.|LTD|LLC|INC|SRL|NV)$/i.test(w));
+          for (const word of words) {
+            const match = list.find(s => s.nm_supplier.toUpperCase().includes(word));
+            if (match) {
+              supplierId = match.fp_supplier_id;
+              addLog(`Matched to FreshPortal supplier: ${match.nm_supplier} (#${supplierId})`);
+              break;
+            }
+          }
+        }
+      } catch {
+        addLog("Failed to fetch supplier list from FreshPortal.");
+        setStage("preview");
+        return;
+      }
+
+      if (!supplierId) {
+        addLog(`Could not identify a FreshPortal supplier for "${supplierName}". Check the supplier list manually.`);
+        setStage("preview");
+        return;
+      }
+    }
+
     addLog(`Syncing catalogue for ${supplierName} (#${supplierId})…`);
 
     const params = new URLSearchParams({ nm_supplier: supplierName });
@@ -919,9 +947,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </>
           )}
 
-          {/* Actions */}
-          <div className="flex gap-3 justify-end">
-            <button onClick={reset} className="h-9 px-4 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors">
+          {/* Spacer so content isn't hidden behind the fixed action bar */}
+          <div className="h-16" />
+        </div>
+      )}
+
+      {/* Fixed action bar — always visible at bottom-right */}
+      {stage === "preview" && order && (
+        <div className="fixed bottom-0 left-0 right-0 z-30 pointer-events-none flex justify-center">
+          <div className="pointer-events-auto w-full max-w-5xl flex gap-3 justify-end px-6 py-3 bg-surface/90 backdrop-blur border-t border-border">
+            <button onClick={reset} className="h-9 px-4 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors bg-surface">
               {td.startOver}
             </button>
             <button
