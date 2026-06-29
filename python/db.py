@@ -1161,18 +1161,24 @@ def ensure_delivery_product_map() -> None:
                 )
             """)
         conn.commit()
-    # Run migration in a separate transaction so a no-op ALTER doesn't abort the
-    # previous CREATE TABLE commit.
+    # Migration: add approved column if missing (separate transaction for safety)
     try:
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    ALTER TABLE delivery_product_map
-                    ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'delivery_product_map'
+                      AND column_name  = 'approved'
                 """)
+                if not cur.fetchone():
+                    cur.execute("""
+                        ALTER TABLE delivery_product_map
+                        ADD COLUMN approved BOOLEAN NOT NULL DEFAULT FALSE
+                    """)
             conn.commit()
-    except Exception:
-        pass  # column already exists or DB doesn't support IF NOT EXISTS — ignore
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger(__name__).warning("delivery_product_map migration warning: %s", exc)
 
 
 def get_delivery_matches(fp_url: str, fp_supplier_id: str) -> dict[str, dict]:
