@@ -781,7 +781,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
                   return (
                     <tr key={i} className={`border-b border-border/60 transition-colors hover:bg-muted/50
-                      ${line.match_method === "none" ? "opacity-60" : ""}
+                      ${line.match_method === "none" && !isEditing ? "opacity-60" : ""}
                       ${isApproved ? "bg-green-500/5" : ""}`}>
                       {/* Approve checkbox */}
                       <td className="px-2 py-2 text-center">
@@ -871,18 +871,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium ${badge.cls}`}>
                               {badge.label}
                             </span>
-                            {hasMatch && (
-                              <button
-                                onClick={() => { setEditingKey(dk); setEditSearch(""); }}
-                                title="Zmień dopasowanie"
-                                className="text-ink-3 hover:text-ink opacity-50 hover:opacity-100 transition-opacity"
-                              >
-                                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                                </svg>
-                              </button>
-                            )}
+                            <button
+                              onClick={() => { setEditingKey(dk); setEditSearch(""); }}
+                              title={hasMatch ? "Zmień dopasowanie" : "Przypisz produkt z katalogu"}
+                              className={`transition-opacity ${hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
+                            >
+                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                              </svg>
+                            </button>
                           </div>
                         )}
                       </td>
