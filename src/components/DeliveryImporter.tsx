@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useSession } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
@@ -77,8 +78,11 @@ const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
 export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const t = translations[lang];
   const td = t.delivery;
+  const { data: session } = useSession();
+  const username = session?.user?.name ?? undefined;
 
   const [stage, setStage] = useState<Stage>("idle");
+  const [importLogId, setImportLogId] = useState<number | null>(null);
   const [jsonText, setJsonText] = useState("");
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [activeOrderIdx, setActiveOrderIdx] = useState(0);
@@ -331,8 +335,43 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           const ev = JSON.parse(line);
           if (ev.type === "status") addLog(ev.message);
           if (ev.type === "result") {
-            setImportResult(ev.data);
+            const result = ev.data;
+            setImportResult(result);
             setStage("done");
+            // Log import to history
+            if (result.ok && result.batch_id) {
+              try {
+                const logRes = await fetch(`${RAILWAY}/delivery/import-log`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    fp_supplier_id: parseResult!.supplier_id,
+                    tx_company: order.tx_company,
+                    id_invoice: order.id_invoice,
+                    dt_fly: order.dt_fly,
+                    tx_awb: order.tx_awb,
+                    nu_boxes: order.nu_boxes,
+                    nu_stems_total: order.nu_stems_total,
+                    mny_total: order.mny_total,
+                    nu_lines_total: order.lines.length,
+                    nu_lines_matched: order.lines.filter((l: DeliveryLine) => l.fp_product_id).length,
+                    batch_id: result.batch_id,
+                    batch_url: result.batch_url,
+                    batch_status: "ok",
+                    nm_user: username ?? null,
+                    details: { lines: order.lines.map((l: DeliveryLine) => ({
+                      nm_variety: l.nm_variety, nu_length: l.nu_length,
+                      nu_bunches: l.nu_bunches, match_method: l.match_method,
+                      catalogue_nm_product: l.catalogue_nm_product,
+                    })) },
+                  }),
+                });
+                if (logRes.ok) {
+                  const logData = await logRes.json();
+                  setImportLogId(logData.id);
+                }
+              } catch {}
+            }
           }
           if (ev.type === "error") {
             setError(ev.message);
@@ -426,7 +465,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           const ev = JSON.parse(line);
           if (ev.type === "status") setAddLogs(prev => [...prev, ev.message]);
           if (ev.type === "result") {
-            setAddResult(ev.data);
+            const addData = ev.data;
+            setAddResult(addData);
             setAddStage("done");
             // Auto-approve all matched lines after successful import
             const allMatchedKeys = new Set(
@@ -435,10 +475,35 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 .map(l => deliveryKey(l))
             );
             handleApproveMatches(allMatchedKeys);
+            // Update history log with add-products result
+            if (importLogId) {
+              try {
+                await fetch(`${RAILWAY}/delivery/import-log/${importLogId}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    nu_products_added: addData.lines_added ?? 0,
+                    nu_products_failed: addData.lines_failed ?? 0,
+                    nu_products_skipped: addData.lines_skipped ?? 0,
+                    products_status: addData.ok ? "ok" : "partial",
+                  }),
+                });
+              } catch {}
+            }
           }
           if (ev.type === "error") {
             setAddLogs(prev => [...prev, `Error: ${ev.message}`]);
             setAddStage("error");
+            // Log failure
+            if (importLogId) {
+              try {
+                await fetch(`${RAILWAY}/delivery/import-log/${importLogId}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ products_status: "error", nu_products_added: 0, nu_products_failed: 0, nu_products_skipped: 0 }),
+                });
+              } catch {}
+            }
           }
         } catch {}
       }

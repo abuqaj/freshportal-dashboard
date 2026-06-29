@@ -56,7 +56,7 @@ export default function HistoryTab({ lang }: Props) {
   const t = translations[lang];
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
 
-  const [historySubTab, setHistorySubTab] = useState<"ops" | "sync" | "auto">("ops");
+  const [historySubTab, setHistorySubTab] = useState<"ops" | "sync" | "auto" | "delivery">("ops");
 
   const [history, setHistory]               = useState<HistoryRow[] | null>(null);
   const [histLoading, setHistLoading]       = useState(false);
@@ -75,6 +75,35 @@ export default function HistoryTab({ lang }: Props) {
   const [histAutoOffset, setHistAutoOffset]         = useState(0);
   const [histAutoHasMore, setHistAutoHasMore]       = useState(false);
   const [expandedAutoId, setExpandedAutoId]         = useState<number | null>(null);
+
+  // Delivery import history
+  interface DeliveryImportRun {
+    id: number;
+    fp_supplier_id: string | null;
+    tx_company: string | null;
+    id_invoice: string | null;
+    dt_fly: string | null;
+    tx_awb: string | null;
+    nu_boxes: number | null;
+    nu_stems_total: number | null;
+    mny_total: number | null;
+    nu_lines_total: number;
+    nu_lines_matched: number;
+    batch_id: string | null;
+    batch_url: string | null;
+    batch_status: string;
+    nu_products_added: number | null;
+    nu_products_failed: number | null;
+    nu_products_skipped: number | null;
+    products_status: string;
+    nm_user: string | null;
+    created_at: string;
+  }
+  const [deliveryHistory, setDeliveryHistory]       = useState<DeliveryImportRun[] | null>(null);
+  const [deliveryHistLoading, setDeliveryHistLoading] = useState(false);
+  const [histDeliveryOffset, setHistDeliveryOffset] = useState(0);
+  const [histDeliveryHasMore, setHistDeliveryHasMore] = useState(false);
+  const [expandedDeliveryId, setExpandedDeliveryId] = useState<number | null>(null);
 
   const loadHistory = useCallback(async (append = false) => {
     setHistLoading(true);
@@ -141,23 +170,48 @@ export default function HistoryTab({ lang }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [histAutoOffset]);
 
-  function handleTabSwitch(tab: "ops" | "sync" | "auto") {
+  const loadDeliveryHistory = useCallback(async (append = false) => {
+    if (!RAILWAY) return;
+    setDeliveryHistLoading(true);
+    const offset = append ? histDeliveryOffset : 0;
+    try {
+      const res = await fetch(`${RAILWAY}/delivery/import-log?limit=${PAGE_SIZE}&offset=${offset}`);
+      const data = await res.json();
+      const rows = data.history ?? [];
+      const hasMore: boolean = data.hasMore ?? false;
+      if (append) {
+        setDeliveryHistory(prev => [...(prev ?? []), ...rows]);
+        setHistDeliveryOffset(offset + rows.length);
+      } else {
+        setDeliveryHistory(rows);
+        setHistDeliveryOffset(rows.length);
+      }
+      setHistDeliveryHasMore(hasMore);
+    } catch {}
+    setDeliveryHistLoading(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [histDeliveryOffset]);
+
+  function handleTabSwitch(tab: "ops" | "sync" | "auto" | "delivery") {
     setHistorySubTab(tab);
-    if (tab === "ops"  && history === null)        loadHistory();
-    if (tab === "sync" && syncHistory === null)     loadSyncHistory();
-    if (tab === "auto" && autoVbnHistory === null)  loadAutoVbnHistory();
+    if (tab === "ops"      && history === null)          loadHistory();
+    if (tab === "sync"     && syncHistory === null)       loadSyncHistory();
+    if (tab === "auto"     && autoVbnHistory === null)    loadAutoVbnHistory();
+    if (tab === "delivery" && deliveryHistory === null)   loadDeliveryHistory();
   }
 
-  useEffect(() => { loadHistory(); loadSyncHistory(); loadAutoVbnHistory(); }, []);
+  useEffect(() => { loadHistory(); loadSyncHistory(); loadAutoVbnHistory(); loadDeliveryHistory(); }, []);
 
   function handleRefresh() {
-    if (historySubTab === "ops")   loadHistory();
-    else if (historySubTab === "sync") loadSyncHistory();
-    else loadAutoVbnHistory();
+    if (historySubTab === "ops")          loadHistory();
+    else if (historySubTab === "sync")     loadSyncHistory();
+    else if (historySubTab === "delivery") loadDeliveryHistory();
+    else                                   loadAutoVbnHistory();
   }
 
   const isLoading = historySubTab === "ops" ? histLoading
-    : historySubTab === "sync" ? syncHistLoading
+    : historySubTab === "sync"     ? syncHistLoading
+    : historySubTab === "delivery" ? deliveryHistLoading
     : autoVbnHistLoading;
 
   return (
@@ -184,7 +238,7 @@ export default function HistoryTab({ lang }: Props) {
       {/* ── Sub-tabs ── */}
       <div className="px-5 py-3 border-b border-border">
         <div className="flex gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
-          {(["ops", "sync", "auto"] as const).map((tab) => (
+          {(["ops", "sync", "auto", "delivery"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => handleTabSwitch(tab)}
@@ -194,7 +248,10 @@ export default function HistoryTab({ lang }: Props) {
                   : "text-ink-3 hover:text-ink"
               }`}
             >
-              {tab === "ops" ? t.history.subTabOps : tab === "sync" ? t.history.subTabSync : t.history.subTabAutoVbn}
+              {tab === "ops" ? t.history.subTabOps
+                : tab === "sync" ? t.history.subTabSync
+                : tab === "auto" ? t.history.subTabAutoVbn
+                : "Delivery import"}
             </button>
           ))}
         </div>
@@ -541,6 +598,111 @@ export default function HistoryTab({ lang }: Props) {
                     className="flex items-center gap-2 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-4 py-2 bg-ground hover:bg-muted transition-colors disabled:opacity-40"
                   >
                     {autoVbnHistLoading ? <><Spinner /><span>{t.history.loading}</span></> : t.history.loadMore}
+                  </button>
+                </div>
+              )}
+            </>
+          )
+        )}
+
+        {/* DELIVERY IMPORT */}
+        {historySubTab === "delivery" && (
+          deliveryHistLoading && deliveryHistory === null ? (
+            <div className="flex items-center justify-center gap-2 py-12 text-ink-3 text-sm">
+              <Spinner /><span>{t.history.loading}</span>
+            </div>
+          ) : !deliveryHistory || deliveryHistory.length === 0 ? (
+            <div className="py-12 text-center">
+              <p className="text-sm font-medium text-ink-3">Brak historii importów</p>
+              <p className="text-xs text-ink-3/50 mt-1">Historia pojawi się po pierwszym imporcie dostawy do FreshPortal.</p>
+            </div>
+          ) : (
+            <>
+              <div className="divide-y divide-border">
+                {deliveryHistory.map((run, runIdx) => {
+                  const isExp = expandedDeliveryId === run.id;
+                  const batchOk = run.batch_status === "ok";
+                  const prodPending = run.products_status === "pending";
+                  const prodOk = run.products_status === "ok";
+                  return (
+                    <div key={run.id} className="card-enter" style={{ animationDelay: `${Math.min(runIdx * 20, 300)}ms` }}>
+                      <div
+                        onClick={() => setExpandedDeliveryId(isExp ? null : run.id)}
+                        className="flex items-center gap-3 px-5 py-3 cursor-pointer hover:bg-ground transition-colors"
+                      >
+                        <span className="text-ink-3/40 flex-shrink-0">{isExp ? <ChevronDown /> : <ChevronRight />}</span>
+
+                        <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold flex-shrink-0 ${batchOk ? "bg-emerald-light text-emerald" : "bg-ember-light text-ember"}`}>
+                          {batchOk ? "batch ok" : "batch err"}
+                        </span>
+
+                        {!prodPending && (
+                          <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold flex-shrink-0 ${prodOk ? "bg-blue-500/10 text-blue-600" : "bg-amber-50 text-amber-700"}`}>
+                            {run.nu_products_added ?? 0}/{run.nu_lines_matched} prod
+                          </span>
+                        )}
+
+                        <span className="text-xs font-medium text-ink truncate flex-1">
+                          {run.tx_company ?? run.fp_supplier_id ?? "—"}
+                          {run.id_invoice && <span className="text-ink-3 font-normal ml-1">#{run.id_invoice}</span>}
+                        </span>
+
+                        <span className="text-[11px] text-ink-3/60 flex-shrink-0 whitespace-nowrap">
+                          {new Date(run.created_at).toLocaleString(localeStr)}
+                        </span>
+                        {run.nm_user && <span className="text-[11px] text-ink-3/40 flex-shrink-0">{run.nm_user}</span>}
+                      </div>
+
+                      {isExp && (
+                        <div className="border-t border-border bg-ground/50 px-6 py-4 grid grid-cols-2 gap-x-8 gap-y-2 text-xs">
+                          {[
+                            ["Dostawca",   run.tx_company],
+                            ["Faktura",    run.id_invoice],
+                            ["Data lotu",  run.dt_fly],
+                            ["AWB",        run.tx_awb],
+                            ["Pudełka",    run.nu_boxes],
+                            ["Łodygi",     run.nu_stems_total?.toLocaleString()],
+                            ["Wartość",    run.mny_total != null ? `€${Number(run.mny_total).toFixed(2)}` : null],
+                            ["Dopasowania",`${run.nu_lines_matched}/${run.nu_lines_total} linii`],
+                            ["Użytkownik", run.nm_user],
+                          ].map(([label, val]) => (
+                            <div key={String(label)} className="flex gap-2">
+                              <span className="text-ink-3 w-28 flex-shrink-0">{label}</span>
+                              <span className="font-medium text-ink font-mono">{val ?? "—"}</span>
+                            </div>
+                          ))}
+                          <div className="flex gap-2">
+                            <span className="text-ink-3 w-28 flex-shrink-0">Batch ID</span>
+                            {run.batch_url
+                              ? <a href={run.batch_url} target="_blank" rel="noopener noreferrer" className="text-emerald underline font-mono">{run.batch_id}</a>
+                              : <span className="font-mono text-ink">{run.batch_id ?? "—"}</span>
+                            }
+                          </div>
+                          {!prodPending && (
+                            <div className="flex gap-2">
+                              <span className="text-ink-3 w-28 flex-shrink-0">Produkty</span>
+                              <span className="flex gap-3">
+                                <span className="text-emerald">{run.nu_products_added ?? 0} dodane</span>
+                                {(run.nu_products_failed ?? 0) > 0 && <span className="text-ember">{run.nu_products_failed} błąd</span>}
+                                {(run.nu_products_skipped ?? 0) > 0 && <span className="text-ink-3">{run.nu_products_skipped} pominięte</span>}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {histDeliveryHasMore && (
+                <div className="sticky bottom-0 border-t border-border bg-surface px-5 py-3 flex justify-center">
+                  <button
+                    onClick={() => loadDeliveryHistory(true)}
+                    disabled={deliveryHistLoading}
+                    className="flex items-center gap-2 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-4 py-2 bg-ground hover:bg-muted transition-colors disabled:opacity-40"
+                  >
+                    {deliveryHistLoading ? <><Spinner /><span>{t.history.loading}</span></> : t.history.loadMore}
                   </button>
                 </div>
               )}

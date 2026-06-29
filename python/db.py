@@ -1315,6 +1315,122 @@ def clear_delivery_matches(fp_url: str, fp_supplier_id: str) -> int:
         return 0
 
 
+def ensure_delivery_import_log() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS delivery_import_log (
+                    id                   SERIAL PRIMARY KEY,
+                    fp_url               TEXT NOT NULL,
+                    fp_supplier_id       TEXT,
+                    tx_company           TEXT,
+                    id_invoice           TEXT,
+                    dt_fly               TEXT,
+                    tx_awb               TEXT,
+                    nu_boxes             INTEGER,
+                    nu_stems_total       INTEGER,
+                    mny_total            NUMERIC(12,2),
+                    nu_lines_total       INTEGER DEFAULT 0,
+                    nu_lines_matched     INTEGER DEFAULT 0,
+                    batch_id             TEXT,
+                    batch_url            TEXT,
+                    batch_status         TEXT DEFAULT 'pending',
+                    nu_products_added    INTEGER,
+                    nu_products_failed   INTEGER,
+                    nu_products_skipped  INTEGER,
+                    products_status      TEXT DEFAULT 'pending',
+                    nm_user              TEXT,
+                    details              JSONB,
+                    created_at           TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at           TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+        conn.commit()
+
+
+def create_delivery_import_log(entry: dict) -> int:
+    """Insert a new delivery import log entry. Returns the new row id."""
+    ensure_delivery_import_log()
+    import json as _json
+    now = datetime.now(timezone.utc)
+    details = entry.get("details")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO delivery_import_log
+                    (fp_url, fp_supplier_id, tx_company, id_invoice, dt_fly, tx_awb,
+                     nu_boxes, nu_stems_total, mny_total, nu_lines_total, nu_lines_matched,
+                     batch_id, batch_url, batch_status, nm_user, details,
+                     created_at, updated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+            """, (
+                entry.get("fp_url"), entry.get("fp_supplier_id"),
+                entry.get("tx_company"), entry.get("id_invoice"),
+                entry.get("dt_fly"), entry.get("tx_awb"),
+                entry.get("nu_boxes"), entry.get("nu_stems_total"),
+                entry.get("mny_total"),
+                entry.get("nu_lines_total", 0), entry.get("nu_lines_matched", 0),
+                entry.get("batch_id"), entry.get("batch_url"),
+                entry.get("batch_status", "ok"),
+                entry.get("nm_user"),
+                _json.dumps(details) if details is not None else None,
+                now, now,
+            ))
+            row_id = cur.fetchone()[0]
+        conn.commit()
+    return row_id
+
+
+def update_delivery_import_log(log_id: int, update: dict) -> None:
+    """Patch a delivery import log entry after add-products completes."""
+    ensure_delivery_import_log()
+    now = datetime.now(timezone.utc)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE delivery_import_log
+                SET nu_products_added   = %s,
+                    nu_products_failed  = %s,
+                    nu_products_skipped = %s,
+                    products_status     = %s,
+                    updated_at          = %s
+                WHERE id = %s
+            """, (
+                update.get("nu_products_added"),
+                update.get("nu_products_failed"),
+                update.get("nu_products_skipped"),
+                update.get("products_status", "ok"),
+                now, log_id,
+            ))
+        conn.commit()
+
+
+def get_delivery_import_logs(fp_url: str, limit: int = 20, offset: int = 0) -> tuple[list[dict], bool]:
+    """Return paginated delivery import log rows and hasMore flag."""
+    try:
+        ensure_delivery_import_log()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, fp_supplier_id, tx_company, id_invoice, dt_fly, tx_awb,
+                           nu_boxes, nu_stems_total, mny_total,
+                           nu_lines_total, nu_lines_matched,
+                           batch_id, batch_url, batch_status,
+                           nu_products_added, nu_products_failed, nu_products_skipped,
+                           products_status, nm_user, created_at
+                    FROM delivery_import_log
+                    WHERE fp_url = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                """, (fp_url, limit + 1, offset))
+                rows = [dict(r) for r in cur.fetchall()]
+        has_more = len(rows) > limit
+        return rows[:limit], has_more
+    except Exception:
+        return [], False
+
+
 def get_catalogue_last_sync(supplier_id: str) -> str | None:
     try:
         ensure_catalogue_table()

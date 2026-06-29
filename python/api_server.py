@@ -43,6 +43,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                find_supplier_fp_id,
                get_delivery_matches, save_delivery_matches, approve_delivery_matches,
                set_delivery_match, delete_delivery_match, clear_delivery_matches,
+               create_delivery_import_log, update_delivery_import_log, get_delivery_import_logs,
                upsert_fust_entries, get_all_fust, get_fust_count)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
@@ -1803,6 +1804,75 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permissi
     except Exception as exc:
         log.exception("[delivery/parse] unexpected error")
         raise HTTPException(500, f"Internal error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Delivery import log  (/delivery/import-log)
+# ---------------------------------------------------------------------------
+
+class DeliveryImportLogCreate(BaseModel):
+    fp_supplier_id: str | None = None
+    tx_company: str | None = None
+    id_invoice: str | None = None
+    dt_fly: str | None = None
+    tx_awb: str | None = None
+    nu_boxes: int | None = None
+    nu_stems_total: int | None = None
+    mny_total: float | None = None
+    nu_lines_total: int = 0
+    nu_lines_matched: int = 0
+    batch_id: str | None = None
+    batch_url: str | None = None
+    batch_status: str = "ok"
+    nm_user: str | None = None
+    details: dict | None = None
+
+
+class DeliveryImportLogUpdate(BaseModel):
+    nu_products_added: int | None = None
+    nu_products_failed: int | None = None
+    nu_products_skipped: int | None = None
+    products_status: str = "ok"
+
+
+@app.post("/delivery/import-log", tags=["delivery"])
+def delivery_import_log_create(
+    req: DeliveryImportLogCreate,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Log a new delivery import (after batch creation)."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    entry = req.model_dump()
+    entry["fp_url"] = fp_url
+    log_id = create_delivery_import_log(entry)
+    return {"id": log_id}
+
+
+@app.patch("/delivery/import-log/{log_id}", tags=["delivery"])
+def delivery_import_log_update(
+    log_id: int,
+    req: DeliveryImportLogUpdate,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Update a delivery import log entry with add-products result."""
+    update_delivery_import_log(log_id, req.model_dump())
+    return {"ok": True}
+
+
+@app.get("/delivery/import-log", tags=["delivery"])
+def delivery_import_log_list(
+    limit: int = 20,
+    offset: int = 0,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Paginated delivery import history."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    rows, has_more = get_delivery_import_logs(fp_url, limit=limit, offset=offset)
+    # Serialize datetime fields
+    for r in rows:
+        if r.get("created_at") and hasattr(r["created_at"], "isoformat"):
+            r["created_at"] = r["created_at"].isoformat()
+    return {"history": rows, "hasMore": has_more}
 
 
 @app.post("/dev/token", tags=["dev"])
