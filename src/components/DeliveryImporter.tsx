@@ -886,51 +886,54 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </table>
           </div>
 
-          {/* Cache manager panel */}
+          {/* Cache manager panel — fixed drawer at bottom of viewport */}
           {showCacheManager && (
-            <div className="rounded-2xl border border-border bg-muted/40 p-4 flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-ink">Pamięć systemu ({cachedMatchesList.length} wpisów)</span>
-                <button onClick={() => setShowCacheManager(false)} className="text-xs text-ink-3 hover:text-ink">Zamknij ✕</button>
-              </div>
-              {cachedMatchesList.length === 0 ? (
-                <p className="text-xs text-ink-3">Brak zapisanych dopasowań.</p>
-              ) : (
-                <div className="overflow-y-auto max-h-64 rounded-xl border border-border bg-background">
-                  <table className="w-full text-xs">
-                    <thead className="sticky top-0 bg-muted">
-                      <tr className="border-b border-border">
-                        <th className="px-3 py-1.5 text-left text-ink-3 font-semibold">Odmiana</th>
-                        <th className="px-3 py-1.5 text-left text-ink-3 font-semibold">Produkt FP</th>
-                        <th className="px-3 py-1.5 text-left text-ink-3 font-semibold">Typ</th>
-                        <th className="px-3 py-1.5 text-center text-ink-3 font-semibold">Zatw.</th>
-                        <th className="px-1 py-1.5"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {cachedMatchesList.map(m => (
-                        <tr key={m.delivery_key} className="border-b border-border/60 hover:bg-muted/50">
-                          <td className="px-3 py-1.5 font-mono text-ink-3">{m.nm_variety || m.delivery_key}</td>
-                          <td className="px-3 py-1.5 text-ink">{m.nm_product || "—"}</td>
-                          <td className="px-3 py-1.5 text-ink-3">{m.match_type}</td>
-                          <td className="px-3 py-1.5 text-center">{m.approved ? "✓" : "—"}</td>
-                          <td className="px-1 py-1.5">
-                            <button
-                              onClick={() => deleteCachedMatch(m.delivery_key)}
-                              title="Usuń z pamięci"
-                              className="text-red-400 hover:text-red-600 transition-colors"
-                            >
-                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
-                              </svg>
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+            <div className="fixed bottom-0 left-0 right-0 z-50 flex justify-center pointer-events-none">
+              <div className="pointer-events-auto w-full max-w-5xl mx-4 mb-0 rounded-t-2xl border border-b-0 border-border bg-background shadow-2xl flex flex-col"
+                   style={{ maxHeight: "60vh" }}>
+                <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+                  <span className="text-sm font-semibold text-ink">Pamięć systemu ({cachedMatchesList.length} wpisów)</span>
+                  <button onClick={() => setShowCacheManager(false)} className="text-xs text-ink-3 hover:text-ink">Zamknij ✕</button>
                 </div>
-              )}
+                {cachedMatchesList.length === 0 ? (
+                  <p className="text-xs text-ink-3 px-4 py-3">Brak zapisanych dopasowań.</p>
+                ) : (
+                  <div className="overflow-y-auto flex-1">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-muted z-10">
+                        <tr className="border-b border-border">
+                          <th className="px-3 py-2 text-left text-ink-3 font-semibold">Odmiana</th>
+                          <th className="px-3 py-2 text-left text-ink-3 font-semibold">Produkt FP</th>
+                          <th className="px-3 py-2 text-left text-ink-3 font-semibold">Typ</th>
+                          <th className="px-3 py-2 text-center text-ink-3 font-semibold">Zatw.</th>
+                          <th className="px-2 py-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cachedMatchesList.map(m => (
+                          <tr key={m.delivery_key} className="border-b border-border/60 hover:bg-muted/50">
+                            <td className="px-3 py-1.5 font-mono text-ink-3">{m.nm_variety || m.delivery_key}</td>
+                            <td className="px-3 py-1.5 text-ink">{m.nm_product || "—"}</td>
+                            <td className="px-3 py-1.5 text-ink-3">{m.match_type}</td>
+                            <td className="px-3 py-1.5 text-center">{m.approved ? "✓" : "—"}</td>
+                            <td className="px-2 py-1.5">
+                              <button
+                                onClick={() => deleteCachedMatch(m.delivery_key)}
+                                title="Usuń z pamięci"
+                                className="text-red-400 hover:text-red-600 transition-colors"
+                              >
+                                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
