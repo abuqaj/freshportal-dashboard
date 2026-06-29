@@ -774,22 +774,28 @@ def get_suppliers_count(fp_url: str) -> int:
         return 0
 
 
+_LEGAL_SUFFIXES = {"s.a.", "b.v.", "ltd", "llc", "inc", "srl", "nv", "s.a", "sa"}
+
 def find_supplier_fp_id(fp_url: str, company_name: str) -> str:
-    """Return fp_supplier_id (option value) for the best name match in fp_suppliers.
+    """Return fp_supplier_id for the best name match in fp_suppliers.
 
     Tries:
     1. Exact nm_supplier match (case-insensitive)
-    2. First word of company_name appears in nm_supplier (ILIKE)
+    2. Each significant word (>3 chars, not a legal suffix) in nm_supplier (ILIKE)
+       e.g. 'FLORICULTURA JOSARFLOR S.A.' → tries 'floricultura', then 'josarflor'
     Returns "" if not found.
     """
     if not company_name:
         return ""
     try:
         ensure_suppliers_table()
-        keyword = company_name.lower().split()[0] if company_name.split() else ""
+        words = [
+            w.lower() for w in company_name.split()
+            if len(w) > 3 and w.lower().rstrip(".") not in _LEGAL_SUFFIXES
+        ]
         with _conn() as conn:
             with conn.cursor() as cur:
-                # Exact
+                # Exact match
                 cur.execute(
                     "SELECT fp_supplier_id FROM fp_suppliers "
                     "WHERE fp_url = %s AND LOWER(nm_supplier) = %s LIMIT 1",
@@ -798,12 +804,12 @@ def find_supplier_fp_id(fp_url: str, company_name: str) -> str:
                 row = cur.fetchone()
                 if row:
                     return row[0]
-                # First-word fuzzy
-                if keyword:
+                # Each significant word as a substring
+                for word in words:
                     cur.execute(
                         "SELECT fp_supplier_id FROM fp_suppliers "
                         "WHERE fp_url = %s AND LOWER(nm_supplier) LIKE %s LIMIT 1",
-                        (fp_url, f"%{keyword}%"),
+                        (fp_url, f"%{word}%"),
                     )
                     row = cur.fetchone()
                     if row:

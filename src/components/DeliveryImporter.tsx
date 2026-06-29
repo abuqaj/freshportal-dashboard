@@ -184,7 +184,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Parse & match ──────────────────────────────────────────────────────
 
-  async function handleParse() {
+  async function handleParse(supplierIdOverride?: string) {
     if (!jsonText.trim()) return;
     setStage("parsing");
     setError("");
@@ -193,7 +193,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const res = await fetch(`${RAILWAY}/delivery/parse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw_json: body, with_matching: true }),
+        body: JSON.stringify({
+          raw_json: body,
+          with_matching: true,
+          ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
+        }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data: ParseResult = await res.json();
@@ -291,8 +295,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           if (ev.type === "result") {
             addLog(`Catalogue synced — ${ev.data.items_saved} products. Re-matching…`);
             setCatalogueCount(ev.data.items_saved);
-            // Re-parse with fresh catalogue so matching runs again automatically
-            await handleParse();
+            // Pass supplierId so re-parse uses it even if backend name-match still fails
+            await handleParse(supplierId);
           }
           if (ev.type === "error") {
             addLog(`Error: ${ev.message}`);
