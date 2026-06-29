@@ -398,6 +398,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const order = parseResult.orders[activeOrderIdx];
     if (!order) return;
     const keysToSave = keys ?? approvedKeys;
+    const seenKeys = new Set<string>();
     const matches = order.lines
       .map(line => {
         const dk = deliveryKey(line);
@@ -405,6 +406,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         const effectiveFpId = edit?.fp_product_id ?? line.fp_product_id;
         if (!effectiveFpId) return null;
         if (!keysToSave.has(dk)) return null;
+        if (seenKeys.has(dk)) return null;   // deduplicate same variety+length
+        seenKeys.add(dk);
         return {
           delivery_key: dk,
           nm_variety:   line.nm_variety,

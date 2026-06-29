@@ -1210,10 +1210,18 @@ def save_delivery_matches(fp_url: str, fp_supplier_id: str, matches: list[dict],
         return 0
     ensure_delivery_product_map()
     now = datetime.now(timezone.utc)
-    rows = [
-        (
+    seen_keys: set[str] = set()
+    rows = []
+    for m in matches:
+        if not m.get("fp_product_id"):
+            continue
+        dk = m["delivery_key"]
+        if dk in seen_keys:
+            continue  # deduplicate: same delivery_key appears multiple times (multi-box lines)
+        seen_keys.add(dk)
+        rows.append((
             fp_url, fp_supplier_id,
-            m["delivery_key"],
+            dk,
             m.get("nm_variety"),
             m.get("nu_length"),
             m.get("id_floricode"),
@@ -1222,9 +1230,7 @@ def save_delivery_matches(fp_url: str, fp_supplier_id: str, matches: list[dict],
             m.get("match_type", "auto"),
             approved,
             now, now,
-        )
-        for m in matches if m.get("fp_product_id")
-    ]
+        ))
     if not rows:
         return 0
     with _conn() as conn:
