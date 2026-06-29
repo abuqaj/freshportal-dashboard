@@ -2157,6 +2157,7 @@ async def delivery_add_products(
             "nu_length":            int(l.get("nu_length") or 0),
             "nu_stems_bunch":       int(l.get("nu_stems_bunch") or 0),
             "nu_bunches":           int(l.get("nu_bunches") or 0),
+            "nu_physical_boxes":    int(l.get("nu_physical_boxes") or 1),
             "mny_rate_stem":        float(l.get("mny_rate_stem") or 0),
             "nm_box":               l.get("nm_box", ""),
         }

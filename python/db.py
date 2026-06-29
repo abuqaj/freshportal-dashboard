@@ -1160,12 +1160,19 @@ def ensure_delivery_product_map() -> None:
                     PRIMARY KEY (fp_url, fp_supplier_id, delivery_key)
                 )
             """)
-            # Migration: add approved column to existing tables
-            cur.execute("""
-                ALTER TABLE delivery_product_map
-                ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE
-            """)
         conn.commit()
+    # Run migration in a separate transaction so a no-op ALTER doesn't abort the
+    # previous CREATE TABLE commit.
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    ALTER TABLE delivery_product_map
+                    ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE
+                """)
+            conn.commit()
+    except Exception:
+        pass  # column already exists or DB doesn't support IF NOT EXISTS — ignore
 
 
 def get_delivery_matches(fp_url: str, fp_supplier_id: str) -> dict[str, dict]:

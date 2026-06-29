@@ -390,28 +390,36 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!order) return;
     const keysToSave = keys ?? approvedKeys;
     const matches = order.lines
-      .filter(line => line.fp_product_id && keysToSave.has(deliveryKey(line)))
       .map(line => {
         const dk = deliveryKey(line);
         const edit = lineEdits[dk];
+        const effectiveFpId = edit?.fp_product_id ?? line.fp_product_id;
+        if (!effectiveFpId) return null;
+        if (!keysToSave.has(dk)) return null;
         return {
-          delivery_key:         dk,
-          nm_variety:           line.nm_variety,
-          nu_length:            line.nu_length,
-          id_floricode:         line.id_floricode,
-          fp_product_id:        edit?.fp_product_id ?? line.fp_product_id,
-          nm_product:           edit?.catalogue_nm_product ?? line.catalogue_nm_product,
-          match_type:           line.match_method === "cached" ? "cached" : "approved",
+          delivery_key: dk,
+          nm_variety:   line.nm_variety,
+          nu_length:    line.nu_length,
+          id_floricode: line.id_floricode,
+          fp_product_id: effectiveFpId,
+          nm_product:   edit?.catalogue_nm_product ?? line.catalogue_nm_product,
+          match_type:   line.match_method === "cached" ? "cached" : "approved",
         };
-      });
+      })
+      .filter((m): m is NonNullable<typeof m> => m !== null);
     if (!matches.length) return;
     setSavingApproved(true);
     try {
-      await fetch(`${RAILWAY}/catalogue/${supplierId}/matches/approve`, {
+      const res = await fetch(`${RAILWAY}/catalogue/${supplierId}/matches/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ matches }),
       });
+      if (!res.ok) {
+        console.error("[cache] approve failed", res.status, await res.text().catch(() => ""));
+      }
+    } catch (err) {
+      console.error("[cache] approve error", err);
     } finally {
       setSavingApproved(false);
     }
@@ -474,7 +482,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 .filter(l => l.fp_product_id)
                 .map(l => deliveryKey(l))
             );
-            handleApproveMatches(allMatchedKeys);
+            await handleApproveMatches(allMatchedKeys);
             // Update history log with add-products result
             if (importLogId) {
               try {
