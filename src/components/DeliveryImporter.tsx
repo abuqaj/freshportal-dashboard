@@ -617,7 +617,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
 
           <button
-            onClick={handleParse}
+            onClick={() => handleParse()}
             disabled={!jsonText.trim() || stage === "parsing"}
             className="self-end h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
           >
