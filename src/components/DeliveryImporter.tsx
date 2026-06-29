@@ -302,6 +302,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!parseResult) return;
     const order = parseResult.orders[activeOrderIdx];
     if (!order) return;
+
+    // Cache all matched lines immediately — leaving the matching screen means user agreed
+    const keysToCache = new Set(
+      order.lines
+        .filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id))
+        .map(l => deliveryKey(l))
+    );
+    await handleApproveMatches(keysToCache);
+
     setStage("importing");
     setLogs([]);
     setImportResult(null);
@@ -338,15 +347,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             const result = ev.data;
             setImportResult(result);
             setStage("done");
-            // Auto-approve all matched lines immediately when batch is created
-            if (result.ok) {
-              const keysToCache = new Set(
-                order.lines
-                  .filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id))
-                  .map(l => deliveryKey(l))
-              );
-              await handleApproveMatches(keysToCache);
-            }
             // Log import to history
             if (result.ok && result.batch_id) {
               try {
