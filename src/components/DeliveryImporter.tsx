@@ -220,39 +220,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Sync catalogue ──────────────────────────────────────────────────────
 
   async function handleSyncCatalogue() {
-    const order = parseResult?.orders[activeOrderIdx];
-    setStage("syncing");
-    setLogs([]);
-
-    // Resolve fp_supplier_id from the company name in the parsed order
-    let supplierId = "";
-    let supplierName = order?.tx_company ?? "";
-    try {
-      const suppRes = await fetch(`${RAILWAY}/catalogue/suppliers`);
-      if (suppRes.ok) {
-        const suppData = await suppRes.json();
-        const list: Array<{ fp_supplier_id: string; nm_supplier: string }> =
-          suppData.suppliers ?? [];
-        const needle = supplierName.toLowerCase();
-        const match =
-          list.find(s => s.nm_supplier.toLowerCase().includes(needle)) ||
-          list.find(s => {
-            const firstWord = needle.split(" ")[0];
-            return firstWord && s.nm_supplier.toLowerCase().includes(firstWord);
-          });
-        if (match) {
-          supplierId = match.fp_supplier_id;
-          supplierName = match.nm_supplier;
-        }
-      }
-    } catch {}
+    // Use supplier_id already resolved during parse — no need for a second lookup
+    const supplierId = parseResult?.supplier_id;
+    const supplierName = parseResult?.orders[activeOrderIdx]?.tx_company ?? "";
 
     if (!supplierId) {
-      addLog(`Supplier '${supplierName}' not found — cannot sync`);
-      setStage("preview");
+      addLog("Cannot sync — supplier not identified from this delivery.");
       return;
     }
 
+    setStage("syncing");
+    setLogs([]);
     addLog(`Syncing catalogue for ${supplierName} (#${supplierId})…`);
 
     const params = new URLSearchParams({ nm_supplier: supplierName });
@@ -283,9 +261,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           const ev = JSON.parse(line);
           if (ev.type === "status") addLog(ev.message);
           if (ev.type === "result") {
+            addLog(`Catalogue synced — ${ev.data.items_saved} products. Re-matching…`);
             setCatalogueCount(ev.data.items_saved);
-            setStage("preview");
-            handleParse();
+            // Re-parse with fresh catalogue so matching runs again automatically
+            await handleParse();
           }
           if (ev.type === "error") {
             addLog(`Error: ${ev.message}`);
