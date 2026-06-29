@@ -886,11 +886,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </table>
           </div>
 
-          {/* Cache manager panel — fixed drawer at bottom of viewport */}
+          {/* Cache manager — modal dialog */}
           {showCacheManager && (
-            <div className="fixed bottom-0 left-0 right-0 z-50 flex justify-center pointer-events-none">
-              <div className="pointer-events-auto w-full max-w-5xl mx-4 mb-0 rounded-t-2xl border border-b-0 border-border bg-background shadow-2xl flex flex-col"
-                   style={{ maxHeight: "60vh" }}>
+            <>
+              <div
+                className="fixed inset-0 z-40 bg-black/40"
+                onClick={() => setShowCacheManager(false)}
+              />
+              <div className="fixed inset-x-4 top-12 bottom-4 z-50 max-w-3xl mx-auto rounded-2xl border border-border bg-background shadow-2xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
                   <span className="text-sm font-semibold text-ink">Pamięć systemu ({cachedMatchesList.length} wpisów)</span>
                   <button onClick={() => setShowCacheManager(false)} className="text-xs text-ink-3 hover:text-ink">Zamknij ✕</button>
@@ -934,7 +937,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   </div>
                 )}
               </div>
-            </div>
+            </>
           )}
 
           {/* Actions */}
