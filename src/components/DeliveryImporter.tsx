@@ -996,7 +996,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background outline-none focus:border-emerald/50"
                   />
                 </div>
-                <div className="overflow-y-auto flex-1">
+                <div className="overflow-y-auto flex-1 bg-background">
                   {supplierList.length === 0 ? (
                     <p className="text-xs text-ink-3 px-4 py-3">Ładowanie listy dostawców…</p>
                   ) : (
@@ -1006,8 +1006,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         <button
                           key={s.fp_supplier_id}
                           onClick={() => handleSelectSupplier(s)}
-                          className={`w-full text-left px-4 py-2.5 text-sm hover:bg-muted border-b border-border/60 last:border-0 transition-colors
-                            ${resolvedSupplier?.fp_supplier_id === s.fp_supplier_id ? "bg-emerald/8 text-emerald font-medium" : "text-ink"}`}
+                          className={`w-full text-left px-4 py-2.5 text-sm border-b border-border/60 last:border-0 transition-colors
+                            ${resolvedSupplier?.fp_supplier_id === s.fp_supplier_id
+                              ? "bg-emerald/10 text-emerald font-medium"
+                              : "bg-background text-ink hover:bg-muted"}`}
                         >
                           {s.nm_supplier}
                           <span className="ml-2 text-xs text-ink-3">#{s.fp_supplier_id}</span>
