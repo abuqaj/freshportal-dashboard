@@ -155,10 +155,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [supplierList, setSupplierList] = useState<FPSupplier[]>([]);
   const [supplierSearch, setSupplierSearch] = useState("");
 
-  // ── Inline edit dropdown (fixed-position to escape table overflow) ────────
-  const editInputRef = useRef<HTMLInputElement>(null);
-  const tableRef = useRef<HTMLDivElement>(null);
-  const [editDropdownPos, setEditDropdownPos] = useState<{ top: number; left: number } | null>(null);
+  // ── Product match modal ───────────────────────────────────────────────────
+  const [editModalOpen, setEditModalOpen] = useState(false);
 
   function deliveryKey(line: DeliveryLine): string {
     return `${(line.nm_variety ?? "").toLowerCase().trim()}|${line.nu_length || ""}`;
@@ -166,25 +164,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev, msg]);
-  }, []);
-
-  // Recompute fixed dropdown position when editing starts/stops
-  useEffect(() => {
-    if (editingKey && editInputRef.current) {
-      const rect = editInputRef.current.getBoundingClientRect();
-      setEditDropdownPos({ top: rect.bottom + 4, left: rect.left });
-    } else {
-      setEditDropdownPos(null);
-    }
-  }, [editingKey]);
-
-  // Close inline edit when table is scrolled (prevents stale position)
-  useEffect(() => {
-    const el = tableRef.current;
-    if (!el) return;
-    const onScroll = () => { setEditingKey(null); setEditSearch(""); };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
   // ── File drop / select ──────────────────────────────────────────────────
@@ -641,6 +620,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setApprovedKeys(new Set());
     setLineEdits({});
     setEditingKey(null);
+    setEditModalOpen(false);
     setShowCacheManager(false);
     setCachedMatchesList([]);
     setResolvedSupplier(null);
@@ -858,7 +838,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {/* Product lines table */}
-          <div ref={tableRef} className="overflow-x-auto overflow-y-auto max-h-[420px] rounded-2xl border border-border">
+          <div className="overflow-x-auto overflow-y-auto max-h-[420px] rounded-2xl border border-border">
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
@@ -869,19 +849,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 </tr>
               </thead>
               <tbody>
-                {(() => {
-                  const catalogueForSearch = parseResult?.catalogue ?? [];
-                  const searchResults = editingKey && editSearch.length >= 2
-                    ? catalogueForSearch.filter(p => p.nm_product.toLowerCase().includes(editSearch.toLowerCase())).slice(0, 8)
-                    : [];
-                  return order.lines.map((line, i) => {
+                {order.lines.map((line, i) => {
                   const dk = deliveryKey(line);
                   const edit = lineEdits[dk];
                   const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
                   const isApproved = approvedKeys.has(dk);
-                  const isEditing = editingKey === dk;
-                  const hasMatch = !!line.fp_product_id;
-                  const badge = MATCH_BADGE[line.match_method] ?? MATCH_BADGE.none;
+                  const hasMatch = !!(edit?.fp_product_id ?? line.fp_product_id);
+                  const badge = MATCH_BADGE[edit ? "cached" : line.match_method] ?? MATCH_BADGE.none;
 
                   return (
                     <tr key={i} className={`border-b border-border/60 transition-colors hover:bg-muted/50
@@ -938,75 +912,108 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       <td className="px-3 py-2 text-ink-3">{line.nu_stems_total > 0 ? line.nu_stems_total.toLocaleString() : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.mny_rate_stem > 0 ? `€${line.mny_rate_stem.toFixed(4)}` : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.mny_total > 0 ? `€${line.mny_total.toFixed(2)}` : "—"}</td>
-                      {/* Match badge + inline edit */}
+                      {/* Match badge + edit button */}
                       <td className="px-3 py-2">
-                        {isEditing ? (
-                          <div className="flex items-center gap-1">
-                            <input
-                              ref={editInputRef}
-                              autoFocus
-                              value={editSearch}
-                              onChange={e => setEditSearch(e.target.value)}
-                              onKeyDown={e => { if (e.key === "Escape") { setEditingKey(null); setEditSearch(""); } }}
-                              placeholder={td.searchProductPlaceholder}
-                              className="w-48 px-2 py-1 text-[11px] border border-emerald/50 rounded-md bg-surface outline-none"
-                            />
-                            <button onClick={() => { setEditingKey(null); setEditSearch(""); }} className="text-ink-3 hover:text-ink text-[11px]">✕</button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1">
-                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium ${badge.cls}`}>
-                              {badge.label}
-                            </span>
-                            <button
-                              onClick={() => { setEditingKey(dk); setEditSearch(""); }}
-                              title={hasMatch ? td.changeMatch : td.assignFromCatalogue}
-                              className={`transition-opacity ${hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
-                            >
-                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                              </svg>
-                            </button>
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1">
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium ${badge.cls}`}>
+                            {badge.label}
+                          </span>
+                          <button
+                            onClick={() => { setEditingKey(dk); setEditSearch(""); setEditModalOpen(true); }}
+                            title={hasMatch ? td.changeMatch : td.assignFromCatalogue}
+                            className={`transition-opacity ${hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
+                          >
+                            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            </svg>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
-                });
-                })()}
+                })}
               </tbody>
             </table>
           </div>
 
-          {/* Inline edit product search dropdown — fixed to escape table overflow:hidden */}
-          {editingKey && editDropdownPos && (() => {
-            const catalogueForSearch = parseResult?.catalogue ?? [];
-            const searchResults = editSearch.length >= 2
-              ? catalogueForSearch.filter(p => p.nm_product.toLowerCase().includes(editSearch.toLowerCase())).slice(0, 8)
-              : [];
-            if (!searchResults.length) return null;
+          {/* Product match modal */}
+          {editModalOpen && editingKey && (() => {
             const dk = editingKey;
+            const editLine = order.lines.find(l => deliveryKey(l) === dk);
+            const currentEdit = lineEdits[dk];
+            const currentMatchName = currentEdit?.catalogue_nm_product ?? editLine?.catalogue_nm_product ?? "";
+            const catalogue = parseResult?.catalogue ?? [];
+            const matchResults = editSearch.length >= 2
+              ? catalogue.filter(p => p.nm_product.toLowerCase().includes(editSearch.toLowerCase())).slice(0, 30)
+              : catalogue.slice(0, 30);
             return (
-              <div
-                className="fixed z-[300] w-72 bg-surface border border-border rounded-xl shadow-lg overflow-hidden"
-                style={{ top: editDropdownPos.top, left: editDropdownPos.left }}
-              >
-                {searchResults.map(p => (
-                  <button
-                    key={p.fp_product_id}
-                    onClick={() => {
-                      setLineEdits(prev => ({ ...prev, [dk]: { fp_product_id: p.fp_product_id, catalogue_nm_product: p.nm_product } }));
-                      setApprovedKeys(prev => { const n = new Set(prev); n.add(dk); return n; });
-                      setEditingKey(null);
-                      setEditSearch("");
-                    }}
-                    className="w-full text-left px-3 py-1.5 text-[11px] text-ink hover:bg-muted border-b border-border/50 last:border-0 truncate bg-surface"
-                  >
-                    {p.nm_product}
-                  </button>
-                ))}
-              </div>
+              <>
+                <div className="fixed inset-0 bg-black/60 z-[200]" onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} />
+                <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
+                  {/* Header — shows delivery line context */}
+                  <div className="px-4 py-3 border-b border-border shrink-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-ink">
+                          {editLine ? td.editMatchTitle : td.editNoMatchTitle}
+                        </p>
+                        {editLine && (
+                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-ink-3">
+                            <span className="font-medium text-ink">{editLine.nm_variety}</span>
+                            {editLine.nm_species && <span>{editLine.nm_species}</span>}
+                            {editLine.nu_length > 0 && <span>{editLine.nu_length} cm</span>}
+                            {editLine.nu_stems_bunch > 0 && <span>{editLine.nu_stems_bunch} st/bos</span>}
+                            {editLine.nu_bunches > 0 && <span>{editLine.nu_bunches} bossen</span>}
+                          </div>
+                        )}
+                        {currentMatchName && (
+                          <p className="mt-1 text-[11px] text-ink-3">
+                            {td.currentMatch}: <span className="text-emerald font-medium">{currentMatchName}</span>
+                          </p>
+                        )}
+                      </div>
+                      <button onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} className="text-ink-3 hover:text-ink shrink-0 mt-0.5">✕</button>
+                    </div>
+                  </div>
+                  {/* Search */}
+                  <div className="px-3 py-2 border-b border-border shrink-0">
+                    <input
+                      autoFocus
+                      value={editSearch}
+                      onChange={e => setEditSearch(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Escape") { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); } }}
+                      placeholder={td.editSearchPlaceholder}
+                      className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
+                    />
+                  </div>
+                  {/* Results */}
+                  <div className="overflow-y-auto flex-1">
+                    {matchResults.length === 0 ? (
+                      <p className="text-xs text-ink-3 px-4 py-3">{td.noProductsFound}</p>
+                    ) : matchResults.map(p => {
+                      const isCurrentMatch = (currentEdit?.fp_product_id ?? editLine?.fp_product_id) === p.fp_product_id;
+                      return (
+                        <button
+                          key={p.fp_product_id}
+                          onClick={() => {
+                            setLineEdits(prev => ({ ...prev, [dk]: { fp_product_id: p.fp_product_id, catalogue_nm_product: p.nm_product } }));
+                            setApprovedKeys(prev => { const n = new Set(prev); n.add(dk); return n; });
+                            setEditModalOpen(false);
+                            setEditingKey(null);
+                            setEditSearch("");
+                          }}
+                          className={`w-full text-left px-4 py-2.5 border-b border-border/60 last:border-0 transition-colors
+                            ${isCurrentMatch ? "bg-emerald/8 text-emerald" : "bg-surface text-ink hover:bg-muted"}`}
+                        >
+                          <div className="text-sm font-medium leading-snug">{p.nm_product}</div>
+                          <div className="text-[11px] text-ink-3 mt-0.5">#{p.fp_product_id}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
             );
           })()}
 
