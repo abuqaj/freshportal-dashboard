@@ -258,29 +258,7 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, o
   const w = MODULE_WIDTH[tab];
   return (
     <div className="module-enter w-full flex-1 flex flex-col items-center overflow-y-auto py-6 px-4 bg-ground">
-      <div className={`relative w-full ${w} mb-8`}>
-        {/* Nav tiles — absolutely positioned to the left of the card */}
-        {navTabs.length > 1 && (
-          <div className="absolute right-full top-0 mr-4 w-40 flex flex-col gap-2">
-            {navTabs.map((nt) => (
-              <button
-                key={nt.id}
-                onClick={() => onSelectTab(nt.id)}
-                className={`relative w-full px-3 py-2.5 rounded-xl text-left text-[11px] font-semibold text-white
-                  bg-gradient-to-br ${nt.gradient} transition-all
-                  ${nt.id === tab
-                    ? "opacity-100 shadow-sm"
-                    : "opacity-50 hover:opacity-80"}`}
-              >
-                {nt.id === tab && (
-                  <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-white/60 rounded-r-full" />
-                )}
-                <span className="pl-1">{nt.label}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
+      <div className={`w-full ${w} mb-8`}>
         {/* Back + optional auto VBN badge */}
         <div className="flex items-center justify-between mb-4">
           <button
@@ -316,9 +294,32 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, o
           )}
         </div>
 
-        {/* Content card */}
-        <div className="bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden">
-          {children}
+        {/* Card wrapper — relative so nav tiles anchor to the card top */}
+        <div className="relative">
+          {navTabs.length > 1 && (
+            <div className="absolute right-full top-0 mr-4 w-40 flex flex-col gap-2">
+              {navTabs.map((nt) => (
+                <button
+                  key={nt.id}
+                  onClick={() => onSelectTab(nt.id)}
+                  className={`relative w-full px-3 py-2.5 rounded-xl text-left text-[11px] font-semibold text-white
+                    bg-gradient-to-br ${nt.gradient} transition-all
+                    ${nt.id === tab
+                      ? "opacity-100 shadow-sm"
+                      : "opacity-50 hover:opacity-80"}`}
+                >
+                  {nt.id === tab && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-white/60 rounded-r-full" />
+                  )}
+                  <span className="pl-1">{nt.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden">
+            {children}
+          </div>
         </div>
       </div>
     </div>
