@@ -178,7 +178,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
               <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/>
               <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
             </svg>
-            Sync
+            {t.hub.syncRunning}
           </span>
         )}
         {/* DB count pill */}
@@ -215,7 +215,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
           onClick={() => signOut({ callbackUrl: "/login" })}
           className="h-7 px-2.5 rounded-lg text-[11px] font-medium text-ink-3 hover:text-ink border border-border bg-muted hover:bg-border/40 transition-colors"
         >
-          Sign out
+          {t.hub.signOut}
         </button>
         <LanguageSwitcher lang={lang} setLang={setLang}/>
       </div>
@@ -353,8 +353,8 @@ function SystemSelector({ t, onSelect }: {
   return (
     <div className="hub-enter flex-1 flex flex-col items-center justify-center px-8 py-10 bg-ground overflow-y-auto">
       <div className="w-full max-w-5xl">
-        <h1 className="text-3xl font-bold text-ink mb-2 tracking-tight">Select system</h1>
-        <p className="text-sm text-ink-3 mb-10">Choose which FreshPortal environment to work on</p>
+        <h1 className="text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.selectSystemTitle}</h1>
+        <p className="text-sm text-ink-3 mb-10">{t.hub.selectSystemDesc}</p>
         <div className="grid grid-cols-3 gap-5">
           {FP_SYSTEMS.map((sys, i) => (
             <SystemCard
@@ -447,10 +447,10 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
     {
       id: "admin",
       perm: "admin:manage",
-      label: "Admin",
-      desc: "Manage users and access control",
+      label: t.hub.adminLabel,
+      desc: t.hub.adminDesc,
       gradient: "bg-gradient-to-br from-[#374151] to-[#111827]",
-      stat: "Users & groups",
+      stat: t.hub.adminStat,
       statColor: "text-white/60",
       icon: (
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -549,7 +549,7 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
                 onClick={onChangeSystem}
                 className="ml-1 underline underline-offset-2 hover:text-ink transition-colors"
               >
-                Change
+                {t.hub.changeSystem}
               </button>
             </span>
           </>

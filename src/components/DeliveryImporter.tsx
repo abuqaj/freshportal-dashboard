@@ -124,7 +124,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             const ev = JSON.parse(line);
             if (ev.type === "status") setFustLogs(prev => [...prev, ev.message]);
             if (ev.type === "result") setFustCount(ev.data.entries_saved);
-            if (ev.type === "error") setFustLogs(prev => [...prev, `Błąd: ${ev.message}`]);
+            if (ev.type === "error") setFustLogs(prev => [...prev, `${t.common.error}: ${ev.message}`]);
           } catch {}
         }
       }
@@ -183,14 +183,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   async function handleClearCache() {
     const supplierId = parseResult?.supplier_id;
-    if (!supplierId) { alert("Najpierw sparsuj JSON żeby poznać dostawcę."); return; }
-    if (!confirm(`Wyczyścić wszystkie cache'd matche dla supplier ${supplierId}?`)) return;
+    if (!supplierId) { alert(td.clearCacheNoSupplier); return; }
+    if (!confirm(td.clearCacheConfirm(supplierId))) return;
     setClearingCache(true);
     try {
       const res = await fetch(`${RAILWAY}/catalogue/${supplierId}/matches`, { method: "DELETE" });
       const data = await res.json();
-      alert(`Usunięto ${data.deleted} wpisów z cache. Parsuj ponownie.`);
-    } catch { alert("Błąd podczas czyszczenia cache."); }
+      alert(td.clearCacheSuccess(data.deleted));
+    } catch { alert(td.clearCacheError); }
     finally { setClearingCache(false); }
   }
 
@@ -704,14 +704,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* FreshPortal supplier resolution row */}
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-ink-3 shrink-0">Dostawca FP:</span>
+            <span className="text-ink-3 shrink-0">{td.fpSupplierLabel}</span>
             {resolvedSupplier ? (
               <>
                 <span className="font-medium text-ink">{resolvedSupplier.nm_supplier}</span>
                 <span className="text-ink-3/50 text-xs">#{resolvedSupplier.fp_supplier_id}</span>
                 <button
                   onClick={openSupplierPicker}
-                  title="Zmień dostawcę FreshPortal"
+                  title={td.changeSupplierBtn}
                   className="ml-1 text-ink-3 hover:text-ink opacity-60 hover:opacity-100 transition-opacity"
                 >
                   <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -722,12 +722,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </>
             ) : (
               <>
-                <span className="text-amber-600 text-xs">Nie znaleziono dopasowania</span>
+                <span className="text-amber-600 text-xs">{td.supplierNoMatch}</span>
                 <button
                   onClick={openSupplierPicker}
                   className="h-6 px-2.5 rounded-lg text-xs font-medium border border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors"
                 >
-                  Wybierz dostawcę FP
+                  {td.selectSupplierBtn}
                 </button>
               </>
             )}
@@ -754,14 +754,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <button
                 onClick={handleSyncFust}
                 disabled={fustSyncing}
-                title={fustCount !== null ? `Ostatnia synchronizacja: ${fustCount} typów opakowań` : "Synchronizuj typy opakowań (jednorazowo)"}
+                title={fustCount !== null ? td.fustSyncTitle(fustCount) : td.fustSyncHint}
                 className={`h-7 px-3 rounded-lg text-xs font-medium border transition-colors
                   ${fustCount !== null
                     ? "border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15"
                     : "border-border text-ink-3 hover:text-ink hover:border-border-hover"}
                   disabled:opacity-40`}
               >
-                {fustSyncing ? "Syncing…" : fustCount !== null ? `Opakowania ✓ ${fustCount}` : "Sync opakowania"}
+                {fustSyncing ? td.syncingFust : fustCount !== null ? td.fustSynced(fustCount) : td.syncFust}
               </button>
               <button
                 onClick={handleSyncCatalogue}
@@ -772,10 +772,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <button
                 onClick={handleClearCache}
                 disabled={clearingCache}
-                title="Usuń zcachowane matche — następny parse użyje świeżego algorytmu"
+                title={td.clearCacheTitle}
                 className="h-7 px-3 rounded-lg text-xs font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
               >
-                {clearingCache ? "Czyszczę…" : "Wyczyść cache"}
+                {clearingCache ? td.clearingCache : td.clearCache}
               </button>
             </div>
           </div>
@@ -784,7 +784,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {fustLogs.length > 0 && (
             <details open={fustSyncing}>
               <summary className="cursor-pointer text-xs text-ink-3 hover:text-ink">
-                Log sync opakowań ({fustLogs.length} linii)
+                {td.fustSyncLog(fustLogs.length)}
               </summary>
               <div className="mt-1 bg-muted rounded-xl p-2 max-h-40 overflow-y-auto font-mono text-xs space-y-0.5">
                 {fustLogs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
@@ -801,7 +801,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Approve toolbar */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-ink-3">
-              {approvedKeys.size} / {order.lines.filter(l => l.fp_product_id).length} zatwierdzone
+              {td.approved(approvedKeys.size, order.lines.filter(l => l.fp_product_id).length)}
             </span>
             <button
               onClick={() => {
@@ -810,26 +810,26 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               }}
               className="h-6 px-2 rounded-md text-[11px] border border-emerald/40 text-emerald hover:bg-emerald/8 transition-colors"
             >
-              Zatwierdź wszystkie
+              {td.approveAll}
             </button>
             <button
               onClick={() => setApprovedKeys(new Set())}
               className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink transition-colors"
             >
-              Odznacz wszystkie
+              {td.deselectAll}
             </button>
             <button
               onClick={() => handleApproveMatches()}
               disabled={approvedKeys.size === 0 || savingApproved}
               className="h-6 px-3 rounded-md text-[11px] font-semibold border border-green-500/40 text-green-700 bg-green-500/8 hover:bg-green-500/15 disabled:opacity-40 transition-colors"
             >
-              {savingApproved ? "Zapisuję…" : `Zapisz zatwierdzone (${approvedKeys.size})`}
+              {savingApproved ? td.saving : td.saveApproved(approvedKeys.size)}
             </button>
             <button
               onClick={loadCacheManager}
               className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink ml-auto transition-colors"
             >
-              Pamięć systemu
+              {td.cacheManager}
             </button>
           </div>
 
@@ -924,7 +924,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                               value={editSearch}
                               onChange={e => setEditSearch(e.target.value)}
                               onKeyDown={e => { if (e.key === "Escape") { setEditingKey(null); setEditSearch(""); } }}
-                              placeholder="Szukaj produktu…"
+                              placeholder={td.searchProductPlaceholder}
                               className="w-48 px-2 py-1 text-[11px] border border-emerald/50 rounded-md bg-surface outline-none"
                             />
                             {searchResults.length > 0 && (
@@ -954,7 +954,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             </span>
                             <button
                               onClick={() => { setEditingKey(dk); setEditSearch(""); }}
-                              title={hasMatch ? "Zmień dopasowanie" : "Przypisz produkt z katalogu"}
+                              title={hasMatch ? td.changeMatch : td.assignFromCatalogue}
                               className={`transition-opacity ${hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
                             >
                               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -982,8 +982,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <div className="fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
                   <div>
-                    <span className="text-sm font-semibold text-ink">Wybierz dostawcę FreshPortal</span>
-                    <p className="text-xs text-ink-3 mt-0.5">dla: {parseResult?.orders[activeOrderIdx]?.tx_company}</p>
+                    <span className="text-sm font-semibold text-ink">{td.selectSupplierTitle}</span>
+                    <p className="text-xs text-ink-3 mt-0.5">{td.supplierForLabel} {parseResult?.orders[activeOrderIdx]?.tx_company}</p>
                   </div>
                   <button onClick={() => setSupplierPickerOpen(false)} className="text-xs text-ink-3 hover:text-ink">✕</button>
                 </div>
@@ -992,13 +992,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     autoFocus
                     value={supplierSearch}
                     onChange={e => setSupplierSearch(e.target.value)}
-                    placeholder="Szukaj dostawcy…"
+                    placeholder={td.searchSupplierPlaceholder}
                     className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
                   />
                 </div>
                 <div className="overflow-y-auto flex-1 bg-surface">
                   {supplierList.length === 0 ? (
-                    <p className="text-xs text-ink-3 px-4 py-3">Ładowanie listy dostawców…</p>
+                    <p className="text-xs text-ink-3 px-4 py-3">{td.loadingSuppliers}</p>
                   ) : (
                     supplierList
                       .filter(s => s.nm_supplier.toLowerCase().includes(supplierSearch.toLowerCase()))
@@ -1030,20 +1030,20 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               />
               <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-3xl mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-                  <span className="text-sm font-semibold text-ink">Pamięć systemu ({cachedMatchesList.length} wpisów)</span>
-                  <button onClick={() => setShowCacheManager(false)} className="text-xs text-ink-3 hover:text-ink">Zamknij ✕</button>
+                  <span className="text-sm font-semibold text-ink">{td.cacheManager} ({td.cacheEntries(cachedMatchesList.length)})</span>
+                  <button onClick={() => setShowCacheManager(false)} className="text-xs text-ink-3 hover:text-ink">{td.closeBtn} ✕</button>
                 </div>
                 {cachedMatchesList.length === 0 ? (
-                  <p className="text-xs text-ink-3 px-4 py-3">Brak zapisanych dopasowań.</p>
+                  <p className="text-xs text-ink-3 px-4 py-3">{td.noSavedMatches}</p>
                 ) : (
                   <div className="overflow-y-auto flex-1">
                     <table className="w-full text-xs">
                       <thead className="sticky top-0 bg-muted z-10">
                         <tr className="border-b border-border">
-                          <th className="px-3 py-2 text-left text-ink-3 font-semibold">Odmiana</th>
-                          <th className="px-3 py-2 text-left text-ink-3 font-semibold">Produkt FP</th>
-                          <th className="px-3 py-2 text-left text-ink-3 font-semibold">Typ</th>
-                          <th className="px-3 py-2 text-center text-ink-3 font-semibold">Zatw.</th>
+                          <th className="px-3 py-2 text-left text-ink-3 font-semibold">{td.cacheColVariety}</th>
+                          <th className="px-3 py-2 text-left text-ink-3 font-semibold">{td.cacheColFpProduct}</th>
+                          <th className="px-3 py-2 text-left text-ink-3 font-semibold">{td.cacheColType}</th>
+                          <th className="px-3 py-2 text-center text-ink-3 font-semibold">{td.cacheColApproved}</th>
                           <th className="px-2 py-2"></th>
                         </tr>
                       </thead>
@@ -1057,7 +1057,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             <td className="px-2 py-1.5">
                               <button
                                 onClick={() => deleteCachedMatch(m.delivery_key)}
-                                title="Usuń z pamięci"
+                                title={td.deleteFromCache}
                                 className="text-red-400 hover:text-red-600 transition-colors"
                               >
                                 <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1115,7 +1115,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Batch creation result */}
           <div className={`p-4 rounded-2xl border ${importResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-red-500/8 border-red-500/20"}`}>
             <p className={`font-semibold text-sm ${importResult.ok ? "text-emerald" : "text-red-500"}`}>
-              {importResult.ok ? "Przesyłka stworzona" : td.importFailed}
+              {importResult.ok ? td.batchCreated : td.importFailed}
             </p>
             <p className="text-xs text-ink-3 mt-1">{importResult.message}</p>
             {importResult.batch_id && (
@@ -1137,18 +1137,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   onClick={handleAddProducts}
                   className="h-10 px-6 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 transition-colors"
                 >
-                  Dodaj produkty do przesyłki #{importResult.batch_id}
+                  {td.addProductsBtn(importResult.batch_id)}
                 </button>
               )}
 
               {addStage === "running" && (
-                <ProgressLog title="Dodawanie produktów…" logs={addLogs} />
+                <ProgressLog title={td.addingProducts} logs={addLogs} />
               )}
 
               {addStage === "done" && addResult && (
                 <div className={`p-4 rounded-2xl border ${addResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-amber-500/8 border-amber-500/20"}`}>
                   <p className={`font-semibold text-sm ${addResult.ok ? "text-emerald" : "text-amber-600"}`}>
-                    {addResult.lines_added} produktów dodanych
+                    {td.productsAdded(addResult.lines_added)}
                     {addResult.lines_failed > 0 && `, ${addResult.lines_failed} failed`}
                     {addResult.lines_skipped > 0 && `, ${addResult.lines_skipped} bez dopasowania`}
                   </p>
@@ -1163,7 +1163,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     </div>
                   )}
                   <details className="mt-3 text-xs">
-                    <summary className="cursor-pointer text-ink-3 hover:text-ink">Pełny log ({addLogs.length} linii)</summary>
+                    <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.fullLog(addLogs.length)}</summary>
                     <div className="mt-1 bg-muted rounded-xl p-2 max-h-64 overflow-y-auto font-mono space-y-0.5">
                       {addLogs.map((l, i) => (
                         <div key={i} className={l.startsWith("  ✓") ? "text-emerald" : l.startsWith("  ✗") ? "text-red-400" : "text-ink-3"}>{l}</div>
@@ -1175,12 +1175,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
               {addStage === "error" && (
                 <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20">
-                  <p className="text-sm font-semibold text-red-500">Błąd dodawania produktów</p>
+                  <p className="text-sm font-semibold text-red-500">{td.addProductsFailed}</p>
                   <div className="mt-1 font-mono text-xs text-red-400 space-y-0.5">
                     {addLogs.map((l, i) => <div key={i}>{l}</div>)}
                   </div>
                   <button onClick={() => setAddStage("idle")} className="mt-2 text-xs text-ink-3 underline">
-                    Spróbuj ponownie
+                    {td.retryBtn}
                   </button>
                 </div>
               )}
@@ -1188,7 +1188,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           )}
 
           <details className="text-xs">
-            <summary className="cursor-pointer text-ink-3 hover:text-ink">Log tworzenia przesyłki ({logs.length})</summary>
+            <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.batchLog(logs.length)}</summary>
             <div className="mt-2 bg-muted rounded-xl p-3 max-h-48 overflow-y-auto font-mono space-y-0.5">
               {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
             </div>

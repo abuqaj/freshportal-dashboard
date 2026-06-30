@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react"
 import { signIn, useSession } from "next-auth/react"
 import { useRouter } from "next/navigation"
+import { translations, Lang } from "@/lib/i18n"
 
 function LogoMark({ size = 28 }: { size?: number }) {
   return (
@@ -24,10 +25,18 @@ export default function LoginPage() {
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
+  const [lang, setLangState] = useState<Lang>("en")
+
+  useEffect(() => {
+    const saved = localStorage.getItem("fp_lang") as Lang | null
+    if (saved && ["en", "nl", "pl", "es"].includes(saved)) setLangState(saved)
+  }, [])
 
   useEffect(() => {
     if (status === "authenticated") router.replace("/")
   }, [status, router])
+
+  const tl = translations[lang].login
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -40,12 +49,12 @@ export default function LoginPage() {
         redirect: false,
       })
       if (result?.error) {
-        setError("Invalid credentials")
+        setError(tl.invalidCredentials)
       } else {
         router.replace("/")
       }
     } catch {
-      setError("Login failed. Please try again.")
+      setError(tl.loginFailed)
     } finally {
       setLoading(false)
     }
@@ -68,14 +77,14 @@ export default function LoginPage() {
             <LogoMark size={36} />
           </div>
           <h1 className="text-2xl font-bold text-ink tracking-tight">FreshPortal</h1>
-          <p className="text-sm text-ink-3 mt-1">Sign in to your account</p>
+          <p className="text-sm text-ink-3 mt-1">{tl.subtitle}</p>
         </div>
 
         {/* Card */}
         <div className="bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.14)] p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-ink-3 mb-1.5">Username</label>
+              <label className="block text-xs font-medium text-ink-3 mb-1.5">{tl.usernameLabel}</label>
               <input
                 type="text"
                 value={username}
@@ -90,7 +99,7 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-ink-3 mb-1.5">Password</label>
+              <label className="block text-xs font-medium text-ink-3 mb-1.5">{tl.passwordLabel}</label>
               <input
                 type="password"
                 value={password}
@@ -117,15 +126,15 @@ export default function LoginPage() {
               {loading ? (
                 <>
                   <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                  Signing in…
+                  {tl.signingIn}
                 </>
-              ) : "Sign in"}
+              ) : tl.signInBtn}
             </button>
           </form>
         </div>
 
         <p className="text-center text-xs text-ink-3/50 mt-6">
-          DFG Stamgegevens · FreshPortal Management
+          {tl.footer}
         </p>
       </div>
     </div>

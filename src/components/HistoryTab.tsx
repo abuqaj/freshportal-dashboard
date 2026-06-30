@@ -251,7 +251,7 @@ export default function HistoryTab({ lang }: Props) {
               {tab === "ops" ? t.history.subTabOps
                 : tab === "sync" ? t.history.subTabSync
                 : tab === "auto" ? t.history.subTabAutoVbn
-                : "Delivery import"}
+                : t.history.subTabDelivery}
             </button>
           ))}
         </div>
@@ -613,8 +613,8 @@ export default function HistoryTab({ lang }: Props) {
             </div>
           ) : !deliveryHistory || deliveryHistory.length === 0 ? (
             <div className="py-12 text-center">
-              <p className="text-sm font-medium text-ink-3">Brak historii importów</p>
-              <p className="text-xs text-ink-3/50 mt-1">Historia pojawi się po pierwszym imporcie dostawy do FreshPortal.</p>
+              <p className="text-sm font-medium text-ink-3">{t.delivery.histDeliveryEmpty}</p>
+              <p className="text-xs text-ink-3/50 mt-1">{t.delivery.histDeliveryEmptyHint}</p>
             </div>
           ) : (
             <>
@@ -656,15 +656,15 @@ export default function HistoryTab({ lang }: Props) {
                       {isExp && (
                         <div className="border-t border-border bg-ground/50 px-6 py-4 grid grid-cols-2 gap-x-8 gap-y-2 text-xs">
                           {[
-                            ["Dostawca",   run.tx_company],
-                            ["Faktura",    run.id_invoice],
-                            ["Data lotu",  run.dt_fly],
-                            ["AWB",        run.tx_awb],
-                            ["Pudełka",    run.nu_boxes],
-                            ["Łodygi",     run.nu_stems_total?.toLocaleString()],
-                            ["Wartość",    run.mny_total != null ? `€${Number(run.mny_total).toFixed(2)}` : null],
-                            ["Dopasowania",`${run.nu_lines_matched}/${run.nu_lines_total} linii`],
-                            ["Użytkownik", run.nm_user],
+                            [t.delivery.histDeliverySupplier, run.tx_company],
+                            [t.delivery.histDeliveryInvoice,  run.id_invoice],
+                            [t.delivery.histDeliveryFlight,   run.dt_fly],
+                            [t.delivery.histDeliveryAwb,      run.tx_awb],
+                            [t.delivery.histDeliveryBoxes,    run.nu_boxes],
+                            [t.delivery.histDeliveryStems,    run.nu_stems_total?.toLocaleString()],
+                            [t.delivery.histDeliveryValue,    run.mny_total != null ? `€${Number(run.mny_total).toFixed(2)}` : null],
+                            [t.delivery.colMatch, t.delivery.histDeliveryMatches(run.nu_lines_matched, run.nu_lines_total)],
+                            [t.delivery.histDeliveryUser,     run.nm_user],
                           ].map(([label, val]) => (
                             <div key={String(label)} className="flex gap-2">
                               <span className="text-ink-3 w-28 flex-shrink-0">{label}</span>
@@ -672,7 +672,7 @@ export default function HistoryTab({ lang }: Props) {
                             </div>
                           ))}
                           <div className="flex gap-2">
-                            <span className="text-ink-3 w-28 flex-shrink-0">Batch ID</span>
+                            <span className="text-ink-3 w-28 flex-shrink-0">{t.delivery.batchId}</span>
                             {run.batch_url
                               ? <a href={run.batch_url} target="_blank" rel="noopener noreferrer" className="text-emerald underline font-mono">{run.batch_id}</a>
                               : <span className="font-mono text-ink">{run.batch_id ?? "—"}</span>
@@ -680,11 +680,11 @@ export default function HistoryTab({ lang }: Props) {
                           </div>
                           {!prodPending && (
                             <div className="flex gap-2">
-                              <span className="text-ink-3 w-28 flex-shrink-0">Produkty</span>
+                              <span className="text-ink-3 w-28 flex-shrink-0">{t.history.products}</span>
                               <span className="flex gap-3">
-                                <span className="text-emerald">{run.nu_products_added ?? 0} dodane</span>
-                                {(run.nu_products_failed ?? 0) > 0 && <span className="text-ember">{run.nu_products_failed} błąd</span>}
-                                {(run.nu_products_skipped ?? 0) > 0 && <span className="text-ink-3">{run.nu_products_skipped} pominięte</span>}
+                                <span className="text-emerald">{t.delivery.histDeliveryAdded(run.nu_products_added ?? 0)}</span>
+                                {(run.nu_products_failed ?? 0) > 0 && <span className="text-ember">{t.delivery.histDeliveryFailed(run.nu_products_failed!)}</span>}
+                                {(run.nu_products_skipped ?? 0) > 0 && <span className="text-ink-3">{t.delivery.histDeliverySkipped(run.nu_products_skipped!)}</span>}
                               </span>
                             </div>
                           )}
