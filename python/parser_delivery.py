@@ -68,8 +68,18 @@ def _normalise_date(raw: str) -> str:
     return raw
 
 
-def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
-    """Parse an invoice JSON and return one DeliveryOrder per invoice."""
+def _parse_date_iso(raw: str) -> str:
+    """YYYY-MM-DD[THH:MM:SS] → DD-MM-YYYY (FreshPortal date picker format)."""
+    raw = (raw or "").strip().split("T")[0]
+    parts = raw.split("-")
+    if len(parts) == 3:
+        y, m, d = parts
+        return f"{d.zfill(2)}-{m.zfill(2)}-{y}"
+    return raw
+
+
+def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
+    """Parse Elite/Ecoroses/Alissroses format: data["invoices"][]["boxes"][]["products"][]."""
     orders: list[DeliveryOrder] = []
 
     for inv in data.get("invoices", []):
@@ -194,6 +204,129 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
         orders.append(order)
 
     return orders
+
+
+def _parse_factura_format(data: dict[str, Any]) -> list[DeliveryOrder]:
+    """Parse Bloomingacres/FreshFromSource format: single factura object with detalles[]/productos[].
+
+    Field mapping vs internal model:
+      empresa        → tx_company       id_factura  → id_invoice
+      cuarto_frio    → nm_location      fecha_embarque → dt_fly
+      mawb           → tx_awb           hawb        → tx_hawb
+      agencia        → nm_ship          cajas       → nu_boxes
+      detalles       → boxes            productos   → products
+      code_caja      → tp_box           id_producto → gu_product
+      nombre_variedad→ nm_variety       tipo_producto → nm_species
+      grado          → nu_length        tallos_x_ramo → nu_stems_bunch
+      ramos          → nu_bunches       precio      → mny_rate_stem
+    """
+    merged: dict[str, DeliveryLine] = {}
+    mix_box_counter = 0
+
+    for box in data.get("detalles", []):
+        products_in_box = box.get("productos", [])
+        if not products_in_box:
+            continue
+
+        tp_box = (box.get("code_caja") or "").strip().upper()
+
+        unique_ids = {
+            str(p.get("id_producto") or "")
+            for p in products_in_box
+            if p.get("id_producto")
+        }
+
+        keys_new_in_this_box: set[str] = set()
+
+        if len(unique_ids) > 1:
+            mix_box_counter += 1
+            box_code = f"MB{mix_box_counter}"
+
+            for prod in products_in_box:
+                gu = str(prod.get("id_producto") or "").strip()
+                key = f"{gu}|{box_code}"
+                nu_bunches = int(prod.get("ramos") or 0)
+
+                if key in merged:
+                    merged[key].nu_bunches += nu_bunches
+                    if key not in keys_new_in_this_box:
+                        merged[key].nu_physical_boxes += 1
+                else:
+                    merged[key] = DeliveryLine(
+                        gu_product=gu,
+                        nm_variety=(prod.get("nombre_variedad") or "").strip().title(),
+                        nm_species=(prod.get("tipo_producto") or "").strip().title(),
+                        nu_length=int(prod.get("grado") or 0),
+                        nu_stems_bunch=int(prod.get("tallos_x_ramo") or 0),
+                        nu_bunches=nu_bunches,
+                        mny_rate_stem=float(prod.get("precio") or 0),
+                        id_floricode="",
+                        nm_product=(prod.get("variedad") or "").strip(),
+                        nm_box=box_code,
+                    )
+                keys_new_in_this_box.add(key)
+        else:
+            for prod in products_in_box:
+                gu = str(prod.get("id_producto") or "").strip()
+                key = f"{gu}|{tp_box}"
+                nu_bunches = int(prod.get("ramos") or 0)
+
+                if key in merged:
+                    merged[key].nu_bunches += nu_bunches
+                    if key not in keys_new_in_this_box:
+                        merged[key].nu_physical_boxes += 1
+                else:
+                    merged[key] = DeliveryLine(
+                        gu_product=gu,
+                        nm_variety=(prod.get("nombre_variedad") or "").strip().title(),
+                        nm_species=(prod.get("tipo_producto") or "").strip().title(),
+                        nu_length=int(prod.get("grado") or 0),
+                        nu_stems_bunch=int(prod.get("tallos_x_ramo") or 0),
+                        nu_bunches=nu_bunches,
+                        mny_rate_stem=float(prod.get("precio") or 0),
+                        id_floricode="",
+                        nm_product=(prod.get("variedad") or "").strip(),
+                        nm_box=tp_box,
+                    )
+                keys_new_in_this_box.add(key)
+
+    lines = sorted(
+        merged.values(),
+        key=lambda l: (l.nm_species, l.nm_variety, l.nu_length),
+    )
+
+    order = DeliveryOrder(
+        tx_company=(data.get("empresa") or "").strip(),
+        nm_location=(data.get("cuarto_frio") or "").strip(),
+        id_invoice=str(data.get("id_factura") or "").strip(),
+        id_purchaseorder="",
+        dt_fly=_parse_date_iso(data.get("fecha_embarque") or ""),
+        dt_invoice=_parse_date_iso(data.get("fecha") or ""),
+        nm_ship=(data.get("agencia") or "").strip(),
+        nm_cargo="",
+        tx_awb=(data.get("mawb") or "").strip(),
+        tx_hawb=(data.get("hawb") or "").strip(),
+        nu_boxes=int(data.get("cajas") or 0),
+        nu_stems_total=sum(l.nu_stems_total for l in lines),
+        mny_total=round(sum(l.mny_total for l in lines), 2),
+        lines=lines,
+    )
+
+    return [order]
+
+
+def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
+    """Auto-detect format and parse delivery JSON into DeliveryOrder list.
+
+    Format detection:
+      "invoices" key present → Format 1/2 (Elite/Ecoroses/Alissroses, english fields, boxes[]/products[])
+      "id_factura" key present → Format 3 (Bloomingacres/FFS, spanish fields, detalles[]/productos[])
+    """
+    if "invoices" in data:
+        return _parse_invoices_format(data)
+    if "id_factura" in data or "detalles" in data:
+        return _parse_factura_format(data)
+    raise ValueError("Unknown delivery JSON format: missing 'invoices' or 'id_factura' key")
 
 
 # ---------------------------------------------------------------------------
