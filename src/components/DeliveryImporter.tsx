@@ -651,6 +651,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── PROGRESS STEPPER ── */}
       <DeliveryStepBar
         stage={stage}
+        allDone={stage === "done" && addStage === "done" && (addResult?.ok ?? false)}
         steps={[td.stepUpload, td.stepReview, td.stepImport, td.stepProducts]}
       />
 
@@ -1186,7 +1187,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {stage === "done" && importResult && (
         <div className="flex flex-col gap-4">
 
-          {/* Batch creation result */}
+          {/* Batch creation result — always visible */}
           <div className={`p-4 rounded-2xl border ${importResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-red-500/8 border-red-500/20"}`}>
             <p className={`font-semibold text-sm ${importResult.ok ? "text-emerald" : "text-red-500"}`}>
               {importResult.ok ? td.batchCreated : td.importFailed}
@@ -1203,74 +1204,100 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             )}
           </div>
 
-          {/* Add Products step — only when batch was created */}
-          {importResult.ok && importResult.batch_id && (
-            <div className="flex flex-col gap-3">
-              {addStage === "idle" && (
-                <button
-                  onClick={handleAddProducts}
-                  className="h-10 px-6 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 transition-colors"
-                >
-                  {td.addProductsBtn(importResult.batch_id)}
-                </button>
-              )}
+          {addStage === "done" && addResult?.ok ? (
+            /* ── COMPLETION SCREEN: all steps done ── */
+            <>
+              <div className="p-4 rounded-2xl border bg-emerald/8 border-emerald/20">
+                <p className="font-semibold text-sm text-emerald">
+                  {td.productsAdded(addResult.lines_added)}
+                  {addResult.lines_failed > 0 && `, ${addResult.lines_failed} failed`}
+                  {addResult.lines_skipped > 0 && `, ${addResult.lines_skipped} bez dopasowania`}
+                </p>
+                <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
+                {addResult.details.length > 0 && (
+                  <div className="mt-2 max-h-52 overflow-y-auto space-y-0.5 pr-1">
+                    {addResult.details.map((d, i) => (
+                      <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : "text-red-400"}`}>
+                        {d.status === "added" ? "✓" : "✗"} {d.product}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <details className="mt-3 text-xs">
+                  <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.fullLog(addLogs.length)}</summary>
+                  <div className="mt-1 bg-muted rounded-xl p-2 max-h-64 overflow-y-auto font-mono space-y-0.5">
+                    {addLogs.map((l, i) => (
+                      <div key={i} className={l.startsWith("  ✓") ? "text-emerald" : l.startsWith("  ✗") ? "text-red-400" : "text-ink-3"}>{l}</div>
+                    ))}
+                  </div>
+                </details>
+              </div>
 
-              {addStage === "running" && (
-                <ProgressLog title={td.addingProducts} logs={addLogs} />
-              )}
+              <details className="text-xs">
+                <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.batchLog(logs.length)}</summary>
+                <div className="mt-2 bg-muted rounded-xl p-3 max-h-48 overflow-y-auto font-mono space-y-0.5">
+                  {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
+                </div>
+              </details>
 
-              {addStage === "done" && addResult && (
-                <div className={`p-4 rounded-2xl border ${addResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-amber-500/8 border-amber-500/20"}`}>
-                  <p className={`font-semibold text-sm ${addResult.ok ? "text-emerald" : "text-amber-600"}`}>
-                    {td.productsAdded(addResult.lines_added)}
-                    {addResult.lines_failed > 0 && `, ${addResult.lines_failed} failed`}
-                    {addResult.lines_skipped > 0 && `, ${addResult.lines_skipped} bez dopasowania`}
-                  </p>
-                  <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
-                  {addResult.details.length > 0 && (
-                    <div className="mt-2 max-h-52 overflow-y-auto space-y-0.5 pr-1">
-                      {addResult.details.map((d, i) => (
-                        <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : "text-red-400"}`}>
-                          {d.status === "added" ? "✓" : "✗"} {d.product}
-                        </div>
-                      ))}
+              <button onClick={reset} className="self-end h-10 px-6 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 active:scale-[0.98] transition-all">
+                {td.startOver}
+              </button>
+            </>
+          ) : (
+            /* ── INTERMEDIATE: add products to batch ── */
+            <>
+              {importResult.ok && importResult.batch_id && (
+                <div className="flex flex-col gap-3">
+                  {addStage === "idle" && (
+                    <button
+                      onClick={handleAddProducts}
+                      className="h-10 px-6 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 transition-colors"
+                    >
+                      {td.addProductsBtn(importResult.batch_id)}
+                    </button>
+                  )}
+
+                  {addStage === "running" && (
+                    <ProgressLog title={td.addingProducts} logs={addLogs} />
+                  )}
+
+                  {addStage === "done" && addResult && !addResult.ok && (
+                    <div className={`p-4 rounded-2xl border bg-amber-500/8 border-amber-500/20`}>
+                      <p className="font-semibold text-sm text-amber-600">
+                        {td.productsAdded(addResult.lines_added)}
+                        {addResult.lines_failed > 0 && `, ${addResult.lines_failed} failed`}
+                      </p>
+                      <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
                     </div>
                   )}
-                  <details className="mt-3 text-xs">
-                    <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.fullLog(addLogs.length)}</summary>
-                    <div className="mt-1 bg-muted rounded-xl p-2 max-h-64 overflow-y-auto font-mono space-y-0.5">
-                      {addLogs.map((l, i) => (
-                        <div key={i} className={l.startsWith("  ✓") ? "text-emerald" : l.startsWith("  ✗") ? "text-red-400" : "text-ink-3"}>{l}</div>
-                      ))}
+
+                  {addStage === "error" && (
+                    <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20">
+                      <p className="text-sm font-semibold text-red-500">{td.addProductsFailed}</p>
+                      <div className="mt-1 font-mono text-xs text-red-400 space-y-0.5">
+                        {addLogs.map((l, i) => <div key={i}>{l}</div>)}
+                      </div>
+                      <button onClick={() => setAddStage("idle")} className="mt-2 text-xs text-ink-3 underline">
+                        {td.retryBtn}
+                      </button>
                     </div>
-                  </details>
+                  )}
                 </div>
               )}
 
-              {addStage === "error" && (
-                <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20">
-                  <p className="text-sm font-semibold text-red-500">{td.addProductsFailed}</p>
-                  <div className="mt-1 font-mono text-xs text-red-400 space-y-0.5">
-                    {addLogs.map((l, i) => <div key={i}>{l}</div>)}
-                  </div>
-                  <button onClick={() => setAddStage("idle")} className="mt-2 text-xs text-ink-3 underline">
-                    {td.retryBtn}
-                  </button>
+              <details className="text-xs">
+                <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.batchLog(logs.length)}</summary>
+                <div className="mt-2 bg-muted rounded-xl p-3 max-h-48 overflow-y-auto font-mono space-y-0.5">
+                  {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
                 </div>
-              )}
-            </div>
+              </details>
+
+              <button onClick={reset} className="self-end h-9 px-5 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors">
+                {td.startOver}
+              </button>
+            </>
           )}
-
-          <details className="text-xs">
-            <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.batchLog(logs.length)}</summary>
-            <div className="mt-2 bg-muted rounded-xl p-3 max-h-48 overflow-y-auto font-mono space-y-0.5">
-              {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
-            </div>
-          </details>
-
-          <button onClick={reset} className="self-end h-9 px-5 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors">
-            {td.startOver}
-          </button>
         </div>
       )}
 
@@ -1300,12 +1327,12 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 function DeliveryStepBar({
-  stage, steps,
+  stage, steps, allDone,
 }: {
-  stage: Stage; steps: string[];
+  stage: Stage; steps: string[]; allDone: boolean;
 }) {
-  const current =
-    stage === "idle" || stage === "parsing" || stage === "error" ? 0
+  const current = allDone ? steps.length
+    : stage === "idle" || stage === "parsing" || stage === "error" ? 0
     : stage === "preview" || stage === "syncing" ? 1
     : stage === "importing" ? 2
     : 3;
@@ -1320,9 +1347,9 @@ function DeliveryStepBar({
             {/* Circle + label */}
             <div className="flex flex-col items-center gap-2 flex-shrink-0">
               <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ring-2 transition-all
-                ${done ? "bg-emerald ring-emerald text-white"
-                : active ? "bg-emerald ring-emerald text-white"
-                : "bg-surface ring-border text-ink-3"}`}>
+                ${done    ? "bg-emerald ring-emerald text-white"
+                : active  ? "bg-surface ring-emerald text-emerald"
+                :           "bg-surface ring-border text-ink-3"}`}>
                 {done ? (
                   <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="20 6 9 17 4 12"/>
