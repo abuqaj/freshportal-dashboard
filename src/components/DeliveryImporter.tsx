@@ -16,6 +16,10 @@ type MatchMethod =
 interface CatalogueProduct {
   fp_product_id: string;
   nm_product: string;
+  nu_length?: number | null;
+  nu_stems_bunch?: number | null;
+  nu_stems_pack?: number | null;
+  nm_packaging?: string;
 }
 
 interface DeliveryLine {
@@ -1004,10 +1008,24 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             setEditSearch("");
                           }}
                           className={`w-full text-left px-4 py-2.5 border-b border-border/60 last:border-0 transition-colors
-                            ${isCurrentMatch ? "bg-emerald/8 text-emerald" : "bg-surface text-ink hover:bg-muted"}`}
+                            ${isCurrentMatch ? "bg-emerald/8" : "bg-surface hover:bg-muted"}`}
                         >
-                          <div className="text-sm font-medium leading-snug">{p.nm_product}</div>
-                          <div className="text-[11px] text-ink-3 mt-0.5">#{p.fp_product_id}</div>
+                          <div className={`text-sm font-medium leading-snug ${isCurrentMatch ? "text-emerald" : "text-ink"}`}>{p.nm_product}</div>
+                          <div className="flex items-center gap-2.5 mt-1 flex-wrap">
+                            <span className="text-[10px] text-ink-3">#{p.fp_product_id}</span>
+                            {p.nu_length != null && p.nu_length > 0 && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 font-medium">{p.nu_length} cm</span>
+                            )}
+                            {p.nu_stems_bunch != null && p.nu_stems_bunch > 0 && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-600 font-medium">{p.nu_stems_bunch} st/bos</span>
+                            )}
+                            {p.nu_stems_pack != null && p.nu_stems_pack > 0 && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-ink-3 font-medium">pack {p.nu_stems_pack}</span>
+                            )}
+                            {p.nm_packaging && (
+                              <span className="text-[10px] text-ink-3">{p.nm_packaging}</span>
+                            )}
+                          </div>
                         </button>
                       );
                     })}

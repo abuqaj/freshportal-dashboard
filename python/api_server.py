@@ -1784,9 +1784,15 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permissi
             result_orders.append(d)
 
         log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
-        # Catalogue sent to frontend for inline-edit search (fp_product_id + nm_product only)
         catalogue_slim = [
-            {"fp_product_id": e["fp_product_id"], "nm_product": e.get("nm_product") or ""}
+            {
+                "fp_product_id":  e["fp_product_id"],
+                "nm_product":     e.get("nm_product") or "",
+                "nu_length":      e.get("nu_length"),
+                "nu_stems_bunch": e.get("nu_stems_bunch"),
+                "nu_stems_pack":  e.get("nu_stems_pack"),
+                "nm_packaging":   e.get("nm_packaging") or "",
+            }
             for e in catalogue
             if e.get("fp_product_id") and e.get("nm_product")
         ]
