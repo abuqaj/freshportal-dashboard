@@ -155,12 +155,36 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [supplierList, setSupplierList] = useState<FPSupplier[]>([]);
   const [supplierSearch, setSupplierSearch] = useState("");
 
+  // ── Inline edit dropdown (fixed-position to escape table overflow) ────────
+  const editInputRef = useRef<HTMLInputElement>(null);
+  const tableRef = useRef<HTMLDivElement>(null);
+  const [editDropdownPos, setEditDropdownPos] = useState<{ top: number; left: number } | null>(null);
+
   function deliveryKey(line: DeliveryLine): string {
     return `${(line.nm_variety ?? "").toLowerCase().trim()}|${line.nu_length || ""}`;
   }
 
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev, msg]);
+  }, []);
+
+  // Recompute fixed dropdown position when editing starts/stops
+  useEffect(() => {
+    if (editingKey && editInputRef.current) {
+      const rect = editInputRef.current.getBoundingClientRect();
+      setEditDropdownPos({ top: rect.bottom + 4, left: rect.left });
+    } else {
+      setEditDropdownPos(null);
+    }
+  }, [editingKey]);
+
+  // Close inline edit when table is scrolled (prevents stale position)
+  useEffect(() => {
+    const el = tableRef.current;
+    if (!el) return;
+    const onScroll = () => { setEditingKey(null); setEditSearch(""); };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
   // ── File drop / select ──────────────────────────────────────────────────
@@ -834,7 +858,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {/* Product lines table */}
-          <div className="overflow-x-auto overflow-y-auto max-h-[420px] rounded-2xl border border-border">
+          <div ref={tableRef} className="overflow-x-auto overflow-y-auto max-h-[420px] rounded-2xl border border-border">
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
@@ -845,7 +869,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 </tr>
               </thead>
               <tbody>
-                {order.lines.map((line, i) => {
+                {(() => {
+                  const catalogueForSearch = parseResult?.catalogue ?? [];
+                  const searchResults = editingKey && editSearch.length >= 2
+                    ? catalogueForSearch.filter(p => p.nm_product.toLowerCase().includes(editSearch.toLowerCase())).slice(0, 8)
+                    : [];
+                  return order.lines.map((line, i) => {
                   const dk = deliveryKey(line);
                   const edit = lineEdits[dk];
                   const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
@@ -853,12 +882,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   const isEditing = editingKey === dk;
                   const hasMatch = !!line.fp_product_id;
                   const badge = MATCH_BADGE[line.match_method] ?? MATCH_BADGE.none;
-                  const catalogueForSearch = parseResult?.catalogue ?? [];
-                  const searchResults = isEditing && editSearch.length >= 2
-                    ? catalogueForSearch.filter(p =>
-                        p.nm_product.toLowerCase().includes(editSearch.toLowerCase())
-                      ).slice(0, 8)
-                    : [];
 
                   return (
                     <tr key={i} className={`border-b border-border/60 transition-colors hover:bg-muted/50
@@ -918,8 +941,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       {/* Match badge + inline edit */}
                       <td className="px-3 py-2">
                         {isEditing ? (
-                          <div className="relative">
+                          <div className="flex items-center gap-1">
                             <input
+                              ref={editInputRef}
                               autoFocus
                               value={editSearch}
                               onChange={e => setEditSearch(e.target.value)}
@@ -927,25 +951,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                               placeholder={td.searchProductPlaceholder}
                               className="w-48 px-2 py-1 text-[11px] border border-emerald/50 rounded-md bg-surface outline-none"
                             />
-                            {searchResults.length > 0 && (
-                              <div className="absolute left-0 top-full mt-1 z-50 w-72 bg-surface border border-border rounded-xl shadow-lg overflow-hidden">
-                                {searchResults.map(p => (
-                                  <button
-                                    key={p.fp_product_id}
-                                    onClick={() => {
-                                      setLineEdits(prev => ({ ...prev, [dk]: { fp_product_id: p.fp_product_id, catalogue_nm_product: p.nm_product } }));
-                                      setApprovedKeys(prev => { const n = new Set(prev); n.add(dk); return n; });
-                                      setEditingKey(null);
-                                      setEditSearch("");
-                                    }}
-                                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-muted border-b border-border/50 last:border-0 truncate"
-                                  >
-                                    {p.nm_product}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                            <button onClick={() => { setEditingKey(null); setEditSearch(""); }} className="ml-1 text-ink-3 hover:text-ink text-[11px]">✕</button>
+                            <button onClick={() => { setEditingKey(null); setEditSearch(""); }} className="text-ink-3 hover:text-ink text-[11px]">✕</button>
                           </div>
                         ) : (
                           <div className="flex items-center gap-1">
@@ -967,10 +973,42 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       </td>
                     </tr>
                   );
-                })}
+                });
+                })()}
               </tbody>
             </table>
           </div>
+
+          {/* Inline edit product search dropdown — fixed to escape table overflow:hidden */}
+          {editingKey && editDropdownPos && (() => {
+            const catalogueForSearch = parseResult?.catalogue ?? [];
+            const searchResults = editSearch.length >= 2
+              ? catalogueForSearch.filter(p => p.nm_product.toLowerCase().includes(editSearch.toLowerCase())).slice(0, 8)
+              : [];
+            if (!searchResults.length) return null;
+            const dk = editingKey;
+            return (
+              <div
+                className="fixed z-[300] w-72 bg-surface border border-border rounded-xl shadow-lg overflow-hidden"
+                style={{ top: editDropdownPos.top, left: editDropdownPos.left }}
+              >
+                {searchResults.map(p => (
+                  <button
+                    key={p.fp_product_id}
+                    onClick={() => {
+                      setLineEdits(prev => ({ ...prev, [dk]: { fp_product_id: p.fp_product_id, catalogue_nm_product: p.nm_product } }));
+                      setApprovedKeys(prev => { const n = new Set(prev); n.add(dk); return n; });
+                      setEditingKey(null);
+                      setEditSearch("");
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-[11px] text-ink hover:bg-muted border-b border-border/50 last:border-0 truncate bg-surface"
+                  >
+                    {p.nm_product}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
 
           {/* Supplier picker modal */}
           {supplierPickerOpen && (
