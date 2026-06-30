@@ -58,6 +58,14 @@ class DeliveryOrder:
     lines: list[DeliveryLine] = field(default_factory=list)
 
 
+_BOX_TYPE_MAP = {"QB": "QBE"}
+
+
+def _normalise_box(tp: str) -> str:
+    """Normalise box type code: QB → QBE (FreshPortal convention)."""
+    return _BOX_TYPE_MAP.get(tp.upper(), tp)
+
+
 def _normalise_date(raw: str) -> str:
     """MM/DD/YYYY → DD-MM-YYYY (FreshPortal date picker format)."""
     raw = raw.strip()
@@ -97,7 +105,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
             if not products_in_box:
                 continue
 
-            tp_box = (box.get("tp_box") or box.get("nm_box") or "").strip().upper()
+            tp_box = _normalise_box((box.get("tp_box") or box.get("nm_box") or "").strip())
 
             unique_guids = {
                 (p.get("gu_product") or "").strip()
@@ -228,7 +236,7 @@ def _parse_factura_format(data: dict[str, Any]) -> list[DeliveryOrder]:
         if not products_in_box:
             continue
 
-        tp_box = (box.get("code_caja") or "").strip().upper()
+        tp_box = _normalise_box((box.get("code_caja") or "").strip())
 
         unique_ids = {
             str(p.get("id_producto") or "")

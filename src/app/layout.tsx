@@ -13,8 +13,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "FreshPortal Dashboard",
-  description: "VBN Checker & Product Management for FreshPortal",
+  title: "FreshFromSource",
+  description: "VBN Checker & Product Management for FreshFromSource",
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

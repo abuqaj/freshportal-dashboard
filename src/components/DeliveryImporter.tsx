@@ -643,6 +643,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         <p className="text-sm text-ink-3 mt-0.5">{td.description}</p>
       </div>
 
+      {/* ── PROGRESS STEPPER ── */}
+      <DeliveryStepBar
+        stage={stage}
+        addStage={addStage}
+        steps={[td.stepUpload, td.stepReview, td.stepImport, td.stepProducts]}
+      />
+
       {/* ── IDLE / INPUT ── */}
       {(stage === "idle" || stage === "parsing") && (
         <div className="flex flex-col gap-4">
@@ -707,7 +714,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <Row label={td.awb} value={order.tx_awb} />
             <Row label={td.boxes} value={String(order.nu_boxes)} />
             <Row label={td.stemsTotal} value={order.nu_stems_total.toLocaleString()} />
-            <Row label={td.valueTotal} value={`€${order.mny_total.toFixed(2)}`} />
+            <Row label={td.valueTotal} value={`$${order.mny_total.toFixed(2)}`} />
           </div>
 
           {/* FreshPortal supplier resolution row */}
@@ -914,8 +921,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       <td className="px-3 py-2 text-ink-3">{line.nu_stems_bunch || "—"}</td>
                       <td className="px-3 py-2 font-semibold text-ink">{line.nu_bunches}</td>
                       <td className="px-3 py-2 text-ink-3">{line.nu_stems_total > 0 ? line.nu_stems_total.toLocaleString() : "—"}</td>
-                      <td className="px-3 py-2 text-ink-3">{line.mny_rate_stem > 0 ? `€${line.mny_rate_stem.toFixed(4)}` : "—"}</td>
-                      <td className="px-3 py-2 text-ink-3">{line.mny_total > 0 ? `€${line.mny_total.toFixed(2)}` : "—"}</td>
+                      <td className="px-3 py-2 text-ink-3">{line.mny_rate_stem > 0 ? `$${line.mny_rate_stem.toFixed(4)}` : "—"}</td>
+                      <td className="px-3 py-2 text-ink-3">{line.mny_total > 0 ? `$${line.mny_total.toFixed(2)}` : "—"}</td>
                       {/* Match badge + edit button */}
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-1">
@@ -1284,6 +1291,45 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex gap-2">
       <span className="text-ink-3 shrink-0 w-28">{label}</span>
       <span className="font-medium text-ink">{value || "—"}</span>
+    </div>
+  );
+}
+
+function DeliveryStepBar({
+  stage, addStage, steps,
+}: {
+  stage: Stage; addStage: "idle" | "running" | "done" | "error"; steps: string[];
+}) {
+  const current =
+    stage === "idle" || stage === "parsing" || stage === "error" ? 0
+    : stage === "preview" || stage === "syncing" ? 1
+    : stage === "importing" ? 2
+    : 3;
+
+  return (
+    <div className="flex items-center gap-1">
+      {steps.map((label, i) => {
+        const done = i < current;
+        const active = i === current;
+        return (
+          <div key={i} className="flex items-center gap-1">
+            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
+              ${done ? "bg-emerald text-white" : active ? "bg-emerald/12 text-emerald ring-1 ring-inset ring-emerald/30" : "bg-muted text-ink-3"}`}>
+              <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0
+                ${done ? "bg-white/25 text-white" : active ? "bg-emerald text-white" : "bg-border text-ink-3"}`}>
+                {done ? "✓" : i + 1}
+              </span>
+              <span className="whitespace-nowrap">{label}</span>
+            </div>
+            {i < steps.length - 1 && (
+              <svg className={`w-3.5 h-3.5 shrink-0 ${done ? "text-emerald" : "text-border"}`}
+                   viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
