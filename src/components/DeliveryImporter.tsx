@@ -859,7 +859,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
                   return (
                     <tr key={i} className={`border-b border-border/60 transition-colors hover:bg-muted/50
-                      ${line.match_method === "none" && !isEditing ? "opacity-60" : ""}
+                      ${line.match_method === "none" && !edit ? "opacity-60" : ""}
                       ${isApproved ? "bg-green-500/5" : ""}`}>
                       {/* Approve checkbox */}
                       <td className="px-2 py-2 text-center">
