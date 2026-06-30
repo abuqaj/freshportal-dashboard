@@ -925,10 +925,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                               onChange={e => setEditSearch(e.target.value)}
                               onKeyDown={e => { if (e.key === "Escape") { setEditingKey(null); setEditSearch(""); } }}
                               placeholder="Szukaj produktu…"
-                              className="w-48 px-2 py-1 text-[11px] border border-emerald/50 rounded-md bg-background outline-none"
+                              className="w-48 px-2 py-1 text-[11px] border border-emerald/50 rounded-md bg-surface outline-none"
                             />
                             {searchResults.length > 0 && (
-                              <div className="absolute left-0 top-full mt-1 z-50 w-72 bg-background border border-border rounded-xl shadow-lg overflow-hidden">
+                              <div className="absolute left-0 top-full mt-1 z-50 w-72 bg-surface border border-border rounded-xl shadow-lg overflow-hidden">
                                 {searchResults.map(p => (
                                   <button
                                     key={p.fp_product_id}
@@ -979,7 +979,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 className="fixed inset-0 bg-black/60 z-[200]"
                 onClick={() => setSupplierPickerOpen(false)}
               />
-              <div className="fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl border border-border bg-background shadow-2xl flex flex-col overflow-hidden">
+              <div className="fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
                   <div>
                     <span className="text-sm font-semibold text-ink">Wybierz dostawcę FreshPortal</span>
@@ -993,10 +993,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     value={supplierSearch}
                     onChange={e => setSupplierSearch(e.target.value)}
                     placeholder="Szukaj dostawcy…"
-                    className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background outline-none focus:border-emerald/50"
+                    className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
                   />
                 </div>
-                <div className="overflow-y-auto flex-1 bg-background">
+                <div className="overflow-y-auto flex-1 bg-surface">
                   {supplierList.length === 0 ? (
                     <p className="text-xs text-ink-3 px-4 py-3">Ładowanie listy dostawców…</p>
                   ) : (
@@ -1009,7 +1009,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           className={`w-full text-left px-4 py-2.5 text-sm border-b border-border/60 last:border-0 transition-colors
                             ${resolvedSupplier?.fp_supplier_id === s.fp_supplier_id
                               ? "bg-emerald/10 text-emerald font-medium"
-                              : "bg-background text-ink hover:bg-muted"}`}
+                              : "bg-surface text-ink hover:bg-muted"}`}
                         >
                           {s.nm_supplier}
                           <span className="ml-2 text-xs text-ink-3">#{s.fp_supplier_id}</span>
@@ -1028,7 +1028,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 className="fixed inset-0 bg-black/60 z-[200]"
                 onClick={() => setShowCacheManager(false)}
               />
-              <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-3xl mx-auto rounded-2xl border border-border bg-background shadow-2xl flex flex-col overflow-hidden">
+              <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-3xl mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
                   <span className="text-sm font-semibold text-ink">Pamięć systemu ({cachedMatchesList.length} wpisów)</span>
                   <button onClick={() => setShowCacheManager(false)} className="text-xs text-ink-3 hover:text-ink">Zamknij ✕</button>
