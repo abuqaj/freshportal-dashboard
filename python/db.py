@@ -776,17 +776,104 @@ def get_suppliers_count(fp_url: str) -> int:
 
 _LEGAL_SUFFIXES = {"s.a.", "b.v.", "ltd", "llc", "inc", "srl", "nv", "s.a", "sa"}
 
+
+# ---------------------------------------------------------------------------
+# Supplier name → fp_supplier_id map  (manually confirmed JSON→FP mappings)
+# ---------------------------------------------------------------------------
+
+def ensure_supplier_name_map() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS delivery_supplier_name_map (
+                    fp_url         TEXT NOT NULL,
+                    tx_company     TEXT NOT NULL,
+                    fp_supplier_id TEXT NOT NULL,
+                    created_at     TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at     TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (fp_url, tx_company)
+                )
+            """)
+        conn.commit()
+
+
+def get_supplier_name_map(fp_url: str, tx_company: str) -> str:
+    """Return fp_supplier_id from cached name mapping, or ''."""
+    if not tx_company:
+        return ""
+    try:
+        ensure_supplier_name_map()
+        key = tx_company.lower().strip()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT fp_supplier_id FROM delivery_supplier_name_map "
+                    "WHERE fp_url = %s AND tx_company = %s LIMIT 1",
+                    (fp_url, key),
+                )
+                row = cur.fetchone()
+                return row[0] if row else ""
+    except Exception as exc:
+        logger.warning("get_supplier_name_map failed: %s", exc)
+        return ""
+
+
+def save_supplier_name_map(fp_url: str, tx_company: str, fp_supplier_id: str) -> None:
+    """Upsert JSON company name → fp_supplier_id mapping."""
+    if not tx_company or not fp_supplier_id:
+        return
+    try:
+        ensure_supplier_name_map()
+        key = tx_company.lower().strip()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO delivery_supplier_name_map (fp_url, tx_company, fp_supplier_id, updated_at)
+                    VALUES (%s, %s, %s, NOW())
+                    ON CONFLICT (fp_url, tx_company) DO UPDATE SET
+                        fp_supplier_id = EXCLUDED.fp_supplier_id,
+                        updated_at = NOW()
+                """, (fp_url, key, fp_supplier_id))
+            conn.commit()
+    except Exception as exc:
+        logger.warning("save_supplier_name_map failed: %s", exc)
+
+
+def get_supplier_name_by_id(fp_url: str, fp_supplier_id: str) -> str:
+    """Return nm_supplier from fp_suppliers for the given fp_supplier_id."""
+    if not fp_supplier_id:
+        return ""
+    try:
+        ensure_suppliers_table()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT nm_supplier FROM fp_suppliers "
+                    "WHERE fp_url = %s AND fp_supplier_id = %s LIMIT 1",
+                    (fp_url, fp_supplier_id),
+                )
+                row = cur.fetchone()
+                return row[0] if row else ""
+    except Exception as exc:
+        logger.warning("get_supplier_name_by_id failed: %s", exc)
+        return ""
+
+
 def find_supplier_fp_id(fp_url: str, company_name: str) -> str:
     """Return fp_supplier_id for the best name match in fp_suppliers.
 
-    Tries:
-    1. Exact nm_supplier match (case-insensitive)
-    2. Each significant word (>3 chars, not a legal suffix) in nm_supplier (ILIKE)
-       e.g. 'FLORICULTURA JOSARFLOR S.A.' → tries 'floricultura', then 'josarflor'
+    Priority:
+    1. Cached delivery_supplier_name_map (manually confirmed mappings take precedence)
+    2. Exact nm_supplier match (case-insensitive)
+    3. Each significant word (>3 chars, not a legal suffix) via ILIKE
     Returns "" if not found.
     """
     if not company_name:
         return ""
+    # Highest priority: manually confirmed mapping
+    cached = get_supplier_name_map(fp_url, company_name)
+    if cached:
+        return cached
     try:
         ensure_suppliers_table()
         words = [

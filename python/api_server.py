@@ -40,7 +40,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                sync_supplier_catalogue, get_supplier_catalogue, get_all_catalogue_meta,
                get_supplier_meta_one,
                upsert_suppliers, get_suppliers, get_suppliers_count,
-               find_supplier_fp_id,
+               find_supplier_fp_id, get_supplier_name_by_id, save_supplier_name_map,
                get_delivery_matches, save_delivery_matches, approve_delivery_matches,
                set_delivery_match, delete_delivery_match, clear_delivery_matches,
                create_delivery_import_log, update_delivery_import_log, get_delivery_import_logs,
@@ -1790,9 +1790,11 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permissi
             for e in catalogue
             if e.get("fp_product_id") and e.get("nm_product")
         ]
+        supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
         return {
             "orders": result_orders,
             "supplier_id": supplier_id,
+            "supplier_nm": supplier_nm,
             "catalogue_count": len(catalogue),
             "catalogue": catalogue_slim,
             "matched_count": matched_count,
@@ -2413,6 +2415,26 @@ def catalogue_set_match(
 
 class ApproveMatchesRequest(BaseModel):
     matches: list[dict]  # [{delivery_key, nm_variety, nu_length, id_floricode, fp_product_id, nm_product, match_type}]
+
+
+class SupplierMapRequest(BaseModel):
+    tx_company: str      # company name from delivery JSON
+    fp_supplier_id: str  # confirmed FreshPortal supplier id
+
+
+@app.post("/catalogue/supplier-map")
+def catalogue_save_supplier_map(
+    req: SupplierMapRequest,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Save (or update) a manually confirmed JSON company name → FP supplier_id mapping.
+
+    Called after user picks a supplier in the supplier picker UI. Stored in
+    delivery_supplier_name_map so future parses resolve this supplier automatically.
+    """
+    fp_url = get_ecuador_cfg().freshportal_url
+    save_supplier_name_map(fp_url, req.tx_company, req.fp_supplier_id)
+    return {"ok": True}
 
 
 @app.post("/catalogue/{supplier_id}/matches/approve")

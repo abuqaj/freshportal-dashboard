@@ -51,9 +51,15 @@ interface DeliveryOrder {
   lines: DeliveryLine[];
 }
 
+interface FPSupplier {
+  fp_supplier_id: string;
+  nm_supplier: string;
+}
+
 interface ParseResult {
   orders: DeliveryOrder[];
   supplier_id: string;
+  supplier_nm: string;
   catalogue_count: number;
   catalogue: CatalogueProduct[];
   matched_count: number;
@@ -143,6 +149,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [showCacheManager, setShowCacheManager] = useState(false);
   const [cachedMatchesList, setCachedMatchesList] = useState<Array<{ delivery_key: string; nm_variety: string; nm_product: string; match_type: string; approved: boolean }>>([]);
 
+  // ── Supplier picker ───────────────────────────────────────────────────────
+  const [resolvedSupplier, setResolvedSupplier] = useState<FPSupplier | null>(null);
+  const [supplierPickerOpen, setSupplierPickerOpen] = useState(false);
+  const [supplierList, setSupplierList] = useState<FPSupplier[]>([]);
+  const [supplierSearch, setSupplierSearch] = useState("");
+
   function deliveryKey(line: DeliveryLine): string {
     return `${(line.nm_variety ?? "").toLowerCase().trim()}|${line.nu_length || ""}`;
   }
@@ -206,6 +218,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setActiveOrderIdx(0);
       setLineEdits({});
       setEditingKey(null);
+      // Set resolved supplier from parse response
+      if (data.supplier_id) {
+        setResolvedSupplier({ fp_supplier_id: data.supplier_id, nm_supplier: data.supplier_nm || data.supplier_id });
+      } else {
+        setResolvedSupplier(null);
+      }
       // Pre-approve lines that are already cached from DB
       const preApproved = new Set<string>();
       for (const order of data.orders) {
@@ -221,48 +239,63 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     }
   }
 
-  // ── Sync catalogue ──────────────────────────────────────────────────────
+  // ── Supplier picker ──────────────────────────────────────────────────────
 
-  async function handleSyncCatalogue() {
-    const supplierName = parseResult?.orders[activeOrderIdx]?.tx_company ?? "";
-    let supplierId = parseResult?.supplier_id ?? "";
-
-    setStage("syncing");
-    setLogs([]);
-
-    // If supplier wasn't resolved during parse (e.g. first-time supplier, not yet in DB),
-    // fetch the live supplier list from FreshPortal and match by any significant word
-    if (!supplierId) {
-      addLog("Supplier not in local DB — fetching live supplier list from FreshPortal…");
+  async function openSupplierPicker() {
+    // Load supplier list if not yet loaded
+    if (supplierList.length === 0) {
       try {
-        const suppRes = await fetch(`${RAILWAY}/catalogue/suppliers?refresh=true`);
-        if (suppRes.ok) {
-          const suppData = await suppRes.json();
-          const list: Array<{ fp_supplier_id: string; nm_supplier: string }> = suppData.suppliers ?? [];
-          // Try each significant word (>3 chars) from the company name
-          const words = supplierName.toUpperCase().split(/\s+/).filter(w => w.length > 3 && !/^(S\.A\.|B\.V\.|LTD|LLC|INC|SRL|NV)$/i.test(w));
-          for (const word of words) {
-            const match = list.find(s => s.nm_supplier.toUpperCase().includes(word));
-            if (match) {
-              supplierId = match.fp_supplier_id;
-              addLog(`Matched to FreshPortal supplier: ${match.nm_supplier} (#${supplierId})`);
-              break;
-            }
-          }
+        const res = await fetch(`${RAILWAY}/catalogue/suppliers`);
+        if (res.ok) {
+          const data = await res.json();
+          setSupplierList(data.suppliers ?? []);
         }
-      } catch {
-        addLog("Failed to fetch supplier list from FreshPortal.");
-        setStage("preview");
-        return;
-      }
+      } catch {}
+    }
+    setSupplierSearch("");
+    setSupplierPickerOpen(true);
+  }
 
-      if (!supplierId) {
-        addLog(`Could not identify a FreshPortal supplier for "${supplierName}". Check the supplier list manually.`);
-        setStage("preview");
-        return;
+  async function handleSelectSupplier(supplier: FPSupplier) {
+    setSupplierPickerOpen(false);
+    setResolvedSupplier(supplier);
+
+    // Persist the company name → fp_supplier_id mapping
+    const txCompany = parseResult?.orders[activeOrderIdx]?.tx_company ?? "";
+    try {
+      await fetch(`${RAILWAY}/catalogue/supplier-map`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tx_company: txCompany, fp_supplier_id: supplier.fp_supplier_id }),
+      });
+    } catch {}
+
+    // Check if catalogue exists for this supplier
+    let needsSync = false;
+    try {
+      const statusRes = await fetch(`${RAILWAY}/catalogue/${supplier.fp_supplier_id}/status`);
+      if (statusRes.ok) {
+        const status = await statusRes.json();
+        needsSync = !status.synced || (status.item_count ?? 0) === 0;
+      } else {
+        needsSync = true;
       }
+    } catch {
+      needsSync = true;
     }
 
+    if (needsSync) {
+      await syncCatalogueForSupplier(supplier.fp_supplier_id, supplier.nm_supplier);
+    } else {
+      await handleParse(supplier.fp_supplier_id);
+    }
+  }
+
+  // ── Sync catalogue ──────────────────────────────────────────────────────
+
+  async function syncCatalogueForSupplier(supplierId: string, supplierName: string) {
+    setStage("syncing");
+    setLogs([]);
     addLog(`Syncing catalogue for ${supplierName} (#${supplierId})…`);
 
     const params = new URLSearchParams({ nm_supplier: supplierName });
@@ -287,15 +320,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const parts = buf.split("\n\n");
       buf = parts.pop() ?? "";
       for (const part of parts) {
-        const line = part.replace(/^data: /, "").trim();
-        if (!line || line.startsWith(":")) continue;
+        const evLine = part.replace(/^data: /, "").trim();
+        if (!evLine || evLine.startsWith(":")) continue;
         try {
-          const ev = JSON.parse(line);
+          const ev = JSON.parse(evLine);
           if (ev.type === "status") addLog(ev.message);
           if (ev.type === "result") {
             addLog(`Catalogue synced — ${ev.data.items_saved} products. Re-matching…`);
             setCatalogueCount(ev.data.items_saved);
-            // Pass supplierId so re-parse uses it even if backend name-match still fails
             await handleParse(supplierId);
           }
           if (ev.type === "error") {
@@ -305,6 +337,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         } catch {}
       }
     }
+  }
+
+  async function handleSyncCatalogue() {
+    // If supplier is already resolved, sync directly
+    if (resolvedSupplier) {
+      await syncCatalogueForSupplier(resolvedSupplier.fp_supplier_id, resolvedSupplier.nm_supplier);
+      return;
+    }
+
+    // No supplier known — open picker so user can select
+    await openSupplierPicker();
   }
 
   // ── Import to FreshPortal ───────────────────────────────────────────────
@@ -576,6 +619,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setEditingKey(null);
     setShowCacheManager(false);
     setCachedMatchesList([]);
+    setResolvedSupplier(null);
+    setSupplierPickerOpen(false);
+    setSupplierSearch("");
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -654,6 +700,37 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <Row label={td.boxes} value={String(order.nu_boxes)} />
             <Row label={td.stemsTotal} value={order.nu_stems_total.toLocaleString()} />
             <Row label={td.valueTotal} value={`€${order.mny_total.toFixed(2)}`} />
+          </div>
+
+          {/* FreshPortal supplier resolution row */}
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-ink-3 shrink-0">Dostawca FP:</span>
+            {resolvedSupplier ? (
+              <>
+                <span className="font-medium text-ink">{resolvedSupplier.nm_supplier}</span>
+                <span className="text-ink-3/50 text-xs">#{resolvedSupplier.fp_supplier_id}</span>
+                <button
+                  onClick={openSupplierPicker}
+                  title="Zmień dostawcę FreshPortal"
+                  className="ml-1 text-ink-3 hover:text-ink opacity-60 hover:opacity-100 transition-opacity"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-amber-600 text-xs">Nie znaleziono dopasowania</span>
+                <button
+                  onClick={openSupplierPicker}
+                  className="h-6 px-2.5 rounded-lg text-xs font-medium border border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors"
+                >
+                  Wybierz dostawcę FP
+                </button>
+              </>
+            )}
           </div>
 
           {/* Catalogue status */}
@@ -894,6 +971,53 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </tbody>
             </table>
           </div>
+
+          {/* Supplier picker modal */}
+          {supplierPickerOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-40 bg-black/40"
+                onClick={() => setSupplierPickerOpen(false)}
+              />
+              <div className="fixed inset-x-4 top-16 bottom-16 z-50 max-w-md mx-auto rounded-2xl border border-border bg-background shadow-2xl flex flex-col overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+                  <div>
+                    <span className="text-sm font-semibold text-ink">Wybierz dostawcę FreshPortal</span>
+                    <p className="text-xs text-ink-3 mt-0.5">dla: {parseResult?.orders[activeOrderIdx]?.tx_company}</p>
+                  </div>
+                  <button onClick={() => setSupplierPickerOpen(false)} className="text-xs text-ink-3 hover:text-ink">✕</button>
+                </div>
+                <div className="px-3 py-2 border-b border-border shrink-0">
+                  <input
+                    autoFocus
+                    value={supplierSearch}
+                    onChange={e => setSupplierSearch(e.target.value)}
+                    placeholder="Szukaj dostawcy…"
+                    className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background outline-none focus:border-emerald/50"
+                  />
+                </div>
+                <div className="overflow-y-auto flex-1">
+                  {supplierList.length === 0 ? (
+                    <p className="text-xs text-ink-3 px-4 py-3">Ładowanie listy dostawców…</p>
+                  ) : (
+                    supplierList
+                      .filter(s => s.nm_supplier.toLowerCase().includes(supplierSearch.toLowerCase()))
+                      .map(s => (
+                        <button
+                          key={s.fp_supplier_id}
+                          onClick={() => handleSelectSupplier(s)}
+                          className={`w-full text-left px-4 py-2.5 text-sm hover:bg-muted border-b border-border/60 last:border-0 transition-colors
+                            ${resolvedSupplier?.fp_supplier_id === s.fp_supplier_id ? "bg-emerald/8 text-emerald font-medium" : "text-ink"}`}
+                        >
+                          {s.nm_supplier}
+                          <span className="ml-2 text-xs text-ink-3">#{s.fp_supplier_id}</span>
+                        </button>
+                      ))
+                  )}
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Cache manager — modal dialog */}
           {showCacheManager && (
