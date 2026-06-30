@@ -1311,7 +1311,7 @@ function DeliveryStepBar({
     : 3;
 
   return (
-    <div className="flex items-start w-full max-w-sm">
+    <div className="flex items-start w-full">
       {steps.map((label, i) => {
         const done = i < current;
         const active = i === current;

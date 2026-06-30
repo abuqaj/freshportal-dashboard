@@ -257,33 +257,32 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, o
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
   const w = MODULE_WIDTH[tab];
   return (
-    <div className="module-enter w-full flex-1 flex overflow-hidden bg-ground">
-      {/* Side navigation */}
-      {navTabs.length > 1 && (
-        <nav className="w-44 flex-shrink-0 flex flex-col gap-2 py-5 px-3 overflow-y-auto border-r border-border/40">
-          {navTabs.map((nt) => (
-            <button
-              key={nt.id}
-              onClick={() => onSelectTab(nt.id)}
-              className={`relative w-full px-3 py-2.5 rounded-xl text-left text-[11px] font-semibold text-white
-                bg-gradient-to-br ${nt.gradient} transition-all
-                ${nt.id === tab
-                  ? "opacity-100 shadow-sm"
-                  : "opacity-50 hover:opacity-80"}`}
-            >
-              {nt.id === tab && (
-                <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-white/60 rounded-r-full" />
-              )}
-              <span className="pl-1">{nt.label}</span>
-            </button>
-          ))}
-        </nav>
-      )}
+    <div className="module-enter w-full flex-1 flex flex-col items-center overflow-y-auto py-6 px-4 bg-ground">
+      <div className={`relative w-full ${w} mb-8`}>
+        {/* Nav tiles — absolutely positioned to the left of the card */}
+        {navTabs.length > 1 && (
+          <div className="absolute right-full top-0 mr-4 w-40 flex flex-col gap-2">
+            {navTabs.map((nt) => (
+              <button
+                key={nt.id}
+                onClick={() => onSelectTab(nt.id)}
+                className={`relative w-full px-3 py-2.5 rounded-xl text-left text-[11px] font-semibold text-white
+                  bg-gradient-to-br ${nt.gradient} transition-all
+                  ${nt.id === tab
+                    ? "opacity-100 shadow-sm"
+                    : "opacity-50 hover:opacity-80"}`}
+              >
+                {nt.id === tab && (
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-white/60 rounded-r-full" />
+                )}
+                <span className="pl-1">{nt.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
-      {/* Main content area */}
-      <div className="flex-1 min-w-0 flex flex-col items-center overflow-y-auto py-6 px-4">
         {/* Back + optional auto VBN badge */}
-        <div className={`w-full ${w} flex items-center justify-between mb-4`}>
+        <div className="flex items-center justify-between mb-4">
           <button
             onClick={onBack}
             className="flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink transition-colors group"
@@ -318,7 +317,7 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, o
         </div>
 
         {/* Content card */}
-        <div className={`w-full ${w} bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden mb-8`}>
+        <div className="bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden">
           {children}
         </div>
       </div>
