@@ -18,6 +18,19 @@ import { useSystem } from "@/contexts/SystemContext";
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "catalogue";
 
+const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
+const ECUADOR_ONLY_TABS:      Tab[] = ["delivery", "catalogue"];
+
+const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
+  { id: "vbn",       gradient: "from-emerald to-[#0D5430]",   perm: "vbn:check" },
+  { id: "create",    gradient: "from-ember to-[#B83220]",     perm: "products:create" },
+  { id: "photos",    gradient: "from-[#145E35] to-[#073D22]", perm: "photos:upload" },
+  { id: "history",   gradient: "from-[#C43320] to-[#8B1E14]", perm: "admin:manage" },
+  { id: "admin",     gradient: "from-[#374151] to-[#111827]", perm: "admin:manage" },
+  { id: "delivery",  gradient: "from-[#0F4C8A] to-[#0A2E54]", perm: "admin:manage" },
+  { id: "catalogue", gradient: "from-[#5B3FA6] to-[#2E1D66]", perm: "admin:manage" },
+];
+
 /* ─── 3-D tilt hook ─── */
 function useTilt(strength = 10) {
   const ref = useRef<HTMLDivElement>(null);
@@ -234,52 +247,80 @@ const MODULE_WIDTH: Record<Tab, string> = {
   catalogue: "max-w-4xl",
 };
 
-function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, children }: {
+function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, onSelectTab, children }: {
   tab: Tab; onBack: () => void; autoEnabled: boolean | null; autoNextRun: string | null;
-  lang: Lang; t: (typeof translations)[Lang]; children: React.ReactNode;
+  lang: Lang; t: (typeof translations)[Lang];
+  navTabs: { id: Tab; label: string; gradient: string }[];
+  onSelectTab: (id: Tab) => void;
+  children: React.ReactNode;
 }) {
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
   const w = MODULE_WIDTH[tab];
   return (
-    <div className="module-enter w-full flex-1 flex flex-col items-center overflow-y-auto py-6 px-4 bg-ground">
-      {/* Back + optional auto VBN badge */}
-      <div className={`w-full ${w} flex items-center justify-between mb-4`}>
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink transition-colors group"
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
-            className="group-hover:-translate-x-0.5 transition-transform">
-            <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          {t.hub.back}
-        </button>
-
-        {tab === "vbn" && (
-          autoEnabled ? (
-            <span className="flex items-center gap-1.5 text-xs text-emerald bg-emerald-light border border-emerald/20 px-2.5 py-1 rounded-full">
-              <span className="relative w-1.5 h-1.5 flex-shrink-0">
-                <span className="absolute inset-0 rounded-full bg-emerald pulse-ring"/>
-                <span className="relative w-1.5 h-1.5 rounded-full bg-emerald block"/>
-              </span>
-              {t.hub.autoVbnActive}
-              {autoNextRun && (
-                <span className="text-emerald/70 ml-1">
-                  · {new Date(autoNextRun).toLocaleString(localeStr, {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
-                </span>
+    <div className="module-enter w-full flex-1 flex overflow-hidden bg-ground">
+      {/* Side navigation */}
+      {navTabs.length > 1 && (
+        <nav className="w-44 flex-shrink-0 flex flex-col gap-2 py-5 px-3 overflow-y-auto border-r border-border/40">
+          {navTabs.map((nt) => (
+            <button
+              key={nt.id}
+              onClick={() => onSelectTab(nt.id)}
+              className={`relative w-full px-3 py-2.5 rounded-xl text-left text-[11px] font-semibold text-white
+                bg-gradient-to-br ${nt.gradient} transition-all
+                ${nt.id === tab
+                  ? "opacity-100 shadow-sm"
+                  : "opacity-50 hover:opacity-80"}`}
+            >
+              {nt.id === tab && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-white/60 rounded-r-full" />
               )}
-            </span>
-          ) : (
-            <span className="text-xs text-ink-3 bg-muted px-2.5 py-1 rounded-full border border-border">
-              {t.hub.moduleAutoOff}
-            </span>
-          )
-        )}
-      </div>
+              <span className="pl-1">{nt.label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
 
-      {/* Content */}
-      <div className={`w-full ${w} bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden mb-8`}>
-        {children}
+      {/* Main content area */}
+      <div className="flex-1 min-w-0 flex flex-col items-center overflow-y-auto py-6 px-4">
+        {/* Back + optional auto VBN badge */}
+        <div className={`w-full ${w} flex items-center justify-between mb-4`}>
+          <button
+            onClick={onBack}
+            className="flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink transition-colors group"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+              className="group-hover:-translate-x-0.5 transition-transform">
+              <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            {t.hub.back}
+          </button>
+
+          {tab === "vbn" && (
+            autoEnabled ? (
+              <span className="flex items-center gap-1.5 text-xs text-emerald bg-emerald-light border border-emerald/20 px-2.5 py-1 rounded-full">
+                <span className="relative w-1.5 h-1.5 flex-shrink-0">
+                  <span className="absolute inset-0 rounded-full bg-emerald pulse-ring"/>
+                  <span className="relative w-1.5 h-1.5 rounded-full bg-emerald block"/>
+                </span>
+                {t.hub.autoVbnActive}
+                {autoNextRun && (
+                  <span className="text-emerald/70 ml-1">
+                    · {new Date(autoNextRun).toLocaleString(localeStr, {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span className="text-xs text-ink-3 bg-muted px-2.5 py-1 rounded-full border border-border">
+                {t.hub.moduleAutoOff}
+              </span>
+            )
+          )}
+        </div>
+
+        {/* Content card */}
+        <div className={`w-full ${w} bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden mb-8`}>
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -498,8 +539,6 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
 
   const isStamgegevens = system.id === "stamgegevens";
   const isEcuador = system.id === "ecuador";
-  const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
-  const ECUADOR_ONLY_TABS: Tab[] = ["delivery", "catalogue"];
 
   const tiles = allTiles.filter(tile =>
     permissions.includes(tile.perm) &&
@@ -562,7 +601,7 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
 /* ─── Root ─── */
 export default function Dashboard() {
   const { data: session, status: sessionStatus } = useSession();
-  const { setSystem } = useSystem();
+  const { system, setSystem } = useSystem();
   const [lang, setLangState] = useState<Lang>("en");
   const [tab, setTab] = useState<Tab | null>(null);
   const [hubStep, setHubStep] = useState<"system" | "module">("system");
@@ -616,6 +655,22 @@ export default function Dashboard() {
     setHubStep("module");
   }
 
+  const navTabs = NAV_TABS_ALL
+    .filter(nt => permissions.includes(nt.perm))
+    .filter(nt => system.id === "stamgegevens" || !STAMGEGEVENS_ONLY_TABS.includes(nt.id))
+    .filter(nt => system.id === "ecuador"      || !ECUADOR_ONLY_TABS.includes(nt.id))
+    .map(nt => ({
+      id:       nt.id,
+      gradient: nt.gradient,
+      label:    nt.id === "admin"     ? t.hub.adminLabel
+              : nt.id === "vbn"       ? t.nav.vbnChecker
+              : nt.id === "create"    ? t.nav.newProducts
+              : nt.id === "photos"    ? t.nav.photoUploader
+              : nt.id === "history"   ? t.nav.history
+              : nt.id === "delivery"  ? t.nav.deliveryImporter
+              : t.nav.catalogueSync,
+    }));
+
   // Show spinner while session loads
   if (sessionStatus === "loading") {
     return (
@@ -655,6 +710,8 @@ export default function Dashboard() {
             autoNextRun={autoNextRun}
             lang={lang}
             t={t}
+            navTabs={navTabs}
+            onSelectTab={setTab}
           >
             {tab === "vbn"      && <VbnChecker       lang={lang} onAutoVbnChange={handleAutoVbnChange} initialAutoEnabled={autoEnabled} initialAutoNextRun={autoNextRun}/>}
             {tab === "create"   && <ProductCreator  lang={lang}/>}
