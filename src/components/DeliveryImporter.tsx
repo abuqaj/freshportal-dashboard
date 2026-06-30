@@ -640,13 +640,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     <div className="p-6 flex flex-col gap-6">
       <div>
         <h2 className="text-lg font-bold text-ink">{td.title}</h2>
-        <p className="text-sm text-ink-3 mt-0.5">{td.description}</p>
+        <p className="text-sm text-ink-3 mt-0.5">
+          {stage === "preview" || stage === "syncing" ? td.descReview
+           : stage === "importing" ? td.descImport
+           : stage === "done" ? td.descProducts
+           : td.descUpload}
+        </p>
       </div>
 
       {/* ── PROGRESS STEPPER ── */}
       <DeliveryStepBar
         stage={stage}
-        addStage={addStage}
         steps={[td.stepUpload, td.stepReview, td.stepImport, td.stepProducts]}
       />
 
@@ -1296,9 +1300,9 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 function DeliveryStepBar({
-  stage, addStage, steps,
+  stage, steps,
 }: {
-  stage: Stage; addStage: "idle" | "running" | "done" | "error"; steps: string[];
+  stage: Stage; steps: string[];
 }) {
   const current =
     stage === "idle" || stage === "parsing" || stage === "error" ? 0
@@ -1307,25 +1311,33 @@ function DeliveryStepBar({
     : 3;
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-start w-full max-w-sm">
       {steps.map((label, i) => {
         const done = i < current;
         const active = i === current;
         return (
-          <div key={i} className="flex items-center gap-1">
-            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
-              ${done ? "bg-emerald text-white" : active ? "bg-emerald/12 text-emerald ring-1 ring-inset ring-emerald/30" : "bg-muted text-ink-3"}`}>
-              <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0
-                ${done ? "bg-white/25 text-white" : active ? "bg-emerald text-white" : "bg-border text-ink-3"}`}>
-                {done ? "✓" : i + 1}
+          <div key={i} className="flex items-start flex-1 min-w-0">
+            {/* Circle + label */}
+            <div className="flex flex-col items-center gap-2 flex-shrink-0">
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ring-2 transition-all
+                ${done ? "bg-emerald ring-emerald text-white"
+                : active ? "bg-emerald ring-emerald text-white"
+                : "bg-surface ring-border text-ink-3"}`}>
+                {done ? (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                ) : i + 1}
+              </div>
+              <span className={`text-[11px] font-medium text-center whitespace-nowrap
+                ${active ? "text-emerald" : done ? "text-ink-3" : "text-ink-3/50"}`}>
+                {label}
               </span>
-              <span className="whitespace-nowrap">{label}</span>
             </div>
+            {/* Connecting line (not after last step) */}
             {i < steps.length - 1 && (
-              <svg className={`w-3.5 h-3.5 shrink-0 ${done ? "text-emerald" : "text-border"}`}
-                   viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <polyline points="9 18 15 12 9 6"/>
-              </svg>
+              <div className={`flex-1 h-0.5 mt-[18px] mx-1.5 rounded-full transition-colors
+                ${done ? "bg-emerald" : "bg-border"}`} />
             )}
           </div>
         );

@@ -76,7 +76,7 @@ export default function LoginPage() {
           <div className="w-16 h-16 rounded-3xl bg-surface border border-border shadow-sm flex items-center justify-center mb-4">
             <LogoMark size={36} />
           </div>
-          <h1 className="text-2xl font-bold text-ink tracking-tight">FreshPortal</h1>
+          <h1 className="text-2xl font-bold text-ink tracking-tight">FreshFromSource</h1>
           <p className="text-sm text-ink-3 mt-1">{tl.subtitle}</p>
         </div>
 

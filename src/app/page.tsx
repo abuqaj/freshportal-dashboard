@@ -162,7 +162,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-surface flex-shrink-0">
       <div className="flex items-center gap-3">
         <LogoMark size={24}/>
-        <span className="text-sm font-bold text-ink">FreshPortal</span>
+        <span className="text-sm font-bold text-ink">FreshFromSource</span>
         {tab && tabLabel && (
           <>
             <span className="text-border text-sm select-none">/</span>
