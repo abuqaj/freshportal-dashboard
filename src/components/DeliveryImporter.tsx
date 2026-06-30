@@ -976,10 +976,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {supplierPickerOpen && (
             <>
               <div
-                className="fixed inset-0 z-40 bg-black/40"
+                className="fixed inset-0 bg-black/60 z-[200]"
                 onClick={() => setSupplierPickerOpen(false)}
               />
-              <div className="fixed inset-x-4 top-16 bottom-16 z-50 max-w-md mx-auto rounded-2xl border border-border bg-background shadow-2xl flex flex-col overflow-hidden">
+              <div className="fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl border border-border bg-background shadow-2xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
                   <div>
                     <span className="text-sm font-semibold text-ink">Wybierz dostawcę FreshPortal</span>
@@ -1023,10 +1023,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {showCacheManager && (
             <>
               <div
-                className="fixed inset-0 z-40 bg-black/40"
+                className="fixed inset-0 bg-black/60 z-[200]"
                 onClick={() => setShowCacheManager(false)}
               />
-              <div className="fixed inset-x-4 top-12 bottom-4 z-50 max-w-3xl mx-auto rounded-2xl border border-border bg-background shadow-2xl flex flex-col overflow-hidden">
+              <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-3xl mx-auto rounded-2xl border border-border bg-background shadow-2xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
                   <span className="text-sm font-semibold text-ink">Pamięć systemu ({cachedMatchesList.length} wpisów)</span>
                   <button onClick={() => setShowCacheManager(false)} className="text-xs text-ink-3 hover:text-ink">Zamknij ✕</button>
