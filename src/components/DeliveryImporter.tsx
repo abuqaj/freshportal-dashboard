@@ -1273,13 +1273,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         ) : "—"}
                       </td>
                       <td className="px-3 py-2 text-center">
-                        {(line.nu_physical_boxes ?? 1) > 1 ? (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-semibold bg-blue-500/10 text-blue-600 border-blue-500/20">
-                            ×{line.nu_physical_boxes}
-                          </span>
-                        ) : (
-                          <span className="text-ink-3">{line.nu_physical_boxes ?? 1}</span>
-                        )}
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-semibold bg-blue-500/10 text-blue-600 border-blue-500/20">
+                          ×{line.nu_physical_boxes ?? 1}
+                        </span>
                       </td>
                       <td className="px-3 py-2 text-ink-3 text-center">
                         {Math.floor(line.nu_bunches / Math.max(1, line.nu_physical_boxes ?? 1)) * line.nu_stems_bunch}
@@ -1570,11 +1566,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
               {addResult.details.length > 0 && (
                 <div className="mt-2 max-h-52 overflow-y-auto space-y-0.5 pr-1">
-                  {addResult.details.map((d, i) => (
-                    <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : "text-red-400"}`}>
-                      {d.status === "added" ? "✓" : "✗"} {d.product}
-                    </div>
-                  ))}
+                  {[...addResult.details]
+                    .sort((a, b) => (a.status === "failed" ? -1 : b.status === "failed" ? 1 : 0))
+                    .map((d, i) => (
+                      <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : d.status === "failed" ? "text-red-500 font-semibold" : "text-amber-500"}`}>
+                        {d.status === "added" ? "✓" : "✗"} {d.product}
+                        {d.status === "failed" && <span className="ml-1 text-red-400 font-normal">— failed</span>}
+                      </div>
+                    ))
+                  }
                 </div>
               )}
               <details className="mt-3 text-xs">
