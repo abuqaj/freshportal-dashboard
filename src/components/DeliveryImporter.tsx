@@ -933,26 +933,36 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
           )}
 
-          {/* Duplicate warning */}
+          {/* Duplicate warning — centered modal */}
           {duplicateWarning.length > 0 && (
-            <div className="flex flex-col gap-2 px-3 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs">
-              <p className="font-semibold text-amber-700">{td.duplicateWarningTitle}</p>
-              <p className="text-amber-600">{td.duplicateWarningMsg(duplicateWarning.join(", "))}</p>
-              <div className="flex gap-2 mt-1">
-                <button
-                  onClick={() => { setDuplicateWarning([]); handleParse(); }}
-                  className="h-7 px-3 rounded-lg text-xs font-semibold bg-amber-500/25 text-amber-800 hover:bg-amber-500/35 transition-colors"
-                >
-                  {td.parseBtn}
-                </button>
-                <button
-                  onClick={() => setDuplicateWarning([])}
-                  className="h-7 px-3 rounded-lg text-xs font-medium border border-amber-500/30 text-amber-600 hover:bg-amber-500/10 transition-colors"
-                >
-                  {t.common.cancel}
-                </button>
+            <>
+              <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setDuplicateWarning([])} />
+              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-amber-500/40 bg-surface shadow-2xl p-6 flex flex-col gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xl">
+                    ⚠
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-amber-700">{td.duplicateWarningTitle}</p>
+                    <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.duplicateWarningMsg(duplicateWarning.join(", "))}</p>
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={() => setDuplicateWarning([])}
+                    className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
+                  >
+                    {t.common.cancel}
+                  </button>
+                  <button
+                    onClick={() => { setDuplicateWarning([]); handleParse(); }}
+                    className="h-9 px-5 rounded-xl text-sm font-semibold bg-amber-500 text-white hover:bg-amber-500/90 transition-colors"
+                  >
+                    {td.parseBtn}
+                  </button>
+                </div>
               </div>
-            </div>
+            </>
           )}
 
           <div
@@ -1006,7 +1016,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <button
               ref={refParseBtn}
               onClick={handleParseClick}
-              disabled={!jsonText.trim() || stage === "parsing"}
+              disabled={!jsonText.trim() || stage === "parsing" || duplicateWarning.length > 0}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
             >
               {td.parseBtn}
