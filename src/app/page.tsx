@@ -27,8 +27,8 @@ const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "photos",    gradient: "from-[#145E35] to-[#073D22]", perm: "photos:upload" },
   { id: "history",   gradient: "from-[#C43320] to-[#8B1E14]", perm: "admin:manage" },
   { id: "admin",     gradient: "from-[#374151] to-[#111827]", perm: "admin:manage" },
-  { id: "delivery",  gradient: "from-[#0F4C8A] to-[#0A2E54]", perm: "admin:manage" },
-  { id: "catalogue", gradient: "from-[#5B3FA6] to-[#2E1D66]", perm: "admin:manage" },
+  { id: "delivery",  gradient: "from-[#0F4C8A] to-[#0A2E54]", perm: "delivery:import" },
+  { id: "catalogue", gradient: "from-[#5B3FA6] to-[#2E1D66]", perm: "catalogue:sync" },
 ];
 
 /* ─── 3-D tilt hook ─── */
@@ -386,18 +386,19 @@ function SystemCard({
   );
 }
 
-/* ─── System selector step (admin only) ─── */
-function SystemSelector({ t, onSelect }: {
-  t: (typeof translations)[Lang]; onSelect: (system: FPSystem) => void;
+/* ─── System selector step ─── */
+function SystemSelector({ t, systems, onSelect }: {
+  t: (typeof translations)[Lang]; systems: FPSystem[]; onSelect: (system: FPSystem) => void;
 }) {
   const { system: currentSystem } = useSystem();
+  const cols = systems.length <= 2 ? `grid-cols-${systems.length}` : systems.length <= 4 ? "grid-cols-2" : "grid-cols-3";
   return (
     <div className="hub-enter flex-1 flex flex-col items-center justify-center px-8 py-10 bg-ground overflow-y-auto">
       <div className="w-full max-w-5xl">
         <h1 className="text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.selectSystemTitle}</h1>
         <p className="text-sm text-ink-3 mb-10">{t.hub.selectSystemDesc}</p>
-        <div className="grid grid-cols-3 gap-5">
-          {FP_SYSTEMS.map((sys, i) => (
+        <div className={`grid ${cols} gap-5`}>
+          {systems.map((sys, i) => (
             <SystemCard
               key={sys.id}
               system={sys}
@@ -504,7 +505,7 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
     },
     {
       id: "delivery",
-      perm: "admin:manage",
+      perm: "delivery:import",
       label: t.nav.deliveryImporter,
       desc: t.hub.deliveryDesc,
       gradient: "bg-gradient-to-br from-[#0F4C8A] to-[#0A2E54]",
@@ -520,7 +521,7 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
     },
     {
       id: "catalogue",
-      perm: "admin:manage",
+      perm: "catalogue:sync",
       label: t.nav.catalogueSync,
       desc: t.hub.catalogueSyncDesc,
       gradient: "bg-gradient-to-br from-[#5B3FA6] to-[#2E1D66]",
@@ -541,7 +542,7 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
   const isEcuador = system.id === "ecuador";
 
   const tiles = allTiles.filter(tile =>
-    permissions.includes(tile.perm) &&
+    (isAdmin || permissions.includes(tile.perm)) &&
     (isStamgegevens || !STAMGEGEVENS_ONLY_TABS.includes(tile.id)) &&
     (isEcuador || !ECUADOR_ONLY_TABS.includes(tile.id))
   );
@@ -579,7 +580,7 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
           <span className={`w-1.5 h-1.5 rounded-full ${autoEnabled ? "bg-emerald" : "bg-muted"}`}/>
           {autoEnabled ? t.hub.autoVbnActive : t.hub.autoVbnDisabled}
         </span>
-        {isAdmin && onChangeSystem && (
+        {onChangeSystem && (
           <>
             <span className="w-px h-3 bg-border"/>
             <span className="flex items-center gap-1.5">
@@ -615,17 +616,30 @@ export default function Dashboard() {
   const isAdmin = permissions.includes("admin:manage");
   const username = session?.user?.name ?? undefined;
 
+  // Compute which systems this user can access via system:* permissions
+  const accessibleSystems = (() => {
+    const sysIds = permissions.filter(p => p.startsWith("system:")).map(p => p.replace("system:", ""));
+    return sysIds.length > 0
+      ? FP_SYSTEMS.filter(s => sysIds.includes(s.id))
+      : (isAdmin ? FP_SYSTEMS : []);
+  })();
+
   useEffect(() => {
     const saved = localStorage.getItem("fp_lang") as Lang | null;
     if (saved && ["en","nl","pl","es"].includes(saved)) setLangState(saved);
   }, []);
 
-  // Non-admins skip the system step entirely
+  // Auto-select system when there's only one accessible, or skip selector for no-system users
   useEffect(() => {
-    if (sessionStatus === "authenticated" && !isAdmin) {
+    if (sessionStatus !== "authenticated") return;
+    if (accessibleSystems.length === 1) {
+      setSystem(accessibleSystems[0]);
+      setHubStep("module");
+    } else if (accessibleSystems.length === 0) {
       setHubStep("module");
     }
-  }, [sessionStatus, isAdmin]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionStatus]);
 
   useEffect(() => {
     if (!RAILWAY || sessionStatus !== "authenticated") return;
@@ -656,7 +670,7 @@ export default function Dashboard() {
   }
 
   const navTabs = NAV_TABS_ALL
-    .filter(nt => permissions.includes(nt.perm))
+    .filter(nt => isAdmin || permissions.includes(nt.perm))
     .filter(nt => system.id === "stamgegevens" || !STAMGEGEVENS_ONLY_TABS.includes(nt.id))
     .filter(nt => system.id === "ecuador"      || !ECUADOR_ONLY_TABS.includes(nt.id))
     .map(nt => ({
@@ -688,8 +702,8 @@ export default function Dashboard() {
       {/* Main content */}
       <div className="flex-1 overflow-hidden flex flex-col">
         {!tab ? (
-          isAdmin && hubStep === "system" ? (
-            <SystemSelector t={t} onSelect={handleSystemSelect} />
+          hubStep === "system" && accessibleSystems.length > 1 ? (
+            <SystemSelector t={t} systems={accessibleSystems} onSelect={handleSystemSelect} />
           ) : (
             <Hub
               lang={lang}
@@ -699,7 +713,7 @@ export default function Dashboard() {
               productCount={productCount}
               onSelect={(t) => setTab(t)}
               permissions={permissions}
-              onChangeSystem={isAdmin ? () => setHubStep("system") : undefined}
+              onChangeSystem={accessibleSystems.length > 1 ? () => setHubStep("system") : undefined}
             />
           )
         ) : (

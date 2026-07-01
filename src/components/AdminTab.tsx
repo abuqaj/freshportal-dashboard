@@ -20,12 +20,36 @@ interface Group {
   permissions: string[]
 }
 
-const ALL_PERMISSIONS = ["vbn:check", "vbn:fix", "products:create", "photos:upload", "admin:manage"]
+const SYSTEM_DEFS: { id: string; label: string; dot: string; modules: { perm: string; label: string }[] }[] = [
+  {
+    id: "stamgegevens", label: "Stamgegevens", dot: "bg-emerald",
+    modules: [
+      { perm: "vbn:check",       label: "VBN Check" },
+      { perm: "vbn:fix",         label: "VBN Fix" },
+      { perm: "products:create", label: "New Products" },
+      { perm: "photos:upload",   label: "Photo Uploader" },
+    ],
+  },
+  {
+    id: "ecuador", label: "Ecuador", dot: "bg-[#E8A200]",
+    modules: [
+      { perm: "delivery:import", label: "Delivery Import" },
+      { perm: "catalogue:sync",  label: "Catalogue Sync" },
+    ],
+  },
+  { id: "piazza",      label: "Piazza dei Fiori", dot: "bg-[#009246]", modules: [] },
+  { id: "netherlands", label: "Netherlands",       dot: "bg-[#AE1C28]", modules: [] },
+  { id: "kenya",       label: "Kenya",             dot: "bg-[#006600]", modules: [] },
+  { id: "coloriginz",  label: "Coloriginz",        dot: "bg-[#7C3AED]", modules: [] },
+]
+
 const PERM_LABELS: Record<string, string> = {
   "vbn:check":       "VBN Check",
   "vbn:fix":         "VBN Fix",
-  "products:create": "Products",
-  "photos:upload":   "Photos",
+  "products:create": "New Products",
+  "photos:upload":   "Photo Uploader",
+  "delivery:import": "Delivery Import",
+  "catalogue:sync":  "Catalogue Sync",
   "admin:manage":    "Admin",
 }
 
@@ -79,7 +103,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
             </svg>
           </button>
         </div>
-        <div className="px-6 py-5 space-y-4">{children}</div>
+        <div className="px-6 py-5 space-y-4 overflow-y-auto max-h-[75vh]">{children}</div>
       </div>
     </div>
   )
@@ -168,7 +192,11 @@ function UserEditModal({ user, currentUsername, onSaved, onClose }: {
                     onChange={() => setGroupId(g.id)} />
                   <span className="text-sm font-medium text-ink">{g.name}</span>
                   {g.permissions.length > 0 && (
-                    <span className="text-xs text-ink-3">({g.permissions.map(p => PERM_LABELS[p] ?? p).join(", ")})</span>
+                    <span className="text-xs text-ink-3">
+                      ({g.permissions.filter(p => !p.startsWith("system:")).map(p => PERM_LABELS[p] ?? p).join(", ")}
+                      {g.permissions.some(p => p.startsWith("system:")) &&
+                        ` · ${g.permissions.filter(p => p.startsWith("system:")).length} system(s)`})
+                    </span>
                   )}
                 </label>
               ))}
@@ -214,6 +242,74 @@ function UserEditModal({ user, currentUsername, onSaved, onClose }: {
   )
 }
 
+/* ─── Shared permission picker (used in both edit and create modals) ─── */
+function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string[]) => void }) {
+  function hasSystem(sysId: string) { return perms.includes(`system:${sysId}`) }
+  function hasPerm(p: string)        { return perms.includes(p) }
+
+  function toggleSystem(sysId: string, checked: boolean) {
+    const sysPerm  = `system:${sysId}`
+    const modPerms = SYSTEM_DEFS.find(s => s.id === sysId)?.modules.map(m => m.perm) ?? []
+    if (checked) {
+      setPerms([...perms.filter(p => p !== sysPerm), sysPerm])
+    } else {
+      setPerms(perms.filter(p => p !== sysPerm && !modPerms.includes(p)))
+    }
+  }
+
+  function togglePerm(p: string, checked: boolean) {
+    setPerms(checked ? [...perms, p] : perms.filter(x => x !== p))
+  }
+
+  return (
+    <div className="space-y-4">
+      <Field label="Systems & Modules">
+        <div className="flex flex-col gap-2">
+          {SYSTEM_DEFS.map(sys => {
+            const sysChecked = hasSystem(sys.id)
+            return (
+              <div key={sys.id}
+                className={`rounded-2xl border p-3 transition-all ${sysChecked ? "border-emerald/30 bg-emerald/5" : "border-border"}`}>
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input type="checkbox" className="accent-emerald w-4 h-4"
+                    checked={sysChecked}
+                    onChange={e => toggleSystem(sys.id, e.target.checked)} />
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${sys.dot}`} />
+                  <span className="text-sm font-semibold text-ink">{sys.label}</span>
+                  {sys.modules.length === 0 && (
+                    <span className="text-xs text-ink-3/40 ml-auto">no modules</span>
+                  )}
+                </label>
+                {sysChecked && sys.modules.length > 0 && (
+                  <div className="ml-6 mt-2 flex flex-col gap-1.5 border-t border-border/40 pt-2">
+                    {sys.modules.map(mod => (
+                      <label key={mod.perm} className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" className="accent-emerald w-3.5 h-3.5"
+                          checked={hasPerm(mod.perm)}
+                          onChange={e => togglePerm(mod.perm, e.target.checked)} />
+                        <span className="text-sm text-ink">{mod.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </Field>
+
+      <Field label="Shared">
+        <label className="flex items-center gap-2.5 cursor-pointer">
+          <input type="checkbox" className="accent-emerald w-4 h-4"
+            checked={hasPerm("admin:manage")}
+            onChange={e => togglePerm("admin:manage", e.target.checked)} />
+          <span className="text-sm text-ink">Admin & Management <span className="text-xs text-ink-3">(all systems)</span></span>
+        </label>
+      </Field>
+    </div>
+  )
+}
+
 /* ─── Group edit modal ─── */
 function GroupEditModal({ group, onSaved, onClose }: {
   group: Group; onSaved: () => void; onClose: () => void
@@ -248,18 +344,7 @@ function GroupEditModal({ group, onSaved, onClose }: {
         <input className={INPUT} value={desc} onChange={e => setDesc(e.target.value)} placeholder="Optional" />
       </Field>
 
-      <Field label="Permissions">
-        <div className="flex flex-col gap-2">
-          {ALL_PERMISSIONS.map(p => (
-            <label key={p} className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" className="accent-emerald w-4 h-4"
-                checked={perms.includes(p)}
-                onChange={e => setPerms(prev => e.target.checked ? [...prev, p] : prev.filter(x => x !== p))} />
-              <span className="text-sm text-ink">{PERM_LABELS[p] ?? p}</span>
-            </label>
-          ))}
-        </div>
-      </Field>
+      <PermPicker perms={perms} setPerms={setPerms} />
 
       {error && <p className="text-xs text-ember font-medium">{error}</p>}
 
@@ -527,9 +612,20 @@ function GroupRow({ group, onRefresh }: { group: Group; onRefresh: () => void })
         <td className="px-4 py-3 text-xs text-ink-3">{group.description || <span className="opacity-30">—</span>}</td>
         <td className="px-4 py-3">
           <div className="flex flex-wrap gap-1">
-            {group.permissions.length
-              ? group.permissions.map(p => <Badge key={p} variant="green">{PERM_LABELS[p] ?? p}</Badge>)
-              : <span className="text-xs text-ink-3/40">—</span>}
+            {group.permissions.filter(p => p.startsWith("system:")).map(p => {
+              const sysId = p.replace("system:", "")
+              const sys = SYSTEM_DEFS.find(s => s.id === sysId)
+              return (
+                <span key={p} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium border bg-muted text-ink-3 border-border">
+                  <span className={`w-1.5 h-1.5 rounded-full ${sys?.dot ?? "bg-ink-3"}`} />
+                  {sys?.label ?? sysId}
+                </span>
+              )
+            })}
+            {group.permissions.filter(p => !p.startsWith("system:")).map(p =>
+              <Badge key={p} variant="green">{PERM_LABELS[p] ?? p}</Badge>
+            )}
+            {group.permissions.length === 0 && <span className="text-xs text-ink-3/40">—</span>}
           </div>
         </td>
         <td className="px-4 py-3 text-right">
@@ -549,74 +645,57 @@ function GroupRow({ group, onRefresh }: { group: Group; onRefresh: () => void })
   )
 }
 
-/* ─── New group row ─── */
-function NewGroupRow({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
+/* ─── New group modal ─── */
+function NewGroupModal({ onCreated, onClose }: { onCreated: () => void; onClose: () => void }) {
   const [name, setName] = useState("")
   const [desc, setDesc] = useState("")
   const [perms, setPerms] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
-    setSaving(true)
+  async function save() {
+    if (!name.trim()) { setError("Name is required"); return }
     setError("")
+    setSaving(true)
     try {
       const r = await fetch("/api/admin/groups", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create", name, description: desc, permissions: perms }),
+        body: JSON.stringify({ action: "create", name: name.trim(), description: desc, permissions: perms }),
       })
       if (!r.ok) setError((await r.json()).error ?? "Failed")
       else onCreated()
+    } catch (e) {
+      setError(String(e))
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <tr className="border-b border-border bg-emerald/5">
-      <td colSpan={4} className="px-4 py-3">
-        <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
-          <div>
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">Name</p>
-            <input required autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="group-name"
-              className="h-8 px-3 rounded-xl border border-border bg-surface text-xs text-ink w-32
-                         focus:outline-none focus:border-emerald/60 focus:ring-2 focus:ring-emerald/15 transition-all" />
-          </div>
-          <div>
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">Description</p>
-            <input value={desc} onChange={e => setDesc(e.target.value)} placeholder="Optional"
-              className="h-8 px-3 rounded-xl border border-border bg-surface text-xs text-ink w-44
-                         focus:outline-none focus:border-emerald/60 focus:ring-2 focus:ring-emerald/15 transition-all" />
-          </div>
-          <div>
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">Permissions</p>
-            <div className="flex flex-wrap gap-3">
-              {ALL_PERMISSIONS.map(p => (
-                <label key={p} className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input type="checkbox" className="accent-emerald"
-                    checked={perms.includes(p)}
-                    onChange={e => setPerms(prev => e.target.checked ? [...prev, p] : prev.filter(x => x !== p))} />
-                  <span className="text-xs text-ink">{PERM_LABELS[p] ?? p}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className="flex gap-2 items-center">
-            {error && <p className="text-xs text-ember">{error}</p>}
-            <button type="submit" disabled={saving}
-              className="h-8 px-4 rounded-xl bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 disabled:opacity-50 transition-colors">
-              {saving ? "Creating…" : "Create"}
-            </button>
-            <button type="button" onClick={onCancel}
-              className="h-8 px-3 rounded-xl text-xs font-medium text-ink-3 bg-ground border border-border hover:bg-border/40 transition-colors">
-              Cancel
-            </button>
-          </div>
-        </form>
-      </td>
-    </tr>
+    <Modal title="New group" onClose={onClose}>
+      <Field label="Name">
+        <input autoFocus className={INPUT} value={name} onChange={e => setName(e.target.value)} placeholder="group-name" />
+      </Field>
+      <Field label="Description">
+        <input className={INPUT} value={desc} onChange={e => setDesc(e.target.value)} placeholder="Optional" />
+      </Field>
+
+      <PermPicker perms={perms} setPerms={setPerms} />
+
+      {error && <p className="text-xs text-ember font-medium">{error}</p>}
+
+      <div className="flex gap-2 pt-1">
+        <button onClick={save} disabled={saving}
+          className="flex-1 h-9 rounded-xl bg-emerald text-white text-sm font-semibold hover:bg-emerald/90 disabled:opacity-50 transition-colors">
+          {saving ? "Creating…" : "Create group"}
+        </button>
+        <button onClick={onClose}
+          className="h-9 px-4 rounded-xl border border-border text-sm font-medium text-ink-3 hover:bg-ground transition-colors">
+          Cancel
+        </button>
+      </div>
+    </Modal>
   )
 }
 
@@ -640,6 +719,9 @@ function GroupsTable() {
 
   return (
     <div className="overflow-x-auto">
+      {showNew && (
+        <NewGroupModal onCreated={() => { setShowNew(false); load() }} onClose={() => setShowNew(false)} />
+      )}
       <table className="w-full">
         <thead>
           <tr className="border-b border-border bg-ground/60">
@@ -664,9 +746,6 @@ function GroupsTable() {
           </tr>
         </thead>
         <tbody>
-          {showNew && (
-            <NewGroupRow onCreated={() => { setShowNew(false); load() }} onCancel={() => setShowNew(false)} />
-          )}
           {loading ? (
             <tr><td colSpan={4} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
           ) : groups.length === 0 ? (

@@ -56,9 +56,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 
 def get_cfg(request: Request, payload: dict = Depends(get_token_payload)) -> Config:
-    """Return a Config instance, overriding freshportal_url for admin requests with X-FP-URL header."""
+    """Return a Config instance, overriding freshportal_url when the user has a system-scoped permission."""
     cfg = Config()
-    if "admin:manage" in payload.get("permissions", []):
+    user_perms = payload.get("permissions", [])
+    can_override = any(p in user_perms for p in ("admin:manage", "delivery:import", "catalogue:sync"))
+    if can_override:
         fp_url = request.headers.get("X-FP-URL", "").strip().rstrip("/")
         if fp_url in ALLOWED_FP_URLS:
             cfg.freshportal_url = fp_url
@@ -1716,7 +1718,7 @@ class DeliveryCreateRequest(BaseModel):
 
 
 @app.post("/delivery/parse")
-def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_permission("admin:manage"))):
+def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
     """Parse delivery JSON, aggregate products, match against supplier catalogue.
 
     Request body:
@@ -1846,7 +1848,7 @@ class DeliveryImportLogUpdate(BaseModel):
 @app.post("/delivery/import-log", tags=["delivery"])
 def delivery_import_log_create(
     req: DeliveryImportLogCreate,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """Log a new delivery import (after batch creation)."""
     fp_url = get_ecuador_cfg().freshportal_url
@@ -1860,7 +1862,7 @@ def delivery_import_log_create(
 def delivery_import_log_update(
     log_id: int,
     req: DeliveryImportLogUpdate,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """Update a delivery import log entry with add-products result."""
     update_delivery_import_log(log_id, req.model_dump())
@@ -1871,7 +1873,7 @@ def delivery_import_log_update(
 def delivery_import_log_list(
     limit: int = 20,
     offset: int = 0,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """Paginated delivery import history."""
     fp_url = get_ecuador_cfg().freshportal_url
@@ -1912,7 +1914,7 @@ def dev_token():
 @app.post("/delivery/catalogue/sync")
 def delivery_catalogue_sync(
     supplier_id: str = "27",
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """Trigger synchronous scrape of supplier catalogue from Ecuador FP.
 
@@ -1948,7 +1950,7 @@ def delivery_catalogue_sync(
 @app.post("/delivery/catalogue/sync/stream")
 async def delivery_catalogue_sync_stream(
     supplier_id: str = "27",
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """SSE-streaming version of catalogue sync."""
     cfg = get_ecuador_cfg()
@@ -2001,7 +2003,7 @@ async def delivery_catalogue_sync_stream(
 @app.get("/delivery/catalogue/{supplier_id}")
 def delivery_catalogue_get(
     supplier_id: str,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """Return stored catalogue for a supplier from DB."""
     items = get_catalogue(supplier_id)
@@ -2022,7 +2024,7 @@ class BatchCreateRequest(BaseModel):
 @app.post("/delivery/create-batch")
 async def delivery_create_batch(
     req: BatchCreateRequest,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """SSE stream: create a FreshPortal batch header via direct HTTP POST.
 
@@ -2137,7 +2139,7 @@ class AddProductsRequest(BaseModel):
 @app.post("/delivery/add-products")
 async def delivery_add_products(
     req: AddProductsRequest,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """SSE stream: add matched product lines to an existing FreshPortal batch.
 
@@ -2212,7 +2214,7 @@ async def delivery_add_products(
 @app.post("/delivery/create/stream")
 async def delivery_create_stream(
     req: DeliveryCreateRequest,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """SSE stream: create batch + add product lines in Ecuador FreshPortal.
 
@@ -2390,7 +2392,7 @@ def delivery_debug_stock(batch_id: str, _: dict = Depends(require_permission("ad
 @app.get("/catalogue/{supplier_id}/matches")
 def catalogue_get_matches(
     supplier_id: str,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
 ):
     """Return all cached delivery→catalogue product matches for a supplier."""
     fp_url = get_ecuador_cfg().freshportal_url
@@ -2410,7 +2412,7 @@ class DeliveryMatchRequest(BaseModel):
 def catalogue_set_match(
     supplier_id: str,
     req: DeliveryMatchRequest,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
 ):
     """Manually create or override a cached match (marks as 'manual', never auto-overwritten)."""
     fp_url = get_ecuador_cfg().freshportal_url
@@ -2431,7 +2433,7 @@ class SupplierMapRequest(BaseModel):
 @app.post("/catalogue/supplier-map")
 def catalogue_save_supplier_map(
     req: SupplierMapRequest,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
 ):
     """Save (or update) a manually confirmed JSON company name → FP supplier_id mapping.
 
@@ -2447,7 +2449,7 @@ def catalogue_save_supplier_map(
 def catalogue_approve_matches(
     supplier_id: str,
     req: ApproveMatchesRequest,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
 ):
     """Save a batch of user-approved delivery→product matches to cache.
 
@@ -2463,7 +2465,7 @@ def catalogue_approve_matches(
 @app.delete("/catalogue/{supplier_id}/matches")
 def catalogue_clear_all_matches(
     supplier_id: str,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
 ):
     """Delete ALL cached delivery→catalogue matches for a supplier."""
     fp_url = get_ecuador_cfg().freshportal_url
@@ -2475,7 +2477,7 @@ def catalogue_clear_all_matches(
 def catalogue_delete_match(
     supplier_id: str,
     delivery_key: str,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
 ):
     """Delete a single cached match so the next parse re-runs live matching."""
     fp_url = get_ecuador_cfg().freshportal_url
@@ -2487,7 +2489,7 @@ def catalogue_delete_match(
 def catalogue_suppliers(
     refresh: bool = False,
     debug: bool = False,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
     cfg: Config = Depends(get_cfg),
 ):
     """Return supplier list with catalogue sync status.
@@ -2529,7 +2531,7 @@ def catalogue_suppliers(
 
 
 @app.get("/catalogue/{supplier_id}/status")
-def catalogue_status(supplier_id: str, _: dict = Depends(require_permission("admin:manage"))):
+def catalogue_status(supplier_id: str, _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync"))):
     """Return sync status for a single supplier from DB (no scraping)."""
     meta = get_supplier_meta_one(supplier_id)
     if not meta:
@@ -2541,7 +2543,7 @@ def catalogue_status(supplier_id: str, _: dict = Depends(require_permission("adm
 def catalogue_sync_stream(
     supplier_id: str,
     nm_supplier: str = "",
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
     cfg: Config = Depends(get_cfg),
 ):
     """SSE stream: scrape the full catalogue for supplier_id and save to DB.
@@ -2601,7 +2603,7 @@ def catalogue_sync_stream(
 @app.get("/catalogue/{supplier_id}/items")
 def catalogue_items(
     supplier_id: str,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
 ):
     """Return all catalogue items for a supplier from DB."""
     items = get_supplier_catalogue(supplier_id)
