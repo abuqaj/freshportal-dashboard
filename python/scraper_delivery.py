@@ -378,6 +378,8 @@ def create_batch_header(
             if batch_id:
                 result["ok"] = True
                 result["batch_id"] = batch_id
+                fp_base = cfg.freshportal_url.rstrip("/")
+                result["batch_url"] = f"{fp_base}/batch_v2/stock_entry/index/BAT_ID/{batch_id}/"
                 result["message"] = f"Batch {order.id_invoice} created (ID: {batch_id})"
             else:
                 result["message"] = (
