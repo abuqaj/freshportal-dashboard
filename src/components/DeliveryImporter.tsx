@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
 
@@ -90,6 +90,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const td = t.delivery;
   const { data: session } = useSession();
   const username = session?.user?.name ?? undefined;
+  const userPerms: string[] = (session?.user as { permissions?: string[] })?.permissions ?? [];
+  const isAdmin = userPerms.includes("admin:manage");
+  const canSyncCatalogue = isAdmin || userPerms.includes("catalogue:sync");
 
   const [stage, setStage] = useState<Stage>("idle");
   const [importLogId, setImportLogId] = useState<number | null>(null);
@@ -100,42 +103,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [logs, setLogs] = useState<string[]>([]);
   const [importResult, setImportResult] = useState<{ ok: boolean; batch_id: string; batch_url: string; lines_added: number; message: string } | null>(null);
   const [error, setError] = useState("");
-
-  // ── Fust (packaging) sync ─────────────────────────────
-  const [fustSyncing, setFustSyncing] = useState(false);
-  const [fustCount, setFustCount] = useState<number | null>(null);
-  const [fustLogs, setFustLogs] = useState<string[]>([]);
-
-  async function handleSyncFust() {
-    setFustSyncing(true);
-    setFustLogs([]);
-    try {
-      const res = await fetch(`${RAILWAY}/fust/sync`, { method: "POST" });
-      if (!res.ok || !res.body) { setFustLogs([await res.text()]); return; }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const parts = buf.split("\n\n");
-        buf = parts.pop() ?? "";
-        for (const part of parts) {
-          const line = part.replace(/^data: /, "").trim();
-          if (!line || line.startsWith(":")) continue;
-          try {
-            const ev = JSON.parse(line);
-            if (ev.type === "status") setFustLogs(prev => [...prev, ev.message]);
-            if (ev.type === "result") setFustCount(ev.data.entries_saved);
-            if (ev.type === "error") setFustLogs(prev => [...prev, `${t.common.error}: ${ev.message}`]);
-          } catch {}
-        }
-      }
-    } finally {
-      setFustSyncing(false);
-    }
-  }
 
   // ── Add-products step (separate from batch creation) ──
   type AddStage = "idle" | "running" | "done" | "error";
@@ -162,6 +129,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Product match modal ───────────────────────────────────────────────────
   const [editModalOpen, setEditModalOpen] = useState(false);
 
+  // ── Table sort / filter / view ────────────────────────────────────────────
+  const [showOnlyUnmatched, setShowOnlyUnmatched] = useState(false);
+  const [sortCol, setSortCol] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [colFilters, setColFilters] = useState<Record<string, string>>({});
+  const [duplicateWarning, setDuplicateWarning] = useState<string[]>([]);
+  const [multiFileError, setMultiFileError] = useState(false);
+
   function deliveryKey(line: DeliveryLine): string {
     return `${(line.nm_variety ?? "").toLowerCase().trim()}|${line.nu_length || ""}`;
   }
@@ -180,7 +155,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
-    const f = e.dataTransfer.files[0];
+    const files = e.dataTransfer.files;
+    if (files.length > 1) { setMultiFileError(true); return; }
+    setMultiFileError(false);
+    const f = files[0];
     if (f && f.name.endsWith(".json")) handleFile(f);
   }
 
@@ -201,11 +179,39 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     finally { setClearingCache(false); }
   }
 
+  // ── Duplicate detection ────────────────────────────────────────────────
+
+  async function checkDuplicate(text: string): Promise<string[]> {
+    try {
+      const body = JSON.parse(text);
+      const rawInvoices: { id_invoice?: string }[] = body.invoices ?? (Array.isArray(body) ? body : [body]);
+      const ids = rawInvoices.map(i => i.id_invoice).filter(Boolean) as string[];
+      if (!ids.length) return [];
+      const res = await fetch(`${RAILWAY}/delivery/import-logs?limit=500`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      const entries: { id_invoice?: string }[] = data.logs ?? data.entries ?? (Array.isArray(data) ? data : []);
+      const existing = new Set<string>(entries.map(l => l.id_invoice).filter(Boolean) as string[]);
+      return ids.filter(id => existing.has(id));
+    } catch { return []; }
+  }
+
+  async function handleParseClick() {
+    if (!jsonText.trim()) return;
+    const dupes = await checkDuplicate(jsonText);
+    if (dupes.length > 0) {
+      setDuplicateWarning(dupes);
+      return;
+    }
+    await handleParse();
+  }
+
   // ── Parse & match ──────────────────────────────────────────────────────
 
   async function handleParse(supplierIdOverride?: string) {
     if (!jsonText.trim()) return;
     setStage("parsing");
+    setDuplicateWarning([]);
     setError("");
     try {
       const body = JSON.parse(jsonText);
@@ -225,13 +231,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setActiveOrderIdx(0);
       setLineEdits({});
       setEditingKey(null);
-      // Set resolved supplier from parse response
+      setShowOnlyUnmatched(false);
+      setSortCol(null);
+      setColFilters({});
       if (data.supplier_id) {
         setResolvedSupplier({ fp_supplier_id: data.supplier_id, nm_supplier: data.supplier_nm || data.supplier_id });
       } else {
         setResolvedSupplier(null);
       }
-      // Pre-approve lines that are already cached from DB
       const preApproved = new Set<string>();
       for (const order of data.orders) {
         for (const line of order.lines) {
@@ -249,7 +256,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Supplier picker ──────────────────────────────────────────────────────
 
   async function openSupplierPicker() {
-    // Load supplier list if not yet loaded
     if (supplierList.length === 0) {
       try {
         const res = await fetch(`${RAILWAY}/catalogue/suppliers`);
@@ -267,7 +273,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setSupplierPickerOpen(false);
     setResolvedSupplier(supplier);
 
-    // Persist the company name → fp_supplier_id mapping
     const txCompany = parseResult?.orders[activeOrderIdx]?.tx_company ?? "";
     try {
       await fetch(`${RAILWAY}/catalogue/supplier-map`, {
@@ -277,7 +282,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     } catch {}
 
-    // Check if catalogue exists for this supplier
     let needsSync = false;
     try {
       const statusRes = await fetch(`${RAILWAY}/catalogue/${supplier.fp_supplier_id}/status`);
@@ -347,13 +351,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   }
 
   async function handleSyncCatalogue() {
-    // If supplier is already resolved, sync directly
     if (resolvedSupplier) {
       await syncCatalogueForSupplier(resolvedSupplier.fp_supplier_id, resolvedSupplier.nm_supplier);
       return;
     }
-
-    // No supplier known — open picker so user can select
     await openSupplierPicker();
   }
 
@@ -364,7 +365,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const order = parseResult.orders[activeOrderIdx];
     if (!order) return;
 
-    // Cache all matched lines immediately — leaving the matching screen means user agreed
     const keysToCache = new Set(
       order.lines
         .filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id))
@@ -376,7 +376,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLogs([]);
     setImportResult(null);
 
-    // POST to create-batch: backend resolves supplier via find_supplier_fp_id(tx_company)
     const res = await fetch(`${RAILWAY}/delivery/create-batch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -408,7 +407,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             const result = ev.data;
             setImportResult(result);
             setStage("done");
-            // Log import to history
             if (result.ok && result.batch_id) {
               try {
                 const logRes = await fetch(`${RAILWAY}/delivery/import-log`, {
@@ -467,7 +465,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         const effectiveFpId = edit?.fp_product_id ?? line.fp_product_id;
         if (!effectiveFpId) return null;
         if (!keysToSave.has(dk)) return null;
-        if (seenKeys.has(dk)) return null;   // deduplicate same variety+length
+        if (seenKeys.has(dk)) return null;
         seenKeys.add(dk);
         return {
           delivery_key: dk,
@@ -507,7 +505,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setAddLogs([]);
     setAddResult(null);
 
-    // Build order with any inline edits applied
     const orderWithEdits = {
       ...order,
       lines: order.lines.map(line => {
@@ -549,14 +546,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             const addData = ev.data;
             setAddResult(addData);
             setAddStage("done");
-            // Auto-approve all matched lines after successful import
             const allMatchedKeys = new Set(
               orderWithEdits.lines
                 .filter(l => l.fp_product_id)
                 .map(l => deliveryKey(l))
             );
             await handleApproveMatches(allMatchedKeys);
-            // Update history log with add-products result
             if (importLogId) {
               try {
                 await fetch(`${RAILWAY}/delivery/import-log/${importLogId}`, {
@@ -575,7 +570,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           if (ev.type === "error") {
             setAddLogs(prev => [...prev, `Error: ${ev.message}`]);
             setAddStage("error");
-            // Log failure
             if (importLogId) {
               try {
                 await fetch(`${RAILWAY}/delivery/import-log/${importLogId}`, {
@@ -630,14 +624,76 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setResolvedSupplier(null);
     setSupplierPickerOpen(false);
     setSupplierSearch("");
+    setShowOnlyUnmatched(false);
+    setSortCol(null);
+    setSortDir("asc");
+    setColFilters({});
+    setDuplicateWarning([]);
+    setMultiFileError(false);
+  }
+
+  function handleSortCol(col: string) {
+    if (sortCol === col) {
+      setSortDir(d => d === "asc" ? "desc" : "asc");
+    } else {
+      setSortCol(col);
+      setSortDir("asc");
+    }
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
 
   const order = parseResult?.orders[activeOrderIdx];
 
+  const displayLines = useMemo(() => {
+    const o = parseResult?.orders[activeOrderIdx];
+    if (!o) return [];
+    let lines = [...o.lines];
+
+    if (showOnlyUnmatched) {
+      lines = lines.filter(l => {
+        const dk = `${(l.nm_variety ?? "").toLowerCase().trim()}|${l.nu_length || ""}`;
+        return !(lineEdits[dk]?.fp_product_id ?? l.fp_product_id);
+      });
+    }
+
+    if (colFilters.variety) {
+      const f = colFilters.variety.toLowerCase();
+      lines = lines.filter(l => l.nm_variety.toLowerCase().includes(f));
+    }
+    if (colFilters.match) {
+      const f = colFilters.match.toLowerCase();
+      lines = lines.filter(l => {
+        const dk = `${(l.nm_variety ?? "").toLowerCase().trim()}|${l.nu_length || ""}`;
+        const edit = lineEdits[dk];
+        const badge = MATCH_BADGE[edit ? "cached" : l.match_method] ?? MATCH_BADGE.none;
+        return badge.label.toLowerCase().includes(f);
+      });
+    }
+
+    if (sortCol) {
+      const dir = sortDir === "asc" ? 1 : -1;
+      lines.sort((a, b) => {
+        let av: string | number = 0, bv: string | number = 0;
+        if (sortCol === "variety")    { av = a.nm_variety;       bv = b.nm_variety; }
+        else if (sortCol === "box")   { av = a.nm_box || "";     bv = b.nm_box || ""; }
+        else if (sortCol === "length") { av = a.nu_length;       bv = b.nu_length; }
+        else if (sortCol === "stemsBunch") { av = a.nu_stems_bunch; bv = b.nu_stems_bunch; }
+        else if (sortCol === "bunches") { av = a.nu_bunches;     bv = b.nu_bunches; }
+        else if (sortCol === "stemsTotal") { av = a.nu_stems_total; bv = b.nu_stems_total; }
+        else if (sortCol === "price") { av = a.mny_rate_stem;    bv = b.mny_rate_stem; }
+        else if (sortCol === "total") { av = a.mny_total;        bv = b.mny_total; }
+        else if (sortCol === "match") { av = a.match_method;     bv = b.match_method; }
+        if (av < bv) return -dir;
+        if (av > bv) return dir;
+        return 0;
+      });
+    }
+    return lines;
+  }, [parseResult, activeOrderIdx, showOnlyUnmatched, colFilters, sortCol, sortDir, lineEdits]);
+
   return (
-    <div className="p-6 flex flex-col gap-6">
+    <div className="p-4 sm:p-6 flex flex-col gap-5 sm:gap-6">
       <div>
         <h2 className="text-lg font-bold text-ink">{td.title}</h2>
         <p className="text-sm text-ink-3 mt-0.5">
@@ -658,6 +714,36 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── IDLE / INPUT ── */}
       {(stage === "idle" || stage === "parsing") && (
         <div className="flex flex-col gap-4">
+          {/* Multi-file error */}
+          {multiFileError && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600">
+              <span>⚠ {td.onlyOneFile}</span>
+              <button onClick={() => setMultiFileError(false)} className="ml-auto text-amber-400 hover:text-amber-600 transition-colors">✕</button>
+            </div>
+          )}
+
+          {/* Duplicate warning */}
+          {duplicateWarning.length > 0 && (
+            <div className="flex flex-col gap-2 px-3 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs">
+              <p className="font-semibold text-amber-700">{td.duplicateWarningTitle}</p>
+              <p className="text-amber-600">{td.duplicateWarningMsg(duplicateWarning.join(", "))}</p>
+              <div className="flex gap-2 mt-1">
+                <button
+                  onClick={() => { setDuplicateWarning([]); handleParse(); }}
+                  className="h-7 px-3 rounded-lg text-xs font-semibold bg-amber-500/25 text-amber-800 hover:bg-amber-500/35 transition-colors"
+                >
+                  {td.parseBtn}
+                </button>
+                <button
+                  onClick={() => setDuplicateWarning([])}
+                  className="h-7 px-3 rounded-lg text-xs font-medium border border-amber-500/30 text-amber-600 hover:bg-amber-500/10 transition-colors"
+                >
+                  {t.common.cancel}
+                </button>
+              </div>
+            </div>
+          )}
+
           <div
             className="border-2 border-dashed border-border rounded-2xl p-4 transition-colors hover:border-emerald/40"
             onDragOver={e => e.preventDefault()}
@@ -671,24 +757,45 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             />
             <div className="flex items-center justify-between mt-2">
               <span className="text-[11px] text-ink-3">{td.dropHint}</span>
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="text-[11px] text-ink-3 hover:text-ink underline"
-              >
-                Browse
-              </button>
+              <div className="flex items-center gap-3">
+                {jsonText && (
+                  <button
+                    onClick={() => { setJsonText(""); setDuplicateWarning([]); setMultiFileError(false); }}
+                    className="text-[11px] text-red-400 hover:text-red-600 transition-colors"
+                  >
+                    {td.clearJson}
+                  </button>
+                )}
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="text-[11px] text-ink-3 hover:text-ink underline"
+                >
+                  Browse
+                </button>
+              </div>
             </div>
           </div>
           <input ref={fileInputRef} type="file" accept=".json" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
 
-          <button
-            onClick={() => handleParse()}
-            disabled={!jsonText.trim() || stage === "parsing"}
-            className="self-end h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
-          >
-            {stage === "parsing" ? td.parsing : td.parseBtn}
-          </button>
+          <div className="flex items-center justify-end gap-3">
+            {stage === "parsing" && (
+              <div className="flex items-center gap-2">
+                <svg className="animate-spin w-4 h-4 text-emerald" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/>
+                  <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                <span className="text-sm text-ink-3">{td.parsing}</span>
+              </div>
+            )}
+            <button
+              onClick={handleParseClick}
+              disabled={!jsonText.trim() || stage === "parsing"}
+              className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
+            >
+              {td.parseBtn}
+            </button>
+          </div>
         </div>
       )}
 
@@ -712,7 +819,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           )}
 
           {/* Order header */}
-          <div className="bg-muted rounded-2xl p-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+          <div className="bg-muted rounded-2xl p-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
             <Row label={td.supplier} value={order.tx_company} />
             <Row label={td.invoiceNr} value={order.id_invoice} />
             <Row label={td.deliveryDate} value={order.dt_fly} />
@@ -770,47 +877,26 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </span>
             )}
             <div className="ml-auto flex gap-2">
-              {/* Fust (packaging) sync — one-time setup per FP system */}
-              <button
-                onClick={handleSyncFust}
-                disabled={fustSyncing}
-                title={fustCount !== null ? td.fustSyncTitle(fustCount) : td.fustSyncHint}
-                className={`h-7 px-3 rounded-lg text-xs font-medium border transition-colors
-                  ${fustCount !== null
-                    ? "border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15"
-                    : "border-border text-ink-3 hover:text-ink hover:border-border-hover"}
-                  disabled:opacity-40`}
-              >
-                {fustSyncing ? td.syncingFust : fustCount !== null ? td.fustSynced(fustCount) : td.syncFust}
-              </button>
-              <button
-                onClick={handleSyncCatalogue}
-                className="h-7 px-3 rounded-lg text-xs font-medium border border-border text-ink-3 hover:text-ink hover:border-emerald/40 transition-colors"
-              >
-                {td.syncCatalogueBtn}
-              </button>
-              <button
-                onClick={handleClearCache}
-                disabled={clearingCache}
-                title={td.clearCacheTitle}
-                className="h-7 px-3 rounded-lg text-xs font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
-              >
-                {clearingCache ? td.clearingCache : td.clearCache}
-              </button>
+              {canSyncCatalogue && (
+                <button
+                  onClick={handleSyncCatalogue}
+                  className="h-7 px-3 rounded-lg text-xs font-medium border border-border text-ink-3 hover:text-ink hover:border-emerald/40 transition-colors"
+                >
+                  {td.syncCatalogueBtn}
+                </button>
+              )}
+              {canSyncCatalogue && (
+                <button
+                  onClick={handleClearCache}
+                  disabled={clearingCache}
+                  title={td.clearCacheTitle}
+                  className="h-7 px-3 rounded-lg text-xs font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+                >
+                  {clearingCache ? td.clearingCache : td.clearCache}
+                </button>
+              )}
             </div>
           </div>
-
-          {/* Fust sync progress log (collapses when done) */}
-          {fustLogs.length > 0 && (
-            <details open={fustSyncing}>
-              <summary className="cursor-pointer text-xs text-ink-3 hover:text-ink">
-                {td.fustSyncLog(fustLogs.length)}
-              </summary>
-              <div className="mt-1 bg-muted rounded-xl p-2 max-h-40 overflow-y-auto font-mono text-xs space-y-0.5">
-                {fustLogs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
-              </div>
-            </details>
-          )}
 
           {parseResult!.unmatched_count > 0 && (
             <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
@@ -820,9 +906,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* Approve toolbar */}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-ink-3">
+            <button
+              onClick={() => setShowOnlyUnmatched(p => !p)}
+              title={showOnlyUnmatched ? td.showAll : td.showOnlyUnmatched}
+              className={`h-7 px-3 rounded-lg text-xs font-semibold border transition-colors
+                ${showOnlyUnmatched
+                  ? "bg-amber-500/15 border-amber-500/30 text-amber-700"
+                  : "bg-emerald/8 border-emerald/30 text-emerald hover:bg-emerald/15"}`}
+            >
               {td.approved(approvedKeys.size, order.lines.filter(l => l.fp_product_id).length)}
-            </span>
+              {showOnlyUnmatched ? " ✕" : ""}
+            </button>
             <button
               onClick={() => {
                 const all = new Set(order.lines.filter(l => l.fp_product_id).map(l => deliveryKey(l)));
@@ -838,13 +932,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             >
               {td.deselectAll}
             </button>
-            <button
-              onClick={() => handleApproveMatches()}
-              disabled={approvedKeys.size === 0 || savingApproved}
-              className="h-6 px-3 rounded-md text-[11px] font-semibold border border-green-500/40 text-green-700 bg-green-500/8 hover:bg-green-500/15 disabled:opacity-40 transition-colors"
-            >
-              {savingApproved ? td.saving : td.saveApproved(approvedKeys.size)}
-            </button>
+            {(Object.values(colFilters).some(Boolean) || sortCol) && (
+              <button
+                onClick={() => { setColFilters({}); setSortCol(null); setSortDir("asc"); }}
+                className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink transition-colors"
+              >
+                ✕ Reset
+              </button>
+            )}
             <button
               onClick={loadCacheManager}
               className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink ml-auto transition-colors"
@@ -854,18 +949,61 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {/* Product lines table */}
-          <div className="overflow-x-auto overflow-y-auto max-h-[420px] rounded-2xl border border-border">
+          <div className="overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border">
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
                   <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8">✓</th>
-                  {[td.colVariety, td.colBox, td.colBoxQty, td.colContent, td.colLength, td.colStemsBunch, td.colBunches, td.colStemsTotal, td.colPrice, td.colTotal, td.colMatch].map(h => (
-                    <th key={h} className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{h}</th>
-                  ))}
+                  <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="boxQty"     label={td.colBoxQty}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colContent}</th>
+                  <SortTh col="length"     label={td.colLength}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="stemsBunch" label={td.colStemsBunch} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="bunches"    label={td.colBunches}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="stemsTotal" label={td.colStemsTotal} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="price"      label={td.colPrice}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="total"      label={td.colTotal}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="match"      label={td.colMatch}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                </tr>
+                {/* Filter row */}
+                <tr className="bg-muted/60 border-b border-border/60">
+                  <td />
+                  <td className="px-2 py-1">
+                    <input
+                      value={colFilters.variety ?? ""}
+                      onChange={e => setColFilters(p => ({ ...p, variety: e.target.value }))}
+                      placeholder="…"
+                      className="w-full text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface outline-none focus:border-emerald/50 min-w-[60px]"
+                    />
+                  </td>
+                  <td className="px-2 py-1">
+                    <input
+                      value={colFilters.box ?? ""}
+                      onChange={e => setColFilters(p => ({ ...p, box: e.target.value }))}
+                      placeholder="…"
+                      className="w-full text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface outline-none focus:border-emerald/50 min-w-[40px]"
+                    />
+                  </td>
+                  <td colSpan={8} />
+                  <td className="px-2 py-1">
+                    <input
+                      value={colFilters.match ?? ""}
+                      onChange={e => setColFilters(p => ({ ...p, match: e.target.value }))}
+                      placeholder="…"
+                      className="w-full text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface outline-none focus:border-emerald/50 min-w-[60px]"
+                    />
+                  </td>
                 </tr>
               </thead>
               <tbody>
-                {order.lines.map((line, i) => {
+                {displayLines.length === 0 ? (
+                  <tr>
+                    <td colSpan={12} className="px-4 py-6 text-center text-xs text-ink-3">
+                      {showOnlyUnmatched ? td.showAll : "—"}
+                    </td>
+                  </tr>
+                ) : displayLines.map((line, i) => {
                   const dk = deliveryKey(line);
                   const edit = lineEdits[dk];
                   const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
@@ -967,7 +1105,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <>
                 <div className="fixed inset-0 bg-black/60 z-[200]" onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} />
                 <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
-                  {/* Header — shows delivery line context */}
                   <div className="px-4 py-3 border-b border-border shrink-0">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -992,7 +1129,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       <button onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} className="text-ink-3 hover:text-ink shrink-0 mt-0.5">✕</button>
                     </div>
                   </div>
-                  {/* Search */}
                   <div className="px-3 py-2 border-b border-border shrink-0">
                     <input
                       autoFocus
@@ -1003,7 +1139,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
                     />
                   </div>
-                  {/* Results */}
                   <div className="overflow-y-auto flex-1">
                     {matchResults.length === 0 ? (
                       <p className="text-xs text-ink-3 px-4 py-3">{td.noProductsFound}</p>
@@ -1158,7 +1293,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* Fixed action bar — always visible at bottom-right */}
       {stage === "preview" && order && (
         <div className="fixed bottom-0 left-0 right-0 z-30 pointer-events-none flex justify-center">
-          <div className="pointer-events-auto w-full max-w-5xl flex gap-3 justify-end px-6 py-3 bg-surface/90 backdrop-blur border-t border-border">
+          <div className="pointer-events-auto w-full max-w-5xl flex gap-3 justify-end px-4 sm:px-6 py-3 bg-surface/90 backdrop-blur border-t border-border">
             <button onClick={reset} className="h-9 px-4 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors bg-surface">
               {td.startOver}
             </button>
@@ -1205,7 +1340,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {addStage === "done" && addResult?.ok ? (
-            /* ── COMPLETION SCREEN: all steps done ── */
             <>
               <div className="p-4 rounded-2xl border bg-emerald/8 border-emerald/20">
                 <p className="font-semibold text-sm text-emerald">
@@ -1245,7 +1379,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </button>
             </>
           ) : (
-            /* ── INTERMEDIATE: add products to batch ── */
             <>
               {importResult.ok && importResult.batch_id && (
                 <div className="flex flex-col gap-3">
@@ -1326,6 +1459,27 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
+function SortTh({
+  col, label, sortCol, sortDir, onSort,
+}: {
+  col: string; label: string; sortCol: string | null; sortDir: "asc" | "desc"; onSort: (col: string) => void;
+}) {
+  const active = sortCol === col;
+  return (
+    <th
+      className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap cursor-pointer select-none hover:text-ink transition-colors"
+      onClick={() => onSort(col)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        <span className={`text-[9px] ${active ? "text-emerald" : "opacity-30"}`}>
+          {active ? (sortDir === "asc" ? "▲" : "▼") : "▲▼"}
+        </span>
+      </span>
+    </th>
+  );
+}
+
 function DeliveryStepBar({
   stage, steps, allDone,
 }: {
@@ -1344,7 +1498,6 @@ function DeliveryStepBar({
         const active = i === current;
         return (
           <div key={i} className="flex items-start flex-1 min-w-0">
-            {/* Circle + label */}
             <div className="flex flex-col items-center gap-2 flex-shrink-0">
               <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ring-2 transition-all
                 ${done    ? "bg-emerald ring-emerald text-white"
@@ -1361,7 +1514,6 @@ function DeliveryStepBar({
                 {label}
               </span>
             </div>
-            {/* Connecting line (not after last step) */}
             {i < steps.length - 1 && (
               <div className={`flex-1 h-0.5 mt-[18px] mx-1.5 rounded-full transition-colors
                 ${done ? "bg-emerald" : "bg-border"}`} />

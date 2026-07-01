@@ -119,12 +119,12 @@ function Tile({
     >
       <DecoBg type={id} />
       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/8 transition-colors duration-300 rounded-3xl" />
-      <div className="relative z-10 flex flex-col h-full p-7 min-h-[220px]">
+      <div className="relative z-10 flex flex-col h-full p-5 sm:p-7 min-h-[180px] sm:min-h-[220px]">
         <div className="mb-auto">
-          <div className="w-12 h-12 rounded-2xl bg-white/15 flex items-center justify-center group-hover:bg-white/25 transition-colors duration-300 mb-5 group-hover:scale-110 transition-transform">
+          <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-white/15 flex items-center justify-center group-hover:bg-white/25 transition-colors duration-300 mb-4 sm:mb-5 group-hover:scale-110 transition-transform">
             {icon}
           </div>
-          <h2 className="text-xl font-bold text-white tracking-tight leading-tight">{label}</h2>
+          <h2 className="text-base sm:text-xl font-bold text-white tracking-tight leading-tight">{label}</h2>
           <p className="text-sm text-white/65 mt-1.5 leading-relaxed">{desc}</p>
         </div>
         <div className="flex items-end justify-between mt-6">
@@ -172,21 +172,21 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     : null;
 
   return (
-    <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-surface flex-shrink-0">
-      <div className="flex items-center gap-3">
+    <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-border bg-surface flex-shrink-0">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         <LogoMark size={24}/>
-        <span className="text-sm font-bold text-ink">FreshFromSource</span>
+        <span className="text-sm font-bold text-ink whitespace-nowrap">FreshFromSource</span>
         {tab && tabLabel && (
           <>
             <span className="text-border text-sm select-none">/</span>
-            <span className="text-sm font-medium text-ink-3">{tabLabel}</span>
+            <span className="text-sm font-medium text-ink-3 truncate">{tabLabel}</span>
           </>
         )}
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
         {/* Sync running spinner */}
         {syncStatus?.running && (
-          <span className="flex items-center gap-1.5 text-[11px] text-ink-3">
+          <span className="hidden sm:flex items-center gap-1.5 text-[11px] text-ink-3">
             <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
               <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/>
               <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
@@ -196,13 +196,13 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
         )}
         {/* DB count pill */}
         {syncStatus != null && syncStatus.product_count > 0 && (
-          <span className="text-[11px] text-ink-3 bg-muted border border-border px-2 py-0.5 rounded-full font-medium tabular-nums">
+          <span className="hidden sm:inline-flex items-center text-[11px] text-ink-3 bg-muted border border-border px-2 py-0.5 rounded-full font-medium tabular-nums">
             {t.hub.topbarDb(syncStatus.product_count)}
           </span>
         )}
         {/* VBN online / offline dot */}
         {railwayOnline !== null && (
-          <span className="flex items-center gap-1.5 text-[11px]">
+          <span className="hidden sm:flex items-center gap-1.5 text-[11px]">
             {railwayOnline ? (
               <>
                 <span className="relative w-1.5 h-1.5 flex-shrink-0">
@@ -220,7 +220,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
           </span>
         )}
         {username && (
-          <span className="text-[11px] text-ink-3 border border-border bg-muted px-2 py-0.5 rounded-full">
+          <span className="hidden sm:inline-flex text-[11px] text-ink-3 border border-border bg-muted px-2 py-0.5 rounded-full">
             {username}
           </span>
         )}
@@ -297,24 +297,41 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, o
         {/* Card wrapper — relative so nav tiles anchor to the card top */}
         <div className="relative">
           {navTabs.length > 1 && (
-            <div className="absolute right-full top-0 mr-4 w-40 flex flex-col gap-2">
-              {navTabs.map((nt) => (
-                <button
-                  key={nt.id}
-                  onClick={() => onSelectTab(nt.id)}
-                  className={`relative w-full px-3 py-2.5 rounded-xl text-left text-[11px] font-semibold text-white
-                    bg-gradient-to-br ${nt.gradient} transition-all
-                    ${nt.id === tab
-                      ? "opacity-100 shadow-sm"
-                      : "opacity-50 hover:opacity-80"}`}
-                >
-                  {nt.id === tab && (
-                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-white/60 rounded-r-full" />
-                  )}
-                  <span className="pl-1">{nt.label}</span>
-                </button>
-              ))}
-            </div>
+            <>
+              {/* Small/medium screens: horizontal scrollable nav above card */}
+              <div className="flex 2xl:hidden overflow-x-auto pb-2 mb-3 gap-2">
+                {navTabs.map((nt) => (
+                  <button
+                    key={nt.id}
+                    onClick={() => onSelectTab(nt.id)}
+                    className={`flex-shrink-0 px-3 py-2 rounded-xl text-[11px] font-semibold text-white whitespace-nowrap
+                      bg-gradient-to-br ${nt.gradient} transition-all
+                      ${nt.id === tab ? "opacity-100 shadow-sm ring-1 ring-white/40" : "opacity-50 hover:opacity-80"}`}
+                  >
+                    {nt.label}
+                  </button>
+                ))}
+              </div>
+              {/* Large screens: side nav */}
+              <div className="hidden 2xl:flex absolute right-full top-0 mr-4 w-40 flex-col gap-2">
+                {navTabs.map((nt) => (
+                  <button
+                    key={nt.id}
+                    onClick={() => onSelectTab(nt.id)}
+                    className={`relative w-full px-3 py-2.5 rounded-xl text-left text-[11px] font-semibold text-white
+                      bg-gradient-to-br ${nt.gradient} transition-all
+                      ${nt.id === tab
+                        ? "opacity-100 shadow-sm"
+                        : "opacity-50 hover:opacity-80"}`}
+                  >
+                    {nt.id === tab && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-white/60 rounded-r-full" />
+                    )}
+                    <span className="pl-1">{nt.label}</span>
+                  </button>
+                ))}
+              </div>
+            </>
           )}
 
           <div className="bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden">
@@ -391,13 +408,13 @@ function SystemSelector({ t, systems, onSelect }: {
   t: (typeof translations)[Lang]; systems: FPSystem[]; onSelect: (system: FPSystem) => void;
 }) {
   const { system: currentSystem } = useSystem();
-  const cols = systems.length <= 2 ? `grid-cols-${systems.length}` : systems.length <= 4 ? "grid-cols-2" : "grid-cols-3";
+  const cols = systems.length === 1 ? "grid-cols-1" : systems.length <= 4 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
   return (
-    <div className="hub-enter flex-1 flex flex-col items-center justify-center px-8 py-10 bg-ground overflow-y-auto">
+    <div className="hub-enter flex-1 flex flex-col items-center justify-center px-4 sm:px-8 py-6 sm:py-10 bg-ground overflow-y-auto">
       <div className="w-full max-w-5xl">
-        <h1 className="text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.selectSystemTitle}</h1>
-        <p className="text-sm text-ink-3 mb-10">{t.hub.selectSystemDesc}</p>
-        <div className={`grid ${cols} gap-5`}>
+        <h1 className="text-2xl sm:text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.selectSystemTitle}</h1>
+        <p className="text-sm text-ink-3 mb-6 sm:mb-10">{t.hub.selectSystemDesc}</p>
+        <div className={`grid ${cols} gap-4 sm:gap-5`}>
           {systems.map((sys, i) => (
             <SystemCard
               key={sys.id}
@@ -547,15 +564,15 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
     (isEcuador || !ECUADOR_ONLY_TABS.includes(tile.id))
   );
 
-  const colsClass = tiles.length <= 2 ? "grid-cols-2" : "grid-cols-3";
+  const colsClass = tiles.length <= 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
   const maxWClass = tiles.length <= 2 ? "max-w-3xl" : "max-w-5xl";
 
   return (
-    <div className="hub-enter flex-1 flex flex-col items-center justify-center px-8 py-10 bg-ground overflow-y-auto">
+    <div className="hub-enter flex-1 flex flex-col items-center justify-center px-4 sm:px-8 py-6 sm:py-10 bg-ground overflow-y-auto">
       <div className={`w-full ${maxWClass}`}>
-        <h1 className="text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.title}</h1>
-        <p className="text-sm text-ink-3 mb-10">{t.hub.subtitle}</p>
-        <div className={`grid ${colsClass} gap-5`}>
+        <h1 className="text-2xl sm:text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.title}</h1>
+        <p className="text-sm text-ink-3 mb-6 sm:mb-10">{t.hub.subtitle}</p>
+        <div className={`grid ${colsClass} gap-4 sm:gap-5`}>
           {tiles.map((tile, i) => (
             <Tile
               key={tile.id}

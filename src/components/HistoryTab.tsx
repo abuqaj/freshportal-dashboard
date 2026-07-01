@@ -217,7 +217,7 @@ export default function HistoryTab({ lang }: Props) {
   return (
     <div>
       {/* ── Header ── */}
-      <div className="px-6 py-5 border-b border-border flex items-start justify-between gap-4">
+      <div className="px-4 sm:px-6 py-4 sm:py-5 border-b border-border flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-base font-semibold text-ink">{t.history.title}</h2>
           <p className="text-xs text-ink-3 mt-0.5">{t.history.description}</p>
@@ -236,13 +236,13 @@ export default function HistoryTab({ lang }: Props) {
       </div>
 
       {/* ── Sub-tabs ── */}
-      <div className="px-5 py-3 border-b border-border">
-        <div className="flex gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
+      <div className="px-4 sm:px-5 py-3 border-b border-border overflow-x-auto">
+        <div className="flex gap-1 bg-ground border border-border rounded-xl p-1 w-fit min-w-max">
           {(["ops", "sync", "auto", "delivery"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => handleTabSwitch(tab)}
-              className={`text-xs px-4 py-1.5 rounded-lg font-medium transition-colors ${
+              className={`text-xs px-3 sm:px-4 py-1.5 rounded-lg font-medium transition-colors ${
                 historySubTab === tab
                   ? "bg-surface text-ink shadow-sm border border-border"
                   : "text-ink-3 hover:text-ink"
@@ -654,7 +654,7 @@ export default function HistoryTab({ lang }: Props) {
                       </div>
 
                       {isExp && (
-                        <div className="border-t border-border bg-ground/50 px-6 py-4 grid grid-cols-2 gap-x-8 gap-y-2 text-xs">
+                        <div className="border-t border-border bg-ground/50 px-4 sm:px-6 py-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs">
                           {[
                             [t.delivery.histDeliverySupplier, run.tx_company],
                             [t.delivery.histDeliveryInvoice,  run.id_invoice],

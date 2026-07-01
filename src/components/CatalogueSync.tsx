@@ -157,9 +157,9 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
   const syncedCount = suppliers.filter(s => s.synced).length;
 
   return (
-    <div className="p-6 flex flex-col gap-5">
+    <div className="p-4 sm:p-6 flex flex-col gap-5">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-bold text-ink">{tc.title}</h2>
           <p className="text-sm text-ink-3 mt-0.5">{tc.description}</p>
@@ -252,7 +252,7 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
           </div>
 
           {/* Scrollable table body */}
-          <div className="overflow-y-auto" style={{ maxHeight: "calc(100vh - 380px)", minHeight: "200px" }}>
+          <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: "calc(100vh - 380px)", minHeight: "200px" }}>
             <table className="w-full text-sm border-collapse">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
@@ -305,7 +305,7 @@ export default function CatalogueSync({ lang }: { lang: Lang }) {
             Debug — /supplier/index_v2/index/
           </summary>
           <div className="px-4 pb-4 flex flex-col gap-3 text-xs">
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 font-mono">
               <span className="text-ink-3">Final URL</span>
               <span className="text-ink break-all">{String(debugData.final_url ?? "—")}</span>
               <span className="text-ink-3">Page title</span>
