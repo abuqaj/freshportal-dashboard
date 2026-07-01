@@ -627,10 +627,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setAddResult(null);
     setAddProgress(null);
 
-    // Backend processes one entry per physical box, so total must sum nu_physical_boxes
-    const totalLines = orderWithEdits.lines
-      .filter(l => l.fp_product_id)
-      .reduce((sum, l) => sum + (l.nu_physical_boxes ?? 1), 0);
+    const totalLines = orderWithEdits.lines.filter(l => l.fp_product_id).length;
     if (totalLines > 0) setAddProgress({ done: 0, total: totalLines });
 
     const res = await fetch(`${RAILWAY}/delivery/add-products`, {
@@ -1559,10 +1556,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </svg>
             </div>
             <div className="text-center space-y-1 max-w-xs">
-              <p className="text-sm font-semibold text-ink">{td.importing}</p>
-              {logs.length > 0 && (
-                <p className="text-xs text-ink-3 leading-relaxed">{logs[logs.length - 1]}</p>
-              )}
+              <p className="text-sm font-semibold text-ink">
+                {addStage === "running" && addProgress && addProgress.done > 0
+                  ? td.addingProductN(addProgress.done, addProgress.total)
+                  : addStage === "running"
+                  ? td.addingProducts
+                  : td.creatingShipment}
+              </p>
             </div>
             {addStage === "running" && addProgress && (
               <div className="w-full px-2">
