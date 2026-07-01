@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
+import DeliveryTour, { TourStep } from "./DeliveryTour";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -111,6 +112,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [addResult, setAddResult] = useState<{ ok: boolean; lines_added: number; lines_skipped: number; lines_failed: number; message: string; details: { product: string; status: string }[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── Tour refs ─────────────────────────────────────────────────────────────
+  const refDropZone      = useRef<HTMLDivElement>(null);
+  const refParseBtn      = useRef<HTMLButtonElement>(null);
+  const refSupplierRow   = useRef<HTMLDivElement>(null);
+  const refCatalogueStatus = useRef<HTMLDivElement>(null);
+  const refApproveToolbar  = useRef<HTMLDivElement>(null);
+  const refTable           = useRef<HTMLDivElement>(null);
+  const refActionBtns      = useRef<HTMLDivElement>(null);
+
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourStep, setTourStep] = useState(0);
+
   // ── Match approval & inline edit ──────────────────────────────────────────
   const [approvedKeys, setApprovedKeys] = useState<Set<string>>(new Set());
   const [lineEdits, setLineEdits] = useState<Record<string, { fp_product_id: string; catalogue_nm_product: string }>>({});
@@ -145,6 +158,27 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev, msg]);
   }, []);
+
+  // ── Tour ──────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!username) return;
+    fetch(`${RAILWAY}/user/flag/delivery_tour_dismissed`)
+      .then(r => r.ok ? r.json() : { value: true })
+      .then(d => { if (!d.value) { setTourOpen(true); setTourStep(0); } })
+      .catch(() => {});
+  }, [username]);
+
+  async function dismissTour() {
+    setTourOpen(false);
+    try {
+      await fetch(`${RAILWAY}/user/flag/delivery_tour_dismissed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: true }),
+      });
+    } catch {}
+  }
 
   // ── File drop / select ──────────────────────────────────────────────────
 
@@ -692,17 +726,63 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     return lines;
   }, [parseResult, activeOrderIdx, showOnlyUnmatched, colFilters, sortCol, sortDir, lineEdits]);
 
+  const tourSteps = useMemo((): TourStep[] => {
+    if (stage === "idle" || stage === "parsing") {
+      return [
+        { targetRef: refDropZone as React.RefObject<HTMLElement | null>, title: td.tourStep1Title, body: td.tourStep1Body },
+        { targetRef: refParseBtn as React.RefObject<HTMLElement | null>, title: td.tourStep2Title, body: td.tourStep2Body },
+      ];
+    }
+    if (stage === "preview") {
+      return [
+        { targetRef: refSupplierRow    as React.RefObject<HTMLElement | null>, title: td.tourStep3Title, body: td.tourStep3Body },
+        { targetRef: refCatalogueStatus as React.RefObject<HTMLElement | null>, title: td.tourStep4Title, body: td.tourStep4Body },
+        { targetRef: refApproveToolbar  as React.RefObject<HTMLElement | null>, title: td.tourStep5Title, body: td.tourStep5Body },
+        { targetRef: refTable           as React.RefObject<HTMLElement | null>, title: td.tourStep6Title, body: td.tourStep6Body },
+        { targetRef: refActionBtns      as React.RefObject<HTMLElement | null>, title: td.tourStep7Title, body: td.tourStep7Body },
+      ];
+    }
+    return [];
+  }, [stage, td]);
+
+  function handleTourNext() {
+    if (tourStep >= tourSteps.length - 1) {
+      dismissTour();
+    } else {
+      setTourStep(s => s + 1);
+    }
+  }
+
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-5 sm:gap-6">
-      <div>
-        <h2 className="text-lg font-bold text-ink">{td.title}</h2>
-        <p className="text-sm text-ink-3 mt-0.5">
-          {stage === "preview" || stage === "syncing" ? td.descReview
-           : stage === "importing" ? td.descImport
-           : stage === "done" ? td.descProducts
-           : td.descUpload}
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-bold text-ink">{td.title}</h2>
+          <p className="text-sm text-ink-3 mt-0.5">
+            {stage === "preview" || stage === "syncing" ? td.descReview
+             : stage === "importing" ? td.descImport
+             : stage === "done" ? td.descProducts
+             : td.descUpload}
+          </p>
+        </div>
+        <button
+          onClick={() => { setTourStep(0); setTourOpen(true); }}
+          title={td.tourOpenBtn}
+          className="flex-shrink-0 w-7 h-7 rounded-full border border-border text-ink-3 hover:text-emerald hover:border-emerald/50 text-xs font-bold transition-colors flex items-center justify-center"
+        >
+          ?
+        </button>
       </div>
+
+      {tourOpen && tourSteps.length > 0 && (
+        <DeliveryTour
+          steps={tourSteps}
+          stepIndex={Math.min(tourStep, tourSteps.length - 1)}
+          onNext={handleTourNext}
+          onSkip={dismissTour}
+          t={{ tourNext: td.tourNext, tourSkip: td.tourSkip, tourFinish: td.tourFinish }}
+        />
+      )}
 
       {/* ── PROGRESS STEPPER ── */}
       <DeliveryStepBar
@@ -745,6 +825,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           )}
 
           <div
+            ref={refDropZone}
             className={`border-2 border-dashed rounded-2xl p-4 transition-colors
               ${fileLoaded ? "border-border/40 bg-muted/30" : "border-border hover:border-emerald/40"}`}
             onDragOver={e => e.preventDefault()}
@@ -792,6 +873,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </div>
             )}
             <button
+              ref={refParseBtn}
               onClick={handleParseClick}
               disabled={!jsonText.trim() || stage === "parsing"}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
@@ -833,7 +915,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {/* FreshPortal supplier resolution row */}
-          <div className="flex items-center gap-2 text-sm">
+          <div ref={refSupplierRow} className="flex items-center gap-2 text-sm">
             <span className="text-ink-3 shrink-0">{td.fpSupplierLabel}</span>
             {resolvedSupplier ? (
               <>
@@ -864,7 +946,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {/* Catalogue status */}
-          <div className="flex items-center gap-3 text-sm flex-wrap">
+          <div ref={refCatalogueStatus} className="flex items-center gap-3 text-sm flex-wrap">
             <span className={`px-2.5 py-1 rounded-full border text-xs font-medium
               ${(catalogueCount ?? 0) > 0 ? "bg-emerald/10 text-emerald border-emerald/20" : "bg-amber-500/10 text-amber-600 border-amber-500/20"}`}>
               {(catalogueCount ?? 0) > 0
@@ -922,7 +1004,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           )}
 
           {/* Approve toolbar */}
-          <div className="flex items-center gap-2 flex-wrap">
+          <div ref={refApproveToolbar} className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => setShowOnlyUnmatched(p => !p)}
               title={showOnlyUnmatched ? td.showAll : td.showOnlyUnmatched}
@@ -966,7 +1048,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {/* Action buttons — above the table */}
-          <div className="flex items-center justify-end gap-3">
+          <div ref={refActionBtns} className="flex items-center justify-end gap-3">
             <button onClick={reset} className="h-9 px-4 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors bg-surface">
               {td.startOver}
             </button>
@@ -980,7 +1062,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {/* Product lines table */}
-          <div className="overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border">
+          <div ref={refTable} className="overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border">
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">

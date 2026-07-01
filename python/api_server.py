@@ -44,7 +44,8 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                get_delivery_matches, save_delivery_matches, approve_delivery_matches,
                set_delivery_match, delete_delivery_match, clear_delivery_matches,
                create_delivery_import_log, update_delivery_import_log, get_delivery_import_logs,
-               upsert_fust_entries, get_all_fust, get_fust_count)
+               upsert_fust_entries, get_all_fust, get_fust_count,
+               get_user_flag, set_user_flag)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, match_order, delivery_key
@@ -2674,6 +2675,31 @@ def fust_list(
     fp_url = cfg.freshportal_url
     entries = get_all_fust(fp_url)
     return {"fp_url": fp_url, "entries": entries, "count": len(entries)}
+
+
+# ---------------------------------------------------------------------------
+# User flags  (/user/flag/...)
+# ---------------------------------------------------------------------------
+
+class UserFlagBody(BaseModel):
+    value: bool
+
+
+@app.get("/user/flag/{name}")
+def get_flag(name: str, payload: dict = Depends(get_token_payload)):
+    username = payload.get("sub") or payload.get("username") or ""
+    if not username:
+        raise HTTPException(status_code=401, detail="No username in token")
+    return {"value": get_user_flag(username, name)}
+
+
+@app.post("/user/flag/{name}")
+def set_flag(name: str, body: UserFlagBody, payload: dict = Depends(get_token_payload)):
+    username = payload.get("sub") or payload.get("username") or ""
+    if not username:
+        raise HTTPException(status_code=401, detail="No username in token")
+    set_user_flag(username, name, body.value)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

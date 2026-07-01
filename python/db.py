@@ -1694,6 +1694,53 @@ def get_fust_count(fp_url: str) -> int:
         return 0
 
 
+# ── User flags ──────────────────────────────────────────────────────────────
+
+def ensure_user_flags() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_flags (
+                    username TEXT NOT NULL,
+                    flag     TEXT NOT NULL,
+                    value    BOOLEAN NOT NULL DEFAULT FALSE,
+                    PRIMARY KEY (username, flag)
+                )
+            """)
+        conn.commit()
+
+
+def get_user_flag(username: str, flag: str) -> bool:
+    try:
+        ensure_user_flags()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT value FROM user_flags WHERE username = %s AND flag = %s",
+                    (username, flag)
+                )
+                row = cur.fetchone()
+                return bool(row[0]) if row else False
+    except Exception as exc:
+        logger.error("get_user_flag: %s", exc)
+        return False
+
+
+def set_user_flag(username: str, flag: str, value: bool) -> None:
+    try:
+        ensure_user_flags()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO user_flags (username, flag, value)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (username, flag) DO UPDATE SET value = EXCLUDED.value
+                """, (username, flag, value))
+            conn.commit()
+    except Exception as exc:
+        logger.error("set_user_flag: %s", exc)
+
+
 def get_vbn_auto_history(limit: int = 10, offset: int = 0) -> list[dict]:
     try:
         ensure_tables()
