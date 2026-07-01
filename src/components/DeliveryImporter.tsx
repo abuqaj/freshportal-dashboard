@@ -136,6 +136,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
   const [duplicateWarning, setDuplicateWarning] = useState<string[]>([]);
   const [multiFileError, setMultiFileError] = useState(false);
+  const [fileLoaded, setFileLoaded] = useState(false);
 
   function deliveryKey(line: DeliveryLine): string {
     return `${(line.nm_variety ?? "").toLowerCase().trim()}|${line.nu_length || ""}`;
@@ -149,7 +150,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   function handleFile(file: File) {
     const reader = new FileReader();
-    reader.onload = e => setJsonText((e.target?.result as string) || "");
+    reader.onload = e => {
+      setJsonText((e.target?.result as string) || "");
+      setFileLoaded(true);
+    };
     reader.readAsText(file);
   }
 
@@ -630,6 +634,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setColFilters({});
     setDuplicateWarning([]);
     setMultiFileError(false);
+    setFileLoaded(false);
   }
 
   function handleSortCol(col: string) {
@@ -740,22 +745,25 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           )}
 
           <div
-            className="border-2 border-dashed border-border rounded-2xl p-4 transition-colors hover:border-emerald/40"
+            className={`border-2 border-dashed rounded-2xl p-4 transition-colors
+              ${fileLoaded ? "border-border/40 bg-muted/30" : "border-border hover:border-emerald/40"}`}
             onDragOver={e => e.preventDefault()}
             onDrop={onDrop}
           >
             <textarea
-              className="w-full h-40 bg-transparent text-sm font-mono text-ink outline-none resize-none placeholder:text-ink-3/40"
+              className={`w-full h-40 bg-transparent text-sm font-mono outline-none resize-none placeholder:text-ink-3/40 transition-colors
+                ${fileLoaded ? "text-ink-3/60 cursor-not-allowed select-none" : "text-ink"}`}
               placeholder={td.pastePlaceholder}
               value={jsonText}
-              onChange={e => setJsonText(e.target.value)}
+              readOnly={fileLoaded}
+              onChange={e => { if (!fileLoaded) setJsonText(e.target.value); }}
             />
             <div className="flex items-center justify-between mt-2">
               <span className="text-[11px] text-ink-3">{td.dropHint}</span>
               <div className="flex items-center gap-3">
                 {jsonText && (
                   <button
-                    onClick={() => { setJsonText(""); setDuplicateWarning([]); setMultiFileError(false); }}
+                    onClick={() => { setJsonText(""); setDuplicateWarning([]); setMultiFileError(false); setFileLoaded(false); }}
                     className="text-[11px] text-red-400 hover:text-red-600 transition-colors"
                   >
                     {td.clearJson}
