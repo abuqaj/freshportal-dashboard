@@ -306,7 +306,7 @@ const en = {
     // Progress stepper
     stepUpload:         "Upload",
     stepReview:         "Review",
-    stepImport:         "Import",
+    stepImport:         "Review shipment",
     stepProducts:       "Products",
     // Done stage
     batchCreated:       "Shipment created",
@@ -765,7 +765,7 @@ const nl: typeof en = {
     // Progress stepper
     stepUpload:         "Upload",
     stepReview:         "Beoordelen",
-    stepImport:         "Importeren",
+    stepImport:         "Zending bekijken",
     stepProducts:       "Producten",
     batchCreated:       "Zending aangemaakt",
     addProductsBtn:     (id: string) => `Producten toevoegen aan zending #${id}`,
@@ -1188,7 +1188,7 @@ const pl: typeof en = {
     // Progress stepper
     stepUpload:         "Wczytaj",
     stepReview:         "Dopasowanie",
-    stepImport:         "Import",
+    stepImport:         "Przejrzyj przesyłkę",
     stepProducts:       "Produkty",
     batchCreated:       "Przesyłka stworzona",
     addProductsBtn:     (id: string) => `Dodaj produkty do przesyłki #${id}`,
@@ -1611,7 +1611,7 @@ const es: typeof en = {
     // Progress stepper
     stepUpload:         "Cargar",
     stepReview:         "Revisar",
-    stepImport:         "Importar",
+    stepImport:         "Revisar envío",
     stepProducts:       "Productos",
     batchCreated:       "Envío creado",
     addProductsBtn:     (id: string) => `Añadir productos al envío #${id}`,

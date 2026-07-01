@@ -627,8 +627,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setAddResult(null);
     setAddProgress(null);
 
-    const totalLines = orderWithEdits.lines.filter(l => l.fp_product_id).length;
-    if (totalLines > 0) setAddProgress({ done: 0, total: totalLines });
+    // Build per-product cumulative box thresholds so the progress counter tracks
+    // products (not boxes). Backend sends one ✓/✗ message per physical box.
+    const matchedLines = orderWithEdits.lines.filter(l => l.fp_product_id);
+    const totalProducts = matchedLines.length;
+    let cumBoxes = 0;
+    const productThresholds: number[] = matchedLines.map(l => {
+      cumBoxes += (l.nu_physical_boxes ?? 1);
+      return cumBoxes;
+    });
+    if (totalProducts > 0) setAddProgress({ done: 0, total: totalProducts });
 
     const res = await fetch(`${RAILWAY}/delivery/add-products`, {
       method: "POST",
@@ -645,7 +653,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    let doneCount = 0;
+    let boxMsgCount = 0;
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -661,8 +669,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             setAddLogs(prev => [...prev, ev.message]);
             setLogs(prev => [...prev, ev.message]);
             if (ev.message?.startsWith("  ✓") || ev.message?.startsWith("  ✗")) {
-              doneCount++;
-              setAddProgress({ done: Math.min(doneCount, totalLines), total: totalLines });
+              boxMsgCount++;
+              // Count how many products are fully done based on cumulative box thresholds
+              const productsDone = productThresholds.filter(t => t <= boxMsgCount).length;
+              setAddProgress({ done: productsDone, total: totalProducts });
             }
           }
           if (ev.type === "result") {
