@@ -875,9 +875,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               {parseResult!.matched_count} {td.matched}
             </span>
             {parseResult!.unmatched_count > 0 && (
-              <span className="px-2.5 py-1 rounded-full border text-xs text-red-500 bg-red-500/10 border-red-500/20">
+              <button
+                onClick={() => setShowOnlyUnmatched(p => !p)}
+                className={`px-2.5 py-1 rounded-full border text-xs font-medium transition-colors
+                  ${showOnlyUnmatched
+                    ? "bg-red-500/20 text-red-600 border-red-500/40 ring-1 ring-red-500/30"
+                    : "bg-red-500/10 text-red-500 border-red-500/20 hover:bg-red-500/20"}`}
+              >
                 {parseResult!.unmatched_count} {td.unmatched}
-              </span>
+                {showOnlyUnmatched ? " ✕" : ""}
+              </button>
             )}
             <div className="ml-auto flex gap-2">
               {canSyncCatalogue && (
@@ -902,9 +909,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {parseResult!.unmatched_count > 0 && (
-            <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+            <button
+              onClick={() => setShowOnlyUnmatched(p => !p)}
+              className={`w-full text-left text-xs rounded-xl px-3 py-2 border transition-colors
+                ${showOnlyUnmatched
+                  ? "text-amber-700 bg-amber-100 border-amber-300"
+                  : "text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100"}`}
+            >
               ⚠ {td.unmatchedWarning(parseResult!.unmatched_count)}
-            </p>
+              <span className="ml-2 underline">{showOnlyUnmatched ? td.showAll : td.showOnlyUnmatched}</span>
+            </button>
           )}
 
           {/* Approve toolbar */}
