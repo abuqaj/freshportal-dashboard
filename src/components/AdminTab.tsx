@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { signOut } from "next-auth/react"
 
 interface User {
   id: number
@@ -264,24 +263,39 @@ function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string
   return (
     <div className="space-y-4">
       <Field label="Systems & Modules">
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1.5">
           {SYSTEM_DEFS.map(sys => {
             const sysChecked = hasSystem(sys.id)
+            const checkedModules = sys.modules.filter(m => hasPerm(m.perm))
             return (
               <div key={sys.id}
-                className={`rounded-2xl border p-3 transition-all ${sysChecked ? "border-emerald/30 bg-emerald/5" : "border-border"}`}>
-                <label className="flex items-center gap-2.5 cursor-pointer">
-                  <input type="checkbox" className="accent-emerald w-4 h-4"
+                className={`rounded-xl border transition-all ${sysChecked ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
+                {/* System row */}
+                <label className="flex items-center gap-2.5 cursor-pointer px-3 py-2.5">
+                  <input type="checkbox" className="accent-emerald w-4 h-4 flex-shrink-0"
                     checked={sysChecked}
                     onChange={e => toggleSystem(sys.id, e.target.checked)} />
                   <span className={`w-2 h-2 rounded-full flex-shrink-0 ${sys.dot}`} />
-                  <span className="text-sm font-semibold text-ink">{sys.label}</span>
-                  {sys.modules.length === 0 && (
-                    <span className="text-xs text-ink-3/40 ml-auto">no modules</span>
+                  <span className="text-sm font-semibold text-ink flex-1">{sys.label}</span>
+                  {sys.modules.length > 0 ? (
+                    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+                      sysChecked
+                        ? checkedModules.length > 0
+                          ? "bg-emerald/15 text-emerald"
+                          : "bg-amber-500/10 text-amber-600"
+                        : "bg-muted text-ink-3/50"
+                    }`}>
+                      {sysChecked
+                        ? `${checkedModules.length}/${sys.modules.length} modules`
+                        : `${sys.modules.length} modules`}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-ink-3/30">access only</span>
                   )}
                 </label>
+                {/* Module checkboxes — shown when system is checked */}
                 {sysChecked && sys.modules.length > 0 && (
-                  <div className="ml-6 mt-2 flex flex-col gap-1.5 border-t border-border/40 pt-2">
+                  <div className="px-3 pb-2.5 flex flex-col gap-1.5 border-t border-emerald/15 pt-2 ml-6">
                     {sys.modules.map(mod => (
                       <label key={mod.perm} className="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" className="accent-emerald w-3.5 h-3.5"
@@ -299,12 +313,15 @@ function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string
       </Field>
 
       <Field label="Shared">
-        <label className="flex items-center gap-2.5 cursor-pointer">
-          <input type="checkbox" className="accent-emerald w-4 h-4"
-            checked={hasPerm("admin:manage")}
-            onChange={e => togglePerm("admin:manage", e.target.checked)} />
-          <span className="text-sm text-ink">Admin & Management <span className="text-xs text-ink-3">(all systems)</span></span>
-        </label>
+        <div className={`rounded-xl border px-3 py-2.5 transition-all ${hasPerm("admin:manage") ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
+          <label className="flex items-center gap-2.5 cursor-pointer">
+            <input type="checkbox" className="accent-emerald w-4 h-4"
+              checked={hasPerm("admin:manage")}
+              onChange={e => togglePerm("admin:manage", e.target.checked)} />
+            <span className="text-sm font-semibold text-ink">Admin & Management</span>
+            <span className="text-xs text-ink-3 ml-1">all systems · users · history</span>
+          </label>
+        </div>
       </Field>
     </div>
   )
@@ -314,19 +331,21 @@ function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string
 function GroupEditModal({ group, onSaved, onClose }: {
   group: Group; onSaved: () => void; onClose: () => void
 }) {
+  const [name, setName] = useState(group.name)
   const [desc, setDesc] = useState(group.description)
   const [perms, setPerms] = useState<string[]>(group.permissions)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
 
   async function save() {
+    if (!name.trim()) { setError("Name is required"); return }
     setError("")
     setSaving(true)
     try {
       const r = await fetch("/api/admin/groups", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "update", groupId: group.id, description: desc, permissions: perms }),
+        body: JSON.stringify({ action: "update", groupId: group.id, name: name.trim(), description: desc, permissions: perms }),
       })
       if (!r.ok) throw new Error((await r.json()).error ?? "Failed")
       onSaved()
@@ -340,6 +359,9 @@ function GroupEditModal({ group, onSaved, onClose }: {
 
   return (
     <Modal title={`Edit group: ${group.name}`} onClose={onClose}>
+      <Field label="Name">
+        <input className={INPUT} value={name} onChange={e => setName(e.target.value)} />
+      </Field>
       <Field label="Description">
         <input className={INPUT} value={desc} onChange={e => setDesc(e.target.value)} placeholder="Optional" />
       </Field>
@@ -556,7 +578,7 @@ function UsersTable({ currentUsername }: { currentUsername: string | undefined }
                   </svg>
                 </button>
                 <button onClick={() => setShowNew(v => !v)}
-                  className="h-7 px-3 rounded-lg bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 transition-colors">
+                  className="h-7 px-3 rounded-lg bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 transition-colors whitespace-nowrap">
                   + New user
                 </button>
               </div>
@@ -738,7 +760,7 @@ function GroupsTable() {
                   </svg>
                 </button>
                 <button onClick={() => setShowNew(v => !v)}
-                  className="h-7 px-3 rounded-lg bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 transition-colors">
+                  className="h-7 px-3 rounded-lg bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 transition-colors whitespace-nowrap">
                   + New group
                 </button>
               </div>
@@ -765,8 +787,8 @@ export default function AdminTab({ currentUsername }: { currentUsername?: string
 
   return (
     <div>
-      <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-        <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1">
+      <div className="px-5 py-4 border-b border-border">
+        <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
           {(["users", "groups"] as const).map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
               className={`px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${
@@ -776,10 +798,6 @@ export default function AdminTab({ currentUsername }: { currentUsername?: string
             </button>
           ))}
         </div>
-        <button onClick={() => signOut({ callbackUrl: "/login" })}
-          className="h-8 px-3 rounded-xl bg-ground border border-border text-xs font-medium text-ink-3 hover:bg-border/40 transition-colors">
-          Sign out
-        </button>
       </div>
 
       {activeTab === "users"

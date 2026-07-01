@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
       }
       case "update": {
         if (!groupId) return NextResponse.json({ error: "groupId required" }, { status: 400 })
-        await updateGroup(groupId, description ?? "", permissions ?? [])
+        await updateGroup(groupId, description ?? "", permissions ?? [], name?.trim() || undefined)
         return NextResponse.json({ ok: true })
       }
       case "delete": {

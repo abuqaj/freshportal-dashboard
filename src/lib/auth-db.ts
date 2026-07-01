@@ -22,6 +22,14 @@ const ALL_PERMISSIONS = [
   "products:create",
   "photos:upload",
   "admin:manage",
+  "delivery:import",
+  "catalogue:sync",
+  "system:stamgegevens",
+  "system:piazza",
+  "system:ecuador",
+  "system:netherlands",
+  "system:kenya",
+  "system:coloriginz",
 ]
 
 const DEFAULT_GROUPS: Record<string, string[]> = {
@@ -277,6 +285,7 @@ export async function createGroup(name: string, description: string, permissionN
     INSERT INTO auth_groups (name, description) VALUES (${name}, ${description}) RETURNING id, name, description
   `
   for (const perm of permissionNames) {
+    await sql`INSERT INTO auth_permissions (name) VALUES (${perm}) ON CONFLICT (name) DO NOTHING`
     await sql`
       INSERT INTO auth_group_permissions (group_id, permission_id)
       SELECT ${group.id}, id FROM auth_permissions WHERE name = ${perm}
@@ -286,10 +295,15 @@ export async function createGroup(name: string, description: string, permissionN
   return group as AuthGroup
 }
 
-export async function updateGroup(groupId: number, description: string, permissionNames: string[]): Promise<void> {
-  await sql`UPDATE auth_groups SET description = ${description} WHERE id = ${groupId}`
+export async function updateGroup(groupId: number, description: string, permissionNames: string[], name?: string): Promise<void> {
+  if (name !== undefined) {
+    await sql`UPDATE auth_groups SET name = ${name}, description = ${description} WHERE id = ${groupId}`
+  } else {
+    await sql`UPDATE auth_groups SET description = ${description} WHERE id = ${groupId}`
+  }
   await sql`DELETE FROM auth_group_permissions WHERE group_id = ${groupId}`
   for (const perm of permissionNames) {
+    await sql`INSERT INTO auth_permissions (name) VALUES (${perm}) ON CONFLICT (name) DO NOTHING`
     await sql`
       INSERT INTO auth_group_permissions (group_id, permission_id)
       SELECT ${groupId}, id FROM auth_permissions WHERE name = ${perm}
