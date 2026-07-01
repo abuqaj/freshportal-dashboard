@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 export interface TourStep {
@@ -32,6 +32,7 @@ export default function DeliveryTour({ steps, stepIndex, onNext, onSkip, t }: Pr
   const isLast = stepIndex === steps.length - 1;
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [mounted, setMounted] = useState(false);
+  const lastTouchY = useRef<number | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -112,8 +113,20 @@ export default function DeliveryTour({ steps, stepIndex, onNext, onSkip, t }: Pr
 
   const content = (
     <>
-      {/* Click blocker */}
-      <div className="fixed inset-0" style={{ zIndex: 9996 }} />
+      {/* Click blocker — forwards wheel/touch so the page stays scrollable */}
+      <div
+        className="fixed inset-0"
+        style={{ zIndex: 9996 }}
+        onWheel={e => window.scrollBy({ top: e.deltaY, left: e.deltaX })}
+        onTouchStart={e => { lastTouchY.current = e.touches[0]?.clientY ?? null; }}
+        onTouchMove={e => {
+          const y = e.touches[0]?.clientY;
+          if (y != null && lastTouchY.current != null) {
+            window.scrollBy({ top: lastTouchY.current - y });
+          }
+          lastTouchY.current = y ?? null;
+        }}
+      />
 
       {/* Dark overlay when no spotlight target */}
       {!rect && (
