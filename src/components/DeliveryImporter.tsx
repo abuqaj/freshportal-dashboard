@@ -92,7 +92,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const username = session?.user?.name ?? undefined;
   const userPerms: string[] = (session?.user as { permissions?: string[] })?.permissions ?? [];
   const isAdmin = userPerms.includes("admin:manage");
-  const canSyncCatalogue = isAdmin || userPerms.includes("catalogue:sync");
+  const canSyncCatalogue = isAdmin || userPerms.includes("delivery:import") || userPerms.includes("catalogue:sync");
 
   const [stage, setStage] = useState<Stage>("idle");
   const [importLogId, setImportLogId] = useState<number | null>(null);
