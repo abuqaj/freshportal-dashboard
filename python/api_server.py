@@ -2543,7 +2543,7 @@ def catalogue_status(supplier_id: str, _: dict = Depends(require_any_permission(
 def catalogue_sync_stream(
     supplier_id: str,
     nm_supplier: str = "",
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
     cfg: Config = Depends(get_cfg),
 ):
     """SSE stream: scrape the full catalogue for supplier_id and save to DB.
