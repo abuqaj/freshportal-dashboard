@@ -73,6 +73,54 @@ interface ParseResult {
 
 type Stage = "idle" | "parsing" | "preview" | "syncing" | "importing" | "done" | "error";
 
+// ── Demo data for guided tour ─────────────────────────────────────────────
+
+const DEMO_JSON = `{
+  "invoices": [{
+    "id_invoice": "INV-2024-DEMO",
+    "tx_company": "Demo Grower B.V.",
+    "dt_fly": "2024-06-15",
+    "tx_awb": "176-12345678",
+    "nu_boxes": 8,
+    "lines": [
+      { "nm_variety": "ROSES RED NAOMI", "nu_length": 60, "nu_bunches": 10 },
+      { "nm_variety": "CHRYSANTH ANASTASIA WHITE", "nu_length": 70, "nu_bunches": 20 },
+      { "nm_variety": "ALSTROEM PINK FLOYD", "nu_length": 60, "nu_bunches": 15 },
+      { "nm_variety": "GERBERA MINI PINK", "nu_length": 45, "nu_bunches": 20 },
+      { "nm_variety": "TULIP RED DYNASTY", "nu_length": 40, "nu_bunches": 25 }
+    ]
+  }]
+}`;
+
+const DEMO_PARSE_RESULT: ParseResult = {
+  orders: [{
+    tx_company: "Demo Grower B.V.", id_invoice: "INV-2024-DEMO", id_purchaseorder: "PO-88001",
+    dt_fly: "2024-06-15", dt_invoice: "2024-06-12", tx_awb: "176-12345678", tx_hawb: "HAW-001",
+    nu_boxes: 8, nu_stems_total: 1575, mny_total: 441.00,
+    lines: [
+      { gu_product: "d1", nm_variety: "ROSES RED NAOMI", nm_species: "Rosa", nu_length: 60, nu_stems_bunch: 25, nu_bunches: 10, nu_stems_total: 250, mny_rate_stem: 0.38, mny_total: 95.00, id_floricode: "VB401010", nm_product: "Roses Red Naomi 60cm", nm_box: "FB", nu_physical_boxes: 2, fp_product_id: "10001", match_method: "variety_length", catalogue_nm_product: "Roses Red Naomi 60cm" },
+      { gu_product: "d2", nm_variety: "CHRYSANTH ANASTASIA WHITE", nm_species: "Chrysanthemum", nu_length: 70, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.22, mny_total: 44.00, id_floricode: "VB120020", nm_product: "Chrysanth Anastasia White 70cm", nm_box: "HB", nu_physical_boxes: 2, fp_product_id: "10002", match_method: "fuzzy_variety", catalogue_nm_product: "Chrysanthemum Anastasia White 70" },
+      { gu_product: "d3", nm_variety: "ALSTROEM PINK FLOYD", nm_species: "Alstroemeria", nu_length: 60, nu_stems_bunch: 5, nu_bunches: 30, nu_stems_total: 150, mny_rate_stem: 0.14, mny_total: 21.00, id_floricode: "VB110030", nm_product: "Alstroem Pink Floyd 60cm", nm_box: "MB", nu_physical_boxes: 1, fp_product_id: "10003", match_method: "cached", catalogue_nm_product: "Alstroemeria Pink Floyd 60" },
+      { gu_product: "d4", nm_variety: "GERBERA MINI PINK", nm_species: "Gerbera", nu_length: 45, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.18, mny_total: 36.00, id_floricode: "VB210040", nm_product: "", nm_box: "MB", nu_physical_boxes: 2, fp_product_id: "", match_method: "none", catalogue_nm_product: "" },
+      { gu_product: "d5", nm_variety: "TULIP RED DYNASTY", nm_species: "Tulipa", nu_length: 40, nu_stems_bunch: 10, nu_bunches: 25, nu_stems_total: 250, mny_rate_stem: 0.16, mny_total: 40.00, id_floricode: "VB300050", nm_product: "Tulip Red Dynasty 40cm", nm_box: "HB", nu_physical_boxes: 1, fp_product_id: "10005", match_method: "variety_nolen", catalogue_nm_product: "Tulip Red Dynasty" },
+    ],
+  }],
+  supplier_id: "210", supplier_nm: "Demo Grower B.V.", catalogue_count: 450, catalogue: [], matched_count: 4, unmatched_count: 1,
+};
+
+const DEMO_IMPORT_RESULT = { ok: true, batch_id: "DEMO-2024-001", batch_url: "#", lines_added: 5, message: "Batch DEMO-2024-001 created (5 lines)" };
+
+const DEMO_ADD_RESULT = {
+  ok: true, lines_added: 4, lines_skipped: 1, lines_failed: 0, message: "4 products added, 1 skipped (no match)",
+  details: [
+    { product: "Roses Red Naomi 60cm", status: "added" },
+    { product: "Chrysanth Anastasia White 70cm", status: "added" },
+    { product: "Alstroem Pink Floyd 60cm", status: "added" },
+    { product: "Gerbera Mini Pink 45cm", status: "skipped" },
+    { product: "Tulip Red Dynasty 40cm", status: "added" },
+  ],
+};
+
 const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   variety_length:       { label: "exact",        cls: "bg-emerald/15 text-emerald border-emerald/20" },
   variety_nolen:        { label: "exact~len",    cls: "bg-emerald/10 text-emerald border-emerald/15" },
@@ -113,16 +161,19 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Tour refs ─────────────────────────────────────────────────────────────
-  const refDropZone      = useRef<HTMLDivElement>(null);
-  const refParseBtn      = useRef<HTMLButtonElement>(null);
-  const refSupplierRow   = useRef<HTMLDivElement>(null);
+  const refDropZone        = useRef<HTMLDivElement>(null);
+  const refParseBtn        = useRef<HTMLButtonElement>(null);
+  const refSupplierRow     = useRef<HTMLDivElement>(null);
   const refCatalogueStatus = useRef<HTMLDivElement>(null);
   const refApproveToolbar  = useRef<HTMLDivElement>(null);
   const refTable           = useRef<HTMLDivElement>(null);
   const refActionBtns      = useRef<HTMLDivElement>(null);
+  const refImportResult    = useRef<HTMLDivElement>(null);
 
   const [tourOpen, setTourOpen] = useState(false);
   const [tourStep, setTourStep] = useState(0);
+  const [isTourMode, setIsTourMode] = useState(false);
+  const [addProgress, setAddProgress] = useState<{ done: number; total: number } | null>(null);
 
   // ── Match approval & inline edit ──────────────────────────────────────────
   const [approvedKeys, setApprovedKeys] = useState<Set<string>>(new Set());
@@ -147,6 +198,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
+  const [tableSearch, setTableSearch] = useState("");
   const [duplicateWarning, setDuplicateWarning] = useState<string[]>([]);
   const [multiFileError, setMultiFileError] = useState(false);
   const [fileLoaded, setFileLoaded] = useState(false);
@@ -161,16 +213,40 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Tour ──────────────────────────────────────────────────────────────────
 
+  // Auto-show for new users (delay for module-enter animation to complete)
   useEffect(() => {
     if (!username) return;
     fetch(`${RAILWAY}/user/flag/delivery_tour_dismissed`)
       .then(r => r.ok ? r.json() : { value: true })
-      .then(d => { if (!d.value) { setTourOpen(true); setTourStep(0); } })
+      .then(d => {
+        if (!d.value) {
+          setTimeout(() => {
+            setJsonText(DEMO_JSON);
+            setFileLoaded(true);
+            setIsTourMode(true);
+            setTourStep(0);
+            setTourOpen(true);
+          }, 700);
+        }
+      })
       .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [username]);
+
+  function openTour() {
+    reset();
+    setJsonText(DEMO_JSON);
+    setFileLoaded(true);
+    setIsTourMode(true);
+    setTourStep(0);
+    setTourOpen(true);
+  }
 
   async function dismissTour() {
     setTourOpen(false);
+    const wasInTourMode = isTourMode;
+    setIsTourMode(false);
+    if (wasInTourMode) reset();
     try {
       await fetch(`${RAILWAY}/user/flag/delivery_tour_dismissed`, {
         method: "POST",
@@ -444,8 +520,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           if (ev.type === "result") {
             const result = ev.data;
             setImportResult(result);
-            setStage("done");
             if (result.ok && result.batch_id) {
+              let logId: number | null = null;
               try {
                 const logRes = await fetch(`${RAILWAY}/delivery/import-log`, {
                   method: "POST",
@@ -474,10 +550,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 });
                 if (logRes.ok) {
                   const logData = await logRes.json();
+                  logId = logData.id;
                   setImportLogId(logData.id);
                 }
               } catch {}
+              const orderWithEdits = {
+                ...order,
+                lines: order.lines.map((line: DeliveryLine) => {
+                  const dk = deliveryKey(line);
+                  const edit = lineEdits[dk];
+                  return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
+                }),
+              };
+              await handleAddProductsFor(result.batch_id, orderWithEdits, logId);
             }
+            setStage("done");
           }
           if (ev.type === "error") {
             setError(ev.message);
@@ -534,29 +621,19 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     }
   }
 
-  async function handleAddProducts() {
-    if (!importResult?.batch_id || !parseResult) return;
-    const order = parseResult.orders[activeOrderIdx];
-    if (!order) return;
-
+  async function handleAddProductsFor(batchId: string, orderWithEdits: DeliveryOrder, logId: number | null) {
     setAddStage("running");
     setAddLogs([]);
     setAddResult(null);
+    setAddProgress(null);
 
-    const orderWithEdits = {
-      ...order,
-      lines: order.lines.map(line => {
-        const dk = deliveryKey(line);
-        const edit = lineEdits[dk];
-        if (!edit) return line;
-        return { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product };
-      }),
-    };
+    const totalLines = orderWithEdits.lines.filter(l => l.fp_product_id).length;
+    if (totalLines > 0) setAddProgress({ done: 0, total: totalLines });
 
     const res = await fetch(`${RAILWAY}/delivery/add-products`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ batch_id: importResult.batch_id, order: orderWithEdits }),
+      body: JSON.stringify({ batch_id: batchId, order: orderWithEdits }),
     });
 
     if (!res.ok || !res.body) {
@@ -568,6 +645,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    let doneCount = 0;
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -579,20 +657,25 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         if (!line || line.startsWith(":")) continue;
         try {
           const ev = JSON.parse(line);
-          if (ev.type === "status") setAddLogs(prev => [...prev, ev.message]);
+          if (ev.type === "status") {
+            setAddLogs(prev => [...prev, ev.message]);
+            setLogs(prev => [...prev, ev.message]);
+            if (ev.message?.startsWith("  ✓") || ev.message?.startsWith("  ✗")) {
+              doneCount++;
+              setAddProgress({ done: doneCount, total: totalLines });
+            }
+          }
           if (ev.type === "result") {
             const addData = ev.data;
             setAddResult(addData);
             setAddStage("done");
             const allMatchedKeys = new Set(
-              orderWithEdits.lines
-                .filter(l => l.fp_product_id)
-                .map(l => deliveryKey(l))
+              orderWithEdits.lines.filter(l => l.fp_product_id).map(l => deliveryKey(l))
             );
             await handleApproveMatches(allMatchedKeys);
-            if (importLogId) {
+            if (logId) {
               try {
-                await fetch(`${RAILWAY}/delivery/import-log/${importLogId}`, {
+                await fetch(`${RAILWAY}/delivery/import-log/${logId}`, {
                   method: "PATCH",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
@@ -607,10 +690,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           }
           if (ev.type === "error") {
             setAddLogs(prev => [...prev, `Error: ${ev.message}`]);
+            setLogs(prev => [...prev, `Error: ${ev.message}`]);
             setAddStage("error");
-            if (importLogId) {
+            if (logId) {
               try {
-                await fetch(`${RAILWAY}/delivery/import-log/${importLogId}`, {
+                await fetch(`${RAILWAY}/delivery/import-log/${logId}`, {
                   method: "PATCH",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ products_status: "error", nu_products_added: 0, nu_products_failed: 0, nu_products_skipped: 0 }),
@@ -621,6 +705,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         } catch {}
       }
     }
+  }
+
+  async function handleAddProducts() {
+    if (!importResult?.batch_id || !parseResult) return;
+    const order = parseResult.orders[activeOrderIdx];
+    if (!order) return;
+    const orderWithEdits = {
+      ...order,
+      lines: order.lines.map(line => {
+        const dk = deliveryKey(line);
+        const edit = lineEdits[dk];
+        return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
+      }),
+    };
+    await handleAddProductsFor(importResult.batch_id, orderWithEdits, importLogId);
   }
 
   async function loadCacheManager() {
@@ -653,6 +752,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setAddStage("idle");
     setAddLogs([]);
     setAddResult(null);
+    setAddProgress(null);
     setApprovedKeys(new Set());
     setLineEdits({});
     setEditingKey(null);
@@ -666,6 +766,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setSortCol(null);
     setSortDir("asc");
     setColFilters({});
+    setTableSearch("");
     setDuplicateWarning([]);
     setMultiFileError(false);
     setFileLoaded(false);
@@ -696,13 +797,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     }
 
-    if (colFilters.variety) {
-      const f = colFilters.variety.toLowerCase();
-      lines = lines.filter(l => l.nm_variety.toLowerCase().includes(f));
-    }
-    if (colFilters.box) {
-      const f = colFilters.box.toLowerCase();
-      lines = lines.filter(l => (l.nm_box || "").toLowerCase().includes(f));
+    if (tableSearch) {
+      const q = tableSearch.toLowerCase();
+      lines = lines.filter(l => {
+        const dk = deliveryKey(l);
+        const catName = lineEdits[dk]?.catalogue_nm_product ?? l.catalogue_nm_product ?? "";
+        return (
+          l.nm_variety.toLowerCase().includes(q) ||
+          (l.nm_species ?? "").toLowerCase().includes(q) ||
+          (l.nm_box ?? "").toLowerCase().includes(q) ||
+          catName.toLowerCase().includes(q) ||
+          l.match_method.toLowerCase().includes(q) ||
+          (l.id_floricode ?? "").toLowerCase().includes(q) ||
+          String(l.nu_length).includes(q)
+        );
+      });
     }
 
     if (sortCol) {
@@ -724,33 +833,48 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     }
     return lines;
-  }, [parseResult, activeOrderIdx, showOnlyUnmatched, colFilters, sortCol, sortDir, lineEdits]);
+  }, [parseResult, activeOrderIdx, showOnlyUnmatched, tableSearch, sortCol, sortDir, lineEdits]);
 
-  const tourSteps = useMemo((): TourStep[] => {
-    if (stage === "idle" || stage === "parsing") {
-      return [
-        { targetRef: refDropZone as React.RefObject<HTMLElement | null>, title: td.tourStep1Title, body: td.tourStep1Body },
-        { targetRef: refParseBtn as React.RefObject<HTMLElement | null>, title: td.tourStep2Title, body: td.tourStep2Body },
-      ];
-    }
-    if (stage === "preview") {
-      return [
-        { targetRef: refSupplierRow    as React.RefObject<HTMLElement | null>, title: td.tourStep3Title, body: td.tourStep3Body },
-        { targetRef: refCatalogueStatus as React.RefObject<HTMLElement | null>, title: td.tourStep4Title, body: td.tourStep4Body },
-        { targetRef: refApproveToolbar  as React.RefObject<HTMLElement | null>, title: td.tourStep5Title, body: td.tourStep5Body },
-        { targetRef: refTable           as React.RefObject<HTMLElement | null>, title: td.tourStep6Title, body: td.tourStep6Body },
-        { targetRef: refActionBtns      as React.RefObject<HTMLElement | null>, title: td.tourStep7Title, body: td.tourStep7Body },
-      ];
-    }
-    return [];
-  }, [stage, td]);
+  type AllTourStep = TourStep & { tourStage: "idle" | "preview" | "done" };
+
+  const allTourSteps = useMemo((): AllTourStep[] => [
+    { tourStage: "idle",    targetRef: refDropZone        as React.RefObject<HTMLElement|null>, title: td.tourStep1Title, body: td.tourStep1Body },
+    { tourStage: "idle",    targetRef: refParseBtn        as React.RefObject<HTMLElement|null>, title: td.tourStep2Title, body: td.tourStep2Body },
+    { tourStage: "preview", targetRef: refSupplierRow     as React.RefObject<HTMLElement|null>, title: td.tourStep3Title, body: td.tourStep3Body },
+    { tourStage: "preview", targetRef: refCatalogueStatus as React.RefObject<HTMLElement|null>, title: td.tourStep4Title, body: td.tourStep4Body },
+    { tourStage: "preview", targetRef: refApproveToolbar  as React.RefObject<HTMLElement|null>, title: td.tourStep5Title, body: td.tourStep5Body },
+    { tourStage: "preview", targetRef: refTable           as React.RefObject<HTMLElement|null>, title: td.tourStep6Title, body: td.tourStep6Body },
+    { tourStage: "preview", targetRef: refActionBtns      as React.RefObject<HTMLElement|null>, title: td.tourStep7Title, body: td.tourStep7Body },
+    { tourStage: "done",    targetRef: refImportResult    as React.RefObject<HTMLElement|null>, title: td.tourStep8Title, body: td.tourStep8Body },
+  ], [td]);
 
   function handleTourNext() {
-    if (tourStep >= tourSteps.length - 1) {
-      dismissTour();
-    } else {
-      setTourStep(s => s + 1);
+    const nextIdx = tourStep + 1;
+    if (nextIdx >= allTourSteps.length) { dismissTour(); return; }
+    const nextStage = allTourSteps[nextIdx].tourStage;
+    const currStage = allTourSteps[tourStep].tourStage;
+    if (nextStage !== currStage) {
+      if (nextStage === "preview") {
+        const preApproved = new Set<string>();
+        DEMO_PARSE_RESULT.orders[0].lines.forEach(l => { if (l.fp_product_id) preApproved.add(deliveryKey(l)); });
+        setParseResult(DEMO_PARSE_RESULT);
+        setResolvedSupplier({ fp_supplier_id: "210", nm_supplier: "Demo Grower B.V." });
+        setCatalogueCount(450);
+        setActiveOrderIdx(0);
+        setLineEdits({});
+        setShowOnlyUnmatched(false);
+        setSortCol(null);
+        setColFilters({});
+        setApprovedKeys(preApproved);
+        setStage("preview");
+      } else if (nextStage === "done") {
+        setImportResult(DEMO_IMPORT_RESULT);
+        setAddResult(DEMO_ADD_RESULT);
+        setAddStage("done");
+        setStage("done");
+      }
     }
+    setTourStep(nextIdx);
   }
 
   return (
@@ -766,7 +890,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </p>
         </div>
         <button
-          onClick={() => { setTourStep(0); setTourOpen(true); }}
+          onClick={openTour}
           title={td.tourOpenBtn}
           className="flex-shrink-0 w-7 h-7 rounded-full border border-border text-ink-3 hover:text-emerald hover:border-emerald/50 text-xs font-bold transition-colors flex items-center justify-center"
         >
@@ -774,21 +898,28 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         </button>
       </div>
 
-      {tourOpen && tourSteps.length > 0 && (
+      {tourOpen && (
         <DeliveryTour
-          steps={tourSteps}
-          stepIndex={Math.min(tourStep, tourSteps.length - 1)}
+          steps={allTourSteps}
+          stepIndex={Math.min(tourStep, allTourSteps.length - 1)}
           onNext={handleTourNext}
           onSkip={dismissTour}
           t={{ tourNext: td.tourNext, tourSkip: td.tourSkip, tourFinish: td.tourFinish }}
         />
       )}
 
+      {isTourMode && (
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600">
+          <span>🎯</span>
+          <span>{td.tourDemoMode}</span>
+        </div>
+      )}
+
       {/* ── PROGRESS STEPPER ── */}
       <DeliveryStepBar
         stage={stage}
         allDone={stage === "done" && addStage === "done" && (addResult?.ok ?? false)}
-        steps={[td.stepUpload, td.stepReview, td.stepImport, td.stepProducts]}
+        steps={[td.stepUpload, td.stepReview, td.stepImport]}
       />
 
       {/* ── IDLE / INPUT ── */}
@@ -839,20 +970,20 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               readOnly={fileLoaded}
               onChange={e => { if (!fileLoaded) setJsonText(e.target.value); }}
             />
-            <div className="flex items-center justify-between mt-2">
-              <span className="text-[11px] text-ink-3">{td.dropHint}</span>
-              <div className="flex items-center gap-3">
+            <div className="flex items-center justify-between mt-3">
+              <span className="text-xs text-ink-3">{td.dropHint}</span>
+              <div className="flex items-center gap-2">
                 {jsonText && (
                   <button
                     onClick={() => { setJsonText(""); setDuplicateWarning([]); setMultiFileError(false); setFileLoaded(false); }}
-                    className="text-[11px] text-red-400 hover:text-red-600 transition-colors"
+                    className="h-7 px-3 rounded-lg text-xs font-medium text-red-500 border border-red-400/30 hover:bg-red-500/10 transition-colors"
                   >
                     {td.clearJson}
                   </button>
                 )}
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  className="text-[11px] text-ink-3 hover:text-ink underline"
+                  className="h-7 px-3 rounded-lg text-xs font-medium text-ink-3 border border-border hover:text-ink hover:border-emerald/40 transition-colors"
                 >
                   Browse
                 </button>
@@ -1013,12 +1144,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   ? "bg-amber-500/15 border-amber-500/30 text-amber-700"
                   : "bg-emerald/8 border-emerald/30 text-emerald hover:bg-emerald/15"}`}
             >
-              {td.approved(approvedKeys.size, order.lines.filter(l => l.fp_product_id).length)}
+              {td.approved(
+                approvedKeys.size,
+                new Set(order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l))).size
+              )}
               {showOnlyUnmatched ? " ✕" : ""}
             </button>
             <button
               onClick={() => {
-                const all = new Set(order.lines.filter(l => l.fp_product_id).map(l => deliveryKey(l)));
+                const all = new Set(order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l)));
                 setApprovedKeys(all);
               }}
               className="h-6 px-2 rounded-md text-[11px] border border-emerald/40 text-emerald hover:bg-emerald/8 transition-colors"
@@ -1031,9 +1165,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             >
               {td.deselectAll}
             </button>
-            {(Object.values(colFilters).some(Boolean) || sortCol) && (
+            {(tableSearch || sortCol) && (
               <button
-                onClick={() => { setColFilters({}); setSortCol(null); setSortDir("asc"); }}
+                onClick={() => { setTableSearch(""); setSortCol(null); setSortDir("asc"); }}
                 className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink transition-colors"
               >
                 ✕ Reset
@@ -1047,15 +1181,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </button>
           </div>
 
-          {/* Action buttons — above the table */}
-          <div ref={refActionBtns} className="flex items-center justify-end gap-3">
-            <button onClick={reset} className="h-9 px-4 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors bg-surface">
+          {/* Action buttons + search bar — above the table */}
+          <div ref={refActionBtns} className="flex items-center gap-3">
+            <input
+              value={tableSearch}
+              onChange={e => setTableSearch(e.target.value)}
+              placeholder={td.tableSearchPlaceholder}
+              className="flex-1 h-9 px-3 rounded-xl text-sm border border-border bg-surface outline-none focus:border-emerald/50 placeholder:text-ink-3/50 transition-colors"
+            />
+            <button onClick={reset} className="h-9 px-4 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors bg-surface whitespace-nowrap">
               {td.startOver}
             </button>
             <button
               onClick={handleImport}
               disabled={parseResult!.matched_count === 0}
-              className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
+              className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
               {td.importBtn}
             </button>
@@ -1078,27 +1218,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   <SortTh col="price"      label={td.colPrice}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="total"      label={td.colTotal}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="match"      label={td.colMatch}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                </tr>
-                {/* Filter row */}
-                <tr className="bg-muted/60 border-b border-border/60">
-                  <td />
-                  <td className="px-2 py-1">
-                    <input
-                      value={colFilters.variety ?? ""}
-                      onChange={e => setColFilters(p => ({ ...p, variety: e.target.value }))}
-                      placeholder="…"
-                      className="w-full text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface outline-none focus:border-emerald/50 min-w-[60px]"
-                    />
-                  </td>
-                  <td className="px-2 py-1">
-                    <input
-                      value={colFilters.box ?? ""}
-                      onChange={e => setColFilters(p => ({ ...p, box: e.target.value }))}
-                      placeholder="…"
-                      className="w-full text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface outline-none focus:border-emerald/50 min-w-[40px]"
-                    />
-                  </td>
-                  <td colSpan={9} />
                 </tr>
               </thead>
               <tbody>
@@ -1400,14 +1519,30 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       {/* ── IMPORTING ── */}
       {stage === "importing" && (
-        <ProgressLog title={td.importing} logs={logs} />
+        <div className="flex flex-col gap-3">
+          <ProgressLog title={td.importing} logs={logs} />
+          {addStage === "running" && addProgress && (
+            <div className="px-1">
+              <div className="flex items-center justify-between text-xs text-ink-3 mb-1.5">
+                <span>{td.addingProducts}</span>
+                <span className="tabular-nums font-medium">{addProgress.done} / {addProgress.total}</span>
+              </div>
+              <div className="h-2 bg-border rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-emerald rounded-full transition-[width] duration-300"
+                  style={{ width: `${addProgress.total > 0 ? Math.min(100, Math.round((addProgress.done / addProgress.total) * 100)) : 0}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── DONE ── */}
       {stage === "done" && importResult && (
-        <div className="flex flex-col gap-4">
+        <div ref={refImportResult} className="flex flex-col gap-4">
 
-          {/* Batch creation result — always visible */}
+          {/* Batch creation result */}
           <div className={`p-4 rounded-2xl border ${importResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-red-500/8 border-red-500/20"}`}>
             <p className={`font-semibold text-sm ${importResult.ok ? "text-emerald" : "text-red-500"}`}>
               {importResult.ok ? td.batchCreated : td.importFailed}
@@ -1416,7 +1551,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             {importResult.batch_id && (
               <p className="text-xs text-ink-3 mt-0.5">{td.batchId}: <span className="font-mono font-semibold">{importResult.batch_id}</span></p>
             )}
-            {importResult.batch_url && (
+            {importResult.batch_url && importResult.batch_url !== "#" && (
               <a href={importResult.batch_url} target="_blank" rel="noopener noreferrer"
                 className="text-xs text-emerald underline mt-1 inline-block">
                 {td.viewBatch} →
@@ -1424,98 +1559,61 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             )}
           </div>
 
-          {addStage === "done" && addResult?.ok ? (
-            <>
-              <div className="p-4 rounded-2xl border bg-emerald/8 border-emerald/20">
-                <p className="font-semibold text-sm text-emerald">
-                  {td.productsAdded(addResult.lines_added)}
-                  {addResult.lines_failed > 0 && `, ${addResult.lines_failed} failed`}
-                  {addResult.lines_skipped > 0 && `, ${addResult.lines_skipped} bez dopasowania`}
-                </p>
-                <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
-                {addResult.details.length > 0 && (
-                  <div className="mt-2 max-h-52 overflow-y-auto space-y-0.5 pr-1">
-                    {addResult.details.map((d, i) => (
-                      <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : "text-red-400"}`}>
-                        {d.status === "added" ? "✓" : "✗"} {d.product}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <details className="mt-3 text-xs">
-                  <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.fullLog(addLogs.length)}</summary>
-                  <div className="mt-1 bg-muted rounded-xl p-2 max-h-64 overflow-y-auto font-mono space-y-0.5">
-                    {addLogs.map((l, i) => (
-                      <div key={i} className={l.startsWith("  ✓") ? "text-emerald" : l.startsWith("  ✗") ? "text-red-400" : "text-ink-3"}>{l}</div>
-                    ))}
-                  </div>
-                </details>
-              </div>
-
-              <details className="text-xs">
-                <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.batchLog(logs.length)}</summary>
-                <div className="mt-2 bg-muted rounded-xl p-3 max-h-48 overflow-y-auto font-mono space-y-0.5">
-                  {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
-                </div>
-              </details>
-
-              <button onClick={reset} className="self-end h-10 px-6 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 active:scale-[0.98] transition-all">
-                {td.startOver}
-              </button>
-            </>
-          ) : (
-            <>
-              {importResult.ok && importResult.batch_id && (
-                <div className="flex flex-col gap-3">
-                  {addStage === "idle" && (
-                    <button
-                      onClick={handleAddProducts}
-                      className="h-10 px-6 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 transition-colors"
-                    >
-                      {td.addProductsBtn(importResult.batch_id)}
-                    </button>
-                  )}
-
-                  {addStage === "running" && (
-                    <ProgressLog title={td.addingProducts} logs={addLogs} />
-                  )}
-
-                  {addStage === "done" && addResult && !addResult.ok && (
-                    <div className={`p-4 rounded-2xl border bg-amber-500/8 border-amber-500/20`}>
-                      <p className="font-semibold text-sm text-amber-600">
-                        {td.productsAdded(addResult.lines_added)}
-                        {addResult.lines_failed > 0 && `, ${addResult.lines_failed} failed`}
-                      </p>
-                      <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
+          {/* Add-products result */}
+          {addStage === "done" && addResult && (
+            <div className={`p-4 rounded-2xl border ${addResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-amber-500/8 border-amber-500/20"}`}>
+              <p className={`font-semibold text-sm ${addResult.ok ? "text-emerald" : "text-amber-600"}`}>
+                {td.productsAdded(addResult.lines_added)}
+                {addResult.lines_failed > 0 && `, ${addResult.lines_failed} failed`}
+                {addResult.lines_skipped > 0 && `, ${addResult.lines_skipped} bez dopasowania`}
+              </p>
+              <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
+              {addResult.details.length > 0 && (
+                <div className="mt-2 max-h-52 overflow-y-auto space-y-0.5 pr-1">
+                  {addResult.details.map((d, i) => (
+                    <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : "text-red-400"}`}>
+                      {d.status === "added" ? "✓" : "✗"} {d.product}
                     </div>
-                  )}
-
-                  {addStage === "error" && (
-                    <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20">
-                      <p className="text-sm font-semibold text-red-500">{td.addProductsFailed}</p>
-                      <div className="mt-1 font-mono text-xs text-red-400 space-y-0.5">
-                        {addLogs.map((l, i) => <div key={i}>{l}</div>)}
-                      </div>
-                      <button onClick={() => setAddStage("idle")} className="mt-2 text-xs text-ink-3 underline">
-                        {td.retryBtn}
-                      </button>
-                    </div>
-                  )}
+                  ))}
                 </div>
               )}
-
-              <details className="text-xs">
-                <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.batchLog(logs.length)}</summary>
-                <div className="mt-2 bg-muted rounded-xl p-3 max-h-48 overflow-y-auto font-mono space-y-0.5">
-                  {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
+              <details className="mt-3 text-xs">
+                <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.fullLog(addLogs.length)}</summary>
+                <div className="mt-1 bg-muted rounded-xl p-2 max-h-64 overflow-y-auto font-mono space-y-0.5">
+                  {addLogs.map((l, i) => (
+                    <div key={i} className={l.startsWith("  ✓") ? "text-emerald" : l.startsWith("  ✗") ? "text-red-400" : "text-ink-3"}>{l}</div>
+                  ))}
                 </div>
               </details>
-
-              <button onClick={reset} className="self-end h-9 px-5 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors">
-                {td.startOver}
-              </button>
-            </>
+            </div>
           )}
+
+          {/* Add-products error + retry */}
+          {addStage === "error" && (
+            <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20">
+              <p className="text-sm font-semibold text-red-500">{td.addProductsFailed}</p>
+              <div className="mt-1 font-mono text-xs text-red-400 space-y-0.5">
+                {addLogs.map((l, i) => <div key={i}>{l}</div>)}
+              </div>
+              <button onClick={handleAddProducts} className="mt-2 text-xs text-emerald underline">
+                {td.retryBtn}
+              </button>
+            </div>
+          )}
+
+          <details className="text-xs">
+            <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.batchLog(logs.length)}</summary>
+            <div className="mt-2 bg-muted rounded-xl p-3 max-h-48 overflow-y-auto font-mono space-y-0.5">
+              {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
+            </div>
+          </details>
+
+          <button
+            onClick={reset}
+            className="self-end h-10 px-6 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 active:scale-[0.98] transition-all"
+          >
+            {td.startOver}
+          </button>
         </div>
       )}
 
@@ -1573,8 +1671,7 @@ function DeliveryStepBar({
   const current = allDone ? steps.length
     : stage === "idle" || stage === "parsing" || stage === "error" ? 0
     : stage === "preview" || stage === "syncing" ? 1
-    : stage === "importing" ? 2
-    : 3;
+    : 2;
 
   return (
     <div className="flex items-start w-full">

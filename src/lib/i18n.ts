@@ -363,6 +363,10 @@ const en = {
     tourSkip:        "Skip tour",
     tourFinish:      "Finish",
     tourOpenBtn:     "Help tour",
+    tourStep8Title:  "Import result",
+    tourStep8Body:   "After creating the shipment, you'll see the results here — batch created and products added to FreshPortal. Click Finish to start working with your real deliveries.",
+    tourDemoMode:    "Demo mode — example data shown",
+    tableSearchPlaceholder: "Search products…",
   },
   login: {
     subtitle:         "Sign in to your account",
@@ -812,6 +816,10 @@ const nl: typeof en = {
     tourSkip:        "Tour overslaan",
     tourFinish:      "Voltooien",
     tourOpenBtn:     "Rondleiding",
+    tourStep8Title:  "Importresultaat",
+    tourStep8Body:   "Na het aanmaken van de zending ziet u hier de resultaten — batch aangemaakt en producten toegevoegd aan FreshPortal. Klik op Voltooien om met echte leveringen te beginnen.",
+    tourDemoMode:    "Demomodus — voorbeeldgegevens worden getoond",
+    tableSearchPlaceholder: "Producten zoeken…",
   },
   history: {
     title:         "Operatiegeschiedenis",
@@ -1229,6 +1237,10 @@ const pl: typeof en = {
     tourSkip:        "Pomiń przewodnik",
     tourFinish:      "Zakończ",
     tourOpenBtn:     "Przewodnik",
+    tourStep8Title:  "Wynik importu",
+    tourStep8Body:   "Po utworzeniu wysyłki zobaczysz tu wyniki — partia utworzona i produkty dodane do FreshPortal. Kliknij Zakończ, aby zacząć pracować z prawdziwymi dostawami.",
+    tourDemoMode:    "Tryb demonstracyjny — wyświetlane są przykładowe dane",
+    tableSearchPlaceholder: "Szukaj produktów…",
   },
   history: {
     title:         "Historia operacji",
@@ -1646,6 +1658,10 @@ const es: typeof en = {
     tourSkip:        "Omitir visita",
     tourFinish:      "Finalizar",
     tourOpenBtn:     "Visita guiada",
+    tourStep8Title:  "Resultado de importación",
+    tourStep8Body:   "Tras crear el envío, verá los resultados aquí — lote creado y productos añadidos a FreshPortal. Haga clic en Finalizar para trabajar con sus entregas reales.",
+    tourDemoMode:    "Modo demo — se muestran datos de ejemplo",
+    tableSearchPlaceholder: "Buscar productos…",
   },
   history: {
     title:         "Historial de operaciones",

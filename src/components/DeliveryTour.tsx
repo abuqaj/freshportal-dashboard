@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 export interface TourStep {
   targetRef?: React.RefObject<HTMLElement | null>;
@@ -23,28 +24,38 @@ interface Props {
 }
 
 const PAD = 10;
-const TW = 304;
-const TH = 180;
+const TW = 320;
+const TH = 190;
 
 export default function DeliveryTour({ steps, stepIndex, onNext, onSkip, t }: Props) {
   const step = steps[stepIndex];
   const isLast = stepIndex === steps.length - 1;
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
+    setRect(null); // clear old position immediately on step change
     const el = step?.targetRef?.current;
-    if (!el) {
-      setRect(null);
-      return;
-    }
+    if (!el) return;
+
     el.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    const timer = setTimeout(() => {
-      setRect(el.getBoundingClientRect());
-    }, 320);
-    return () => clearTimeout(timer);
+
+    const measure = () => setRect(el.getBoundingClientRect());
+
+    // Wait for any CSS animations and scrolling to settle
+    const timer = setTimeout(measure, 350);
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, { capture: true, passive: true });
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, { capture: true } as EventListenerOptions);
+    };
   }, [stepIndex, step]);
 
-  if (!step) return null;
+  if (!step || !mounted) return null;
 
   let spotlightStyle: React.CSSProperties = {};
   let tooltipStyle: React.CSSProperties = {};
@@ -66,14 +77,13 @@ export default function DeliveryTour({ steps, stepIndex, onNext, onSkip, t }: Pr
       boxShadow: "0 0 0 9999px rgba(0,0,0,0.65)",
       zIndex: 9998,
       pointerEvents: "none",
+      transition: "top 0.25s ease, left 0.25s ease, width 0.25s ease, height 0.25s ease",
     };
 
     const spaceBelow = window.innerHeight - (sr.top + sr.height + 12);
     const placeAbove = spaceBelow < TH + 8;
 
-    let ttTop = placeAbove
-      ? sr.top - TH - 12
-      : sr.top + sr.height + 12;
+    let ttTop = placeAbove ? sr.top - TH - 12 : sr.top + sr.height + 12;
     let ttLeft = sr.left;
 
     if (ttLeft + TW > window.innerWidth - 12) ttLeft = window.innerWidth - TW - 12;
@@ -86,8 +96,10 @@ export default function DeliveryTour({ steps, stepIndex, onNext, onSkip, t }: Pr
       left: ttLeft,
       width: TW,
       zIndex: 9999,
+      transition: "top 0.25s ease, left 0.25s ease",
     };
   } else {
+    // No target — show centered tooltip with full dark overlay
     tooltipStyle = {
       position: "fixed",
       top: "50%",
@@ -98,12 +110,20 @@ export default function DeliveryTour({ steps, stepIndex, onNext, onSkip, t }: Pr
     };
   }
 
-  return (
+  const content = (
     <>
-      {/* Click blocker behind spotlight */}
+      {/* Click blocker */}
       <div className="fixed inset-0" style={{ zIndex: 9996 }} />
 
-      {/* Spotlight cutout */}
+      {/* Dark overlay when no spotlight target */}
+      {!rect && (
+        <div
+          className="fixed inset-0"
+          style={{ zIndex: 9997, background: "rgba(0,0,0,0.65)", pointerEvents: "none" }}
+        />
+      )}
+
+      {/* Spotlight — box-shadow creates dark area around the target element */}
       {rect && <div style={spotlightStyle} />}
 
       {/* Tooltip card */}
@@ -129,7 +149,7 @@ export default function DeliveryTour({ steps, stepIndex, onNext, onSkip, t }: Pr
         </div>
 
         {/* Progress dots */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-wrap">
           {steps.map((_, i) => (
             <div
               key={i}
@@ -153,4 +173,6 @@ export default function DeliveryTour({ steps, stepIndex, onNext, onSkip, t }: Pr
       </div>
     </>
   );
+
+  return createPortal(content, document.body);
 }
