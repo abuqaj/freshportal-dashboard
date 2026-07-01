@@ -2433,7 +2433,7 @@ class SupplierMapRequest(BaseModel):
 @app.post("/catalogue/supplier-map")
 def catalogue_save_supplier_map(
     req: SupplierMapRequest,
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
 ):
     """Save (or update) a manually confirmed JSON company name → FP supplier_id mapping.
 
@@ -2449,7 +2449,7 @@ def catalogue_save_supplier_map(
 def catalogue_approve_matches(
     supplier_id: str,
     req: ApproveMatchesRequest,
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
 ):
     """Save a batch of user-approved delivery→product matches to cache.
 
@@ -2489,7 +2489,7 @@ def catalogue_delete_match(
 def catalogue_suppliers(
     refresh: bool = False,
     debug: bool = False,
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
     cfg: Config = Depends(get_cfg),
 ):
     """Return supplier list with catalogue sync status.
@@ -2531,7 +2531,7 @@ def catalogue_suppliers(
 
 
 @app.get("/catalogue/{supplier_id}/status")
-def catalogue_status(supplier_id: str, _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync"))):
+def catalogue_status(supplier_id: str, _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import"))):
     """Return sync status for a single supplier from DB (no scraping)."""
     meta = get_supplier_meta_one(supplier_id)
     if not meta:

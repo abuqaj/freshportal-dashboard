@@ -191,10 +191,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const rawInvoices: { id_invoice?: string }[] = body.invoices ?? (Array.isArray(body) ? body : [body]);
       const ids = rawInvoices.map(i => i.id_invoice).filter(Boolean) as string[];
       if (!ids.length) return [];
-      const res = await fetch(`${RAILWAY}/delivery/import-logs?limit=500`);
+      const res = await fetch(`${RAILWAY}/delivery/import-log?limit=500`);
       if (!res.ok) return [];
       const data = await res.json();
-      const entries: { id_invoice?: string }[] = data.logs ?? data.entries ?? (Array.isArray(data) ? data : []);
+      const entries: { id_invoice?: string }[] = data.history ?? data.logs ?? (Array.isArray(data) ? data : []);
       const existing = new Set<string>(entries.map(l => l.id_invoice).filter(Boolean) as string[]);
       return ids.filter(id => existing.has(id));
     } catch { return []; }
