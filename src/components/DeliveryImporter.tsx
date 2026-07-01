@@ -627,7 +627,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setAddResult(null);
     setAddProgress(null);
 
-    const totalLines = orderWithEdits.lines.filter(l => l.fp_product_id).length;
+    // Backend processes one entry per physical box, so total must sum nu_physical_boxes
+    const totalLines = orderWithEdits.lines
+      .filter(l => l.fp_product_id)
+      .reduce((sum, l) => sum + (l.nu_physical_boxes ?? 1), 0);
     if (totalLines > 0) setAddProgress({ done: 0, total: totalLines });
 
     const res = await fetch(`${RAILWAY}/delivery/add-products`, {
@@ -662,7 +665,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             setLogs(prev => [...prev, ev.message]);
             if (ev.message?.startsWith("  ✓") || ev.message?.startsWith("  ✗")) {
               doneCount++;
-              setAddProgress({ done: doneCount, total: totalLines });
+              setAddProgress({ done: Math.min(doneCount, totalLines), total: totalLines });
             }
           }
           if (ev.type === "result") {
@@ -1525,23 +1528,58 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       {/* ── IMPORTING ── */}
       {stage === "importing" && (
-        <div className="flex flex-col gap-3">
-          <ProgressLog title={td.importing} logs={logs} />
-          {addStage === "running" && addProgress && (
-            <div className="px-1">
-              <div className="flex items-center justify-between text-xs text-ink-3 mb-1.5">
-                <span>{td.addingProducts}</span>
-                <span className="tabular-nums font-medium">{addProgress.done} / {addProgress.total}</span>
+        isAdmin ? (
+          /* Admin: full log + progress bar */
+          <div className="flex flex-col gap-3">
+            <ProgressLog title={td.importing} logs={logs} />
+            {addStage === "running" && addProgress && (
+              <div className="px-1">
+                <div className="flex items-center justify-between text-xs text-ink-3 mb-1.5">
+                  <span>{td.addingProducts}</span>
+                  <span className="tabular-nums font-medium">{addProgress.done} / {addProgress.total}</span>
+                </div>
+                <div className="h-2 bg-border rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald rounded-full transition-[width] duration-300"
+                    style={{ width: `${addProgress.total > 0 ? Math.min(100, Math.round((addProgress.done / addProgress.total) * 100)) : 0}%` }}
+                  />
+                </div>
               </div>
-              <div className="h-2 bg-border rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-emerald rounded-full transition-[width] duration-300"
-                  style={{ width: `${addProgress.total > 0 ? Math.min(100, Math.round((addProgress.done / addProgress.total) * 100)) : 0}%` }}
-                />
-              </div>
+            )}
+          </div>
+        ) : (
+          /* Non-admin: spinner + current status + progress bar */
+          <div className="flex flex-col items-center gap-5 py-8">
+            <div className="relative flex items-center justify-center">
+              <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
+              </svg>
+              <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
+                <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
+              </svg>
             </div>
-          )}
-        </div>
+            <div className="text-center space-y-1 max-w-xs">
+              <p className="text-sm font-semibold text-ink">{td.importing}</p>
+              {logs.length > 0 && (
+                <p className="text-xs text-ink-3 leading-relaxed">{logs[logs.length - 1]}</p>
+              )}
+            </div>
+            {addStage === "running" && addProgress && (
+              <div className="w-full px-2">
+                <div className="flex items-center justify-between text-xs text-ink-3 mb-1.5">
+                  <span>{td.addingProducts}</span>
+                  <span className="tabular-nums font-medium">{addProgress.done} / {addProgress.total}</span>
+                </div>
+                <div className="h-2 bg-border rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald rounded-full transition-[width] duration-300"
+                    style={{ width: `${addProgress.total > 0 ? Math.min(100, Math.round((addProgress.done / addProgress.total) * 100)) : 0}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )
       )}
 
       {/* ── DONE ── */}
