@@ -661,14 +661,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const f = colFilters.variety.toLowerCase();
       lines = lines.filter(l => l.nm_variety.toLowerCase().includes(f));
     }
-    if (colFilters.match) {
-      const f = colFilters.match.toLowerCase();
-      lines = lines.filter(l => {
-        const dk = `${(l.nm_variety ?? "").toLowerCase().trim()}|${l.nu_length || ""}`;
-        const edit = lineEdits[dk];
-        const badge = MATCH_BADGE[edit ? "cached" : l.match_method] ?? MATCH_BADGE.none;
-        return badge.label.toLowerCase().includes(f);
-      });
+    if (colFilters.box) {
+      const f = colFilters.box.toLowerCase();
+      lines = lines.filter(l => (l.nm_box || "").toLowerCase().includes(f));
     }
 
     if (sortCol) {
@@ -948,6 +943,20 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </button>
           </div>
 
+          {/* Action buttons — above the table */}
+          <div className="flex items-center justify-end gap-3">
+            <button onClick={reset} className="h-9 px-4 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors bg-surface">
+              {td.startOver}
+            </button>
+            <button
+              onClick={handleImport}
+              disabled={parseResult!.matched_count === 0}
+              className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
+            >
+              {td.importBtn}
+            </button>
+          </div>
+
           {/* Product lines table */}
           <div className="overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border">
             <table className="w-full text-xs">
@@ -985,15 +994,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       className="w-full text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface outline-none focus:border-emerald/50 min-w-[40px]"
                     />
                   </td>
-                  <td colSpan={8} />
-                  <td className="px-2 py-1">
-                    <input
-                      value={colFilters.match ?? ""}
-                      onChange={e => setColFilters(p => ({ ...p, match: e.target.value }))}
-                      placeholder="…"
-                      className="w-full text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface outline-none focus:border-emerald/50 min-w-[60px]"
-                    />
-                  </td>
+                  <td colSpan={9} />
                 </tr>
               </thead>
               <tbody>
@@ -1285,26 +1286,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </>
           )}
 
-          {/* Spacer so content isn't hidden behind the fixed action bar */}
-          <div className="h-16" />
-        </div>
-      )}
-
-      {/* Fixed action bar — always visible at bottom-right */}
-      {stage === "preview" && order && (
-        <div className="fixed bottom-0 left-0 right-0 z-30 pointer-events-none flex justify-center">
-          <div className="pointer-events-auto w-full max-w-5xl flex gap-3 justify-end px-4 sm:px-6 py-3 bg-surface/90 backdrop-blur border-t border-border">
-            <button onClick={reset} className="h-9 px-4 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors bg-surface">
-              {td.startOver}
-            </button>
-            <button
-              onClick={handleImport}
-              disabled={parseResult!.matched_count === 0}
-              className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
-            >
-              {td.importBtn}
-            </button>
-          </div>
         </div>
       )}
 
