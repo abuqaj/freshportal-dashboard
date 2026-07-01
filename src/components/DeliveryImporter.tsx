@@ -1567,7 +1567,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
             <div className="text-center space-y-1 max-w-xs">
               <p className="text-sm font-semibold text-ink">
-                {addStage === "running" && addProgress && addProgress.done > 0
+                {addStage === "running" && addProgress && addProgress.done >= addProgress.total && addProgress.total > 0
+                  ? td.reviewShipment
+                  : addStage === "running" && addProgress && addProgress.done > 0
                   ? td.addingProductN(addProgress.done, addProgress.total)
                   : addStage === "running"
                   ? td.addingProducts
