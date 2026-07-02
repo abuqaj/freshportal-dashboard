@@ -932,8 +932,23 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         steps={[td.stepUpload, td.stepReview, td.stepImport]}
       />
 
+      {/* ── PARSING ── */}
+      {stage === "parsing" && (
+        <div className="flex flex-col items-center gap-5 py-8">
+          <div className="relative flex items-center justify-center">
+            <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
+            </svg>
+            <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
+              <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
+            </svg>
+          </div>
+          <p className="text-sm font-semibold text-ink">{td.parsing}</p>
+        </div>
+      )}
+
       {/* ── IDLE / INPUT ── */}
-      {(stage === "idle" || stage === "parsing") && (
+      {stage === "idle" && (
         <div className="flex flex-col gap-4">
           {/* Multi-file error */}
           {multiFileError && (
@@ -1014,15 +1029,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
 
           <div className="flex items-center justify-end gap-3">
-            {stage === "parsing" && (
-              <div className="flex items-center gap-2">
-                <svg className="animate-spin w-4 h-4 text-emerald" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/>
-                  <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-                <span className="text-sm text-ink-3">{td.parsing}</span>
-              </div>
-            )}
             <button
               ref={refParseBtn}
               onClick={handleParseClick}
