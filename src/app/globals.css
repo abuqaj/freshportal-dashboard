@@ -141,6 +141,21 @@ html, body { height: 100%; margin: 0; }
 /* ─── Smooth default transitions ─── */
 *, *::before, *::after { box-sizing: border-box; }
 
+/* ─── Import Done: icon pop + stat chip stagger ─── */
+@keyframes done-pop {
+  0%   { transform: scale(0.2) rotate(-15deg); opacity: 0; }
+  55%  { transform: scale(1.18) rotate(4deg); opacity: 1; }
+  75%  { transform: scale(0.93) rotate(-1deg); }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+.done-icon { animation: done-pop 0.55s cubic-bezier(0.34, 1.4, 0.64, 1) both; }
+
+@keyframes stat-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.stat-chip { animation: stat-rise 0.35s cubic-bezier(0.34, 1.2, 0.64, 1) both; }
+
 /* ─── Button press feedback (Import Delivery) ─── */
 [data-di] button:not(:disabled) {
   transition: transform 120ms ease-out;

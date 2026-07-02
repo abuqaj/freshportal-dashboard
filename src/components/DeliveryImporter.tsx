@@ -1604,84 +1604,125 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       {/* ── DONE ── */}
       {stage === "done" && importResult && (
-        <div ref={refImportResult} className="flex flex-col gap-4">
+        <div ref={refImportResult} className="flex justify-center py-4">
+          <div className="card-enter w-full max-w-lg bg-surface rounded-3xl border border-border shadow-lg overflow-hidden">
 
-          {/* Batch creation result */}
-          <div className={`p-4 rounded-2xl border ${importResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-red-500/8 border-red-500/20"}`}>
-            <p className={`font-semibold text-sm ${importResult.ok ? "text-emerald" : "text-red-500"}`}>
-              {importResult.ok ? td.batchCreated : td.importFailed}
-            </p>
-            <p className="text-xs text-ink-3 mt-1">{importResult.message}</p>
-            {importResult.batch_id && (
-              <p className="text-xs text-ink-3 mt-0.5">{td.batchId}: <span className="font-mono font-semibold">{importResult.batch_id}</span></p>
-            )}
-            {importResult.batch_url && importResult.batch_url !== "#" && (
-              <a href={importResult.batch_url} target="_blank" rel="noopener noreferrer"
-                className="text-xs text-emerald underline mt-1 inline-block">
-                {td.viewBatch} →
-              </a>
-            )}
-          </div>
+            {/* Hero band */}
+            <div className={`px-6 pt-8 pb-6 flex flex-col items-center text-center ${importResult.ok ? "bg-emerald/6" : "bg-red-500/6"}`}>
+              {/* Animated icon */}
+              <div className={`done-icon w-16 h-16 rounded-full flex items-center justify-center text-3xl mb-4 ${importResult.ok ? "bg-emerald text-white shadow-[0_0_24px_rgba(26,125,69,0.4)]" : "bg-red-500 text-white shadow-[0_0_24px_rgba(239,68,68,0.4)]"}`}>
+                {importResult.ok ? "✓" : "✗"}
+              </div>
+              <h2 className={`text-lg font-bold mb-1 ${importResult.ok ? "text-emerald" : "text-red-500"}`}>
+                {importResult.ok ? td.batchCreated : td.importFailed}
+              </h2>
+              {importResult.batch_id && (
+                <p className="text-xs text-ink-3 font-mono">{td.batchId}: <span className="font-semibold text-ink-2">{importResult.batch_id}</span></p>
+              )}
 
-          {/* Add-products result */}
-          {addStage === "done" && addResult && (
-            <div className={`p-4 rounded-2xl border ${addResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-amber-500/8 border-amber-500/20"}`}>
-              <p className={`font-semibold text-sm ${addResult.ok ? "text-emerald" : "text-amber-600"}`}>
-                {td.productsAdded(addResult.lines_added)}
-                {addResult.lines_failed > 0 && td.linesFailedN(addResult.lines_failed)}
-                {addResult.lines_skipped > 0 && td.linesSkippedN(addResult.lines_skipped)}
-              </p>
-              <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
-              {addResult.details.length > 0 && (
-                <div className="mt-2 max-h-52 overflow-y-auto space-y-0.5 pr-1">
+              {/* Stat chips */}
+              {addStage === "done" && addResult && (
+                <div className="flex gap-2 mt-4 flex-wrap justify-center">
+                  <StatChip
+                    value={addResult.lines_added}
+                    label={td.statAddedN(addResult.lines_added)}
+                    color="emerald"
+                    delay="0ms"
+                  />
+                  {addResult.lines_failed > 0 && (
+                    <StatChip
+                      value={addResult.lines_failed}
+                      label={td.statFailedN(addResult.lines_failed)}
+                      color="red"
+                      delay="60ms"
+                    />
+                  )}
+                  {addResult.lines_skipped > 0 && (
+                    <StatChip
+                      value={addResult.lines_skipped}
+                      label={td.statSkippedN(addResult.lines_skipped)}
+                      color="amber"
+                      delay="120ms"
+                    />
+                  )}
+                </div>
+              )}
+
+              {/* FreshPortal link */}
+              {importResult.batch_url && importResult.batch_url !== "#" && (
+                <a
+                  href={importResult.batch_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-5 inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-emerald text-white text-sm font-semibold hover:bg-emerald-dark transition-colors shadow-sm"
+                >
+                  {td.viewBatch}
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="opacity-80"><path d="M3 7h8M7 3l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                </a>
+              )}
+            </div>
+
+            {/* Product list */}
+            {addStage === "done" && addResult && addResult.details.length > 0 && (
+              <div className="px-6 py-4 border-t border-border">
+                <p className="text-xs font-semibold text-ink-3 uppercase tracking-wide mb-2">{addResult.message}</p>
+                <div className="max-h-52 overflow-y-auto space-y-0.5 pr-1">
                   {[...addResult.details]
                     .sort((a, b) => (a.status === "failed" ? -1 : b.status === "failed" ? 1 : 0))
                     .map((d, i) => (
-                      <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : d.status === "failed" ? "text-red-500 font-semibold" : "text-amber-500"}`}>
-                        {d.status === "added" ? "✓" : "✗"} {d.product}
-                        {d.status === "failed" && <span className="ml-1 text-red-400 font-normal">{td.statusFailed}</span>}
+                      <div key={i} className={`flex items-baseline gap-1.5 text-xs font-mono py-0.5 ${d.status === "added" ? "text-emerald" : d.status === "failed" ? "text-red-500 font-semibold" : "text-amber-500"}`}>
+                        <span className="shrink-0">{d.status === "added" ? "✓" : "✗"}</span>
+                        <span className="truncate">{d.product}</span>
+                        {d.status === "failed" && <span className="ml-auto shrink-0 text-red-400 font-normal">{td.statusFailed}</span>}
                       </div>
                     ))
                   }
                 </div>
+              </div>
+            )}
+
+            {/* Add-products error + retry */}
+            {addStage === "error" && (
+              <div className="px-6 py-4 border-t border-border">
+                <p className="text-sm font-semibold text-red-500 mb-1">{td.addProductsFailed}</p>
+                <div className="font-mono text-xs text-red-400 space-y-0.5 max-h-32 overflow-y-auto">
+                  {addLogs.map((l, i) => <div key={i}>{l}</div>)}
+                </div>
+                <button onClick={handleAddProducts} className="mt-2 text-xs text-emerald underline">
+                  {td.retryBtn}
+                </button>
+              </div>
+            )}
+
+            {/* Collapsible logs */}
+            <div className="px-6 pb-5 pt-2 border-t border-border space-y-2">
+              {addStage === "done" && addLogs.length > 0 && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.fullLog(addLogs.length)}</summary>
+                  <div className="mt-1 bg-ground rounded-xl p-2 max-h-48 overflow-y-auto font-mono space-y-0.5">
+                    {addLogs.map((l, i) => (
+                      <div key={i} className={l.startsWith("  ✓") ? "text-emerald" : l.startsWith("  ✗") ? "text-red-400" : "text-ink-3"}>{l}</div>
+                    ))}
+                  </div>
+                </details>
               )}
-              <details className="mt-3 text-xs">
-                <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.fullLog(addLogs.length)}</summary>
-                <div className="mt-1 bg-muted rounded-xl p-2 max-h-64 overflow-y-auto font-mono space-y-0.5">
-                  {addLogs.map((l, i) => (
-                    <div key={i} className={l.startsWith("  ✓") ? "text-emerald" : l.startsWith("  ✗") ? "text-red-400" : "text-ink-3"}>{l}</div>
-                  ))}
+              <details className="text-xs">
+                <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.batchLog(logs.length)}</summary>
+                <div className="mt-1 bg-ground rounded-xl p-2 max-h-40 overflow-y-auto font-mono space-y-0.5">
+                  {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
                 </div>
               </details>
-            </div>
-          )}
 
-          {/* Add-products error + retry */}
-          {addStage === "error" && (
-            <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20">
-              <p className="text-sm font-semibold text-red-500">{td.addProductsFailed}</p>
-              <div className="mt-1 font-mono text-xs text-red-400 space-y-0.5">
-                {addLogs.map((l, i) => <div key={i}>{l}</div>)}
+              <div className="flex justify-end pt-1">
+                <button
+                  onClick={reset}
+                  className="h-9 px-5 rounded-xl text-sm font-semibold border border-border text-ink-2 hover:bg-muted hover:text-ink transition-colors"
+                >
+                  {td.startOver}
+                </button>
               </div>
-              <button onClick={handleAddProducts} className="mt-2 text-xs text-emerald underline">
-                {td.retryBtn}
-              </button>
             </div>
-          )}
-
-          <details className="text-xs">
-            <summary className="cursor-pointer text-ink-3 hover:text-ink">{td.batchLog(logs.length)}</summary>
-            <div className="mt-2 bg-muted rounded-xl p-3 max-h-48 overflow-y-auto font-mono space-y-0.5">
-              {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
-            </div>
-          </details>
-
-          <button
-            onClick={reset}
-            className="self-end h-10 px-6 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 active:scale-[0.98] transition-all"
-          >
-            {td.startOver}
-          </button>
+          </div>
         </div>
       )}
 
@@ -1697,6 +1738,23 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function StatChip({ value, label, color, delay }: { value: number; label: string; color: "emerald" | "red" | "amber"; delay: string }) {
+  const colours = {
+    emerald: "bg-emerald/10 text-emerald border-emerald/20",
+    red:     "bg-red-500/10 text-red-500 border-red-500/20",
+    amber:   "bg-amber-500/10 text-amber-600 border-amber-500/20",
+  };
+  return (
+    <div
+      className={`stat-chip inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-semibold ${colours[color]}`}
+      style={{ animationDelay: delay }}
+    >
+      <span className="text-base font-bold">{value}</span>
+      <span className="text-xs font-normal opacity-80">{label.replace(/^\d+\s*/, "")}</span>
     </div>
   );
 }
