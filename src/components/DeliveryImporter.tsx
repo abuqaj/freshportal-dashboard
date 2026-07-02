@@ -899,13 +899,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
              : td.descUpload}
           </p>
         </div>
-        <button
-          onClick={openTour}
-          title={td.tourOpenBtn}
-          className="flex-shrink-0 w-7 h-7 rounded-full border border-border text-ink-3 hover:text-emerald hover:border-emerald/50 text-xs font-bold transition-colors flex items-center justify-center"
-        >
-          ?
-        </button>
+        {stage !== "importing" && (
+          <button
+            onClick={openTour}
+            title={td.tourOpenBtn}
+            className="flex-shrink-0 w-7 h-7 rounded-full border border-border text-ink-3 hover:text-emerald hover:border-emerald/50 text-xs font-bold transition-colors flex items-center justify-center"
+          >
+            ?
+          </button>
+        )}
       </div>
 
       {tourOpen && (
