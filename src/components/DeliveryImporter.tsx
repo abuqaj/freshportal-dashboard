@@ -162,6 +162,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [resumeBatchId, setResumeBatchId] = useState<string | null>(null);
   const [alreadyAddedKeys, setAlreadyAddedKeys] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const autoParseRef = useRef(false);
 
   // ── Tour refs ─────────────────────────────────────────────────────────────
   const refDropZone        = useRef<HTMLDivElement>(null);
@@ -238,6 +239,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [username]);
 
+  useEffect(() => {
+    if (!autoParseRef.current) return;
+    if (!jsonText.trim() || stage !== "idle") return;
+    autoParseRef.current = false;
+    handleParseClick();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jsonText]);
+
   function openTour() {
     reset();
     setJsonText(DEMO_JSON);
@@ -268,6 +277,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     reader.onload = e => {
       setJsonText((e.target?.result as string) || "");
       setFileLoaded(true);
+      autoParseRef.current = true;
     };
     reader.readAsText(file);
   }
