@@ -198,6 +198,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Table sort / filter / view ────────────────────────────────────────────
   const [showOnlyUnmatched, setShowOnlyUnmatched] = useState(false);
+  const [showOnlyUnapproved, setShowOnlyUnapproved] = useState(false);
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
@@ -359,6 +360,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setLineEdits({});
       setEditingKey(null);
       setShowOnlyUnmatched(false);
+      setShowOnlyUnapproved(false);
       setSortCol(null);
       setColFilters({});
       if (data.supplier_id) {
@@ -826,6 +828,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setSupplierPickerOpen(false);
     setSupplierSearch("");
     setShowOnlyUnmatched(false);
+    setShowOnlyUnapproved(false);
     setSortCol(null);
     setSortDir("asc");
     setColFilters({});
@@ -867,6 +870,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     }
 
+    if (showOnlyUnapproved) {
+      lines = lines.filter(l => {
+        const dk = deliveryKey(l);
+        return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && !approvedKeys.has(dk);
+      });
+    }
+
     if (tableSearch) {
       const q = tableSearch.toLowerCase();
       lines = lines.filter(l => {
@@ -903,7 +913,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     }
     return lines;
-  }, [parseResult, activeOrderIdx, showOnlyUnmatched, tableSearch, sortCol, sortDir, lineEdits]);
+  }, [parseResult, activeOrderIdx, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits, resumeBatchId, alreadyAddedKeys]);
 
   type AllTourStep = TourStep & { tourStage: "idle" | "preview" | "done" };
 
@@ -933,6 +943,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         setActiveOrderIdx(0);
         setLineEdits({});
         setShowOnlyUnmatched(false);
+        setShowOnlyUnapproved(false);
         setSortCol(null);
         setColFilters({});
         setApprovedKeys(preApproved);
@@ -1225,10 +1236,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Approve toolbar */}
           <div ref={refApproveToolbar} className="flex items-center gap-2 flex-wrap">
             <button
-              onClick={() => setShowOnlyUnmatched(p => !p)}
-              title={showOnlyUnmatched ? td.showAll : td.showOnlyUnmatched}
+              onClick={() => setShowOnlyUnapproved(p => !p)}
+              title={showOnlyUnapproved ? td.showAll : td.showOnlyUnmatched}
               className={`h-7 px-3 rounded-lg text-xs font-semibold border transition-colors
-                ${showOnlyUnmatched
+                ${showOnlyUnapproved
                   ? "bg-amber-500/15 border-amber-500/30 text-amber-700"
                   : "bg-emerald/8 border-emerald/30 text-emerald hover:bg-emerald/15"}`}
             >
@@ -1236,7 +1247,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 approvedKeys.size,
                 new Set(order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l))).size
               )}
-              {showOnlyUnmatched ? " ✕" : ""}
+              {showOnlyUnapproved ? " ✕" : ""}
             </button>
             <button
               onClick={() => {
