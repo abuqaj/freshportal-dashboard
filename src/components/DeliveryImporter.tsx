@@ -421,7 +421,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   async function syncCatalogueForSupplier(supplierId: string, supplierName: string) {
     setStage("syncing");
     setLogs([]);
-    addLog(`Syncing catalogue for ${supplierName} (#${supplierId})…`);
+    addLog(td.syncingCatalogueFor(supplierName, supplierId));
 
     const params = new URLSearchParams({ nm_supplier: supplierName });
     const res = await fetch(
@@ -451,7 +451,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           const ev = JSON.parse(evLine);
           if (ev.type === "status") addLog(ev.message);
           if (ev.type === "result") {
-            addLog(`Catalogue synced — ${ev.data.items_saved} products. Re-matching…`);
+            addLog(td.catalogueSyncedRematching(ev.data.items_saved));
             setCatalogueCount(ev.data.items_saved);
             await handleParse(supplierId);
           }
@@ -1010,7 +1010,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   onClick={() => fileInputRef.current?.click()}
                   className="h-7 px-3 rounded-lg text-xs font-medium text-ink-3 border border-border hover:text-ink hover:border-emerald/40 transition-colors"
                 >
-                  Browse
+                  {td.browseBtn}
                 </button>
               </div>
             </div>
@@ -1186,7 +1186,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 onClick={() => { setTableSearch(""); setSortCol(null); setSortDir("asc"); }}
                 className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink transition-colors"
               >
-                ✕ Reset
+                ✕ {td.resetFilter}
               </button>
             )}
             <button
@@ -1616,8 +1616,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <div className={`p-4 rounded-2xl border ${addResult.ok ? "bg-emerald/8 border-emerald/20" : "bg-amber-500/8 border-amber-500/20"}`}>
               <p className={`font-semibold text-sm ${addResult.ok ? "text-emerald" : "text-amber-600"}`}>
                 {td.productsAdded(addResult.lines_added)}
-                {addResult.lines_failed > 0 && `, ${addResult.lines_failed} failed`}
-                {addResult.lines_skipped > 0 && `, ${addResult.lines_skipped} bez dopasowania`}
+                {addResult.lines_failed > 0 && td.linesFailedN(addResult.lines_failed)}
+                {addResult.lines_skipped > 0 && td.linesSkippedN(addResult.lines_skipped)}
               </p>
               <p className="text-xs text-ink-3 mt-1">{addResult.message}</p>
               {addResult.details.length > 0 && (
@@ -1627,7 +1627,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     .map((d, i) => (
                       <div key={i} className={`text-xs font-mono ${d.status === "added" ? "text-emerald" : d.status === "failed" ? "text-red-500 font-semibold" : "text-amber-500"}`}>
                         {d.status === "added" ? "✓" : "✗"} {d.product}
-                        {d.status === "failed" && <span className="ml-1 text-red-400 font-normal">— failed</span>}
+                        {d.status === "failed" && <span className="ml-1 text-red-400 font-normal">{td.statusFailed}</span>}
                       </div>
                     ))
                   }
