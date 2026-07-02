@@ -396,7 +396,12 @@ def delivery_key(nm_variety: str | None, nu_length: int | None) -> str:
 # Origin tokens that appear between genus and variety in FP catalogue names.
 # Same list as product_creator._ORIGIN_TOKENS — keep in sync.
 _ORIGIN_TOKENS = {"ec", "col", "co", "ke", "ken", "nl", "et", "zim", "sa", "tz", "be",
-                  "garden", "premium", "special", "select"}
+                  "garden", "premium", "special", "select",
+                  "preserved", "stem"}  # Preserved-rose catalogue format: "Rosa Preserved Stem 50cm <variety>"
+
+# Descriptor words that appear as a leading token in assembled/preserved delivery varieties
+# but never form part of the FP catalogue variety name.
+_DELIVERY_DESCRIPTOR_TOKENS = {"assembled", "assembly"}
 
 
 def _norm(s: str) -> str:
@@ -469,6 +474,18 @@ def _variety_sim(delivery_variety: str, catalogue_nm_product: str) -> float:
 
     if not d:
         return 0.0
+
+    # Strip product-code tokens that contain both letters and digits (e.g. "sh02st",
+    # "dbp13st", "mlg14st") — these are SKU suffixes, not variety words.
+    # Also strip known delivery descriptor prefixes like "assembled".
+    d_tokens = d.split()
+    d_tokens = [
+        t for t in d_tokens
+        if not (_re.search(r'[a-z]', t) and _re.search(r'\d', t))  # alphanumeric code
+        and t not in _DELIVERY_DESCRIPTOR_TOKENS
+    ]
+    if d_tokens:
+        d = " ".join(d_tokens)
 
     d_words = set(d.split())
     c_words = set(cat_var.split())
