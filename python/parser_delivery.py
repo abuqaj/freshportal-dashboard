@@ -149,9 +149,9 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
             tx_label = (box.get("tx_label") or "").strip()
 
             unique_guids = {
-                (p.get("gu_product") or "").strip()
+                str(p.get("gu_product") or "").strip()
                 for p in products_in_box
-                if (p.get("gu_product") or "").strip()
+                if str(p.get("gu_product") or "").strip()
             }
 
             # Track which keys are first seen in this physical box.
@@ -164,7 +164,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                 box_code = f"MB{mix_box_counter}"
 
                 for prod in products_in_box:
-                    gu = (prod.get("gu_product") or "").strip()
+                    gu = str(prod.get("gu_product") or "").strip()
                     if not gu:
                         gu = (
                             f"{prod.get('nm_variety','')}_{prod.get('nu_length','')}"
@@ -200,7 +200,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                 # Single-variety box — aggregate by gu_product + box_type.
                 # Different box types (HBE vs QBE) stay as separate lines.
                 for prod in products_in_box:
-                    gu = (prod.get("gu_product") or "").strip()
+                    gu = str(prod.get("gu_product") or "").strip()
                     if not gu:
                         gu = (
                             f"{prod.get('nm_variety','')}_{prod.get('nu_length','')}"
