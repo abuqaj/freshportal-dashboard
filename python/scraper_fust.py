@@ -137,7 +137,7 @@ def fetch_fust_catalogue(
     Returns list of dicts: {fust_id, nm_fust_code, nm_fust_desc}
     fust_id is the numeric string used in fust_code_adjustable POST field.
     """
-    from scraper_fp import _launch_browser, _login, _block_resources
+    from scraper_fp import _launch_browser, _login, _logout, _block_resources
 
     def _s(msg: str) -> None:
         log.info(msg)
@@ -218,6 +218,7 @@ def fetch_fust_catalogue(
             _s(f"Error: {exc}")
             raise
         finally:
+            _logout(ctx, cfg)
             ctx.close()
             browser.close()
 

@@ -23,6 +23,7 @@ from config import Config
 from scraper_fp import (
     CHROMIUM_ARGS,
     _login,
+    _logout,
     _block_resources,
     _goto_and_wait,
     _launch_browser,
@@ -267,6 +268,7 @@ def search_products(
             _run_phases(_pw_fetch)
 
         finally:
+            _logout(context, cfg)
             context.close()
             browser.close()
 
@@ -466,6 +468,7 @@ def find_available_number(
             logger.exception("find_available_number failed")
             return None
         finally:
+            _logout(context, cfg)
             context.close()
             browser.close()
 
@@ -751,5 +754,6 @@ def copy_and_create(
             logger.exception("copy_and_create failed")
             return {"ok": False, "message": str(exc)}
         finally:
+            _logout(context, cfg)
             context.close()
             browser.close()

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
 import DeliveryTour, { TourStep } from "./DeliveryTour";
@@ -1805,7 +1805,7 @@ function DeliveryStepBar({
         const done = i < current;
         const active = i === current;
         return (
-          <div key={i} className="flex items-start flex-1 min-w-0">
+          <React.Fragment key={i}>
             <div className="flex flex-col items-center gap-2 flex-shrink-0">
               <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ring-2 transition-all
                 ${done    ? "bg-emerald ring-emerald text-white"
@@ -1823,10 +1823,10 @@ function DeliveryStepBar({
               </span>
             </div>
             {i < steps.length - 1 && (
-              <div className={`flex-1 h-0.5 mt-[18px] mx-1.5 rounded-full transition-colors
+              <div className={`flex-1 h-0.5 mt-[18px] mx-2 rounded-full transition-colors
                 ${done ? "bg-emerald" : "bg-border"}`} />
             )}
-          </div>
+          </React.Fragment>
         );
       })}
     </div>

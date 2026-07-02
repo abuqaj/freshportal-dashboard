@@ -45,7 +45,7 @@ def _to_iso_date(dd_mm_yyyy: str) -> str:
 
 def explore_delivery_form(cfg: Config) -> dict:
     """Navigate to /batch_v2/form/add/ and return its full field structure."""
-    from scraper_fp import _launch_browser, _login
+    from scraper_fp import _launch_browser, _login, _logout
 
     result: dict = {
         "url": "",
@@ -123,6 +123,7 @@ def explore_delivery_form(cfg: Config) -> dict:
         except Exception as exc:
             result["error"] = str(exc)
         finally:
+            _logout(ctx, cfg)
             ctx.close()
             browser.close()
 
@@ -131,7 +132,7 @@ def explore_delivery_form(cfg: Config) -> dict:
 
 def explore_stock_add_form(batch_id: str, cfg: Config) -> dict:
     """Navigate to /company_product_add_stock/index/index/BAT_ID/{batch_id}/ and return form structure."""
-    from scraper_fp import _launch_browser, _login
+    from scraper_fp import _launch_browser, _login, _logout
 
     result: dict = {"url": "", "form_fields": [], "fps_inputs": [], "html_snippet": "", "error": None}
 
@@ -170,6 +171,7 @@ def explore_stock_add_form(batch_id: str, cfg: Config) -> dict:
         except Exception as exc:
             result["error"] = str(exc)
         finally:
+            _logout(ctx, cfg)
             ctx.close()
             browser.close()
 
@@ -264,7 +266,7 @@ def create_batch_header(
     Returns {"ok": bool, "batch_id": str, "batch_url": str, "message": str,
              "captured_post": {url, body}}
     """
-    from scraper_fp import _launch_browser, _login
+    from scraper_fp import _launch_browser, _login, _logout
 
     def _s(msg: str) -> None:
         log.info(msg)
@@ -395,6 +397,7 @@ def create_batch_header(
             _s(f"Error: {exc}")
             log.exception("create_batch_header failed")
         finally:
+            _logout(ctx, cfg)
             ctx.close()
             browser.close()
 
@@ -423,7 +426,7 @@ def add_delivery(
         supplier_fp_id: FreshPortal supplier option value (from supplier[] select).
         on_status:      Progress callback → receives status strings.
     """
-    from scraper_fp import _launch_browser, _login
+    from scraper_fp import _launch_browser, _login, _logout
 
     def _s(msg: str) -> None:
         log.info(msg)
@@ -546,6 +549,7 @@ def add_delivery(
             _s(f"Error: {exc}")
             log.exception("add_delivery failed")
         finally:
+            _logout(ctx, cfg)
             ctx.close()
             browser.close()
 
@@ -1186,7 +1190,7 @@ def add_products_to_batch(
 
     Returns {"ok", "lines_added", "lines_skipped", "lines_failed", "message", "details"}
     """
-    from scraper_fp import _launch_browser, _login, _block_resources
+    from scraper_fp import _launch_browser, _login, _logout, _block_resources
 
     def _s(msg: str) -> None:
         log.info(msg)
@@ -1232,6 +1236,10 @@ def add_products_to_batch(
         return browser, ctx, page
 
     def _close_session(browser, ctx):
+        try:
+            _logout(ctx, cfg)
+        except Exception:
+            pass
         try:
             ctx.close()
         except Exception:

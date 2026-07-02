@@ -276,6 +276,24 @@ def _login(page: Page, cfg: Config, _retries: int = 3) -> None:
                 raise last_exc
 
 
+def _logout(ctx, cfg: Config) -> None:
+    """Best-effort logout before closing a browser context.
+
+    Opens a fresh page, hits /login/index/logout, then closes the page.
+    Errors are silently swallowed — logout is advisory, not critical.
+    """
+    try:
+        pg = ctx.new_page()
+        pg.goto(
+            f"{cfg.freshportal_url}/login/index/logout",
+            wait_until="commit",
+            timeout=8_000,
+        )
+        pg.close()
+    except Exception:
+        pass
+
+
 def _goto_and_wait(page: Page, url: str, cfg: Config) -> None:
     page.goto(url, wait_until="load", timeout=cfg.request_timeout)
     try:

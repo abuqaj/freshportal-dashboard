@@ -163,6 +163,15 @@ def _login(page: Page, cfg: Config, _retries: int = 3) -> None:
                 raise last_exc
 
 
+def _logout(ctx, cfg: Config) -> None:
+    try:
+        pg = ctx.new_page()
+        pg.goto(f"{cfg.freshportal_url}/login/index/logout", wait_until="commit", timeout=8_000)
+        pg.close()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # FreshPortal: detect photo column
 # ---------------------------------------------------------------------------
@@ -479,6 +488,7 @@ def run(
                 time.sleep(1.5)  # let colorbox fully close before next navigation
 
         finally:
+            _logout(context, cfg)
             context.close()
             browser.close()
 
@@ -595,6 +605,7 @@ def run_from_list(
                 time.sleep(1.5)
 
         finally:
+            _logout(context, cfg)
             context.close()
             browser.close()
 

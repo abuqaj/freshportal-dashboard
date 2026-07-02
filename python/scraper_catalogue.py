@@ -228,7 +228,7 @@ def fetch_supplier_catalogue(
     Returns list of dicts: {fp_product_id, nm_product, nm_variety, nm_species,
                              nu_length, nu_stems_bunch, id_floricode}
     """
-    from scraper_fp import _launch_browser, _login, _block_resources
+    from scraper_fp import _launch_browser, _login, _logout, _block_resources
 
     def _s(msg: str) -> None:
         if on_status:
@@ -298,6 +298,7 @@ def fetch_supplier_catalogue(
             _s(f"Error: {exc}")
             raise
         finally:
+            _logout(context, cfg)
             context.close()
             browser.close()
 
@@ -406,7 +407,7 @@ def fetch_supplier_list(
     Debug mode   (debug=True):  returns dict with suppliers + diagnostics
                                 (same session — no extra memory cost)
     """
-    from scraper_fp import _launch_browser, _login, _block_resources
+    from scraper_fp import _launch_browser, _login, _logout, _block_resources
 
     def _s(msg: str) -> None:
         if on_status:
@@ -479,6 +480,7 @@ def fetch_supplier_list(
             _s(f"Error: {exc}")
             raise
         finally:
+            _logout(context, cfg)
             context.close()
             browser.close()
 
