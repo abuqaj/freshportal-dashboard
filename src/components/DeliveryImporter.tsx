@@ -888,7 +888,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   }
 
   return (
-    <div className="p-4 sm:p-6 flex flex-col gap-5 sm:gap-6">
+    <div data-di className="p-4 sm:p-6 flex flex-col gap-5 sm:gap-6">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-ink">{td.title}</h2>
