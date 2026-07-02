@@ -1706,7 +1706,7 @@ def get_ecuador_cfg() -> Config:
 
 
 class DeliveryParseRequest(BaseModel):
-    raw_json: dict
+    raw_json: dict | list
     supplier_id: str = ""
     with_matching: bool = True
 
@@ -1730,7 +1730,19 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
     log.info("[delivery/parse] starting — supplier=%s with_matching=%s", req.supplier_id, req.with_matching)
     try:
         try:
-            orders = parse_delivery_json(req.raw_json)
+            raw = req.raw_json
+            if isinstance(raw, list):
+                # Some exporters wrap the payload in an outer array — unwrap it
+                merged: dict = {}
+                for item in raw:
+                    if isinstance(item, dict):
+                        for k, v in item.items():
+                            if k in merged and isinstance(merged[k], list) and isinstance(v, list):
+                                merged[k].extend(v)
+                            else:
+                                merged.setdefault(k, v)
+                raw = merged
+            orders = parse_delivery_json(raw)
         except Exception as exc:
             log.exception("[delivery/parse] parse_delivery_json failed")
             raise HTTPException(400, f"Invalid delivery JSON: {exc}")
