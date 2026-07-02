@@ -2,11 +2,24 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 
+function formatRelative(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1)   return "just now"
+  if (mins < 60)  return `${mins} min ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24)   return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  if (days < 7)   return `${days}d ago`
+  return new Date(iso).toLocaleDateString("pl-PL")
+}
+
 interface User {
   id: number
   username: string
   is_active: boolean
   created_at: string
+  last_login_at: string | null
   groups: string[]
   failed_attempts: number
   locked_until: string | null
@@ -443,6 +456,13 @@ function UserRow({ user, currentUsername, onRefresh }: {
         <td className="px-4 py-3 text-xs text-ink-3 tabular-nums whitespace-nowrap">
           {new Date(user.created_at).toLocaleDateString("pl-PL")}
         </td>
+        <td className="px-4 py-3 text-xs tabular-nums whitespace-nowrap">
+          {user.last_login_at
+            ? <span className="text-ink" title={new Date(user.last_login_at).toLocaleString("pl-PL")}>
+                {formatRelative(user.last_login_at)}
+              </span>
+            : <span className="text-ink-3/40">—</span>}
+        </td>
         <td className="px-4 py-3 text-right">
           <div className="flex items-center justify-end gap-1.5">
             {isLocked && (
@@ -500,7 +520,7 @@ function NewUserRow({ onCreated, onCancel }: {
 
   return (
     <tr className="border-b border-border bg-emerald/5">
-      <td colSpan={6} className="px-4 py-3">
+      <td colSpan={7} className="px-4 py-3">
         <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
           <div>
             <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">Username</p>
@@ -568,6 +588,7 @@ function UsersTable({ currentUsername }: { currentUsername: string | undefined }
             <Th>Group</Th>
             <Th>Status</Th>
             <Th>Since</Th>
+            <Th>Last login</Th>
             <th className="px-4 py-2.5 text-right">
               <div className="flex items-center justify-end gap-2">
                 <button onClick={load} disabled={loading}

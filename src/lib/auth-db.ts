@@ -7,6 +7,7 @@ export interface AuthUser {
   password_hash: string
   is_active: boolean
   created_at: string
+  last_login_at: string | null
 }
 
 export interface AuthGroup {
@@ -63,6 +64,7 @@ async function _migrateAuth() {
   `
   await sql`ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS failed_attempts INT DEFAULT 0`
   await sql`ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ`
+  await sql`ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ`
   await sql`
     CREATE TABLE IF NOT EXISTS auth_groups (
       id          SERIAL PRIMARY KEY,
@@ -185,6 +187,10 @@ export async function clearFailedAttempts(username: string): Promise<void> {
   `
 }
 
+export async function recordLastLogin(username: string): Promise<void> {
+  await sql`UPDATE auth_users SET last_login_at = NOW() WHERE username = ${username}`
+}
+
 export async function unlockUser(userId: number): Promise<void> {
   await sql`UPDATE auth_users SET failed_attempts = 0, locked_until = NULL WHERE id = ${userId}`
 }
@@ -202,7 +208,7 @@ export async function hashPassword(plain: string): Promise<string> {
 export async function listUsers() {
   await ensureAuthTables()
   const { rows } = await sql`
-    SELECT u.id, u.username, u.is_active, u.created_at,
+    SELECT u.id, u.username, u.is_active, u.created_at, u.last_login_at,
            u.failed_attempts, u.locked_until,
            COALESCE(json_agg(g.name) FILTER (WHERE g.name IS NOT NULL), '[]') AS groups
     FROM auth_users u

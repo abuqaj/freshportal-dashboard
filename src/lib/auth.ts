@@ -1,7 +1,7 @@
 import NextAuth from "next-auth"
 import Credentials from "next-auth/providers/credentials"
 import { SignJWT } from "jose"
-import { getUserByUsername, verifyPassword, isAccountLocked, recordFailedLogin, clearFailedAttempts } from "./auth-db"
+import { getUserByUsername, verifyPassword, isAccountLocked, recordFailedLogin, clearFailedAttempts, recordLastLogin } from "./auth-db"
 
 const secret = new TextEncoder().encode(process.env.AUTH_SECRET ?? "dev-secret-change-me")
 
@@ -29,6 +29,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         }
 
         await clearFailedAttempts(username)
+        await recordLastLogin(username)
 
         // Generate backend JWT for FastAPI verification
         const backendToken = await new SignJWT({
