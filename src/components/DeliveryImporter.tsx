@@ -157,7 +157,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   type AddStage = "idle" | "running" | "done" | "error";
   const [addStage, setAddStage] = useState<AddStage>("idle");
   const [addLogs, setAddLogs] = useState<string[]>([]);
-  const [addResult, setAddResult] = useState<{ ok: boolean; lines_added: number; lines_skipped: number; lines_failed: number; message: string; details: { product: string; status: string }[] } | null>(null);
+  const [addResult, setAddResult] = useState<{ ok: boolean; lines_added: number; lines_skipped: number; lines_failed: number; aborted_at_sidebar?: boolean; message: string; details: { product: string; delivery_key?: string; status: string }[] } | null>(null);
+  // Resume state — set when a sidebar abort happens mid-add
+  const [resumeBatchId, setResumeBatchId] = useState<string | null>(null);
+  const [alreadyAddedKeys, setAlreadyAddedKeys] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Tour refs ─────────────────────────────────────────────────────────────
@@ -496,6 +499,24 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     );
     await handleApproveMatches(keysToCache);
 
+    // Resume mode: skip batch creation, add only remaining lines to existing batch
+    if (resumeBatchId) {
+      setStage("importing");
+      setLogs([]);
+      const remainingLines = order.lines.filter(l => !alreadyAddedKeys.has(deliveryKey(l)));
+      const orderWithEdits = {
+        ...order,
+        lines: remainingLines.map(line => {
+          const dk = deliveryKey(line);
+          const edit = lineEdits[dk];
+          return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
+        }),
+      };
+      await handleAddProductsFor(resumeBatchId, orderWithEdits, importLogId);
+      setStage("done");
+      return;
+    }
+
     setStage("importing");
     setLogs([]);
     setImportResult(null);
@@ -678,6 +699,38 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           if (ev.type === "result") {
             const addData = ev.data;
             setAddResult(addData);
+
+            if (addData.aborted_at_sidebar) {
+              // Sidebar failure mid-import — remember what was added, then auto-recover
+              const addedKeys = new Set<string>(
+                (addData.details as { delivery_key?: string; status: string }[])
+                  .filter(d => d.status === "added" && d.delivery_key)
+                  .map(d => d.delivery_key as string)
+              );
+              setResumeBatchId(batchId);
+              setAlreadyAddedKeys(addedKeys);
+              setAddStage("idle");
+              // Clear cache for non-added products + sync catalogue + reparse
+              const supplierId = parseResult?.supplier_id;
+              const supplierName = parseResult?.supplier_nm ?? supplierId ?? "";
+              if (supplierId) {
+                const keysToDelete: string[] = [];
+                for (const ord of (parseResult?.orders ?? [])) {
+                  for (const ln of ord.lines) {
+                    const dk = deliveryKey(ln);
+                    if (!addedKeys.has(dk)) keysToDelete.push(dk);
+                  }
+                }
+                await Promise.all(
+                  keysToDelete.map(dk =>
+                    fetch(`${RAILWAY}/catalogue/${supplierId}/matches/${encodeURIComponent(dk)}`, { method: "DELETE" })
+                  )
+                );
+                await syncCatalogueForSupplier(supplierId, supplierName);
+              }
+              return;
+            }
+
             setAddStage("done");
             const allMatchedKeys = new Set(
               orderWithEdits.lines.filter(l => l.fp_product_id).map(l => deliveryKey(l))
@@ -780,6 +833,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setDuplicateWarning([]);
     setMultiFileError(false);
     setFileLoaded(false);
+    setResumeBatchId(null);
+    setAlreadyAddedKeys(new Set());
   }
 
   function handleSortCol(col: string) {
@@ -799,6 +854,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const o = parseResult?.orders[activeOrderIdx];
     if (!o) return [];
     let lines = [...o.lines];
+
+    // In resume mode, hide products already added to the existing batch
+    if (resumeBatchId && alreadyAddedKeys.size > 0) {
+      lines = lines.filter(l => !alreadyAddedKeys.has(deliveryKey(l)));
+    }
 
     if (showOnlyUnmatched) {
       lines = lines.filter(l => {
@@ -1209,6 +1269,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </button>
           </div>
 
+          {/* Resume batch banner */}
+          {resumeBatchId && (
+            <div className="flex items-start gap-3 px-4 py-3 rounded-2xl bg-blue-500/8 border border-blue-500/20">
+              <span className="text-blue-500 text-base leading-none mt-0.5">↩</span>
+              <div>
+                <p className="text-sm font-semibold text-blue-600">{td.resumeBatchTitle}</p>
+                <p className="text-xs text-ink-3 mt-0.5">{td.resumeBatchInfo(resumeBatchId, alreadyAddedKeys.size)}</p>
+              </div>
+            </div>
+          )}
+
           {/* Action buttons + search bar — above the table */}
           <div ref={refActionBtns} className="flex items-center gap-3">
             <input
@@ -1225,7 +1296,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               disabled={parseResult!.matched_count === 0}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
-              {td.importBtn}
+              {resumeBatchId ? td.resumeImportBtn : td.importBtn}
             </button>
           </div>
 

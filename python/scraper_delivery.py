@@ -1158,7 +1158,7 @@ def _add_one_product(
         page.wait_for_selector("#btn_company_product_add_stock_form", timeout=8_000)
     except Exception:
         on_status("  Sidebar did not open")
-        return False
+        raise _SidebarNotOpenedError()
 
     # ── Lookup packaging fust_id ─────────────────────────────────────────
     fust_id = get_fust_id_for_box(cfg.freshportal_url, nm_box)
@@ -1174,6 +1174,10 @@ def _add_one_product(
 
 
 _BROWSER_RESTART_EVERY = 15  # restart Chromium every N products to prevent OOM
+
+
+class _SidebarNotOpenedError(Exception):
+    """Raised when FreshPortal's stock-add sidebar fails to open — signals catalogue change."""
 
 
 def add_products_to_batch(
@@ -1202,6 +1206,7 @@ def add_products_to_batch(
         "lines_added": 0,
         "lines_skipped": 0,
         "lines_failed": 0,
+        "aborted_at_sidebar": False,
         "message": "",
         "details": [],
     }
@@ -1273,8 +1278,7 @@ def add_products_to_batch(
                 nu_physical_boxes = int(line.get("nu_physical_boxes") or 1)
                 mny_rate = str(line.get("mny_rate_stem", ""))
                 nm_box = str(line.get("nm_box") or "")
-
-
+                dk = f"{(line.get('nm_variety') or '').lower()}|{nu_length}"
 
                 _s(
                     f"\n[{i}/{len(lines_to_add)}] {catalogue_nm} {nu_length}cm "
@@ -1288,6 +1292,13 @@ def add_products_to_batch(
                         catalogue_nm, nu_length, nu_stems_bunch,
                         nu_bunches, nu_physical_boxes, mny_rate, nm_box, _s,
                     )
+                except _SidebarNotOpenedError:
+                    # Sidebar failure = FreshPortal catalogue likely changed → abort immediately
+                    lines_failed += 1
+                    details.append({"product": catalogue_nm, "delivery_key": dk, "status": "failed"})
+                    result["aborted_at_sidebar"] = True
+                    _s("  ✗ failed — aborting: catalogue may have changed")
+                    break
                 except Exception as exc:
                     err = str(exc)
                     _s(f"  Exception: {err[:200]}")
@@ -1309,11 +1320,11 @@ def add_products_to_batch(
                 if ok:
                     lines_added += 1
                     _s("  ✓ added")
-                    details.append({"product": catalogue_nm, "status": "added"})
-                else:
+                    details.append({"product": catalogue_nm, "delivery_key": dk, "status": "added"})
+                elif not result["aborted_at_sidebar"]:
                     lines_failed += 1
                     _s("  ✗ failed")
-                    details.append({"product": catalogue_nm, "status": "failed"})
+                    details.append({"product": catalogue_nm, "delivery_key": dk, "status": "failed"})
 
                 time.sleep(0.3)
 
