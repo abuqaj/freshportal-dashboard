@@ -660,7 +660,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           if (ev.type === "status") {
             setAddLogs(prev => [...prev, ev.message]);
             setLogs(prev => [...prev, ev.message]);
-            if (ev.message?.includes("✓") || ev.message?.includes("✗")) {
+            if (ev.message?.startsWith("  ✓") || ev.message?.startsWith("  ✗")) {
               doneCount++;
               setAddProgress({ done: Math.min(doneCount, totalProducts), total: totalProducts });
             }
