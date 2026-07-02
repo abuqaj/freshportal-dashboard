@@ -73,13 +73,21 @@ def _normalise_box(tp: str) -> str:
 def _normalise_label(label: str) -> str:
     """Prepare label for temperature-keyword matching.
 
-    Strips Unicode combining marks (accents) so Á→A, Í→I, etc., and replaces
-    U+FFFD replacement characters that appear when Latin-1 encoded files are
-    read as UTF-8 (e.g. 'BICOLORES C�LIDOS' → 'BICOLORES CALIDOS').
+    Handles three encoding corruption scenarios common in supplier JSON files:
+    1. Proper UTF-8 accents (Á): NFKD decomposition + combining mark removal → A
+    2. Double-encoded Latin-1-as-UTF-8 (Á → Ã + U+0081): Ã→A via NFKD,
+       U+0081 removed as C1 control char (Unicode category Cc)
+    3. Raw Latin-1 byte read as UTF-8 (Á → U+FFFD): replaced with A
+
     """
     decomposed = _ud.normalize("NFKD", label)
-    no_combining = "".join(c for c in decomposed if not _ud.combining(c))
-    return no_combining.replace("�", "A")
+    cleaned = "".join(
+        c for c in decomposed
+        if not _ud.combining(c) and _ud.category(c) != "Cc"
+    )
+    return cleaned.replace("�", "A")
+
+
 
 
 def _enrich_variety(nm_variety: str, tx_label: str) -> str:
@@ -164,7 +172,10 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                         )
                     # Within a mix box, same gu_product can appear in different rows —
                     # merge them using a key that ties the product to this exact box.
-                    key = f"{gu}|{box_code}"
+                    # Include nm_variety in the key so same gu_product with different
+                    # temperature qualifiers (e.g. Bicolor Cold vs Bicolor Warm) stay separate.
+                    nm_variety = _enrich_variety((prod.get("nm_variety") or "").strip().title(), tx_label)
+                    key = f"{gu}|{box_code}|{nm_variety.lower()}"
                     nu_bunches = int(prod.get("nu_bunches") or 0)
 
                     if key in merged:
@@ -174,7 +185,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     else:
                         merged[key] = DeliveryLine(
                             gu_product=gu,
-                            nm_variety=_enrich_variety((prod.get("nm_variety") or "").strip().title(), tx_label),
+                            nm_variety=nm_variety,
                             nm_species=(prod.get("nm_species") or "").strip().title(),
                             nu_length=int(prod.get("nu_length") or 0),
                             nu_stems_bunch=int(prod.get("nu_stems_bunch") or 0),
@@ -195,7 +206,10 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             f"{prod.get('nm_variety','')}_{prod.get('nu_length','')}"
                             f"_{prod.get('nu_stems_bunch','')}_{prod.get('mny_rate_stem','')}"
                         )
-                    key = f"{gu}|{tp_box}"
+                    # Include nm_variety in the key so same gu_product with different
+                    # temperature qualifiers (e.g. Bicolor Cold vs Bicolor Warm) stay separate.
+                    nm_variety = _enrich_variety((prod.get("nm_variety") or "").strip().title(), tx_label)
+                    key = f"{gu}|{tp_box}|{nm_variety.lower()}"
                     nu_bunches = int(prod.get("nu_bunches") or 0)
 
                     if key in merged:
@@ -205,7 +219,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     else:
                         merged[key] = DeliveryLine(
                             gu_product=gu,
-                            nm_variety=_enrich_variety((prod.get("nm_variety") or "").strip().title(), tx_label),
+                            nm_variety=nm_variety,
                             nm_species=(prod.get("nm_species") or "").strip().title(),
                             nu_length=int(prod.get("nu_length") or 0),
                             nu_stems_bunch=int(prod.get("nu_stems_bunch") or 0),
