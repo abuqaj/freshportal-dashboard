@@ -691,7 +691,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           if (ev.type === "status") {
             setAddLogs(prev => [...prev, ev.message]);
             setLogs(prev => [...prev, ev.message]);
-            if (ev.message?.startsWith("  ✓") || ev.message?.startsWith("  ✗")) {
+            if (ev.message === "  ✓ added" || ev.message?.startsWith("  ✗ failed")) {
               doneCount++;
               setAddProgress({ done: Math.min(doneCount, totalProducts), total: totalProducts });
             }
@@ -1305,7 +1305,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
-                  <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8">✓</th>
+                  <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8" title={td.colApproveTooltip}>✓</th>
                   <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="boxQty"     label={td.colBoxQty}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
