@@ -1032,7 +1032,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <button
               ref={refParseBtn}
               onClick={handleParseClick}
-              disabled={!jsonText.trim() || stage === "parsing" || duplicateWarning.length > 0}
+              disabled={!jsonText.trim() || duplicateWarning.length > 0}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
             >
               {td.parseBtn}
