@@ -2393,7 +2393,7 @@ def delivery_debug_stock(batch_id: str, _: dict = Depends(require_permission("ad
 @app.get("/catalogue/{supplier_id}/matches")
 def catalogue_get_matches(
     supplier_id: str,
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
 ):
     """Return all cached delivery→catalogue product matches for a supplier."""
     fp_url = get_ecuador_cfg().freshportal_url
@@ -2413,7 +2413,7 @@ class DeliveryMatchRequest(BaseModel):
 def catalogue_set_match(
     supplier_id: str,
     req: DeliveryMatchRequest,
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
 ):
     """Manually create or override a cached match (marks as 'manual', never auto-overwritten)."""
     fp_url = get_ecuador_cfg().freshportal_url
@@ -2466,7 +2466,7 @@ def catalogue_approve_matches(
 @app.delete("/catalogue/{supplier_id}/matches")
 def catalogue_clear_all_matches(
     supplier_id: str,
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
 ):
     """Delete ALL cached delivery→catalogue matches for a supplier."""
     fp_url = get_ecuador_cfg().freshportal_url
@@ -2478,7 +2478,7 @@ def catalogue_clear_all_matches(
 def catalogue_delete_match(
     supplier_id: str,
     delivery_key: str,
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
 ):
     """Delete a single cached match so the next parse re-runs live matching."""
     fp_url = get_ecuador_cfg().freshportal_url

@@ -286,9 +286,19 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!confirm(td.clearCacheConfirm(supplierId))) return;
     setClearingCache(true);
     try {
-      const res = await fetch(`${RAILWAY}/catalogue/${supplierId}/matches`, { method: "DELETE" });
-      const data = await res.json();
-      alert(td.clearCacheSuccess(data.deleted));
+      // Collect delivery keys only for lines currently visible in the review
+      const keysToDelete = new Set<string>();
+      for (const ord of (parseResult?.orders ?? [])) {
+        for (const line of ord.lines) keysToDelete.add(deliveryKey(line));
+      }
+      // Delete each match individually so other supplier cache stays intact
+      await Promise.all(
+        [...keysToDelete].map(dk =>
+          fetch(`${RAILWAY}/catalogue/${supplierId}/matches/${encodeURIComponent(dk)}`, { method: "DELETE" })
+        )
+      );
+      // Re-parse immediately so the table reflects fresh matches
+      await handleParse(supplierId);
     } catch { alert(td.clearCacheError); }
     finally { setClearingCache(false); }
   }

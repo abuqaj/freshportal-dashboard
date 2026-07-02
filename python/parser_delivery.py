@@ -60,10 +60,33 @@ class DeliveryOrder:
 
 _BOX_TYPE_MAP = {"QB": "QBE"}
 
+_TEMP_COLD_WORDS = {"cold", "frio", "fria", "frios", "frias"}
+_TEMP_WARM_WORDS = {"calidos", "calido", "caliente", "calientes", "warm", "hot"}
+
 
 def _normalise_box(tp: str) -> str:
     """Normalise box type code: QB → QBE (FreshPortal convention)."""
     return _BOX_TYPE_MAP.get(tp.upper(), tp)
+
+
+def _enrich_variety(nm_variety: str, tx_label: str) -> str:
+    """Append 'Cold' or 'Warm' qualifier to nm_variety when tx_label contains one."""
+    if not tx_label or not nm_variety:
+        return nm_variety
+    # Strip accents and split into words for language-neutral matching
+    normalized = _ud.normalize("NFKD", tx_label.lower())
+    normalized = "".join(c for c in normalized if not _ud.combining(c))
+    words = set(normalized.split())
+    if words & _TEMP_COLD_WORDS:
+        qualifier = "Cold"
+    elif words & _TEMP_WARM_WORDS:
+        qualifier = "Warm"
+    else:
+        return nm_variety
+    # Only append if not already present in the variety name
+    if qualifier.lower() not in nm_variety.lower():
+        return f"{nm_variety} {qualifier}"
+    return nm_variety
 
 
 def _normalise_date(raw: str) -> str:
@@ -106,6 +129,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                 continue
 
             tp_box = _normalise_box((box.get("tp_box") or box.get("nm_box") or "").strip())
+            tx_label = (box.get("tx_label") or "").strip()
 
             unique_guids = {
                 (p.get("gu_product") or "").strip()
@@ -141,7 +165,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     else:
                         merged[key] = DeliveryLine(
                             gu_product=gu,
-                            nm_variety=(prod.get("nm_variety") or "").strip().title(),
+                            nm_variety=_enrich_variety((prod.get("nm_variety") or "").strip().title(), tx_label),
                             nm_species=(prod.get("nm_species") or "").strip().title(),
                             nu_length=int(prod.get("nu_length") or 0),
                             nu_stems_bunch=int(prod.get("nu_stems_bunch") or 0),
@@ -172,7 +196,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     else:
                         merged[key] = DeliveryLine(
                             gu_product=gu,
-                            nm_variety=(prod.get("nm_variety") or "").strip().title(),
+                            nm_variety=_enrich_variety((prod.get("nm_variety") or "").strip().title(), tx_label),
                             nm_species=(prod.get("nm_species") or "").strip().title(),
                             nu_length=int(prod.get("nu_length") or 0),
                             nu_stems_bunch=int(prod.get("nu_stems_bunch") or 0),
