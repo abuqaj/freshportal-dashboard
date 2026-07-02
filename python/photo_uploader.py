@@ -138,18 +138,29 @@ def find_photo(photo_dir: Path, photo_filename: str) -> Path | None:
 # FreshPortal: login
 # ---------------------------------------------------------------------------
 
-def _login(page: Page, cfg: Config) -> None:
-    page.goto(
-        f"{cfg.freshportal_url}/login_v2/index/index/",
-        wait_until="load",
-        timeout=cfg.request_timeout,
-    )
-    page.fill("#username, input[name='USE_Username']", cfg.freshportal_username)
-    page.fill("#password, input[name='USE_Password'], input[type='password']", cfg.freshportal_password)
-    page.click("button:has-text('Login'), button[type='submit']")
-    page.wait_for_url(lambda url: "login" not in url, timeout=cfg.request_timeout)
-    time.sleep(1)
-    log.info("Logged in. URL: %s", page.url)
+def _login(page: Page, cfg: Config, _retries: int = 3) -> None:
+    login_url = f"{cfg.freshportal_url}/login_v2/index/index/"
+    nav_timeout = max(cfg.request_timeout, 60_000)
+    last_exc: Exception | None = None
+    for attempt in range(1, _retries + 1):
+        try:
+            page.goto(login_url, wait_until="load", timeout=nav_timeout)
+            page.fill("#username, input[name='USE_Username']", cfg.freshportal_username)
+            page.fill("#password, input[name='USE_Password'], input[type='password']", cfg.freshportal_password)
+            page.click("button:has-text('Login'), button[type='submit']")
+            page.wait_for_url(lambda url: "login" not in url, timeout=nav_timeout)
+            time.sleep(1)
+            log.info("Logged in. URL: %s", page.url)
+            return
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _retries:
+                delay = attempt * 5
+                log.warning("Login attempt %d/%d failed (%s) — retrying in %ds", attempt, _retries, exc, delay)
+                time.sleep(delay)
+            else:
+                log.error("Login failed after %d attempts", _retries)
+                raise last_exc
 
 
 # ---------------------------------------------------------------------------

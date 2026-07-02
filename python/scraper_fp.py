@@ -249,18 +249,31 @@ def _block_resources(page: Page) -> None:
         else route.continue_())
 
 
-def _login(page: Page, cfg: Config) -> None:
-    page.goto(
-        f"{cfg.freshportal_url}/login_v2/index/index/",
-        wait_until="load",
-        timeout=cfg.request_timeout,
-    )
-    page.fill("#username, input[name='USE_Username']", cfg.freshportal_username)
-    page.fill("#password, input[name='USE_Password'], input[type='password']", cfg.freshportal_password)
-    page.click("button:has-text('Login'), button[type='submit']")
-    page.wait_for_url(lambda url: "login" not in url, timeout=cfg.request_timeout)
-    time.sleep(1)
-    logger.info("Logged in. URL: %s", page.url)
+def _login(page: Page, cfg: Config, _retries: int = 3) -> None:
+    login_url = f"{cfg.freshportal_url}/login_v2/index/index/"
+    # Allow up to 60 s for the post-login redirect — FreshPortal can be slow
+    # when many sessions are opened in quick succession.
+    nav_timeout = max(cfg.request_timeout, 60_000)
+    last_exc: Exception | None = None
+    for attempt in range(1, _retries + 1):
+        try:
+            page.goto(login_url, wait_until="load", timeout=nav_timeout)
+            page.fill("#username, input[name='USE_Username']", cfg.freshportal_username)
+            page.fill("#password, input[name='USE_Password'], input[type='password']", cfg.freshportal_password)
+            page.click("button:has-text('Login'), button[type='submit']")
+            page.wait_for_url(lambda url: "login" not in url, timeout=nav_timeout)
+            time.sleep(1)
+            logger.info("Logged in. URL: %s", page.url)
+            return
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _retries:
+                delay = attempt * 5  # 5 s, 10 s
+                logger.warning("Login attempt %d/%d failed (%s) — retrying in %ds", attempt, _retries, exc, delay)
+                time.sleep(delay)
+            else:
+                logger.error("Login failed after %d attempts", _retries)
+                raise last_exc
 
 
 def _goto_and_wait(page: Page, url: str, cfg: Config) -> None:
