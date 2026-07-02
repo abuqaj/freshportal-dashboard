@@ -195,6 +195,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Product match modal ───────────────────────────────────────────────────
   const [editModalOpen, setEditModalOpen] = useState(false);
+  const [partialApproveOpen, setPartialApproveOpen] = useState(false);
 
   // ── Table sort / filter / view ────────────────────────────────────────────
   const [showOnlyUnmatched, setShowOnlyUnmatched] = useState(false);
@@ -489,23 +490,34 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Import to FreshPortal ───────────────────────────────────────────────
 
-  async function handleImport() {
+  async function handleImport(skipPartialCheck = false) {
     if (!parseResult) return;
     const order = parseResult.orders[activeOrderIdx];
     if (!order) return;
 
-    const keysToCache = new Set(
-      order.lines
-        .filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id))
-        .map(l => deliveryKey(l))
-    );
-    await handleApproveMatches(keysToCache);
+    // Check if all matched lines are approved — show modal if not
+    if (!skipPartialCheck && !resumeBatchId) {
+      const totalMatched = order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
+      const totalApproved = order.lines.filter(l => {
+        const dk = deliveryKey(l);
+        return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk);
+      }).length;
+      if (totalApproved < totalMatched) {
+        setPartialApproveOpen(true);
+        return;
+      }
+    }
+
+    // Save approved matches to cache (only the approved ones)
+    await handleApproveMatches(approvedKeys);
 
     // Resume mode: skip batch creation, add only remaining lines to existing batch
     if (resumeBatchId) {
       setStage("importing");
       setLogs([]);
-      const remainingLines = order.lines.filter(l => !alreadyAddedKeys.has(deliveryKey(l)));
+      const remainingLines = order.lines.filter(l =>
+        !alreadyAddedKeys.has(deliveryKey(l)) && approvedKeys.has(deliveryKey(l))
+      );
       const orderWithEdits = {
         ...order,
         lines: remainingLines.map(line => {
@@ -589,11 +601,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               } catch {}
               const orderWithEdits = {
                 ...order,
-                lines: order.lines.map((line: DeliveryLine) => {
-                  const dk = deliveryKey(line);
-                  const edit = lineEdits[dk];
-                  return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
-                }),
+                lines: order.lines
+                  .filter((line: DeliveryLine) => approvedKeys.has(deliveryKey(line)))
+                  .map((line: DeliveryLine) => {
+                    const dk = deliveryKey(line);
+                    const edit = lineEdits[dk];
+                    return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
+                  }),
               };
               await handleAddProductsFor(result.batch_id, orderWithEdits, logId);
             }
@@ -822,6 +836,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLineEdits({});
     setEditingKey(null);
     setEditModalOpen(false);
+    setPartialApproveOpen(false);
     setShowCacheManager(false);
     setCachedMatchesList([]);
     setResolvedSupplier(null);
@@ -1117,6 +1132,42 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── PREVIEW ── */}
       {stage === "preview" && order && (
         <div className="flex flex-col gap-5">
+
+          {/* Partial approve confirmation modal */}
+          {partialApproveOpen && (() => {
+            const totalMatched = order.lines.filter((l: DeliveryLine) => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
+            const totalApproved = order.lines.filter((l: DeliveryLine) => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length;
+            return (
+              <>
+                <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPartialApproveOpen(false)} />
+                <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-amber-500/40 bg-surface shadow-2xl p-6 flex flex-col gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xl">⚠</div>
+                    <div>
+                      <p className="text-sm font-bold text-amber-700">{td.partialApproveTitle}</p>
+                      <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.partialApproveBody(totalApproved, totalMatched)}</p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <button
+                      autoFocus
+                      onClick={() => setPartialApproveOpen(false)}
+                      className="h-9 px-5 rounded-xl text-sm font-semibold border-2 border-emerald text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
+                    >
+                      {td.partialApproveCancel}
+                    </button>
+                    <button
+                      onClick={() => { setPartialApproveOpen(false); handleImport(true); }}
+                      className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
+                    >
+                      {td.partialApproveConfirm}
+                    </button>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
+
           {/* Order tabs if multiple invoices */}
           {parseResult!.orders.length > 1 && (
             <div className="flex gap-2 flex-wrap">
@@ -1244,8 +1295,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   : "bg-emerald/8 border-emerald/30 text-emerald hover:bg-emerald/15"}`}
             >
               {td.approved(
-                approvedKeys.size,
-                new Set(order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l))).size
+                order.lines.filter(l => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length,
+                order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length
               )}
               {showOnlyUnapproved ? " ✕" : ""}
             </button>
@@ -1303,8 +1354,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               {td.startOver}
             </button>
             <button
-              onClick={handleImport}
-              disabled={parseResult!.matched_count === 0}
+              onClick={() => handleImport()}
+              disabled={approvedKeys.size === 0 && !resumeBatchId}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
               {resumeBatchId ? td.resumeImportBtn : td.importBtn}
