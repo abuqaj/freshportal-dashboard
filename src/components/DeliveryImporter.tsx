@@ -627,15 +627,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setAddResult(null);
     setAddProgress(null);
 
-    // Build per-product cumulative box thresholds so the progress counter tracks
-    // products (not boxes). Backend sends one ✓/✗ message per physical box.
-    const matchedLines = orderWithEdits.lines.filter(l => l.fp_product_id);
-    const totalProducts = matchedLines.length;
-    let cumBoxes = 0;
-    const productThresholds: number[] = matchedLines.map(l => {
-      cumBoxes += (l.nu_physical_boxes ?? 1);
-      return cumBoxes;
-    });
+    const totalProducts = orderWithEdits.lines.filter(l => l.fp_product_id).length;
     if (totalProducts > 0) setAddProgress({ done: 0, total: totalProducts });
 
     const res = await fetch(`${RAILWAY}/delivery/add-products`, {
@@ -653,7 +645,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    let boxMsgCount = 0;
+    let doneCount = 0;
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -668,11 +660,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           if (ev.type === "status") {
             setAddLogs(prev => [...prev, ev.message]);
             setLogs(prev => [...prev, ev.message]);
-            if (ev.message?.startsWith("  ✓") || ev.message?.startsWith("  ✗")) {
-              boxMsgCount++;
-              // Count how many products are fully done based on cumulative box thresholds
-              const productsDone = productThresholds.filter(t => t <= boxMsgCount).length;
-              setAddProgress({ done: productsDone, total: totalProducts });
+            if (ev.message?.includes("✓") || ev.message?.includes("✗")) {
+              doneCount++;
+              setAddProgress({ done: Math.min(doneCount, totalProducts), total: totalProducts });
             }
           }
           if (ev.type === "result") {
@@ -1542,9 +1532,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── IMPORTING ── */}
       {stage === "importing" && (
         isAdmin ? (
-          /* Admin: full log + progress bar */
+          /* Admin: progress bar (always visible) then full log */
           <div className="flex flex-col gap-3">
-            <ProgressLog title={td.importing} logs={logs} />
             {addStage === "running" && addProgress && (
               <div className="px-1">
                 <div className="flex items-center justify-between text-xs text-ink-3 mb-1.5">
@@ -1559,6 +1548,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 </div>
               </div>
             )}
+            <ProgressLog title={td.importing} logs={logs} />
           </div>
         ) : (
           /* Non-admin: spinner + current status + progress bar */
