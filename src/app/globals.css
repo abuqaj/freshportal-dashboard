@@ -143,12 +143,9 @@ html, body { height: 100%; margin: 0; }
 
 /* ─── Button press feedback (Import Delivery) ─── */
 [data-di] button:not(:disabled) {
-  transition-property: color, background-color, border-color, opacity, transform, filter;
-  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-  transition-duration: 150ms;
+  transition: transform 120ms ease-out;
 }
 [data-di] button:not(:disabled):active {
-  transform: scale(0.95);
-  filter: brightness(0.88);
-  transition-duration: 60ms;
+  transform: scale(0.94);
+  transition-duration: 50ms;
 }
