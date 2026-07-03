@@ -60,6 +60,12 @@ class DeliveryOrder:
 
 _BOX_TYPE_MAP = {"QB": "QBE"}
 
+# Single-letter → two-letter box codes used in the Fiorentina text-invoice format
+_BOX_LETTER_MAP: dict[str, str] = {
+    'F': 'FB', 'H': 'HB', 'Q': 'QB',
+    'E': 'EB', 'S': 'SB', 'D': 'DB', 'T': 'TB',
+}
+
 # ASCII patterns used after accent-stripping and corruption normalization.
 _LABEL_COLD_RE = _re.compile(r'\bcold\b|\bfri[ao]s?\b', _re.IGNORECASE)
 _LABEL_WARM_RE = _re.compile(r'\bcalido[s]?\b|\bcaliente[s]?\b|\bwarm\b', _re.IGNORECASE)
@@ -370,13 +376,124 @@ def _parse_factura_format(data: dict[str, Any]) -> list[DeliveryOrder]:
     return [order]
 
 
+def _parse_text_invoice(text: str) -> list[DeliveryOrder]:
+    """Parse Fiorentina/vertopal.com text-as-JSON-key format.
+
+    The JSON has exactly one key containing the full invoice text (produced by
+    PDF-to-JSON converters).  The product table has 10 columns, one value per line:
+      BOX | TB | Box code | VARIETY | CAN | BUNCHES | LENGT | STEMS | PRICE/UNIT | TOTAL
+    """
+    clean = text.replace('﻿', '').replace('\r\n', '\n').replace('\r', '\n')
+    lines = [l.rstrip() for l in clean.split('\n')]
+    full = '\n'.join(lines)
+
+    # --- metadata ---
+    tx_company = next((l.strip() for l in lines if l.strip()), '')
+
+    def _rx(pattern: str) -> str:
+        m = _re.search(pattern, full, _re.IGNORECASE)
+        return m.group(1).strip() if m else ''
+
+    id_invoice = _rx(r'INVOICE\s*#\s*0*(\d+)')
+    tx_awb     = _rx(r'A\.W\.B[^:\n]*:\s*[\t ]*(\S+)')
+    tx_hawb    = _rx(r'H\.A\.W\.B[^:\n]*:\s*[\t ]*(\S+)')
+    nm_cargo   = _rx(r'Shipper\s*:\s*[\t ]*(.+)')
+
+    # First "Date :" in dd/mm/yyyy (skip "Due Date")
+    dt_invoice = ''
+    for _m in _re.finditer(r'Date\s*:\s*[\t ]*(\d{2}/\d{2}/\d{4})', full, _re.IGNORECASE):
+        if 'due' not in full[max(0, _m.start() - 6):_m.start()].lower():
+            _d, _mo, _y = _m.group(1).split('/')
+            dt_invoice = f"{_d}-{_mo}-{_y}"
+            break
+    dt_fly = dt_invoice
+
+    # Consignee name: first ALL-CAPS line after "Consignee" or "To" label
+    nm_ship = ''
+    _sm = _re.search(r'(?:Consignee|To)\s*:.*?\n([A-Z][A-Z\s&,.\\-]+)\n', full)
+    if _sm:
+        nm_ship = _sm.group(1).strip()
+
+    # --- product table ---
+    _COLS = 10
+    table_start = -1
+    for i in range(len(lines) - _COLS):
+        if (lines[i].strip().upper() == 'BOX'
+                and lines[i + 1].strip().upper() == 'TB'
+                and 'BOX' in lines[i + 2].strip().upper()
+                and lines[i + 3].strip().upper() == 'VARIETY'):
+            table_start = i + _COLS  # skip header row
+            break
+
+    delivery_lines: list[DeliveryLine] = []
+    nu_boxes = 0
+
+    if table_start >= 0:
+        pos = table_start
+        while pos + _COLS <= len(lines):
+            chunk = [l.strip() for l in lines[pos:pos + _COLS]]
+            # End-of-table: first column is "TOTAL" or non-numeric
+            if not chunk[0] or not _re.fullmatch(r'\d+', chunk[0]):
+                break
+            try:
+                box_letter = chunk[1].upper()
+                nm_box = _normalise_box(_BOX_LETTER_MAP.get(box_letter, box_letter + 'B'))
+                nm_variety = chunk[3].title()
+                nu_bunches    = int(chunk[4])
+                nu_stems_bunch = int(chunk[5])
+                nu_length     = int(chunk[6])
+                mny_rate_stem = float(chunk[8].replace(',', '.'))
+            except (ValueError, IndexError):
+                pos += _COLS
+                continue
+
+            gu = f"{nm_variety.lower()}_{nu_length}_{nu_stems_bunch}_{mny_rate_stem}"
+            delivery_lines.append(DeliveryLine(
+                gu_product=gu,
+                nm_variety=nm_variety,
+                nm_species='Roses',
+                nu_length=nu_length,
+                nu_stems_bunch=nu_stems_bunch,
+                nu_bunches=nu_bunches,
+                mny_rate_stem=mny_rate_stem,
+                id_floricode='',
+                nm_product=f"{nm_variety} {nu_length}CM",
+                nm_box=nm_box,
+                nu_physical_boxes=1,
+            ))
+            nu_boxes += 1
+            pos += _COLS
+
+    return [DeliveryOrder(
+        tx_company=tx_company,
+        nm_location='',
+        id_invoice=id_invoice,
+        id_purchaseorder=id_invoice,
+        dt_fly=dt_fly,
+        dt_invoice=dt_invoice,
+        nm_ship=nm_ship,
+        nm_cargo=nm_cargo,
+        tx_awb=tx_awb,
+        tx_hawb=tx_hawb,
+        nu_boxes=nu_boxes,
+        nu_stems_total=sum(l.nu_stems_total for l in delivery_lines),
+        mny_total=round(sum(l.mny_total for l in delivery_lines), 4),
+        lines=delivery_lines,
+    )]
+
+
 def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
     """Auto-detect format and parse delivery JSON into DeliveryOrder list.
 
     Format detection:
+      single key with null value containing newlines + "INVOICE" → Fiorentina text format
       "invoices" key present → Format 1/2 (Elite/Ecoroses/Alissroses, english fields, boxes[]/products[])
       "id_factura" key present → Format 3 (Bloomingacres/FFS, spanish fields, detalles[]/productos[])
     """
+    if len(data) == 1:
+        _key, _val = next(iter(data.items()))
+        if isinstance(_key, str) and _val is None and '\n' in _key and 'INVOICE' in _key.upper():
+            return _parse_text_invoice(_key)
     if "invoices" in data:
         return _parse_invoices_format(data)
     if "id_factura" in data or "detalles" in data:
