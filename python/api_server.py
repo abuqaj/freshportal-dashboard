@@ -2183,6 +2183,7 @@ async def delivery_add_products(
             "nu_physical_boxes":    int(l.get("nu_physical_boxes") or 1),
             "mny_rate_stem":        float(l.get("mny_rate_stem") or 0),
             "nm_box":               l.get("nm_box", ""),
+            "nm_location":          l.get("nm_location", ""),
         }
         for l in raw.get("lines", [])
     ]

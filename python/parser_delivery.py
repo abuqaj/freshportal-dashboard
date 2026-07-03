@@ -26,6 +26,8 @@ class DeliveryLine:
     # Two boxes of the same product with the same box type share one DeliveryLine
     # but each box must become a separate FP stock entry.
     nu_physical_boxes: int = 1
+    # Source location code from JSON (e.g. "Tessa-S") — used for grower lookup
+    nm_location: str = ""
     # Filled after catalogue matching
     fp_product_id: str = ""
     match_method: str = "none"
@@ -200,6 +202,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             id_floricode=(prod.get("id_floricode") or "").strip(),
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=box_code,
+                            nm_location=(prod.get("nm_location") or "").strip(),
                         )
                     keys_new_in_this_box.add(key)
             else:
@@ -234,6 +237,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             id_floricode=(prod.get("id_floricode") or "").strip(),
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=tp_box,
+                            nm_location=(prod.get("nm_location") or "").strip(),
                         )
                     keys_new_in_this_box.add(key)
 

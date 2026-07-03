@@ -949,6 +949,29 @@ def _find_desc_col_and_row(page: Page, catalogue_nm: str, nu_length: int = 0) ->
     return best_idx if best_score >= 0.3 else -1
 
 
+# Pomarosa grower lookup: nm_location (case-insensitive, spaces/hyphens normalised) → FP teler_id
+_POMAROSA_GROWER_MAP: dict[str, str] = {
+    "tessa-e1":  "57396",  # Ecuanros
+    "tessa-e2":  "57396",  # Ecuanros
+    "tessa-s":   "61370",  # Solera
+    "tessa-p":   "60649",  # Positano
+    "tessa-ps2": "60649",  # Positano
+    "tessa-1":   "57369",  # Tessa
+    "tessa-3":   "57369",  # Tessa
+    "tessa-d":   "57366",  # Growerfarms S.A
+    "tessa-f":   "57426",  # Arcoflor Floress Arcoiris
+    "tessa-r1":  "57344",  # Inversiones Pontetresa
+    "tessa-r2":  "57344",  # Inversiones Pontetresa
+    "tessa-r3":  "57344",  # Inversiones Pontetresa
+}
+
+
+def _resolve_grower_id(nm_location: str) -> str:
+    """Return FP teler_id for the given nm_location, or '' if not mapped."""
+    key = re.sub(r"\s+", "", nm_location).lower()  # strip all spaces, lowercase
+    return _POMAROSA_GROWER_MAP.get(key, "")
+
+
 _FORM_PREFIX = "company_product_add_stock_side_bottom_create_form_"
 
 
@@ -978,6 +1001,7 @@ def _fill_sidebar_and_create(
     mny_rate: str,
     fust_id: str,
     on_status: Callable[[str], None],
+    grower_id: str = "",
 ) -> bool:
     """Fill the create-stock sidebar and click #btn_company_product_add_stock_form.
 
@@ -1077,6 +1101,46 @@ def _fill_sidebar_and_create(
     else:
         on_status("  ⚠ fust_id unknown — keeping pre-filled packaging")
 
+    # ── Grower (teler) ────────────────────────────────────────────────────
+    if grower_id:
+        grower_set = False
+        sel = page.locator(f"select[name='{p}teler_id_adjustable']")
+        if sel.count() > 0:
+            try:
+                sel.first.select_option(value=grower_id)
+                sel.first.dispatch_event("change")
+                filled.append(f"grower={grower_id}")
+                grower_set = True
+            except Exception as _exc:
+                on_status(f"  ⚠ grower select_option failed: {_exc}")
+        if not grower_set:
+            # JS fallback — tries common name variants and hidden selects
+            set_ok = page.evaluate("""
+                ([prefix, growerId]) => {
+                    for (const suffix of ['teler_id_adjustable', 'teler_id', 'grower_id_adjustable']) {
+                        const sel = document.querySelector(`select[name='${prefix}${suffix}'], select[name='${suffix}']`);
+                        if (sel) {
+                            sel.value = growerId;
+                            sel.dispatchEvent(new Event('change', {bubbles: true}));
+                            if (window.jQuery) jQuery(sel).trigger('chosen:updated');
+                            return 'select:' + suffix + '=' + growerId;
+                        }
+                        const inp = document.querySelector(`input[name='${prefix}${suffix}'], input[name='${suffix}']`);
+                        if (inp) {
+                            inp.value = growerId;
+                            inp.dispatchEvent(new Event('change', {bubbles: true}));
+                            return 'input:' + suffix + '=' + growerId;
+                        }
+                    }
+                    return 'not found';
+                }
+            """, [p, grower_id])
+            if "not found" not in str(set_ok):
+                filled.append(f"grower(js)={grower_id}→{set_ok}")
+                grower_set = True
+            else:
+                on_status(f"  ⚠ grower {grower_id} field not found — keeping pre-filled")
+
     on_status(f"  Filled: {', '.join(filled) or 'nothing'}")
 
     # ── Click Create stock ────────────────────────────────────────────────
@@ -1103,6 +1167,7 @@ def _add_one_product(
     mny_rate: str,
     nm_box: str,
     on_status: Callable[[str], None],
+    grower_id: str = "",
 ) -> bool:
     """Add one product line via form-filling. Returns True on success.
 
@@ -1169,7 +1234,8 @@ def _add_one_product(
 
     # ── Fill form + click submit ──────────────────────────────────────────
     return _fill_sidebar_and_create(
-        page, nu_length, nu_stems_bunch, nu_bunches, nu_physical_boxes, mny_rate, fust_id, on_status,
+        page, nu_length, nu_stems_bunch, nu_bunches, nu_physical_boxes,
+        mny_rate, fust_id, on_status, grower_id=grower_id,
     )
 
 
@@ -1278,11 +1344,14 @@ def add_products_to_batch(
                 nu_physical_boxes = int(line.get("nu_physical_boxes") or 1)
                 mny_rate = str(line.get("mny_rate_stem", ""))
                 nm_box = str(line.get("nm_box") or "")
+                nm_location = str(line.get("nm_location") or "")
+                grower_id = _resolve_grower_id(nm_location)
                 dk = f"{(line.get('nm_variety') or '').lower()}|{nu_length}"
 
                 _s(
                     f"\n[{i}/{len(lines_to_add)}] {catalogue_nm} {nu_length}cm "
                     f"×{nu_stems_bunch}spb → {nu_bunches} bunches @ {mny_rate}"
+                    + (f" [grower={grower_id}]" if grower_id else "")
                 )
 
                 ok = False
@@ -1291,6 +1360,7 @@ def add_products_to_batch(
                         page, cfg, batch_id,
                         catalogue_nm, nu_length, nu_stems_bunch,
                         nu_bunches, nu_physical_boxes, mny_rate, nm_box, _s,
+                        grower_id=grower_id,
                     )
                 except _SidebarNotOpenedError:
                     # Sidebar failure = FreshPortal catalogue likely changed → abort immediately
@@ -1311,7 +1381,8 @@ def add_products_to_batch(
                             ok = _add_one_product(
                                 page, cfg, batch_id,
                                 catalogue_nm, nu_length, nu_stems_bunch,
-                                nu_bunches, mny_rate, nm_box, _s,
+                                nu_bunches, nu_physical_boxes, mny_rate, nm_box, _s,
+                                grower_id=grower_id,
                             )
                         except Exception as exc2:
                             _s(f"  Retry failed: {str(exc2)[:200]}")
