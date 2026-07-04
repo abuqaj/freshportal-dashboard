@@ -106,7 +106,7 @@ const DEMO_PARSE_RESULT: ParseResult = {
       { gu_product: "d5", nm_variety: "TULIP RED DYNASTY", nm_species: "Tulipa", nu_length: 40, nu_stems_bunch: 10, nu_bunches: 25, nu_stems_total: 250, mny_rate_stem: 0.16, mny_total: 40.00, id_floricode: "VB300050", nm_product: "Tulip Red Dynasty 40cm", nm_box: "HB", nu_physical_boxes: 1, fp_product_id: "10005", match_method: "variety_nolen", catalogue_nm_product: "Tulip Red Dynasty" },
     ],
   }],
-  supplier_id: "210", supplier_nm: "Demo Grower B.V.", catalogue_count: 450, catalogue: [], matched_count: 4, unmatched_count: 1,
+  supplier_id: "210", supplier_nm: "Demo Grower B.V.", supplier_confirmed: true, catalogue_count: 450, catalogue: [], matched_count: 4, unmatched_count: 1,
 };
 
 const DEMO_IMPORT_RESULT = { ok: true, batch_id: "DEMO-2024-001", batch_url: "#", lines_added: 5, message: "Batch DEMO-2024-001 created (5 lines)" };
