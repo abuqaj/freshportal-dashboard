@@ -1489,9 +1489,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             const currentEdit = lineEdits[dk];
             const currentMatchName = currentEdit?.catalogue_nm_product ?? editLine?.catalogue_nm_product ?? "";
             const catalogue = parseResult?.catalogue ?? [];
-            const matchResults = editSearch.length >= 2
-              ? catalogue.filter(p => p.nm_product.toLowerCase().includes(editSearch.toLowerCase())).slice(0, 30)
-              : catalogue.slice(0, 30);
+            const rawResults = editSearch.length >= 2
+              ? catalogue.filter(p => p.nm_product.toLowerCase().includes(editSearch.toLowerCase()))
+              : catalogue;
+            const _seen = new Set<string>();
+            const matchResults = rawResults.filter(p => {
+              if (_seen.has(p.nm_product)) return false;
+              _seen.add(p.nm_product);
+              return true;
+            }).slice(0, 50);
             return (
               <>
                 <div className="fixed inset-0 bg-black/60 z-[200]" onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} />
@@ -1537,7 +1543,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       const isCurrentMatch = (currentEdit?.fp_product_id ?? editLine?.fp_product_id) === p.fp_product_id;
                       return (
                         <button
-                          key={p.fp_product_id}
+                          key={p.nm_product}
                           onClick={() => {
                             setLineEdits(prev => ({ ...prev, [dk]: { fp_product_id: p.fp_product_id, catalogue_nm_product: p.nm_product } }));
                             setApprovedKeys(prev => { const n = new Set(prev); n.add(dk); return n; });
@@ -1549,21 +1555,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             ${isCurrentMatch ? "bg-emerald/8" : "bg-surface hover:bg-muted"}`}
                         >
                           <div className={`text-sm font-medium leading-snug ${isCurrentMatch ? "text-emerald" : "text-ink"}`}>{p.nm_product}</div>
-                          <div className="flex items-center gap-2.5 mt-1 flex-wrap">
-                            <span className="text-[10px] text-ink-3">#{p.fp_product_id}</span>
-                            {p.nu_length != null && p.nu_length > 0 && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 font-medium">{p.nu_length} cm</span>
-                            )}
-                            {p.nu_stems_bunch != null && p.nu_stems_bunch > 0 && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-600 font-medium">{p.nu_stems_bunch} st/bos</span>
-                            )}
-                            {p.nu_stems_pack != null && p.nu_stems_pack > 0 && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-ink-3 font-medium">pack {p.nu_stems_pack}</span>
-                            )}
-                            {p.nm_packaging && (
-                              <span className="text-[10px] text-ink-3">{p.nm_packaging}</span>
-                            )}
-                          </div>
                         </button>
                       );
                     })}
