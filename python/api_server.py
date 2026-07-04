@@ -40,7 +40,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                sync_supplier_catalogue, get_supplier_catalogue, get_all_catalogue_meta,
                get_supplier_meta_one,
                upsert_suppliers, get_suppliers, get_suppliers_count,
-               find_supplier_fp_id, get_supplier_name_by_id, save_supplier_name_map,
+               find_supplier_fp_id, get_supplier_name_by_id, save_supplier_name_map, get_supplier_name_map,
                get_delivery_matches, save_delivery_matches, approve_delivery_matches,
                set_delivery_match, delete_delivery_match, clear_delivery_matches,
                create_delivery_import_log, update_delivery_import_log, get_delivery_import_logs,
@@ -1756,13 +1756,25 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
         # This ensures we never rely on a hardcoded value from the UI.
         fp_url = get_ecuador_cfg().freshportal_url
         supplier_id = req.supplier_id
+        # supplier_confirmed=True when the supplier is already known:
+        #   • user sent explicit supplier_id in the request (already selected/confirmed)
+        #   • saved tx_company→fp_supplier_id mapping exists in DB (manually confirmed before)
+        #   • auto-resolved AND catalogue already exists in DB (was used before)
+        # False = auto-guessed AND no catalogue yet → truly new supplier → show confirmation popup.
+        supplier_confirmed = bool(req.supplier_id)
         if orders:
-            resolved = find_supplier_fp_id(fp_url, orders[0].tx_company)
-            if resolved:
-                supplier_id = resolved
-                log.info("[delivery/parse] resolved supplier_id=%s from tx_company=%r", supplier_id, orders[0].tx_company)
-            elif not supplier_id:
-                log.warning("[delivery/parse] could not resolve supplier from tx_company=%r", orders[0].tx_company)
+            saved_map = get_supplier_name_map(fp_url, orders[0].tx_company)
+            if saved_map:
+                supplier_id = saved_map
+                supplier_confirmed = True
+                log.info("[delivery/parse] supplier_id=%s from saved map for tx_company=%r", supplier_id, orders[0].tx_company)
+            else:
+                resolved = find_supplier_fp_id(fp_url, orders[0].tx_company)
+                if resolved:
+                    supplier_id = resolved
+                    log.info("[delivery/parse] auto-resolved supplier_id=%s from tx_company=%r", supplier_id, orders[0].tx_company)
+                elif not supplier_id:
+                    log.warning("[delivery/parse] could not resolve supplier from tx_company=%r", orders[0].tx_company)
 
         catalogue = []
         cached_matches: dict = {}
@@ -1770,6 +1782,10 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
             catalogue = get_catalogue(supplier_id)
             cached_matches = get_delivery_matches(fp_url, supplier_id)
             log.info("[delivery/parse] supplier=%s catalogue=%d items, cached_matches=%d", supplier_id, len(catalogue), len(cached_matches))
+            # Auto-resolved supplier that already has a synced catalogue → treat as confirmed
+            # (they've been used before, no need to ask for confirmation again)
+            if not supplier_confirmed and catalogue:
+                supplier_confirmed = True
 
         matched_count = 0
         unmatched_count = 0
@@ -1816,6 +1832,7 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
             "orders": result_orders,
             "supplier_id": supplier_id,
             "supplier_nm": supplier_nm,
+            "supplier_confirmed": supplier_confirmed,
             "catalogue_count": len(catalogue),
             "catalogue": catalogue_slim,
             "matched_count": matched_count,

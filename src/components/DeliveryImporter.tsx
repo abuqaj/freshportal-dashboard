@@ -65,6 +65,7 @@ interface ParseResult {
   orders: DeliveryOrder[];
   supplier_id: string;
   supplier_nm: string;
+  supplier_confirmed: boolean;
   catalogue_count: number;
   catalogue: CatalogueProduct[];
   matched_count: number;
@@ -197,6 +198,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Product match modal ───────────────────────────────────────────────────
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [partialApproveOpen, setPartialApproveOpen] = useState(false);
+  const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
 
   // ── Table sort / filter / view ────────────────────────────────────────────
   const [showOnlyUnmatched, setShowOnlyUnmatched] = useState(false);
@@ -376,6 +378,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setColFilters({});
       if (data.supplier_id) {
         setResolvedSupplier({ fp_supplier_id: data.supplier_id, nm_supplier: data.supplier_nm || data.supplier_id });
+        if (!data.supplier_confirmed) setSupplierConfirmOpen(true);
       } else {
         setResolvedSupplier(null);
       }
@@ -831,6 +834,28 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setCachedMatchesList(prev => prev.filter(m => m.delivery_key !== dk));
   }
 
+  async function handleConfirmSupplier() {
+    setSupplierConfirmOpen(false);
+    const supplierId = resolvedSupplier?.fp_supplier_id;
+    const txCompany = parseResult?.orders[activeOrderIdx]?.tx_company ?? "";
+    if (!supplierId) return;
+    try {
+      await fetch(`${RAILWAY}/catalogue/supplier-map`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tx_company: txCompany, fp_supplier_id: supplierId }),
+      });
+    } catch {}
+    if ((catalogueCount ?? 0) === 0) {
+      await syncCatalogueForSupplier(supplierId, resolvedSupplier?.nm_supplier ?? supplierId);
+    }
+  }
+
+  function handleChangeSupplier() {
+    setSupplierConfirmOpen(false);
+    openSupplierPicker();
+  }
+
   function reset() {
     setStage("idle");
     setJsonText("");
@@ -1142,6 +1167,42 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── PREVIEW ── */}
       {stage === "preview" && order && (
         <div className="flex flex-col gap-5">
+
+          {/* Supplier confirmation popup */}
+          {supplierConfirmOpen && resolvedSupplier && (
+            <>
+              <div className="fixed inset-0 bg-black/60 z-[300]" />
+              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-sm mx-auto rounded-2xl border-2 border-border bg-surface shadow-2xl p-6 flex flex-col gap-5">
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-xl">🏭</div>
+                  <div>
+                    <p className="text-sm font-bold text-ink">Znaleziono dostawcę</p>
+                    <p className="text-xs text-ink-3 mt-1 leading-relaxed">
+                      Dla tej dostawy (<span className="font-medium text-ink">{order.tx_company}</span>) dopasowano dostawcę:
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-ink">{resolvedSupplier.nm_supplier}</p>
+                    <p className="text-[11px] text-ink-3">#{resolvedSupplier.fp_supplier_id}</p>
+                    <p className="mt-2 text-xs text-ink-3">Czy to poprawny dostawca?</p>
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={handleChangeSupplier}
+                    className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
+                  >
+                    Zmień
+                  </button>
+                  <button
+                    autoFocus
+                    onClick={handleConfirmSupplier}
+                    className="h-9 px-5 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 transition-colors"
+                  >
+                    Tak, zgadza się
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Partial approve confirmation modal */}
           {partialApproveOpen && (() => {
