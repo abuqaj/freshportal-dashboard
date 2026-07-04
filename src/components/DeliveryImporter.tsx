@@ -1176,13 +1176,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 <div className="flex items-start gap-3">
                   <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-xl">🏭</div>
                   <div>
-                    <p className="text-sm font-bold text-ink">Znaleziono dostawcę</p>
-                    <p className="text-xs text-ink-3 mt-1 leading-relaxed">
-                      Dla tej dostawy (<span className="font-medium text-ink">{order.tx_company}</span>) dopasowano dostawcę:
-                    </p>
+                    <p className="text-sm font-bold text-ink">{td.supplierConfirmTitle}</p>
+                    <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.supplierConfirmBody(order.tx_company)}</p>
                     <p className="mt-2 text-sm font-semibold text-ink">{resolvedSupplier.nm_supplier}</p>
                     <p className="text-[11px] text-ink-3">#{resolvedSupplier.fp_supplier_id}</p>
-                    <p className="mt-2 text-xs text-ink-3">Czy to poprawny dostawca?</p>
+                    <p className="mt-2 text-xs text-ink-3">{td.supplierConfirmQuestion}</p>
                   </div>
                 </div>
                 <div className="flex gap-2 justify-end">
@@ -1190,14 +1188,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     onClick={handleChangeSupplier}
                     className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
                   >
-                    Zmień
+                    {td.supplierConfirmChange}
                   </button>
                   <button
                     autoFocus
                     onClick={handleConfirmSupplier}
                     className="h-9 px-5 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 transition-colors"
                   >
-                    Tak, zgadza się
+                    {td.supplierConfirmYes}
                   </button>
                 </div>
               </div>
