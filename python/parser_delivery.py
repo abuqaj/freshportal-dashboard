@@ -482,13 +482,93 @@ def _parse_text_invoice(text: str) -> list[DeliveryOrder]:
     )]
 
 
+def _parse_etiqueta_format(data: dict[str, Any]) -> list[DeliveryOrder]:
+    """Parse per-etiqueta format: single object with detalle[] — one row per physical box.
+
+    Field mapping:
+      fecha      → dt_invoice / dt_fly    invoice → id_invoice
+      cajas      → nu_boxes               detalle → boxes
+      PRODUCTO   → nm_product             NomVariedad → nm_variety
+      NomColor   → appended to nm_variety BOX     → nm_box
+      Bch/box    → nu_bunches (rounded)   st/Bch  → nu_stems_bunch
+      Price      → mny_rate_stem          Boxes   → nu_physical_boxes
+    """
+    merged: dict[str, DeliveryLine] = {}
+
+    for item in data.get("detalle", []):
+        producto = (item.get("PRODUCTO") or "").strip()
+        nm_variedad = (item.get("NomVariedad") or "").strip()
+        nm_color = (item.get("NomColor") or "").strip()
+
+        if nm_variedad:
+            nm_variety = f"{nm_variedad} {nm_color}".strip().title()
+        else:
+            nm_variety = producto.title()
+
+        tp_box = _normalise_box((item.get("BOX") or "").strip())
+        nu_bunches = max(1, round(float(item.get("Bch/box") or 0)))
+        nu_stems_bunch = int(item.get("st/Bch") or 0)
+        mny_rate_stem = float(item.get("Price") or 0)
+        nu_boxes_item = int(item.get("Boxes") or 1)
+
+        prod_lower = producto.lower()
+        if "minicarnation" in prod_lower or "mini carnation" in prod_lower:
+            nm_species = "Mini Carnation"
+        elif "carnation" in prod_lower or "dianthus" in prod_lower:
+            nm_species = "Carnation"
+        elif "rose" in prod_lower:
+            nm_species = "Roses"
+        else:
+            nm_species = producto.split()[0].title() if producto else ""
+
+        key = f"{nm_variety.lower()}|{tp_box}|{nu_stems_bunch}|{mny_rate_stem}"
+
+        if key in merged:
+            merged[key].nu_bunches += nu_bunches
+            merged[key].nu_physical_boxes += nu_boxes_item
+        else:
+            merged[key] = DeliveryLine(
+                gu_product=key,
+                nm_variety=nm_variety,
+                nm_species=nm_species,
+                nu_length=0,
+                nu_stems_bunch=nu_stems_bunch,
+                nu_bunches=nu_bunches,
+                mny_rate_stem=mny_rate_stem,
+                id_floricode="",
+                nm_product=producto,
+                nm_box=tp_box,
+                nu_physical_boxes=nu_boxes_item,
+            )
+
+    lines = sorted(merged.values(), key=lambda l: (l.nm_species, l.nm_variety, l.nu_length))
+
+    return [DeliveryOrder(
+        tx_company="",
+        nm_location="",
+        id_invoice=str(data.get("invoice") or "").strip(),
+        id_purchaseorder="",
+        dt_fly=_parse_date_iso(data.get("fecha") or ""),
+        dt_invoice=_parse_date_iso(data.get("fecha") or ""),
+        nm_ship="",
+        nm_cargo="",
+        tx_awb="",
+        tx_hawb="",
+        nu_boxes=int(data.get("cajas") or 0),
+        nu_stems_total=sum(l.nu_stems_total for l in lines),
+        mny_total=round(sum(l.mny_total for l in lines), 2),
+        lines=lines,
+    )]
+
+
 def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
     """Auto-detect format and parse delivery JSON into DeliveryOrder list.
 
     Format detection:
       single key with null value containing newlines + "INVOICE" → Fiorentina text format
       "invoices" key present → Format 1/2 (Elite/Ecoroses/Alissroses, english fields, boxes[]/products[])
-      "id_factura" key present → Format 3 (Bloomingacres/FFS, spanish fields, detalles[]/productos[])
+      "id_factura" or "detalles" key present → Format 3 (Bloomingacres/FFS, spanish fields)
+      "detalle" key present → Format 4 (per-etiqueta, one row per physical box)
     """
     if len(data) == 1:
         _key, _val = next(iter(data.items()))
@@ -498,7 +578,9 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
         return _parse_invoices_format(data)
     if "id_factura" in data or "detalles" in data:
         return _parse_factura_format(data)
-    raise ValueError("Unknown delivery JSON format: missing 'invoices' or 'id_factura' key")
+    if "detalle" in data:
+        return _parse_etiqueta_format(data)
+    raise ValueError("Unknown delivery JSON format: missing 'invoices', 'id_factura', or 'detalle' key")
 
 
 # ---------------------------------------------------------------------------
