@@ -1108,45 +1108,36 @@ def _fill_sidebar_and_create(
     else:
         on_status("  ⚠ fust_id unknown — keeping pre-filled packaging")
 
-    # ── Grower ───────────────────────────────────────────────────────────
+    # ── Grower (manufacturer_adjustable — fps-select hidden input) ───────────
     if grower_id:
-        grower_set = False
-        sel = page.locator(f"select[name='{p}grower_id_adjustable']")
-        if sel.count() > 0:
-            try:
-                sel.first.select_option(value=grower_id)
-                sel.first.dispatch_event("change")
-                filled.append(f"grower={grower_id}")
-                grower_set = True
-            except Exception as _exc:
-                on_status(f"  ⚠ grower select_option failed: {_exc}")
-        if not grower_set:
-            set_ok = page.evaluate("""
-                ([prefix, growerId]) => {
-                    const suffixes = [
-                        'grower_id_adjustable', 'grower_id',
-                        'teler_id_adjustable', 'teler_id',
-                        'breeder_id_adjustable', 'breeder_id',
-                        'supplier_id_adjustable',
-                    ];
-                    for (const suffix of suffixes) {
-                        for (const name of [prefix + suffix, suffix]) {
-                            const sel = document.querySelector(`select[name='${name}']`);
-                            if (sel) {
-                                sel.value = growerId;
-                                sel.dispatchEvent(new Event('change', {bubbles: true}));
-                                if (window.jQuery) jQuery(sel).trigger('chosen:updated');
-                                return 'select:' + name + '=' + growerId;
-                            }
+        # The field is a custom fps-select widget; underlying <select> is hidden.
+        # Use evaluate() to set the value directly, bypassing visibility checks.
+        set_ok = page.evaluate("""
+            ([prefix, growerId]) => {
+                const suffixes = [
+                    'manufacturer_adjustable',
+                    'grower_id_adjustable', 'grower_id',
+                    'teler_id_adjustable', 'teler_id',
+                    'breeder_id_adjustable', 'breeder_id',
+                ];
+                for (const suffix of suffixes) {
+                    for (const name of [prefix + suffix, suffix]) {
+                        const sel = document.querySelector(`select[name='${name}']`);
+                        if (sel) {
+                            sel.value = growerId;
+                            sel.dispatchEvent(new Event('change', {bubbles: true}));
+                            sel.dispatchEvent(new Event('input',  {bubbles: true}));
+                            return 'set:' + name + '=' + growerId;
                         }
                     }
-                    return 'not found';
                 }
-            """, [p, grower_id])
-            if "not found" not in str(set_ok):
-                filled.append(f"grower(js)={grower_id}→{set_ok}")
-            else:
-                on_status(f"  ⚠ grower {grower_id} field not found — keeping pre-filled")
+                return 'not found';
+            }
+        """, [p, grower_id])
+        if "not found" not in str(set_ok):
+            filled.append(f"grower(js)={grower_id}→{set_ok}")
+        else:
+            on_status(f"  ⚠ grower {grower_id} field not found — keeping pre-filled")
 
     on_status(f"  Filled: {', '.join(filled) or 'nothing'}")
 

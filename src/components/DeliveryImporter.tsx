@@ -569,8 +569,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
         }),
       };
-      await handleAddProductsFor(resumeBatchId, orderWithEdits, importLogId);
-      setStage("done");
+      const abortRecovering = await handleAddProductsFor(resumeBatchId, orderWithEdits, importLogId);
+      if (!abortRecovering) setStage("done");
       return;
     }
 
@@ -652,7 +652,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
                   }),
               };
-              await handleAddProductsFor(result.batch_id, orderWithEdits, logId);
+              const abortRecovering = await handleAddProductsFor(result.batch_id, orderWithEdits, logId);
+              if (abortRecovering) return;
             }
             setStage("done");
           }
@@ -711,7 +712,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     }
   }
 
-  async function handleAddProductsFor(batchId: string, orderWithEdits: DeliveryOrder, logId: number | null) {
+  async function handleAddProductsFor(batchId: string, orderWithEdits: DeliveryOrder, logId: number | null): Promise<boolean> {
     setAddStage("running");
     setAddLogs([]);
     setAddResult(null);
@@ -792,7 +793,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 );
                 await syncCatalogueForSupplier(supplierId, supplierName, true);
               }
-              return;
+              return true;
             }
 
             setAddStage("done");
