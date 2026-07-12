@@ -923,6 +923,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Render ──────────────────────────────────────────────────────────────
 
   const order = parseResult?.orders[activeOrderIdx];
+  const isPomarosa = !!(
+    order?.tx_company?.toLowerCase().includes("pomarosa") ||
+    resolvedSupplier?.nm_supplier?.toLowerCase().includes("pomarosa")
+  );
 
   const displayLines = useMemo(() => {
     const o = parseResult?.orders[activeOrderIdx];
@@ -1454,8 +1458,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* Product lines table */}
           {(() => {
-            const activeOrder = parseResult?.orders[activeOrderIdx];
-            const isPomarosa = activeOrder?.tx_company?.toLowerCase().includes("pomarosa") ?? false;
             return (
           <div ref={refTable} className="overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border">
             <table className="w-full text-xs">
