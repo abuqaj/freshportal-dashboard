@@ -7,6 +7,26 @@ import DeliveryTour, { TourStep } from "./DeliveryTour";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
+const POMAROSA_GROWER_NAMES: Record<string, string> = {
+  "tessa-e1":  "Ecuanros",
+  "tessa-e2":  "Ecuanros",
+  "tessa-s":   "Solera",
+  "tessa-p":   "Positano",
+  "tessa-ps2": "Positano",
+  "tessa-1":   "Tessa",
+  "tessa-3":   "Tessa",
+  "tessa-d":   "Growerfarms S.A",
+  "tessa-f":   "Arcoflor Floress Arcoiris",
+  "tessa-r1":  "Inversiones Pontetresa",
+  "tessa-r2":  "Inversiones Pontetresa",
+  "tessa-r3":  "Inversiones Pontetresa",
+};
+
+function resolvePomarosaGrower(nmLocation: string): string {
+  const key = nmLocation.replace(/\s+/g, "").toLowerCase();
+  return POMAROSA_GROWER_NAMES[key] ?? nmLocation;
+}
+
 type MatchMethod =
   | "variety_length" | "variety_nolen" | "variety_anylength"
   | "floricode"
@@ -1500,7 +1520,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       </td>
                       {isPomarosa && (
                         <td className="px-3 py-2 text-ink-3 whitespace-nowrap">
-                          {line.nm_location || "—"}
+                          {line.nm_location ? resolvePomarosaGrower(line.nm_location) : "—"}
                         </td>
                       )}
                       <td className="px-3 py-2">
