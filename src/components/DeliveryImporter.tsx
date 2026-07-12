@@ -40,6 +40,7 @@ interface DeliveryLine {
   fp_product_id: string;
   match_method: MatchMethod;
   catalogue_nm_product: string;
+  nm_location: string;
 }
 
 interface DeliveryOrder {
@@ -1432,12 +1433,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {/* Product lines table */}
+          {(() => {
+            const activeOrder = parseResult?.orders[activeOrderIdx];
+            const isPomarosa = activeOrder?.tx_company?.toLowerCase().includes("pomarosa") ?? false;
+            return (
           <div ref={refTable} className="overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border">
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
                   <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8" title={td.colApproveTooltip}>✓</th>
                   <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  {isPomarosa && <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">Grower</th>}
                   <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="boxQty"     label={td.colBoxQty}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colContent}</th>
@@ -1453,7 +1459,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <tbody>
                 {displayLines.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="px-4 py-6 text-center text-xs text-ink-3">
+                    <td colSpan={isPomarosa ? 13 : 12} className="px-4 py-6 text-center text-xs text-ink-3">
                       {showOnlyUnmatched ? td.showAll : "—"}
                     </td>
                   </tr>
@@ -1492,6 +1498,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           <div className="text-ink-3 font-normal">{displayCatName}</div>
                         )}
                       </td>
+                      {isPomarosa && (
+                        <td className="px-3 py-2 text-ink-3 whitespace-nowrap">
+                          {line.nm_location || "—"}
+                        </td>
+                      )}
                       <td className="px-3 py-2">
                         {line.nm_box ? (
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium
@@ -1540,6 +1551,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </tbody>
             </table>
           </div>
+          );})()}
 
           {/* Product match modal */}
           {editModalOpen && editingKey && (() => {
