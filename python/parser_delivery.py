@@ -217,9 +217,11 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                         )
                     # Include nm_variety in the key so same gu_product with different
                     # temperature qualifiers (e.g. Bicolor Cold vs Bicolor Warm) stay separate.
+                    # Include mny_rate_stem so boxes priced differently stay as separate lines.
                     raw_variety = (prod.get("nm_variety") or prod.get("id_migros") or "").strip()
                     nm_variety = _enrich_variety(raw_variety.title(), tx_label)
-                    key = f"{gu}|{tp_box}|{nm_variety.lower()}"
+                    mny_rate = float(prod.get("mny_rate_stem") or 0)
+                    key = f"{gu}|{tp_box}|{nm_variety.lower()}|{mny_rate}"
                     nu_bunches = int(prod.get("nu_bunches") or 0)
 
                     if key in merged:
