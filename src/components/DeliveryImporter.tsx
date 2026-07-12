@@ -833,6 +833,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         } catch {}
       }
     }
+    return false;
   }
 
   async function handleAddProducts() {
