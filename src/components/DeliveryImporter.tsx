@@ -734,7 +734,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!res.ok || !res.body) {
       setAddLogs([await res.text()]);
       setAddStage("error");
-      return;
+      return false;
     }
 
     const reader = res.body.getReader();
