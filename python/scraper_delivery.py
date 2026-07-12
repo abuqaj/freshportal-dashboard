@@ -976,18 +976,25 @@ _FORM_PREFIX = "company_product_add_stock_side_bottom_create_form_"
 
 
 def _inspect_sidebar_inputs(page: Page) -> list[str]:
-    """Return input+select names near #btn_company_product_add_stock_form (for debug)."""
+    """Return input+select names near #btn_company_product_add_stock_form (for debug).
+    Also appends all page select names so grower field can be identified."""
     return page.evaluate("""
         () => {
             const btn = document.getElementById("btn_company_product_add_stock_form");
-            if (!btn) return [];
-            let container = btn;
-            for (let i = 0; i < 8; i++) {
-                if (!container.parentElement) break;
-                container = container.parentElement;
-                if (container.querySelectorAll("input, select").length > 1) break;
+            let nearby = [];
+            if (btn) {
+                let container = btn;
+                for (let i = 0; i < 8; i++) {
+                    if (!container.parentElement) break;
+                    container = container.parentElement;
+                    if (container.querySelectorAll("input, select").length > 1) break;
+                }
+                nearby = Array.from(container.querySelectorAll("input, select")).map(el => el.name);
             }
-            return Array.from(container.querySelectorAll("input, select")).map(el => el.name);
+            const allSelects = Array.from(document.querySelectorAll("select[name]"))
+                .map(el => 'SELECT:' + el.name)
+                .filter(n => !nearby.includes(n.slice(7)));
+            return [...nearby, ...allSelects];
         }
     """)
 
@@ -1116,13 +1123,21 @@ def _fill_sidebar_and_create(
         if not grower_set:
             set_ok = page.evaluate("""
                 ([prefix, growerId]) => {
-                    for (const suffix of ['grower_id_adjustable', 'grower_id']) {
-                        const sel = document.querySelector(`select[name='${prefix}${suffix}'], select[name='${suffix}']`);
-                        if (sel) {
-                            sel.value = growerId;
-                            sel.dispatchEvent(new Event('change', {bubbles: true}));
-                            if (window.jQuery) jQuery(sel).trigger('chosen:updated');
-                            return 'select:' + suffix + '=' + growerId;
+                    const suffixes = [
+                        'grower_id_adjustable', 'grower_id',
+                        'teler_id_adjustable', 'teler_id',
+                        'breeder_id_adjustable', 'breeder_id',
+                        'supplier_id_adjustable',
+                    ];
+                    for (const suffix of suffixes) {
+                        for (const name of [prefix + suffix, suffix]) {
+                            const sel = document.querySelector(`select[name='${name}']`);
+                            if (sel) {
+                                sel.value = growerId;
+                                sel.dispatchEvent(new Event('change', {bubbles: true}));
+                                if (window.jQuery) jQuery(sel).trigger('chosen:updated');
+                                return 'select:' + name + '=' + growerId;
+                            }
                         }
                     }
                     return 'not found';
