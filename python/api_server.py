@@ -2164,6 +2164,7 @@ async def delivery_create_batch(
 class AddProductsRequest(BaseModel):
     batch_id: str
     order: dict
+    skip_on_sidebar_error: bool = False
 
 
 @app.post("/delivery/add-products")
@@ -2214,6 +2215,7 @@ async def delivery_add_products(
                 matched_lines=matched_lines,
                 cfg=cfg,
                 on_status=lambda msg: q.put({"type": "status", "message": msg}),
+                skip_on_sidebar_error=req.skip_on_sidebar_error,
             )
             q.put({"type": "result", "data": result})
         except Exception as exc:

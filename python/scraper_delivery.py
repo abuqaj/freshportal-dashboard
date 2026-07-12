@@ -1258,6 +1258,7 @@ def add_products_to_batch(
     matched_lines: list[dict],
     cfg: Config,
     on_status: Callable[[str], None] | None = None,
+    skip_on_sidebar_error: bool = False,
 ) -> dict:
     """Add matched product lines to an existing FreshPortal batch via Playwright.
 
@@ -1370,12 +1371,17 @@ def add_products_to_batch(
                         grower_id=grower_id,
                     )
                 except _SidebarNotOpenedError:
-                    # Sidebar failure = FreshPortal catalogue likely changed → abort immediately
                     lines_failed += 1
-                    details.append({"product": catalogue_nm, "delivery_key": dk, "status": "failed"})
-                    result["aborted_at_sidebar"] = True
-                    _s("  ✗ failed — aborting: catalogue may have changed")
-                    break
+                    if skip_on_sidebar_error:
+                        # Catalogue already re-synced — just mark as failed and continue
+                        details.append({"product": catalogue_nm, "delivery_key": dk, "status": "sidebar_not_found"})
+                        _s("  ✗ failed (product not in catalogue) — continuing")
+                    else:
+                        # First occurrence — abort so frontend can re-sync catalogue
+                        details.append({"product": catalogue_nm, "delivery_key": dk, "status": "sidebar_aborted"})
+                        result["aborted_at_sidebar"] = True
+                        _s("  ✗ failed — aborting: catalogue may have changed")
+                        break
                 except Exception as exc:
                     err = str(exc)
                     _s(f"  Exception: {err[:200]}")

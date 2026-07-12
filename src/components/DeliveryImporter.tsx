@@ -185,6 +185,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [alreadyAddedKeys, setAlreadyAddedKeys] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoParseRef = useRef(false);
+  // Tracks whether catalogue was already re-synced this import session.
+  // Prevents infinite sync loop: second sidebar error → skip instead of sync again.
+  const catalogueSyncedRef = useRef(false);
 
   // ── Tour refs ─────────────────────────────────────────────────────────────
   const refDropZone        = useRef<HTMLDivElement>(null);
@@ -468,9 +471,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Sync catalogue ──────────────────────────────────────────────────────
 
-  async function syncCatalogueForSupplier(supplierId: string, supplierName: string) {
+  async function syncCatalogueForSupplier(supplierId: string, supplierName: string, abortRecovery = false) {
     setStage("syncing");
     setLogs([]);
+    if (abortRecovery) {
+      addLog("⚠ Products were missing from the catalogue — updating catalogue before resuming…");
+    }
     addLog(td.syncingCatalogueFor(supplierName, supplierId));
 
     const params = new URLSearchParams({ nm_supplier: supplierName });
@@ -544,6 +550,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
     // Save approved matches to cache (only the approved ones)
     await handleApproveMatches(approvedKeys);
+
+    // Reset catalogue-sync flag for fresh (non-resume) imports
+    if (!resumeBatchId) catalogueSyncedRef.current = false;
 
     // Resume mode: skip batch creation, add only remaining lines to existing batch
     if (resumeBatchId) {
@@ -714,7 +723,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const res = await fetch(`${RAILWAY}/delivery/add-products`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ batch_id: batchId, order: orderWithEdits }),
+      body: JSON.stringify({
+        batch_id: batchId,
+        order: orderWithEdits,
+        skip_on_sidebar_error: catalogueSyncedRef.current,
+      }),
     });
 
     if (!res.ok || !res.body) {
@@ -760,6 +773,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               setResumeBatchId(batchId);
               setAlreadyAddedKeys(addedKeys);
               setAddStage("idle");
+              catalogueSyncedRef.current = true;
               // Clear cache for non-added products + sync catalogue + reparse
               const supplierId = parseResult?.supplier_id;
               const supplierName = parseResult?.supplier_nm ?? supplierId ?? "";
@@ -776,7 +790,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     fetch(`${RAILWAY}/catalogue/${supplierId}/matches/${encodeURIComponent(dk)}`, { method: "DELETE" })
                   )
                 );
-                await syncCatalogueForSupplier(supplierId, supplierName);
+                await syncCatalogueForSupplier(supplierId, supplierName, true);
               }
               return;
             }
@@ -826,11 +840,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!order) return;
     const orderWithEdits = {
       ...order,
-      lines: order.lines.map(line => {
-        const dk = deliveryKey(line);
-        const edit = lineEdits[dk];
-        return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
-      }),
+      lines: order.lines
+        .filter(l => !alreadyAddedKeys.has(deliveryKey(l)))
+        .map(line => {
+          const dk = deliveryKey(line);
+          const edit = lineEdits[dk];
+          return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
+        }),
     };
     await handleAddProductsFor(importResult.batch_id, orderWithEdits, importLogId);
   }
@@ -1895,14 +1911,23 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 <p className="text-xs font-semibold text-ink-3 uppercase tracking-wide mb-2">{addResult.message}</p>
                 <div className="max-h-52 overflow-y-auto space-y-0.5 pr-1">
                   {[...addResult.details]
-                    .sort((a, b) => (a.status === "failed" ? -1 : b.status === "failed" ? 1 : 0))
-                    .map((d, i) => (
-                      <div key={i} className={`flex items-baseline gap-1.5 text-xs font-mono py-0.5 ${d.status === "added" ? "text-emerald" : d.status === "failed" ? "text-red-500 font-semibold" : "text-amber-500"}`}>
-                        <span className="shrink-0">{d.status === "added" ? "✓" : "✗"}</span>
-                        <span className="truncate">{d.product}</span>
-                        {d.status === "failed" && <span className="ml-auto shrink-0 text-red-400 font-normal">{td.statusFailed}</span>}
-                      </div>
-                    ))
+                    .sort((a, b) => {
+                      const isErr = (s: string) => s !== "added";
+                      return isErr(a.status) === isErr(b.status) ? 0 : isErr(a.status) ? -1 : 1;
+                    })
+                    .map((d, i) => {
+                      const isAdded = d.status === "added";
+                      const isSidebar = d.status === "sidebar_not_found" || d.status === "sidebar_aborted";
+                      const colorCls = isAdded ? "text-emerald" : isSidebar ? "text-red-500 font-semibold" : "text-red-400";
+                      const label = isAdded ? null : isSidebar ? "not in catalogue" : td.statusFailed;
+                      return (
+                        <div key={i} className={`flex items-baseline gap-1.5 text-xs font-mono py-0.5 ${colorCls}`}>
+                          <span className="shrink-0">{isAdded ? "✓" : "✗"}</span>
+                          <span className="truncate">{d.product}</span>
+                          {label && <span className="ml-auto shrink-0 font-normal opacity-70">{label}</span>}
+                        </div>
+                      );
+                    })
                   }
                 </div>
               </div>
