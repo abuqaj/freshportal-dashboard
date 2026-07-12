@@ -172,15 +172,17 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                 for prod in products_in_box:
                     gu = str(prod.get("gu_product") or "").strip()
                     if not gu:
+                        nm_var_for_key = prod.get("nm_variety") or prod.get("id_migros") or ""
                         gu = (
-                            f"{prod.get('nm_variety','')}_{prod.get('nu_length','')}"
+                            f"{nm_var_for_key}_{prod.get('nu_length','')}"
                             f"_{prod.get('nu_stems_bunch','')}_{prod.get('mny_rate_stem','')}"
                         )
                     # Within a mix box, same gu_product can appear in different rows —
                     # merge them using a key that ties the product to this exact box.
                     # Include nm_variety in the key so same gu_product with different
                     # temperature qualifiers (e.g. Bicolor Cold vs Bicolor Warm) stay separate.
-                    nm_variety = _enrich_variety((prod.get("nm_variety") or "").strip().title(), tx_label)
+                    raw_variety = (prod.get("nm_variety") or prod.get("id_migros") or "").strip()
+                    nm_variety = _enrich_variety(raw_variety.title(), tx_label)
                     key = f"{gu}|{box_code}|{nm_variety.lower()}"
                     nu_bunches = int(prod.get("nu_bunches") or 0)
 
@@ -208,13 +210,15 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                 for prod in products_in_box:
                     gu = str(prod.get("gu_product") or "").strip()
                     if not gu:
+                        nm_var_for_key = prod.get("nm_variety") or prod.get("id_migros") or ""
                         gu = (
-                            f"{prod.get('nm_variety','')}_{prod.get('nu_length','')}"
+                            f"{nm_var_for_key}_{prod.get('nu_length','')}"
                             f"_{prod.get('nu_stems_bunch','')}_{prod.get('mny_rate_stem','')}"
                         )
                     # Include nm_variety in the key so same gu_product with different
                     # temperature qualifiers (e.g. Bicolor Cold vs Bicolor Warm) stay separate.
-                    nm_variety = _enrich_variety((prod.get("nm_variety") or "").strip().title(), tx_label)
+                    raw_variety = (prod.get("nm_variety") or prod.get("id_migros") or "").strip()
+                    nm_variety = _enrich_variety(raw_variety.title(), tx_label)
                     key = f"{gu}|{tp_box}|{nm_variety.lower()}"
                     nu_bunches = int(prod.get("nu_bunches") or 0)
 
