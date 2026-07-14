@@ -474,8 +474,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   async function syncCatalogueForSupplier(supplierId: string, supplierName: string, abortRecovery = false) {
     setStage("syncing");
     if (abortRecovery) {
-      setLogs(prev => [...prev, "── Catalogue sync ──────────────────────────"]);
-      addLog("⚠ Products were missing from the catalogue — updating catalogue before resuming…");
+      setLogs(prev => [...prev, td.catalogueSyncSeparator]);
+      addLog(td.catalogueSyncAbortMsg);
     } else {
       setLogs([]);
     }
@@ -559,7 +559,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     // Resume mode: skip batch creation, add only remaining lines to existing batch
     if (resumeBatchId) {
       setStage("importing");
-      setLogs(prev => [...prev, "── Resuming import ─────────────────────────"]);
+      setLogs(prev => [...prev, td.resumingImportSeparator]);
       const remainingLines = order.lines.filter(l =>
         !alreadyAddedKeys.has(deliveryKey(l)) && approvedKeys.has(deliveryKey(l))
       );
@@ -717,7 +717,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   async function handleAddProductsFor(batchId: string, orderWithEdits: DeliveryOrder, logId: number | null, isResume = false): Promise<boolean> {
     setAddStage("running");
     if (isResume) {
-      setAddLogs(prev => [...prev, "── Resume ───────────────────────────────────"]);
+      setAddLogs(prev => [...prev, td.resumeSeparator]);
     } else {
       setAddLogs([]);
     }
@@ -1489,7 +1489,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 <tr className="bg-muted border-b border-border">
                   <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8" title={td.colApproveTooltip}>✓</th>
                   <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  {isPomarosa && <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">Grower</th>}
+                  {isPomarosa && <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colGrower}</th>}
                   <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="boxQty"     label={td.colBoxQty}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colContent}</th>
@@ -1927,7 +1927,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       const isAdded = d.status === "added";
                       const isSidebar = d.status === "sidebar_not_found" || d.status === "sidebar_aborted";
                       const colorCls = isAdded ? "text-emerald" : isSidebar ? "text-red-500 font-semibold" : "text-red-400";
-                      const label = isAdded ? null : isSidebar ? "not in catalogue" : td.statusFailed;
+                      const label = isAdded ? null : isSidebar ? td.statusNotInCatalogue : td.statusFailed;
                       return (
                         <div key={i} className={`flex items-baseline gap-1.5 text-xs font-mono py-0.5 ${colorCls}`}>
                           <span className="shrink-0">{isAdded ? "✓" : "✗"}</span>
