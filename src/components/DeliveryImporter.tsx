@@ -473,9 +473,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   async function syncCatalogueForSupplier(supplierId: string, supplierName: string, abortRecovery = false) {
     setStage("syncing");
-    setLogs([]);
     if (abortRecovery) {
+      setLogs(prev => [...prev, "── Catalogue sync ──────────────────────────"]);
       addLog("⚠ Products were missing from the catalogue — updating catalogue before resuming…");
+    } else {
+      setLogs([]);
     }
     addLog(td.syncingCatalogueFor(supplierName, supplierId));
 
@@ -557,7 +559,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     // Resume mode: skip batch creation, add only remaining lines to existing batch
     if (resumeBatchId) {
       setStage("importing");
-      setLogs([]);
+      setLogs(prev => [...prev, "── Resuming import ─────────────────────────"]);
       const remainingLines = order.lines.filter(l =>
         !alreadyAddedKeys.has(deliveryKey(l)) && approvedKeys.has(deliveryKey(l))
       );
@@ -569,7 +571,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
         }),
       };
-      const abortRecovering = await handleAddProductsFor(resumeBatchId, orderWithEdits, importLogId);
+      const abortRecovering = await handleAddProductsFor(resumeBatchId, orderWithEdits, importLogId, true);
       if (!abortRecovering) setStage("done");
       return;
     }
@@ -712,9 +714,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     }
   }
 
-  async function handleAddProductsFor(batchId: string, orderWithEdits: DeliveryOrder, logId: number | null): Promise<boolean> {
+  async function handleAddProductsFor(batchId: string, orderWithEdits: DeliveryOrder, logId: number | null, isResume = false): Promise<boolean> {
     setAddStage("running");
-    setAddLogs([]);
+    if (isResume) {
+      setAddLogs(prev => [...prev, "── Resume ───────────────────────────────────"]);
+    } else {
+      setAddLogs([]);
+    }
     setAddResult(null);
     setAddProgress(null);
 
