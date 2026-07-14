@@ -1182,7 +1182,7 @@ def _add_one_product(
     # Strip chars that confuse FP server-side filtering.
     # + → treated as space by some servers, causing too many results.
     # ' → must NOT be stripped; FP searches correctly with %27 (urllib encodes it).
-    search_nm = re.sub(r"[+!\"\(\)&]", "", catalogue_nm).strip()
+    search_nm = re.sub(r"[+!\"\(\)]", "", catalogue_nm).strip()
     desc_encoded = urllib.parse.quote(search_nm)
     search_url = (
         f"{cfg.freshportal_url}/company_product_add_stock/index/index/"
