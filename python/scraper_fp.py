@@ -25,12 +25,26 @@ CHROMIUM_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
+    "--no-zygote",                            # avoids spawning zygote processes (saves ~50 MB)
+    "--disable-setuid-sandbox",
     "--disable-extensions",
     "--disable-background-networking",
     "--disable-sync",
     "--disable-translate",
     "--metrics-recording-only",
     "--mute-audio",
+    "--disable-3d-apis",                      # no WebGL / WebGPU renderer process
+    "--disable-accelerated-2d-canvas",
+    "--disable-software-rasterizer",
+    "--disable-features=VizDisplayCompositor,TranslateUI,BlinkGenPropertyTrees",
+    "--js-flags=--max-old-space-size=256",    # cap V8 heap to 256 MB
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-ipc-flooding-protection",
+    "--disable-hang-monitor",
+    "--disable-domain-reliability",
+    "--disable-component-update",
 ]
 
 
@@ -257,7 +271,11 @@ def _login(page: Page, cfg: Config, _retries: int = 3) -> None:
     last_exc: Exception | None = None
     for attempt in range(1, _retries + 1):
         try:
-            page.goto(login_url, wait_until="load", timeout=nav_timeout)
+            # domcontentloaded fires when DOM is parsed — before all scripts/images
+            # load. FreshPortal's login form is available at this point; waiting
+            # for the full "load" event has caused OOM crashes on Railway since
+            # FreshPortal's page became heavier.
+            page.goto(login_url, wait_until="domcontentloaded", timeout=nav_timeout)
             page.fill("#username, input[name='USE_Username']", cfg.freshportal_username)
             page.fill("#password, input[name='USE_Password'], input[type='password']", cfg.freshportal_password)
             page.click("button:has-text('Login'), button[type='submit']")
