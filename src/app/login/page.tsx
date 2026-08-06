@@ -60,7 +60,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
-          <img src="/iconffs.png" alt="Fresh From Source" className="h-10 w-auto mb-4" />
+          <img src="/iconffs.png" alt="Fresh From Source" className="h-auto w-auto mb-4" />
           <p className="text-sm text-ink-3">{tl.subtitle}</p>
         </div>
 
