@@ -60,11 +60,8 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-16 h-16 rounded-3xl bg-surface border border-border shadow-sm flex items-center justify-center mb-4">
-            <img src="/logo.svg" alt="Fresh From Source" className="h-10 w-10 object-contain" />
-          </div>
-          <h1 className="text-2xl font-bold text-ink tracking-tight">FreshFromSource</h1>
-          <p className="text-sm text-ink-3 mt-1">{tl.subtitle}</p>
+          <img src="/logo.svg" alt="Fresh From Source" className="h-10 w-auto mb-4" />
+          <p className="text-sm text-ink-3">{tl.subtitle}</p>
         </div>
 
         {/* Card */}
