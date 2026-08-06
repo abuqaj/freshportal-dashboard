@@ -141,20 +141,6 @@ function Tile({
   );
 }
 
-/* ─── Logo mark ─── */
-function LogoMark({ size = 28 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 28 28" fill="none">
-      {[0,72,144,216,288].map((deg,i) => (
-        <ellipse key={i} cx="14" cy="14" rx="3.5" ry="7.5"
-          fill="#1A7D45" opacity={i === 0 ? 1 : 0.7}
-          transform={`rotate(${deg} 14 14) translate(0 -5.5)`}/>
-      ))}
-      <circle cx="14" cy="14" r="3.2" fill="#EC4328"/>
-    </svg>
-  );
-}
-
 /* ─── Persistent top bar ─── */
 function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: {
   lang: Lang; setLang: (l: Lang) => void;
@@ -174,8 +160,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
   return (
     <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-border bg-surface flex-shrink-0">
       <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-        <LogoMark size={24}/>
-        <span className="text-sm font-bold text-ink whitespace-nowrap">FreshFromSource</span>
+        <img src="/logo.svg" alt="Fresh From Source" className="h-7 w-auto" />
         {tab && tabLabel && (
           <>
             <span className="text-border text-sm select-none">/</span>
