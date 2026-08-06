@@ -5,19 +5,6 @@ import { signIn, useSession } from "next-auth/react"
 import { useRouter } from "next/navigation"
 import { translations, Lang } from "@/lib/i18n"
 
-function LogoMark({ size = 28 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 28 28" fill="none">
-      {[0, 72, 144, 216, 288].map((deg, i) => (
-        <ellipse key={i} cx="14" cy="14" rx="3.5" ry="7.5"
-          fill="#1A7D45" opacity={i === 0 ? 1 : 0.7}
-          transform={`rotate(${deg} 14 14) translate(0 -5.5)`} />
-      ))}
-      <circle cx="14" cy="14" r="3.2" fill="#EC4328" />
-    </svg>
-  )
-}
-
 export default function LoginPage() {
   const { status } = useSession()
   const router = useRouter()
@@ -74,7 +61,7 @@ export default function LoginPage() {
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
           <div className="w-16 h-16 rounded-3xl bg-surface border border-border shadow-sm flex items-center justify-center mb-4">
-            <LogoMark size={36} />
+            <img src="/logo.svg" alt="Fresh From Source" className="h-10 w-10 object-contain" />
           </div>
           <h1 className="text-2xl font-bold text-ink tracking-tight">FreshFromSource</h1>
           <p className="text-sm text-ink-3 mt-1">{tl.subtitle}</p>
