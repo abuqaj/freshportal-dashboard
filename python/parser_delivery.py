@@ -60,7 +60,7 @@ class DeliveryOrder:
     lines: list[DeliveryLine] = field(default_factory=list)
 
 
-_BOX_TYPE_MAP = {"QB": "QBE"}
+_BOX_TYPE_MAP = {"QB": "QBE", "HB": "HBE"}
 
 # Single-letter → two-letter box codes used in the Fiorentina text-invoice format
 _BOX_LETTER_MAP: dict[str, str] = {
