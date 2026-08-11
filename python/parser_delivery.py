@@ -68,6 +68,69 @@ _BOX_LETTER_MAP: dict[str, str] = {
     'E': 'EB', 'S': 'SB', 'D': 'DB', 'T': 'TB',
 }
 
+# FreshPortal packaging table: box Code -> volume weight (kg).
+# Code is sent as-is as the `fust` field in the DFG BatchV1 API.
+# NOTE: "1/8" and "1/6" get corrupted to "01-Aug"/"01-Jun" by Excel when the
+# source table is exported/copied — verified against the original FreshPortal
+# table and corrected here.
+_PACKAGING_VOLUME_WEIGHT: dict[str, float] = {
+    "EB": 3.06,
+    "QBAZ": 5.72,
+    "HBE": 20,
+    "QBE": 10,
+    "QB8STE": 7,
+    "QB9STE": 8,
+    "QB8XLTE": 9.5,
+    "QB9XLTE": 10.5,
+    "HBTE": 14.5,
+    "HBXLTE": 24,
+    "HBXXLTE": 28,
+    "MBTE": 38,
+    "ECPR": 0.68,
+    "ECPMIS": 0.65,
+    "ECPSO": 0.29,
+    "ECPPM": 0.12,
+    "ECPP": 0.23,
+    "ECPS": 0.85,
+    "MB1": 2, "MB2": 2, "MB3": 2, "MB4": 2, "MB5": 2,
+    "MB6": 2, "MB7": 2, "MB8": 2, "MB9": 2, "MB10": 2,
+    "MB11": 2, "MB12": 2, "MB13": 2, "MB14": 2, "MB15": 2,
+    "MB16": 2, "MB17": 2, "MB18": 2, "MB19": 2, "MB20": 2,
+    "MB21": 2, "MB22": 2, "MB23": 2, "MB24": 2, "MB25": 2,
+    "MB26": 2, "MB27": 2, "MB28": 2, "MB29": 2, "MB30": 2,
+    "MB31": 2, "MB32": 2, "MB33": 2, "MB34": 2, "MB35": 2,
+    "MB36": 2, "MB37": 2, "MB38": 2, "MB39": 2, "MB40": 2,
+    "MB41": 2, "MB42": 2, "MB43": 2, "MB44": 2, "MB45": 2,
+    "MB46": 2, "MB48": 2, "MB49": 2, "MB50": 2,
+    "MB51": 2, "MB52": 2, "MB53": 2, "MB54": 2, "MB55": 2,
+    "MB57": 2,
+    "COGC1": 2,
+    "BXPR": 22,
+    "BXHY": 11,
+    "BB": 7.13,
+    "EBC": 4.76,
+    "QB": 6.05,
+    "XL130": 19.5,
+    "XL160": 24,
+    "XL125": 37.5,
+    "EBRM": 1.7,
+    "QBRM": 5.61,
+    "HBRM": 11.21,
+    "QBE-A": 8.5,
+    "1/8": 3.1,
+    "1/6": 3.75,
+    "52": 2,
+    "53": 2,
+    "135": 2,
+    "555": 2,
+    "656": 2,
+    "965": 2,
+    "990": 2,
+    "Box": 2,
+    "ZIMTAM": 18.67,
+    "EBALX": 3.17,
+}
+
 # ASCII patterns used after accent-stripping and corruption normalization.
 _LABEL_COLD_RE = _re.compile(r'\bcold\b|\bfri[ao]s?\b', _re.IGNORECASE)
 _LABEL_WARM_RE = _re.compile(r'\bcalido[s]?\b|\bcaliente[s]?\b|\bwarm\b', _re.IGNORECASE)
