@@ -60,6 +60,9 @@ class DeliveryOrder:
     nu_stems_total: int
     mny_total: float
     lines: list[DeliveryLine] = field(default_factory=list)
+    # FreshPortal DFG BatchV1 supplier_id, resolved against the local supplier DB
+    # (matched from tx_company). Filled in after parsing, before building the API payload.
+    supplier_fp_id: str = ""
 
 
 _BOX_TYPE_MAP = {"QB": "QBE", "HB": "HBE"}
@@ -141,6 +144,29 @@ _LABEL_WARM_RE = _re.compile(r'\bcalido[s]?\b|\bcaliente[s]?\b|\bwarm\b', _re.IG
 def _normalise_box(tp: str) -> str:
     """Normalise box type code: QB → QBE (FreshPortal convention)."""
     return _BOX_TYPE_MAP.get(tp.upper(), tp)
+
+
+# Pomarosa grower lookup: nm_location (case-insensitive, spaces normalised) → FP grower_id
+_POMAROSA_GROWER_MAP: dict[str, str] = {
+    "tessa-e1":  "57396",  # Ecuanros
+    "tessa-e2":  "57396",  # Ecuanros
+    "tessa-s":   "61370",  # Solera
+    "tessa-p":   "60649",  # Positano
+    "tessa-ps2": "60649",  # Positano
+    "tessa-1":   "57369",  # Tessa
+    "tessa-3":   "57369",  # Tessa
+    "tessa-d":   "57366",  # Growerfarms S.A
+    "tessa-f":   "57426",  # Arcoflor Floress Arcoiris
+    "tessa-r1":  "57344",  # Inversiones Pontetresa
+    "tessa-r2":  "57344",  # Inversiones Pontetresa
+    "tessa-r3":  "57344",  # Inversiones Pontetresa
+}
+
+
+def _resolve_grower_id(nm_location: str) -> str:
+    """Return FP grower_id for the given nm_location, or '' if not mapped."""
+    key = _re.sub(r"\s+", "", nm_location).lower()
+    return _POMAROSA_GROWER_MAP.get(key, "")
 
 
 def _normalise_label(label: str) -> str:

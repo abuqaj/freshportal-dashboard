@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, Page
 
 from config import Config
-from parser_delivery import DeliveryOrder
+from parser_delivery import DeliveryOrder, _resolve_grower_id
 
 log = logging.getLogger(__name__)
 
@@ -949,27 +949,6 @@ def _find_desc_col_and_row(page: Page, catalogue_nm: str, nu_length: int = 0) ->
     return best_idx if best_score >= 0.3 else -1
 
 
-# Pomarosa grower lookup: nm_location (case-insensitive, spaces normalised) → FP grower_id
-_POMAROSA_GROWER_MAP: dict[str, str] = {
-    "tessa-e1":  "57396",  # Ecuanros
-    "tessa-e2":  "57396",  # Ecuanros
-    "tessa-s":   "61370",  # Solera
-    "tessa-p":   "60649",  # Positano
-    "tessa-ps2": "60649",  # Positano
-    "tessa-1":   "57369",  # Tessa
-    "tessa-3":   "57369",  # Tessa
-    "tessa-d":   "57366",  # Growerfarms S.A
-    "tessa-f":   "57426",  # Arcoflor Floress Arcoiris
-    "tessa-r1":  "57344",  # Inversiones Pontetresa
-    "tessa-r2":  "57344",  # Inversiones Pontetresa
-    "tessa-r3":  "57344",  # Inversiones Pontetresa
-}
-
-
-def _resolve_grower_id(nm_location: str) -> str:
-    """Return FP grower_id for the given nm_location, or '' if not mapped."""
-    key = re.sub(r"\s+", "", nm_location).lower()
-    return _POMAROSA_GROWER_MAP.get(key, "")
 
 
 _FORM_PREFIX = "company_product_add_stock_side_bottom_create_form_"
