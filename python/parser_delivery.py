@@ -19,6 +19,8 @@ class DeliveryLine:
     mny_rate_stem: float
     id_floricode: str
     nm_product: str
+    # Weight of a single stem (kg). Only present in the Elite/Alissroses JSON format.
+    nu_weight: float = 0
     # Box code: HB (or original tp_box) for single-variety boxes;
     # MB1, MB2 … for mix-box products (sequential within the invoice)
     nm_box: str = ""
@@ -268,6 +270,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=box_code,
                             nm_location=(prod.get("nm_location") or "").strip(),
+                            nu_weight=float(prod.get("nu_weight") or 0),
                         )
                     keys_new_in_this_box.add(key)
             else:
@@ -307,6 +310,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=tp_box,
                             nm_location=(prod.get("nm_location") or "").strip(),
+                            nu_weight=float(prod.get("nu_weight") or 0),
                         )
                     keys_new_in_this_box.add(key)
 
