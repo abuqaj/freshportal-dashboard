@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from config import Config
+from db import find_supplier_fp_id
 from parser_delivery import (
     DeliveryLine,
     DeliveryOrder,
@@ -103,6 +104,17 @@ def get_batch(cfg: Config, supplier_id: str, batch_number: str) -> dict[str, Any
     return resp.json()
 
 
+def resolve_supplier(cfg: Config, order: DeliveryOrder) -> None:
+    """Resolve order.supplier_fp_id from the local supplier DB (matched by tx_company), in place.
+
+    Mirrors the explicit → DB lookup pattern already used in api_server.py's
+    delivery-creation endpoint. No-op if supplier_fp_id is already set.
+    """
+    if order.supplier_fp_id:
+        return
+    order.supplier_fp_id = find_supplier_fp_id(cfg.freshportal_url, order.tx_company)
+
+
 def _to_iso_date(dd_mm_yyyy: str) -> str:
     """DD-MM-YYYY (parser_delivery's normalised format) → YYYY-MM-DD for the DFG API."""
     parts = dd_mm_yyyy.strip().split("-")
@@ -172,13 +184,7 @@ def build_batch_payload(order: DeliveryOrder, customer_id: int | None = None) ->
     return payload
 
 
-def create_batch(cfg: Config, payload: dict[str, Any]) -> BatchResult:
-    """POST a batch to FreshPortal. Always returns a BatchResult on HTTP 200 —
-    check `.errors` for lines that failed individually (partial success)."""
-    resp = _request(cfg, "POST", "/dfg/v1/batch", json=payload)
-    resp.raise_for_status()
-    data = resp.json()
-
+def _parse_batch_response(data: dict[str, Any], fallback_number: str = "") -> BatchResult:
     batch = data.get("batch") or {}
     errors = [
         BatchLineError(
@@ -190,9 +196,37 @@ def create_batch(cfg: Config, payload: dict[str, Any]) -> BatchResult:
     ]
     return BatchResult(
         batch_id=batch.get("id"),
-        number=batch.get("number", payload.get("number", "")),
+        number=batch.get("number", fallback_number),
         created=bool(batch.get("id")),
         stock_entries_ok=batch.get("stock_entries", []),
         errors=errors,
         raw=data,
     )
+
+
+def create_batch(cfg: Config, payload: dict[str, Any]) -> BatchResult:
+    """POST /dfg/v1/batch — create a new shipment. Always returns a BatchResult
+    on HTTP 200; check `.errors` for lines that failed individually (partial
+    success). Must be preceded by get_batch() to avoid creating a duplicate."""
+    resp = _request(cfg, "POST", "/dfg/v1/batch", json=payload)
+    resp.raise_for_status()
+    return _parse_batch_response(resp.json(), fallback_number=payload.get("number", ""))
+
+
+def add_stock_entries(cfg: Config, batch_id: int, supplier_id: str, lines: list[DeliveryLine]) -> BatchResult:
+    """POST /dfg/v1/batch_stock_entry — add stock entries to an already-existing batch.
+
+    Two use cases from the workflow:
+    1. Retrying lines that came back in create_batch()'s `.errors` (e.g. after
+       the product_number has been fixed via user confirmation).
+    2. A GET showed the shipment already exists but is missing some products
+       that are present in the source JSON — add just the missing ones.
+    """
+    payload = {
+        "batch_id": batch_id,
+        "supplier_id": int(supplier_id),
+        "stock_entries": [build_stock_entry(line) for line in lines],
+    }
+    resp = _request(cfg, "POST", "/dfg/v1/batch_stock_entry", json=payload)
+    resp.raise_for_status()
+    return _parse_batch_response(resp.json())
