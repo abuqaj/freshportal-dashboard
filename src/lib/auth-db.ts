@@ -24,7 +24,6 @@ const ALL_PERMISSIONS = [
   "photos:upload",
   "admin:manage",
   "delivery:import",
-  "catalogue:sync",
   "system:stamgegevens",
   "system:piazza",
   "system:ecuador",

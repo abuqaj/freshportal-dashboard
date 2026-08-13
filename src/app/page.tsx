@@ -11,15 +11,14 @@ import PhotoUploader from "@/components/PhotoUploader";
 import HistoryTab from "@/components/HistoryTab";
 import AdminTab from "@/components/AdminTab";
 import DeliveryImporter from "@/components/DeliveryImporter";
-import CatalogueSync from "@/components/CatalogueSync";
 import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
 import { useSystem } from "@/contexts/SystemContext";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "catalogue";
+type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery";
 
 const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
-const ECUADOR_ONLY_TABS:      Tab[] = ["delivery", "catalogue"];
+const ECUADOR_ONLY_TABS:      Tab[] = ["delivery"];
 
 const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "vbn",       gradient: "from-emerald to-[#0D5430]",   perm: "vbn:check" },
@@ -28,7 +27,6 @@ const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "history",   gradient: "from-[#C43320] to-[#8B1E14]", perm: "admin:manage" },
   { id: "admin",     gradient: "from-[#374151] to-[#111827]", perm: "admin:manage" },
   { id: "delivery",  gradient: "from-[#0F4C8A] to-[#0A2E54]", perm: "delivery:import" },
-  { id: "catalogue", gradient: "from-[#5B3FA6] to-[#2E1D66]", perm: "catalogue:sync" },
 ];
 
 /* ─── 3-D tilt hook ─── */
@@ -154,7 +152,6 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     : tab === "history" ? t.nav.history
     : tab === "admin" ? "Admin"
     : tab === "delivery" ? t.nav.deliveryImporter
-    : tab === "catalogue" ? t.nav.catalogueSync
     : null;
 
   return (
@@ -229,7 +226,6 @@ const MODULE_WIDTH: Record<Tab, string> = {
   photos:    "max-w-5xl",
   admin:     "max-w-3xl",
   delivery:  "max-w-5xl",
-  catalogue: "max-w-4xl",
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, onSelectTab, children }: {
@@ -521,23 +517,6 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
         </svg>
       ),
     },
-    {
-      id: "catalogue",
-      perm: "catalogue:sync",
-      label: t.nav.catalogueSync,
-      desc: t.hub.catalogueSyncDesc,
-      gradient: "bg-gradient-to-br from-[#5B3FA6] to-[#2E1D66]",
-      stat: t.hub.catalogueSyncStat,
-      statColor: "text-white/60",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="18" height="18" rx="3" stroke="white" strokeWidth="1.8"/>
-          <path d="M3 9h18" stroke="white" strokeWidth="1.5"/>
-          <path d="M9 9v12" stroke="white" strokeWidth="1.5"/>
-          <path d="M15 14l2 2-4 4" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      ),
-    },
   ];
 
   const isStamgegevens = system.id === "stamgegevens";
@@ -683,8 +662,7 @@ export default function Dashboard() {
               : nt.id === "create"    ? t.nav.newProducts
               : nt.id === "photos"    ? t.nav.photoUploader
               : nt.id === "history"   ? t.nav.history
-              : nt.id === "delivery"  ? t.nav.deliveryImporter
-              : t.nav.catalogueSync,
+              : t.nav.deliveryImporter,
     }));
 
   // Show spinner while session loads
@@ -735,7 +713,6 @@ export default function Dashboard() {
             {tab === "history"  && <HistoryTab      lang={lang}/>}
             {tab === "admin"    && <AdminTab        currentUsername={username}/>}
             {tab === "delivery"  && <DeliveryImporter lang={lang}/>}
-            {tab === "catalogue" && <CatalogueSync    lang={lang}/>}
           </ModuleCard>
         )}
       </div>

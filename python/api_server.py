@@ -36,9 +36,6 @@ from ai_helper import ai_analyze_product
 from db import (search_products_db, get_products_by_vbn, get_product_count, get_last_sync,
                get_distinct_colors, get_setting, set_setting, get_recent_created_products,
                log_vbn_auto_start, log_vbn_auto_finish, get_vbn_auto_history,
-               upsert_catalogue_items, get_catalogue, get_catalogue_count, get_catalogue_last_sync,
-               sync_supplier_catalogue, get_supplier_catalogue, get_all_catalogue_meta,
-               get_supplier_meta_one,
                upsert_suppliers, get_suppliers, get_suppliers_count,
                find_supplier_fp_id, get_supplier_name_by_id, save_supplier_name_map, get_supplier_name_map,
                get_delivery_matches, save_delivery_matches, approve_delivery_matches,
@@ -48,9 +45,14 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                get_user_flag, set_user_flag)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
-from parser_delivery import parse_delivery_json, order_to_dict, match_order, delivery_key
-from scraper_catalogue import fetch_supplier_catalogue, fetch_supplier_list
-from scraper_delivery import add_delivery, explore_delivery_form, explore_stock_add_form
+from parser_delivery import parse_delivery_json, order_to_dict, DeliveryOrder, DeliveryLine
+from delivery_product_match import match_order_to_products
+from dfg_api_client import (
+    DfgApiError, resolve_supplier, get_batch as dfg_get_batch,
+    build_batch_payload, create_batch as dfg_create_batch,
+    add_stock_entries as dfg_add_stock_entries,
+)
+from scraper_catalogue import fetch_supplier_list
 from scraper_fust import fetch_fust_catalogue
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -1711,16 +1713,13 @@ class DeliveryParseRequest(BaseModel):
     with_matching: bool = True
 
 
-class DeliveryCreateRequest(BaseModel):
-    order: dict
-    supplier_id: str = ""
-    supplier_fp_id: str = ""
-    lang: str = "en"
 
 
 @app.post("/delivery/parse")
 def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
-    """Parse delivery JSON, aggregate products, match against supplier catalogue.
+    """Parse delivery JSON, aggregate products, match against the products master DB
+    (the same DB VBN Checker / Nowe produkty use) to resolve each line's
+    product_number for the DFG BatchV1 API.
 
     Request body:
       { raw_json: <the full delivery JSON>, supplier_id: "27", with_matching: true }
@@ -1750,7 +1749,7 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
         if not orders:
             raise HTTPException(400, "No invoices found in JSON")
 
-        log.info("[delivery/parse] parsed %d order(s), loading catalogue…", len(orders))
+        log.info("[delivery/parse] parsed %d order(s)", len(orders))
 
         # Resolve supplier_id from the parsed order's company name.
         # This ensures we never rely on a hardcoded value from the UI.
@@ -1759,8 +1758,8 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
         # supplier_confirmed=True when the supplier is already known:
         #   • user sent explicit supplier_id in the request (already selected/confirmed)
         #   • saved tx_company→fp_supplier_id mapping exists in DB (manually confirmed before)
-        #   • auto-resolved AND catalogue already exists in DB (was used before)
-        # False = auto-guessed AND no catalogue yet → truly new supplier → show confirmation popup.
+        #   • auto-resolved from fp_suppliers (name match already exists)
+        # False = nothing found → truly new supplier → show confirmation popup.
         supplier_confirmed = bool(req.supplier_id)
         if orders:
             saved_map = get_supplier_name_map(fp_url, orders[0].tx_company)
@@ -1772,69 +1771,35 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
                 resolved = find_supplier_fp_id(fp_url, orders[0].tx_company)
                 if resolved:
                     supplier_id = resolved
+                    supplier_confirmed = True
                     log.info("[delivery/parse] auto-resolved supplier_id=%s from tx_company=%r", supplier_id, orders[0].tx_company)
                 elif not supplier_id:
                     log.warning("[delivery/parse] could not resolve supplier from tx_company=%r", orders[0].tx_company)
 
-        catalogue = []
         cached_matches: dict = {}
         if req.with_matching and supplier_id:
-            catalogue = get_catalogue(supplier_id)
             cached_matches = get_delivery_matches(fp_url, supplier_id)
-            log.info("[delivery/parse] supplier=%s catalogue=%d items, cached_matches=%d", supplier_id, len(catalogue), len(cached_matches))
-            # Auto-resolved supplier that already has a synced catalogue → treat as confirmed
-            # (they've been used before, no need to ask for confirmation again)
-            if not supplier_confirmed and catalogue:
-                supplier_confirmed = True
+            log.info("[delivery/parse] supplier=%s cached_matches=%d", supplier_id, len(cached_matches))
 
         matched_count = 0
         unmatched_count = 0
-        new_matches: list[dict] = []
 
         result_orders = []
         for order in orders:
-            if catalogue:
-                match_order(order, catalogue, cached_matches)
-            d = order_to_dict(order)
-            for line in d["lines"]:
-                if line.get("fp_product_id"):
-                    matched_count += 1
-                    key = delivery_key(line.get("nm_variety"), line.get("nu_length"))
-                    if key not in cached_matches:
-                        new_matches.append({
-                            "delivery_key": key,
-                            "nm_variety":   line.get("nm_variety"),
-                            "nu_length":    line.get("nu_length"),
-                            "id_floricode": line.get("id_floricode"),
-                            "fp_product_id": line["fp_product_id"],
-                            "nm_product":   line.get("catalogue_nm_product"),
-                            "match_type":   line.get("match_method", "auto"),
-                        })
-                else:
-                    unmatched_count += 1
-            result_orders.append(d)
+            order.supplier_fp_id = supplier_id
+            if req.with_matching:
+                m, u = match_order_to_products(order, cached_matches)
+                matched_count += m
+                unmatched_count += u
+            result_orders.append(order_to_dict(order))
 
         log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
-        catalogue_slim = [
-            {
-                "fp_product_id":  e["fp_product_id"],
-                "nm_product":     e.get("nm_product") or "",
-                "nu_length":      e.get("nu_length"),
-                "nu_stems_bunch": e.get("nu_stems_bunch"),
-                "nu_stems_pack":  e.get("nu_stems_pack"),
-                "nm_packaging":   e.get("nm_packaging") or "",
-            }
-            for e in catalogue
-            if e.get("fp_product_id") and e.get("nm_product")
-        ]
         supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
         return {
             "orders": result_orders,
             "supplier_id": supplier_id,
             "supplier_nm": supplier_nm,
             "supplier_confirmed": supplier_confirmed,
-            "catalogue_count": len(catalogue),
-            "catalogue": catalogue_slim,
             "matched_count": matched_count,
             "unmatched_count": unmatched_count,
             "cached_matches_used": len(cached_matches),
@@ -1844,6 +1809,35 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
     except Exception as exc:
         log.exception("[delivery/parse] unexpected error")
         raise HTTPException(500, f"Internal error: {exc}")
+
+
+class DeliveryProductSearchRequest(BaseModel):
+    query: str
+    limit: int = 30
+
+
+@app.post("/delivery/product-search")
+def delivery_product_search(
+    req: DeliveryProductSearchRequest,
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
+):
+    """Live search against the products master DB, for the manual match-correction
+    modal in DeliveryImporter (replaces the old preloaded supplier-catalogue list —
+    the products table is ~44k rows, too large to preload client-side)."""
+    if len(req.query.strip()) < 2:
+        return {"results": []}
+    rows = search_products_db(req.query.strip(), limit=req.limit)
+    return {
+        "results": [
+            {
+                "fp_product_id": r.get("product_number") or "",
+                "nm_product": r.get("name") or "",
+                "id_floricode": r.get("vbn_number") or "",
+            }
+            for r in rows
+            if r.get("product_number")
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1941,321 +1935,92 @@ def dev_token():
     return {"access_token": token, "token_type": "bearer", "expires_in": 3600}
 
 
-@app.post("/delivery/catalogue/sync")
-def delivery_catalogue_sync(
-    supplier_id: str = "27",
-    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
-):
-    """Trigger synchronous scrape of supplier catalogue from Ecuador FP.
-
-    Stores results in supplier_catalogue table in DB.
-    """
-    cfg = get_ecuador_cfg()
-    try:
-        cfg.validate()
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-    messages: list[str] = []
-
-    def on_status(msg: str) -> None:
-        log.info("[catalogue sync] %s", msg)
-        messages.append(msg)
-
-    try:
-        items = fetch_supplier_catalogue(int(supplier_id), cfg, on_status=on_status)
-        saved = upsert_catalogue_items(supplier_id, items)
-        return {
-            "ok": True,
-            "items_scraped": len(items),
-            "items_saved": saved,
-            "supplier_id": supplier_id,
-            "messages": messages,
-        }
-    except Exception as exc:
-        log.exception("catalogue sync failed")
-        raise HTTPException(500, str(exc))
-
-
-@app.post("/delivery/catalogue/sync/stream")
-async def delivery_catalogue_sync_stream(
-    supplier_id: str = "27",
-    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
-):
-    """SSE-streaming version of catalogue sync."""
-    cfg = get_ecuador_cfg()
-    try:
-        cfg.validate()
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-    queue: Queue = Queue()
-
-    def run() -> None:
-        try:
-            def on_status(msg: str) -> None:
-                queue.put({"type": "status", "message": msg})
-
-            items = fetch_supplier_catalogue(int(supplier_id), cfg, on_status=on_status)
-            saved = upsert_catalogue_items(supplier_id, items)
-            queue.put({"type": "result", "data": {
-                "ok": True,
-                "items_scraped": len(items),
-                "items_saved": saved,
-                "supplier_id": supplier_id,
-            }})
-        except Exception as exc:
-            log.exception("catalogue sync stream failed")
-            queue.put({"type": "error", "message": str(exc)})
-
-    threading.Thread(target=run, daemon=True).start()
-
-    async def generate():
-        yield ": connected\n\n"
-        while True:
-            try:
-                item = queue.get_nowait()
-            except Empty:
-                yield ": k\n\n"
-                await asyncio.sleep(0.2)
-                continue
-            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-            if item.get("type") in ("result", "error"):
-                break
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
-
-
-@app.get("/delivery/catalogue/{supplier_id}")
-def delivery_catalogue_get(
-    supplier_id: str,
-    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
-):
-    """Return stored catalogue for a supplier from DB."""
-    items = get_catalogue(supplier_id)
-    return {
-        "supplier_id": supplier_id,
-        "count": len(items),
-        "last_sync": get_catalogue_last_sync(supplier_id),
-        "items": items,
-    }
-
-
-class BatchCreateRequest(BaseModel):
-    order: dict
-    supplier_id: str = ""
-    supplier_fp_id: str = ""
-
-
-@app.post("/delivery/create-batch")
-async def delivery_create_batch(
-    req: BatchCreateRequest,
-    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
-):
-    """SSE stream: create a FreshPortal batch header via direct HTTP POST.
-
-    Much faster than the Playwright UI path — logs in once with Playwright to
-    get session cookies, then POSTs form data directly with httpx.
-
-    Request body:
-      { order: <order dict from /delivery/parse>,
-        supplier_id: "27",        # used for batch-list lookup
-        supplier_fp_id: "27"      # value sent as supplier[] in the form POST
-      }
-
-    Returns SSE events: data: <status line>  +  data: DONE <json result>
-    """
-    from scraper_delivery import create_batch_header
-    from parser_delivery import DeliveryOrder, DeliveryLine
-
-    cfg = get_ecuador_cfg()
-    try:
-        cfg.validate()
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-    raw = req.order
-    try:
-        lines = [
-            DeliveryLine(
-                gu_product=l.get("gu_product", ""),
-                nm_variety=l.get("nm_variety", ""),
-                nm_species=l.get("nm_species", ""),
-                nu_length=int(l.get("nu_length") or 0),
-                nu_stems_bunch=int(l.get("nu_stems_bunch") or 0),
-                nu_bunches=int(l.get("nu_bunches") or 0),
-                mny_rate_stem=float(l.get("mny_rate_stem") or 0),
-                id_floricode=l.get("id_floricode", ""),
-                nm_product=l.get("nm_product", ""),
-                nm_box=l.get("nm_box", ""),
-                fp_product_id=l.get("fp_product_id", ""),
-                match_method=l.get("match_method", "none"),
-                catalogue_nm_product=l.get("catalogue_nm_product", ""),
-            )
-            for l in raw.get("lines", [])
-        ]
-        order = DeliveryOrder(
-            tx_company=raw.get("tx_company", ""),
-            nm_location=raw.get("nm_location", ""),
-            id_invoice=raw.get("id_invoice", ""),
-            id_purchaseorder=raw.get("id_purchaseorder", ""),
-            dt_fly=raw.get("dt_fly", ""),
-            dt_invoice=raw.get("dt_invoice", ""),
-            nm_ship=raw.get("nm_ship", ""),
-            nm_cargo=raw.get("nm_cargo", ""),
-            tx_awb=raw.get("tx_awb", ""),
-            tx_hawb=raw.get("tx_hawb", ""),
-            nu_boxes=int(raw.get("nu_boxes") or 0),
-            nu_stems_total=int(raw.get("nu_stems_total") or 0),
-            mny_total=float(raw.get("mny_total") or 0),
-            lines=lines,
+def _order_from_dict(raw: dict) -> DeliveryOrder:
+    lines = [
+        DeliveryLine(
+            gu_product=l.get("gu_product", ""),
+            nm_variety=l.get("nm_variety", ""),
+            nm_species=l.get("nm_species", ""),
+            nu_length=int(l.get("nu_length") or 0),
+            nu_stems_bunch=int(l.get("nu_stems_bunch") or 0),
+            nu_bunches=int(l.get("nu_bunches") or 0),
+            mny_rate_stem=float(l.get("mny_rate_stem") or 0),
+            id_floricode=l.get("id_floricode", ""),
+            nm_product=l.get("nm_product", ""),
+            nm_box=l.get("nm_box", ""),
+            nu_physical_boxes=int(l.get("nu_physical_boxes") or 1),
+            nm_location=l.get("nm_location", ""),
+            fp_product_id=l.get("fp_product_id", ""),
+            match_method=l.get("match_method", "none"),
+            catalogue_nm_product=l.get("catalogue_nm_product", ""),
+            nu_weight=float(l.get("nu_weight") or 0),
         )
-    except Exception as exc:
-        raise HTTPException(400, f"Invalid order data: {exc}")
-
-    # Resolve supplier_fp_id: explicit → DB lookup by tx_company → fallback to request default
-    supplier_fp_id = req.supplier_fp_id
-    if not supplier_fp_id:
-        supplier_fp_id = find_supplier_fp_id(cfg.freshportal_url, order.tx_company)
-    if not supplier_fp_id:
-        supplier_fp_id = req.supplier_id
-
-    q: Queue = Queue()
-
-    def _run():
-        try:
-            result = create_batch_header(
-                order=order,
-                cfg=cfg,
-                supplier_fp_id=supplier_fp_id,
-                on_status=lambda msg: q.put({"type": "status", "message": msg}),
-            )
-            q.put({"type": "result", "data": result})
-        except Exception as exc:
-            log.exception("delivery/create-batch failed")
-            q.put({"type": "error", "message": str(exc)})
-
-    threading.Thread(target=_run, daemon=True).start()
-
-    async def _generate():
-        yield ": connected\n\n"
-        while True:
-            try:
-                item = q.get_nowait()
-            except Empty:
-                yield ": k\n\n"
-                await asyncio.sleep(0.2)
-                continue
-            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-            if item.get("type") in ("result", "error"):
-                break
-
-    return StreamingResponse(
-        _generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
-
-
-class AddProductsRequest(BaseModel):
-    batch_id: str
-    order: dict
-    skip_on_sidebar_error: bool = False
-
-
-@app.post("/delivery/add-products")
-async def delivery_add_products(
-    req: AddProductsRequest,
-    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
-):
-    """SSE stream: add matched product lines to an existing FreshPortal batch.
-
-    Request body:
-      { batch_id: "12345", order: <order dict with matched lines> }
-
-    Each line in order.lines must have: fp_product_id, catalogue_nm_product,
-    nu_length, nu_stems_bunch, nu_bunches, mny_rate_stem.
-    Lines without fp_product_id are skipped (unmatched).
-    """
-    from scraper_delivery import add_products_to_batch
-
-    cfg = get_ecuador_cfg()
-    try:
-        cfg.validate()
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-    raw = req.order
-    matched_lines = [
-        {
-            "fp_product_id":        l.get("fp_product_id", ""),
-            "nm_variety":           l.get("nm_variety", ""),
-            "catalogue_nm_product": l.get("catalogue_nm_product", ""),
-            "nu_length":            int(l.get("nu_length") or 0),
-            "nu_stems_bunch":       int(l.get("nu_stems_bunch") or 0),
-            "nu_bunches":           int(l.get("nu_bunches") or 0),
-            "nu_physical_boxes":    int(l.get("nu_physical_boxes") or 1),
-            "mny_rate_stem":        float(l.get("mny_rate_stem") or 0),
-            "nm_box":               l.get("nm_box", ""),
-            "nm_location":          l.get("nm_location", ""),
-        }
         for l in raw.get("lines", [])
     ]
-
-    q: Queue = Queue()
-
-    def _run():
-        try:
-            result = add_products_to_batch(
-                batch_id=req.batch_id,
-                matched_lines=matched_lines,
-                cfg=cfg,
-                on_status=lambda msg: q.put({"type": "status", "message": msg}),
-                skip_on_sidebar_error=req.skip_on_sidebar_error,
-            )
-            q.put({"type": "result", "data": result})
-        except Exception as exc:
-            log.exception("delivery/add-products failed")
-            q.put({"type": "error", "message": str(exc)})
-
-    threading.Thread(target=_run, daemon=True).start()
-
-    async def _generate():
-        yield ": connected\n\n"
-        while True:
-            try:
-                item = q.get_nowait()
-            except Empty:
-                yield ": k\n\n"
-                await asyncio.sleep(0.2)
-                continue
-            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-            if item.get("type") in ("result", "error"):
-                break
-
-    return StreamingResponse(
-        _generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    return DeliveryOrder(
+        tx_company=raw.get("tx_company", ""),
+        nm_location=raw.get("nm_location", ""),
+        id_invoice=raw.get("id_invoice", ""),
+        id_purchaseorder=raw.get("id_purchaseorder", ""),
+        dt_fly=raw.get("dt_fly", ""),
+        dt_invoice=raw.get("dt_invoice", ""),
+        nm_ship=raw.get("nm_ship", ""),
+        nm_cargo=raw.get("nm_cargo", ""),
+        tx_awb=raw.get("tx_awb", ""),
+        tx_hawb=raw.get("tx_hawb", ""),
+        nu_boxes=int(raw.get("nu_boxes") or 0),
+        nu_stems_total=int(raw.get("nu_stems_total") or 0),
+        mny_total=float(raw.get("mny_total") or 0),
+        lines=lines,
     )
 
 
-@app.post("/delivery/create/stream")
-async def delivery_create_stream(
-    req: DeliveryCreateRequest,
+class DfgCheckRequest(BaseModel):
+    supplier_fp_id: str
+    batch_number: str
+
+
+@app.post("/delivery/api/check")
+def delivery_api_check(
+    req: DfgCheckRequest,
     _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
-    """SSE stream: create batch + add product lines in Ecuador FreshPortal.
+    """GET /dfg/v1/batch — check whether a shipment already exists before creating it.
 
-    Request body:
-      { order: <order dict from /delivery/parse>, supplier_id: "27",
-        supplier_fp_id: "<select value>", lang: "en" }
+    Mandatory pre-flight step: the DFG API does not dedupe on
+    (supplier_id, number) itself — a duplicate POST creates a second, separate
+    batch instead of being rejected or upserted (confirmed 2026-08-12).
+    """
+    cfg = get_ecuador_cfg()
+    try:
+        batch = dfg_get_batch(cfg, req.supplier_fp_id, req.batch_number)
+    except Exception as exc:
+        log.exception("[delivery/api/check] failed")
+        raise HTTPException(502, f"DFG API error: {exc}")
+    return {"exists": batch is not None, "batch": batch}
 
-    The order.lines must include fp_product_id for matched lines.
+
+class DfgCreateRequest(BaseModel):
+    order: dict
+    supplier_fp_id: str = ""
+    customer_id: int | None = None
+
+
+@app.post("/delivery/api/create")
+def delivery_api_create(
+    req: DfgCreateRequest,
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
+):
+    """POST /dfg/v1/batch — create the shipment (+ invoice if customer_id given).
+
+    Only lines with a resolved product_number (fp_product_id) are sent; unmatched
+    lines are skipped and reported back in `skipped_unmatched` so the UI can flag
+    them. Partial success is normal — check `errors` for individual lines
+    FreshPortal rejected (e.g. product_number not found); retry those via
+    /delivery/api/retry once fixed.
+
+    Call /delivery/api/check first — this endpoint does not check for an
+    existing shipment itself.
     """
     cfg = get_ecuador_cfg()
     try:
@@ -2263,159 +2028,81 @@ async def delivery_create_stream(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
-    # Reconstruct DeliveryOrder from dict for the scraper
-    from parser_delivery import DeliveryOrder, DeliveryLine
-    raw = req.order
     try:
-        lines = [
-            DeliveryLine(
-                gu_product=l.get("gu_product", ""),
-                nm_variety=l.get("nm_variety", ""),
-                nm_species=l.get("nm_species", ""),
-                nu_length=int(l.get("nu_length") or 0),
-                nu_stems_bunch=int(l.get("nu_stems_bunch") or 0),
-                nu_bunches=int(l.get("nu_bunches") or 0),
-                mny_rate_stem=float(l.get("mny_rate_stem") or 0),
-                id_floricode=l.get("id_floricode", ""),
-                nm_product=l.get("nm_product", ""),
-                nm_box=l.get("nm_box", ""),
-                fp_product_id=l.get("fp_product_id", ""),
-                match_method=l.get("match_method", "none"),
-                catalogue_nm_product=l.get("catalogue_nm_product", ""),
-            )
-            for l in raw.get("lines", [])
-        ]
-        order = DeliveryOrder(
-            tx_company=raw.get("tx_company", ""),
-            nm_location=raw.get("nm_location", ""),
-            id_invoice=raw.get("id_invoice", ""),
-            id_purchaseorder=raw.get("id_purchaseorder", ""),
-            dt_fly=raw.get("dt_fly", ""),
-            dt_invoice=raw.get("dt_invoice", ""),
-            nm_ship=raw.get("nm_ship", ""),
-            nm_cargo=raw.get("nm_cargo", ""),
-            tx_awb=raw.get("tx_awb", ""),
-            tx_hawb=raw.get("tx_hawb", ""),
-            nu_boxes=int(raw.get("nu_boxes") or 0),
-            nu_stems_total=int(raw.get("nu_stems_total") or 0),
-            mny_total=float(raw.get("mny_total") or 0),
-            lines=lines,
-        )
+        order = _order_from_dict(req.order)
     except Exception as exc:
         raise HTTPException(400, f"Invalid order payload: {exc}")
 
-    matched_lines = [
-        {
-            "fp_product_id": l.fp_product_id,
-            "nu_bunches": l.nu_bunches,
-            "nu_stems_bunch": l.nu_stems_bunch,
-            "mny_rate_stem": l.mny_rate_stem,
-            "nm_variety": l.nm_variety,
-            "nu_length": l.nu_length,
-        }
-        for l in lines
-    ]
+    order.supplier_fp_id = req.supplier_fp_id
+    resolve_supplier(cfg, order)
+    if not order.supplier_fp_id:
+        raise HTTPException(400, f"Could not resolve supplier for {order.tx_company!r}")
 
-    queue: Queue = Queue()
+    skipped = [l.nm_product for l in order.lines if not l.fp_product_id]
+    order.lines = [l for l in order.lines if l.fp_product_id]
+    if not order.lines:
+        raise HTTPException(400, "No matched products to send — confirm product matches first")
 
-    def run() -> None:
-        try:
-            def on_status(msg: str) -> None:
-                queue.put({"type": "status", "message": msg})
-
-            result = add_delivery(
-                order=order,
-                matched_lines=matched_lines,
-                cfg=cfg,
-                supplier_fp_id=req.supplier_fp_id,
-                on_status=on_status,
-            )
-            queue.put({"type": "result", "data": result})
-        except Exception as exc:
-            log.exception("delivery/create/stream failed")
-            queue.put({"type": "error", "message": str(exc)})
-
-    threading.Thread(target=run, daemon=True).start()
-
-    async def generate():
-        yield ": connected\n\n"
-        while True:
-            try:
-                item = queue.get_nowait()
-            except Empty:
-                yield ": k\n\n"
-                await asyncio.sleep(0.2)
-                continue
-            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-            if item.get("type") in ("result", "error"):
-                break
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
-
-
-@app.get("/delivery/debug-match")
-def delivery_debug_match(
-    variety: str,
-    nu_length: int = 0,
-    supplier_id: str = "27",
-    _: dict = Depends(require_permission("admin:manage")),
-):
-    """Debug matching for a single variety name against the catalogue.
-
-    Returns top 5 catalogue entries with their _variety_sim() scores so you
-    can see why something matches or doesn't.
-
-    Example: GET /delivery/debug-match?variety=Veggie&nu_length=60&supplier_id=27
-    """
-    from parser_delivery import _variety_sim, _extract_variety, _norm
-
-    catalogue = get_catalogue(supplier_id)
-    if not catalogue:
-        return {"error": f"No catalogue for supplier_id={supplier_id}"}
-
-    scored = []
-    for e in catalogue:
-        nm = e.get("nm_product") or ""
-        s = _variety_sim(variety, nm)
-        scored.append({
-            "fp_product_id": e.get("fp_product_id"),
-            "nm_product": nm,
-            "nu_length": e.get("nu_length"),
-            "extracted_variety": _extract_variety(nm),
-            "delivery_norm": _norm(variety),
-            "sim": round(s, 4),
-        })
-
-    scored.sort(key=lambda x: -x["sim"])
-    top = scored[:10]
-    exact_len = [x for x in top if x["nu_length"] == nu_length]
+    try:
+        payload = build_batch_payload(order, customer_id=req.customer_id)
+        result = dfg_create_batch(cfg, payload)
+    except DfgApiError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.exception("[delivery/api/create] failed")
+        raise HTTPException(502, f"DFG API error: {exc}")
 
     return {
-        "delivery_variety": variety,
-        "nu_length": nu_length,
-        "catalogue_size": len(catalogue),
-        "top_10_by_sim": top,
-        "top_10_at_length": [x for x in scored if x["nu_length"] == nu_length][:10],
-        "would_match": exact_len[0] if exact_len and exact_len[0]["sim"] >= 0.80 else None,
+        "batch_id": result.batch_id,
+        "number": result.number,
+        "created": result.created,
+        "stock_entries_ok": result.stock_entries_ok,
+        "errors": [e.__dict__ for e in result.errors],
+        "skipped_unmatched": skipped,
     }
 
 
-@app.get("/delivery/debug-form")
-def delivery_debug_form(_: dict = Depends(require_permission("admin:manage"))):
-    """Explore /batch_v2/form/add/ form structure in Ecuador FP."""
-    cfg = get_ecuador_cfg()
-    return explore_delivery_form(cfg)
+class DfgRetryRequest(BaseModel):
+    batch_id: int
+    supplier_fp_id: str
+    order: dict  # only the lines to retry/add
 
 
-@app.get("/delivery/debug-stock/{batch_id}")
-def delivery_debug_stock(batch_id: str, _: dict = Depends(require_permission("admin:manage"))):
-    """Explore /company_product_add_stock/index/index/BAT_ID/{batch_id}/ structure."""
+@app.post("/delivery/api/retry")
+def delivery_api_retry(
+    req: DfgRetryRequest,
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
+):
+    """POST /dfg/v1/batch_stock_entry — add lines to an already-created batch.
+
+    Used after fixing a product_number that came back in create's `errors`, or
+    to top up an already-existing shipment (per /delivery/api/check) with
+    products present in the source JSON but missing from it.
+    """
     cfg = get_ecuador_cfg()
-    return explore_stock_add_form(batch_id, cfg)
+    try:
+        order = _order_from_dict(req.order)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid order payload: {exc}")
+
+    matched_lines = [l for l in order.lines if l.fp_product_id]
+    if not matched_lines:
+        raise HTTPException(400, "No matched products to retry")
+
+    try:
+        result = dfg_add_stock_entries(cfg, req.batch_id, req.supplier_fp_id, matched_lines)
+    except DfgApiError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.exception("[delivery/api/retry] failed")
+        raise HTTPException(502, f"DFG API error: {exc}")
+
+    return {
+        "batch_id": result.batch_id,
+        "number": result.number,
+        "stock_entries_ok": result.stock_entries_ok,
+        "errors": [e.__dict__ for e in result.errors],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2563,84 +2250,6 @@ def catalogue_suppliers(
     return response
 
 
-@app.get("/catalogue/{supplier_id}/status")
-def catalogue_status(supplier_id: str, _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import"))):
-    """Return sync status for a single supplier from DB (no scraping)."""
-    meta = get_supplier_meta_one(supplier_id)
-    if not meta:
-        return {"supplier_id": supplier_id, "synced": False, "item_count": 0, "synced_at": None}
-    return {**meta, "synced": bool(meta.get("synced_at"))}
-
-
-@app.post("/catalogue/sync/{supplier_id}/stream")
-def catalogue_sync_stream(
-    supplier_id: str,
-    nm_supplier: str = "",
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
-    cfg: Config = Depends(get_cfg),
-):
-    """SSE stream: scrape the full catalogue for supplier_id and save to DB.
-
-    Query params:
-      nm_supplier  — display name (stored in catalogue_meta)
-    """
-    queue: Queue = Queue()
-
-    def run() -> None:
-        try:
-            def on_status(msg: str) -> None:
-                queue.put({"type": "status", "message": msg})
-
-            on_status(f"Starting catalogue sync for supplier {supplier_id}…")
-            items = fetch_supplier_catalogue(supplier_id, cfg, on_status=on_status)
-            on_status(f"Saving {len(items)} items to database…")
-            saved = sync_supplier_catalogue(
-                supplier_id,
-                nm_supplier or supplier_id,
-                cfg.freshportal_url,
-                items,
-            )
-            queue.put({"type": "result", "data": {
-                "supplier_id": supplier_id,
-                "items_saved": saved,
-                "synced": True,
-            }})
-        except Exception as exc:
-            log.exception("catalogue/sync/%s/stream failed", supplier_id)
-            queue.put({"type": "error", "message": str(exc)})
-
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-
-    async def generate():
-        yield ": connected\n\n"
-        while True:
-            try:
-                item = queue.get_nowait()
-            except Empty:
-                yield ": k\n\n"
-                await asyncio.sleep(0.2)
-                continue
-            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-            if item.get("type") in ("result", "error"):
-                break
-        thread.join(timeout=10)
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
-
-
-@app.get("/catalogue/{supplier_id}/items")
-def catalogue_items(
-    supplier_id: str,
-    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync")),
-):
-    """Return all catalogue items for a supplier from DB."""
-    items = get_supplier_catalogue(supplier_id)
-    return {"supplier_id": supplier_id, "items": items, "count": len(items)}
 
 
 

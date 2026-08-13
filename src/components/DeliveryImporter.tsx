@@ -87,13 +87,26 @@ interface ParseResult {
   supplier_id: string;
   supplier_nm: string;
   supplier_confirmed: boolean;
-  catalogue_count: number;
-  catalogue: CatalogueProduct[];
   matched_count: number;
   unmatched_count: number;
 }
 
-type Stage = "idle" | "parsing" | "preview" | "syncing" | "importing" | "done" | "error";
+type Stage = "idle" | "parsing" | "preview" | "importing" | "done" | "error";
+
+interface DfgLineError {
+  product_number: string;
+  length: number;
+  message: string;
+}
+
+interface DfgCreateResult {
+  batch_id: number | null;
+  number: string;
+  created: boolean;
+  stock_entries_ok: unknown[];
+  errors: DfgLineError[];
+  skipped_unmatched: string[];
+}
 
 // ── Demo data for guided tour ─────────────────────────────────────────────
 
@@ -127,20 +140,14 @@ const DEMO_PARSE_RESULT: ParseResult = {
       { gu_product: "d5", nm_variety: "TULIP RED DYNASTY", nm_species: "Tulipa", nu_length: 40, nu_stems_bunch: 10, nu_bunches: 25, nu_stems_total: 250, mny_rate_stem: 0.16, mny_total: 40.00, id_floricode: "VB300050", nm_product: "Tulip Red Dynasty 40cm", nm_box: "HB", nu_physical_boxes: 1, fp_product_id: "10005", match_method: "variety_nolen", catalogue_nm_product: "Tulip Red Dynasty", nm_location: "" },
     ],
   }],
-  supplier_id: "210", supplier_nm: "Demo Grower B.V.", supplier_confirmed: true, catalogue_count: 450, catalogue: [], matched_count: 4, unmatched_count: 1,
+  supplier_id: "210", supplier_nm: "Demo Grower B.V.", supplier_confirmed: true, matched_count: 4, unmatched_count: 1,
 };
 
-const DEMO_IMPORT_RESULT = { ok: true, batch_id: "DEMO-2024-001", batch_url: "#", lines_added: 5, message: "Batch DEMO-2024-001 created (5 lines)" };
-
-const DEMO_ADD_RESULT = {
-  ok: true, lines_added: 4, lines_skipped: 1, lines_failed: 0, message: "4 products added, 1 skipped (no match)",
-  details: [
-    { product: "Roses Red Naomi 60cm", status: "added" },
-    { product: "Chrysanth Anastasia White 70cm", status: "added" },
-    { product: "Alstroem Pink Floyd 60cm", status: "added" },
-    { product: "Gerbera Mini Pink 45cm", status: "skipped" },
-    { product: "Tulip Red Dynasty 40cm", status: "added" },
-  ],
+const DEMO_IMPORT_RESULT: DfgCreateResult = {
+  batch_id: 999001, number: "DEMO-2024-001", created: true,
+  stock_entries_ok: [1, 2, 3, 4],
+  errors: [],
+  skipped_unmatched: ["Gerbera Mini Pink 45cm"],
 };
 
 const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
@@ -163,31 +170,22 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const username = session?.user?.name ?? undefined;
   const userPerms: string[] = (session?.user as { permissions?: string[] })?.permissions ?? [];
   const isAdmin = userPerms.includes("admin:manage");
-  const canSyncCatalogue = isAdmin || userPerms.includes("delivery:import") || userPerms.includes("catalogue:sync");
 
   const [stage, setStage] = useState<Stage>("idle");
   const [importLogId, setImportLogId] = useState<number | null>(null);
   const [jsonText, setJsonText] = useState("");
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [activeOrderIdx, setActiveOrderIdx] = useState(0);
-  const [catalogueCount, setCatalogueCount] = useState<number | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
-  const [importResult, setImportResult] = useState<{ ok: boolean; batch_id: string; batch_url: string; lines_added: number; message: string } | null>(null);
+  const [importResult, setImportResult] = useState<DfgCreateResult | null>(null);
   const [error, setError] = useState("");
-
-  // ── Add-products step (separate from batch creation) ──
-  type AddStage = "idle" | "running" | "done" | "error";
-  const [addStage, setAddStage] = useState<AddStage>("idle");
-  const [addLogs, setAddLogs] = useState<string[]>([]);
-  const [addResult, setAddResult] = useState<{ ok: boolean; lines_added: number; lines_skipped: number; lines_failed: number; aborted_at_sidebar?: boolean; message: string; details: { product: string; delivery_key?: string; status: string }[] } | null>(null);
-  // Resume state — set when a sidebar abort happens mid-add
-  const [resumeBatchId, setResumeBatchId] = useState<string | null>(null);
-  const [alreadyAddedKeys, setAlreadyAddedKeys] = useState<Set<string>>(new Set());
+  const [customerId, setCustomerId] = useState("");
+  // Set when /delivery/api/check finds the shipment already exists — blocks
+  // create until the user explicitly chooses to add the missing lines instead.
+  const [existingBatch, setExistingBatch] = useState<{ id: number; number: string } | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoParseRef = useRef(false);
-  // Tracks whether catalogue was already re-synced this import session.
-  // Prevents infinite sync loop: second sidebar error → skip instead of sync again.
-  const catalogueSyncedRef = useRef(false);
 
   // ── Tour refs ─────────────────────────────────────────────────────────────
   const refDropZone        = useRef<HTMLDivElement>(null);
@@ -202,13 +200,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [tourOpen, setTourOpen] = useState(false);
   const [tourStep, setTourStep] = useState(0);
   const [isTourMode, setIsTourMode] = useState(false);
-  const [addProgress, setAddProgress] = useState<{ done: number; total: number } | null>(null);
 
   // ── Match approval & inline edit ──────────────────────────────────────────
   const [approvedKeys, setApprovedKeys] = useState<Set<string>>(new Set());
   const [lineEdits, setLineEdits] = useState<Record<string, { fp_product_id: string; catalogue_nm_product: string }>>({});
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editSearch, setEditSearch] = useState("");
+  const [editSearchResults, setEditSearchResults] = useState<CatalogueProduct[]>([]);
   const [savingApproved, setSavingApproved] = useState(false);
   const [showCacheManager, setShowCacheManager] = useState(false);
   const [cachedMatchesList, setCachedMatchesList] = useState<Array<{ delivery_key: string; nm_variety: string; nm_product: string; match_type: string; approved: boolean }>>([]);
@@ -272,6 +270,31 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     handleParseClick();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jsonText]);
+
+  // Live product search for the manual match-correction modal — the products
+  // table is ~44k rows, too large to preload client-side like the old
+  // supplier-catalogue list, so this queries the DB per keystroke (debounced).
+  useEffect(() => {
+    if (!editModalOpen || editSearch.trim().length < 2) {
+      setEditSearchResults([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${RAILWAY}/delivery/product-search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: editSearch.trim(), limit: 30 }),
+        });
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setEditSearchResults(data.results ?? []);
+        }
+      } catch {}
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [editSearch, editModalOpen]);
 
   function openTour() {
     reset();
@@ -392,7 +415,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       if (!res.ok) throw new Error(await res.text());
       const data: ParseResult = await res.json();
       setParseResult(data);
-      setCatalogueCount(data.catalogue_count);
       setActiveOrderIdx(0);
       setLineEdits({});
       setEditingKey(null);
@@ -439,6 +461,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   async function handleSelectSupplier(supplier: FPSupplier) {
     setSupplierPickerOpen(false);
     setResolvedSupplier(supplier);
+    setExistingBatch(null);
 
     const txCompany = parseResult?.orders[activeOrderIdx]?.tx_company ?? "";
     try {
@@ -449,96 +472,68 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     } catch {}
 
-    let needsSync = false;
-    try {
-      const statusRes = await fetch(`${RAILWAY}/catalogue/${supplier.fp_supplier_id}/status`);
-      if (statusRes.ok) {
-        const status = await statusRes.json();
-        needsSync = !status.synced || (status.item_count ?? 0) === 0;
-      } else {
-        needsSync = true;
-      }
-    } catch {
-      needsSync = true;
-    }
-
-    if (needsSync) {
-      await syncCatalogueForSupplier(supplier.fp_supplier_id, supplier.nm_supplier);
-    } else {
-      await handleParse(supplier.fp_supplier_id);
-    }
-  }
-
-  // ── Sync catalogue ──────────────────────────────────────────────────────
-
-  async function syncCatalogueForSupplier(supplierId: string, supplierName: string, abortRecovery = false) {
-    setStage("syncing");
-    if (abortRecovery) {
-      setLogs(prev => [...prev, td.catalogueSyncSeparator]);
-      addLog(td.catalogueSyncAbortMsg);
-    } else {
-      setLogs([]);
-    }
-    addLog(td.syncingCatalogueFor(supplierName, supplierId));
-
-    const params = new URLSearchParams({ nm_supplier: supplierName });
-    const res = await fetch(
-      `${RAILWAY}/catalogue/sync/${supplierId}/stream?${params}`,
-      { method: "POST" }
-    );
-
-    if (!res.ok || !res.body) {
-      addLog(await res.text());
-      setStage("preview");
-      return;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop() ?? "";
-      for (const part of parts) {
-        const evLine = part.replace(/^data: /, "").trim();
-        if (!evLine || evLine.startsWith(":")) continue;
-        try {
-          const ev = JSON.parse(evLine);
-          if (ev.type === "status") addLog(ev.message);
-          if (ev.type === "result") {
-            addLog(td.catalogueSyncedRematching(ev.data.items_saved));
-            setCatalogueCount(ev.data.items_saved);
-            await handleParse(supplierId);
-          }
-          if (ev.type === "error") {
-            addLog(`Error: ${ev.message}`);
-            setStage("preview");
-          }
-        } catch {}
-      }
-    }
-  }
-
-  async function handleSyncCatalogue() {
-    if (resolvedSupplier) {
-      await syncCatalogueForSupplier(resolvedSupplier.fp_supplier_id, resolvedSupplier.nm_supplier);
-      return;
-    }
-    await openSupplierPicker();
+    await handleParse(supplier.fp_supplier_id);
   }
 
   // ── Import to FreshPortal ───────────────────────────────────────────────
+
+  async function logImportResult(order: DeliveryOrder, result: DfgCreateResult) {
+    if (!result.batch_id) return;
+    try {
+      const logRes = await fetch(`${RAILWAY}/delivery/import-log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fp_supplier_id: parseResult!.supplier_id,
+          tx_company: order.tx_company,
+          id_invoice: order.id_invoice,
+          dt_fly: order.dt_fly,
+          tx_awb: order.tx_awb,
+          nu_boxes: order.nu_boxes,
+          nu_stems_total: order.nu_stems_total,
+          mny_total: order.mny_total,
+          nu_lines_total: order.lines.length,
+          nu_lines_matched: order.lines.filter((l: DeliveryLine) => l.fp_product_id).length,
+          batch_id: String(result.batch_id),
+          batch_url: "",
+          batch_status: result.errors.length > 0 ? "partial" : "ok",
+          nm_user: username ?? null,
+          details: { lines: order.lines.map((l: DeliveryLine) => ({
+            nm_variety: l.nm_variety, nu_length: l.nu_length,
+            nu_bunches: l.nu_bunches, match_method: l.match_method,
+            catalogue_nm_product: l.catalogue_nm_product,
+          })) },
+        }),
+      });
+      if (!logRes.ok) return;
+      const logData = await logRes.json();
+      setImportLogId(logData.id);
+      await fetch(`${RAILWAY}/delivery/import-log/${logData.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          nu_products_added: result.stock_entries_ok.length,
+          nu_products_failed: result.errors.length,
+          nu_products_skipped: result.skipped_unmatched.length,
+          products_status: result.errors.length > 0 ? "partial" : "ok",
+        }),
+      });
+    } catch {}
+  }
 
   async function handleImport(skipPartialCheck = false) {
     if (!parseResult) return;
     const order = parseResult.orders[activeOrderIdx];
     if (!order) return;
+    const supplierFpId = resolvedSupplier?.fp_supplier_id || parseResult.supplier_id;
+    if (!supplierFpId) {
+      setError(td.noSupplierResolved);
+      setStage("error");
+      return;
+    }
 
     // Check if all matched lines are approved — show modal if not
-    if (!skipPartialCheck && !resumeBatchId) {
+    if (!skipPartialCheck) {
       const totalMatched = order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
       const totalApproved = order.lines.filter(l => {
         const dk = deliveryKey(l);
@@ -553,118 +548,124 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     // Save approved matches to cache (only the approved ones)
     await handleApproveMatches(approvedKeys);
 
-    // Reset catalogue-sync flag for fresh (non-resume) imports
-    if (!resumeBatchId) catalogueSyncedRef.current = false;
+    setStage("importing");
+    setLogs([]);
+    setImportResult(null);
+    setError("");
 
-    // Resume mode: skip batch creation, add only remaining lines to existing batch
-    if (resumeBatchId) {
-      setStage("importing");
-      setLogs(prev => [...prev, td.resumingImportSeparator]);
-      const remainingLines = order.lines.filter(l =>
-        !alreadyAddedKeys.has(deliveryKey(l)) && approvedKeys.has(deliveryKey(l))
-      );
-      const orderWithEdits = {
-        ...order,
-        lines: remainingLines.map(line => {
+    const orderWithEdits: DeliveryOrder = {
+      ...order,
+      lines: order.lines
+        .filter(line => approvedKeys.has(deliveryKey(line)))
+        .map(line => {
           const dk = deliveryKey(line);
           const edit = lineEdits[dk];
           return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
         }),
-      };
-      const abortRecovering = await handleAddProductsFor(resumeBatchId, orderWithEdits, importLogId, true);
-      if (!abortRecovering) setStage("done");
-      return;
-    }
+    };
+    const skippedUnmatched = order.lines.filter(l => !l.fp_product_id).map(l => l.nm_product);
 
-    setStage("importing");
-    setLogs([]);
-    setImportResult(null);
+    try {
+      addLog(td.checkingExisting);
+      const checkRes = await fetch(`${RAILWAY}/delivery/api/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ supplier_fp_id: supplierFpId, batch_number: order.id_invoice }),
+      });
+      if (!checkRes.ok) throw new Error(await checkRes.text());
+      const checkData = await checkRes.json();
 
-    const res = await fetch(`${RAILWAY}/delivery/create-batch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ order }),
-    });
+      if (checkData.exists) {
+        const batch = checkData.batch;
+        setExistingBatch({ id: batch.id, number: batch.number });
+        const existingKeys = new Set(
+          (batch.stock_entries ?? []).map((se: { product_number: string; characteristics?: { length?: number } }) =>
+            `${se.product_number}|${se.characteristics?.length ?? 0}`)
+        );
+        const missingLines = orderWithEdits.lines.filter(l => !existingKeys.has(`${l.fp_product_id}|${l.nu_length}`));
 
-    if (!res.ok || !res.body) {
-      setError(await res.text());
-      setStage("error");
-      return;
-    }
+        if (missingLines.length === 0) {
+          setError(td.batchAlreadyExistsComplete(batch.number));
+          setStage("error");
+          return;
+        }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop() ?? "";
-      for (const part of parts) {
-        const line = part.replace(/^data: /, "").trim();
-        if (!line || line.startsWith(":")) continue;
-        try {
-          const ev = JSON.parse(line);
-          if (ev.type === "status") addLog(ev.message);
-          if (ev.type === "result") {
-            const result = ev.data;
-            setImportResult(result);
-            if (result.ok && result.batch_id) {
-              let logId: number | null = null;
-              try {
-                const logRes = await fetch(`${RAILWAY}/delivery/import-log`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    fp_supplier_id: parseResult!.supplier_id,
-                    tx_company: order.tx_company,
-                    id_invoice: order.id_invoice,
-                    dt_fly: order.dt_fly,
-                    tx_awb: order.tx_awb,
-                    nu_boxes: order.nu_boxes,
-                    nu_stems_total: order.nu_stems_total,
-                    mny_total: order.mny_total,
-                    nu_lines_total: order.lines.length,
-                    nu_lines_matched: order.lines.filter((l: DeliveryLine) => l.fp_product_id).length,
-                    batch_id: result.batch_id,
-                    batch_url: result.batch_url,
-                    batch_status: "ok",
-                    nm_user: username ?? null,
-                    details: { lines: order.lines.map((l: DeliveryLine) => ({
-                      nm_variety: l.nm_variety, nu_length: l.nu_length,
-                      nu_bunches: l.nu_bunches, match_method: l.match_method,
-                      catalogue_nm_product: l.catalogue_nm_product,
-                    })) },
-                  }),
-                });
-                if (logRes.ok) {
-                  const logData = await logRes.json();
-                  logId = logData.id;
-                  setImportLogId(logData.id);
-                }
-              } catch {}
-              const orderWithEdits = {
-                ...order,
-                lines: order.lines
-                  .filter((line: DeliveryLine) => approvedKeys.has(deliveryKey(line)))
-                  .map((line: DeliveryLine) => {
-                    const dk = deliveryKey(line);
-                    const edit = lineEdits[dk];
-                    return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
-                  }),
-              };
-              const abortRecovering = await handleAddProductsFor(result.batch_id, orderWithEdits, logId);
-              if (abortRecovering) return;
-            }
-            setStage("done");
-          }
-          if (ev.type === "error") {
-            setError(ev.message);
-            setStage("error");
-          }
-        } catch {}
+        addLog(td.addingMissingToExisting(batch.number, missingLines.length));
+        const retryRes = await fetch(`${RAILWAY}/delivery/api/retry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ batch_id: batch.id, supplier_fp_id: supplierFpId, order: { ...orderWithEdits, lines: missingLines } }),
+        });
+        if (!retryRes.ok) throw new Error(await retryRes.text());
+        const retryData = await retryRes.json();
+        const result: DfgCreateResult = {
+          batch_id: retryData.batch_id, number: retryData.number, created: false,
+          stock_entries_ok: retryData.stock_entries_ok, errors: retryData.errors,
+          skipped_unmatched: skippedUnmatched,
+        };
+        setImportResult(result);
+        await logImportResult(order, result);
+        setStage("done");
+        return;
       }
+
+      addLog(td.creatingShipment);
+      const res = await fetch(`${RAILWAY}/delivery/api/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          order: orderWithEdits,
+          supplier_fp_id: supplierFpId,
+          customer_id: customerId.trim() ? Number(customerId.trim()) : null,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const result: DfgCreateResult = await res.json();
+      result.skipped_unmatched = skippedUnmatched;
+      setImportResult(result);
+      await logImportResult(order, result);
+      setStage("done");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+      setStage("error");
+    }
+  }
+
+  async function handleRetryFailed() {
+    if (!parseResult || !importResult?.batch_id || importResult.errors.length === 0) return;
+    const order = parseResult.orders[activeOrderIdx];
+    if (!order) return;
+    const supplierFpId = resolvedSupplier?.fp_supplier_id || parseResult.supplier_id;
+    const failedSet = new Set(importResult.errors.map(e => `${e.product_number}|${e.length}`));
+
+    const retryLines = order.lines
+      .filter(l => approvedKeys.has(deliveryKey(l)))
+      .map(line => {
+        const dk = deliveryKey(line);
+        const edit = lineEdits[dk];
+        return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
+      })
+      .filter(l => failedSet.has(`${l.fp_product_id}|${l.nu_length}`));
+    if (!retryLines.length) return;
+
+    setRetrying(true);
+    try {
+      const res = await fetch(`${RAILWAY}/delivery/api/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batch_id: importResult.batch_id, supplier_fp_id: supplierFpId, order: { ...order, lines: retryLines } }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const retryData = await res.json();
+      setImportResult(prev => prev ? {
+        ...prev,
+        stock_entries_ok: [...prev.stock_entries_ok, ...retryData.stock_entries_ok],
+        errors: retryData.errors,
+      } : prev);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -714,151 +715,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     }
   }
 
-  async function handleAddProductsFor(batchId: string, orderWithEdits: DeliveryOrder, logId: number | null, isResume = false): Promise<boolean> {
-    setAddStage("running");
-    if (isResume) {
-      setAddLogs(prev => [...prev, td.resumeSeparator]);
-    } else {
-      setAddLogs([]);
-    }
-    setAddResult(null);
-    setAddProgress(null);
-
-    const totalProducts = orderWithEdits.lines.filter(l => l.fp_product_id).length;
-    if (totalProducts > 0) setAddProgress({ done: 0, total: totalProducts });
-
-    const res = await fetch(`${RAILWAY}/delivery/add-products`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        batch_id: batchId,
-        order: orderWithEdits,
-        skip_on_sidebar_error: catalogueSyncedRef.current,
-      }),
-    });
-
-    if (!res.ok || !res.body) {
-      setAddLogs([await res.text()]);
-      setAddStage("error");
-      return false;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    let doneCount = 0;
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop() ?? "";
-      for (const part of parts) {
-        const line = part.replace(/^data: /, "").trim();
-        if (!line || line.startsWith(":")) continue;
-        try {
-          const ev = JSON.parse(line);
-          if (ev.type === "status") {
-            setAddLogs(prev => [...prev, ev.message]);
-            setLogs(prev => [...prev, ev.message]);
-            if (ev.message === "  ✓ added" || ev.message?.startsWith("  ✗ failed")) {
-              doneCount++;
-              setAddProgress({ done: Math.min(doneCount, totalProducts), total: totalProducts });
-            }
-          }
-          if (ev.type === "result") {
-            const addData = ev.data;
-            setAddResult(addData);
-
-            if (addData.aborted_at_sidebar) {
-              // Sidebar failure mid-import — remember what was added, then auto-recover
-              const addedKeys = new Set<string>(
-                (addData.details as { delivery_key?: string; status: string }[])
-                  .filter(d => d.status === "added" && d.delivery_key)
-                  .map(d => d.delivery_key as string)
-              );
-              setResumeBatchId(batchId);
-              setAlreadyAddedKeys(addedKeys);
-              setAddStage("idle");
-              catalogueSyncedRef.current = true;
-              // Clear cache for non-added products + sync catalogue + reparse
-              const supplierId = parseResult?.supplier_id;
-              const supplierName = parseResult?.supplier_nm ?? supplierId ?? "";
-              if (supplierId) {
-                const keysToDelete: string[] = [];
-                for (const ord of (parseResult?.orders ?? [])) {
-                  for (const ln of ord.lines) {
-                    const dk = deliveryKey(ln);
-                    if (!addedKeys.has(dk)) keysToDelete.push(dk);
-                  }
-                }
-                await Promise.all(
-                  keysToDelete.map(dk =>
-                    fetch(`${RAILWAY}/catalogue/${supplierId}/matches/${encodeURIComponent(dk)}`, { method: "DELETE" })
-                  )
-                );
-                await syncCatalogueForSupplier(supplierId, supplierName, true);
-              }
-              return true;
-            }
-
-            setAddStage("done");
-            const allMatchedKeys = new Set(
-              orderWithEdits.lines.filter(l => l.fp_product_id).map(l => deliveryKey(l))
-            );
-            await handleApproveMatches(allMatchedKeys);
-            if (logId) {
-              try {
-                await fetch(`${RAILWAY}/delivery/import-log/${logId}`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    nu_products_added: addData.lines_added ?? 0,
-                    nu_products_failed: addData.lines_failed ?? 0,
-                    nu_products_skipped: addData.lines_skipped ?? 0,
-                    products_status: addData.ok ? "ok" : "partial",
-                  }),
-                });
-              } catch {}
-            }
-          }
-          if (ev.type === "error") {
-            setAddLogs(prev => [...prev, `Error: ${ev.message}`]);
-            setLogs(prev => [...prev, `Error: ${ev.message}`]);
-            setAddStage("error");
-            if (logId) {
-              try {
-                await fetch(`${RAILWAY}/delivery/import-log/${logId}`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ products_status: "error", nu_products_added: 0, nu_products_failed: 0, nu_products_skipped: 0 }),
-                });
-              } catch {}
-            }
-          }
-        } catch {}
-      }
-    }
-    return false;
-  }
-
-  async function handleAddProducts() {
-    if (!importResult?.batch_id || !parseResult) return;
-    const order = parseResult.orders[activeOrderIdx];
-    if (!order) return;
-    const orderWithEdits = {
-      ...order,
-      lines: order.lines
-        .filter(l => !alreadyAddedKeys.has(deliveryKey(l)))
-        .map(line => {
-          const dk = deliveryKey(line);
-          const edit = lineEdits[dk];
-          return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
-        }),
-    };
-    await handleAddProductsFor(importResult.batch_id, orderWithEdits, importLogId);
-  }
-
   async function loadCacheManager() {
     const supplierId = parseResult?.supplier_id;
     if (!supplierId) return;
@@ -891,9 +747,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         body: JSON.stringify({ tx_company: txCompany, fp_supplier_id: supplierId }),
       });
     } catch {}
-    if ((catalogueCount ?? 0) === 0) {
-      await syncCatalogueForSupplier(supplierId, resolvedSupplier?.nm_supplier ?? supplierId);
-    }
   }
 
   function handleChangeSupplier() {
@@ -908,10 +761,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLogs([]);
     setError("");
     setImportResult(null);
-    setAddStage("idle");
-    setAddLogs([]);
-    setAddResult(null);
-    setAddProgress(null);
+    setExistingBatch(null);
+    setCustomerId("");
     setApprovedKeys(new Set());
     setLineEdits({});
     setEditingKey(null);
@@ -931,8 +782,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setDuplicateWarning([]);
     setMultiFileError(false);
     setFileLoaded(false);
-    setResumeBatchId(null);
-    setAlreadyAddedKeys(new Set());
   }
 
   function handleSortCol(col: string) {
@@ -956,11 +805,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const o = parseResult?.orders[activeOrderIdx];
     if (!o) return [];
     let lines = [...o.lines];
-
-    // In resume mode, hide products already added to the existing batch
-    if (resumeBatchId && alreadyAddedKeys.size > 0) {
-      lines = lines.filter(l => !alreadyAddedKeys.has(deliveryKey(l)));
-    }
 
     if (showOnlyUnmatched) {
       lines = lines.filter(l => {
@@ -1012,7 +856,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     }
     return lines;
-  }, [parseResult, activeOrderIdx, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits, resumeBatchId, alreadyAddedKeys]);
+  }, [parseResult, activeOrderIdx, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits]);
 
   type AllTourStep = TourStep & { tourStage: "idle" | "preview" | "done" };
 
@@ -1038,7 +882,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         DEMO_PARSE_RESULT.orders[0].lines.forEach(l => { if (l.fp_product_id) preApproved.add(deliveryKey(l)); });
         setParseResult(DEMO_PARSE_RESULT);
         setResolvedSupplier({ fp_supplier_id: "210", nm_supplier: "Demo Grower B.V." });
-        setCatalogueCount(450);
         setActiveOrderIdx(0);
         setLineEdits({});
         setShowOnlyUnmatched(false);
@@ -1049,8 +892,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         setStage("preview");
       } else if (nextStage === "done") {
         setImportResult(DEMO_IMPORT_RESULT);
-        setAddResult(DEMO_ADD_RESULT);
-        setAddStage("done");
         setStage("done");
       }
     }
@@ -1063,7 +904,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         <div>
           <h2 className="text-lg font-bold text-ink">{td.title}</h2>
           <p className="text-sm text-ink-3 mt-0.5">
-            {stage === "preview" || stage === "syncing" ? td.descReview
+            {stage === "preview" ? td.descReview
              : stage === "importing" ? td.descImport
              : stage === "done" ? td.descProducts
              : td.descUpload}
@@ -1100,7 +941,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── PROGRESS STEPPER ── */}
       <DeliveryStepBar
         stage={stage}
-        allDone={stage === "done" && addStage === "done" && (addResult?.ok ?? false)}
+        allDone={stage === "done" && (importResult?.errors.length ?? 0) === 0}
         steps={[td.stepUpload, td.stepReview, td.stepImport]}
       />
 
@@ -1344,14 +1185,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             )}
           </div>
 
-          {/* Catalogue status */}
+          {/* Match status */}
           <div ref={refCatalogueStatus} className="flex items-center gap-3 text-sm flex-wrap">
-            <span className={`px-2.5 py-1 rounded-full border text-xs font-medium
-              ${(catalogueCount ?? 0) > 0 ? "bg-emerald/10 text-emerald border-emerald/20" : "bg-amber-500/10 text-amber-600 border-amber-500/20"}`}>
-              {(catalogueCount ?? 0) > 0
-                ? td.catalogueCount(catalogueCount!)
-                : td.catalogueEmpty}
-            </span>
             <span className="px-2.5 py-1 rounded-full border text-xs text-emerald bg-emerald/10 border-emerald/20">
               {parseResult!.matched_count} {td.matched}
             </span>
@@ -1368,25 +1203,27 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </button>
             )}
             <div className="ml-auto flex gap-2">
-              {canSyncCatalogue && (
-                <button
-                  onClick={handleSyncCatalogue}
-                  className="h-7 px-3 rounded-lg text-xs font-medium border border-border text-ink-3 hover:text-ink hover:border-emerald/40 transition-colors"
-                >
-                  {td.syncCatalogueBtn}
-                </button>
-              )}
-              {canSyncCatalogue && (
-                <button
-                  onClick={handleClearCache}
-                  disabled={clearingCache}
-                  title={td.clearCacheTitle}
-                  className="h-7 px-3 rounded-lg text-xs font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
-                >
-                  {clearingCache ? td.clearingCache : td.clearCache}
-                </button>
-              )}
+              <button
+                onClick={handleClearCache}
+                disabled={clearingCache}
+                title={td.clearCacheTitle}
+                className="h-7 px-3 rounded-lg text-xs font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+              >
+                {clearingCache ? td.clearingCache : td.clearCache}
+              </button>
             </div>
+          </div>
+
+          {/* Customer (invoice target) — optional, omit to create shipment without an invoice */}
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-ink-3 whitespace-nowrap">{td.customerIdLabel}</label>
+            <input
+              value={customerId}
+              onChange={e => setCustomerId(e.target.value.replace(/[^0-9]/g, ""))}
+              placeholder={td.customerIdPlaceholder}
+              inputMode="numeric"
+              className="h-8 w-40 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 placeholder:text-ink-3/50 transition-colors"
+            />
           </div>
 
           {parseResult!.unmatched_count > 0 && (
@@ -1449,17 +1286,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </button>
           </div>
 
-          {/* Resume batch banner */}
-          {resumeBatchId && (
-            <div className="flex items-start gap-3 px-4 py-3 rounded-2xl bg-blue-500/8 border border-blue-500/20">
-              <span className="text-blue-500 text-base leading-none mt-0.5">↩</span>
-              <div>
-                <p className="text-sm font-semibold text-blue-600">{td.resumeBatchTitle}</p>
-                <p className="text-xs text-ink-3 mt-0.5">{td.resumeBatchInfo(resumeBatchId, alreadyAddedKeys.size)}</p>
-              </div>
-            </div>
-          )}
-
           {/* Action buttons + search bar — above the table */}
           <div ref={refActionBtns} className="flex items-center gap-3">
             <input
@@ -1473,10 +1299,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </button>
             <button
               onClick={() => handleImport()}
-              disabled={approvedKeys.size === 0 && !resumeBatchId}
+              disabled={approvedKeys.size === 0}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
-              {resumeBatchId ? td.resumeImportBtn : td.importBtn}
+              {td.importBtn}
             </button>
           </div>
 
@@ -1605,16 +1431,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             const editLine = order.lines.find(l => deliveryKey(l) === dk);
             const currentEdit = lineEdits[dk];
             const currentMatchName = currentEdit?.catalogue_nm_product ?? editLine?.catalogue_nm_product ?? "";
-            const catalogue = parseResult?.catalogue ?? [];
-            const rawResults = editSearch.length >= 2
-              ? catalogue.filter(p => p.nm_product.toLowerCase().includes(editSearch.toLowerCase()))
-              : catalogue;
-            const _seen = new Set<string>();
-            const matchResults = rawResults.filter(p => {
-              if (_seen.has(p.nm_product)) return false;
-              _seen.add(p.nm_product);
-              return true;
-            }).slice(0, 50);
+            const matchResults = editSearchResults;
             return (
               <>
                 <div className="fixed inset-0 bg-black/60 z-[200]" onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} />
@@ -1655,7 +1472,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   </div>
                   <div className="overflow-y-auto flex-1">
                     {matchResults.length === 0 ? (
-                      <p className="text-xs text-ink-3 px-4 py-3">{td.noProductsFound}</p>
+                      <p className="text-xs text-ink-3 px-4 py-3">
+                        {editSearch.trim().length < 2 ? td.editSearchTypeToSearch : td.noProductsFound}
+                      </p>
                     ) : matchResults.map(p => {
                       const isCurrentMatch = (currentEdit?.fp_product_id ?? editLine?.fp_product_id) === p.fp_product_id;
                       return (
@@ -1787,70 +1606,22 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         </div>
       )}
 
-      {/* ── SYNCING ── */}
-      {stage === "syncing" && (
-        <ProgressLog title={td.syncing} logs={logs} />
-      )}
-
       {/* ── IMPORTING ── */}
       {stage === "importing" && (
-        isAdmin ? (
-          /* Admin: progress bar (always visible) then full log */
-          <div className="flex flex-col gap-3">
-            {addStage === "running" && addProgress && (
-              <div className="px-1">
-                <div className="flex items-center justify-between text-xs text-ink-3 mb-1.5">
-                  <span>{td.addingProducts}</span>
-                  <span className="tabular-nums font-medium">{addProgress.done} / {addProgress.total}</span>
-                </div>
-                <div className="h-2 bg-border rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-emerald rounded-full transition-[width] duration-300"
-                    style={{ width: `${addProgress.total > 0 ? Math.min(100, Math.round((addProgress.done / addProgress.total) * 100)) : 0}%` }}
-                  />
-                </div>
-              </div>
-            )}
-            <ProgressLog title={td.importing} logs={logs} />
+        <div className="flex flex-col items-center gap-5 py-8">
+          <div className="relative flex items-center justify-center">
+            <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
+            </svg>
+            <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
+              <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
+            </svg>
           </div>
-        ) : (
-          /* Non-admin: spinner + current status + progress bar */
-          <div className="flex flex-col items-center gap-5 py-8">
-            <div className="relative flex items-center justify-center">
-              <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
-              </svg>
-              <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
-                <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
-              </svg>
-            </div>
-            <div className="text-center space-y-1 max-w-xs">
-              <p className="text-sm font-semibold text-ink">
-                {addStage === "running" && addProgress && addProgress.done >= addProgress.total && addProgress.total > 0
-                  ? td.reviewShipment
-                  : addStage === "running" && addProgress && addProgress.done > 0
-                  ? td.addingProductN(addProgress.done, addProgress.total)
-                  : addStage === "running"
-                  ? td.addingProducts
-                  : td.creatingShipment}
-              </p>
-            </div>
-            {addStage === "running" && addProgress && (
-              <div className="w-full px-2">
-                <div className="flex items-center justify-between text-xs text-ink-3 mb-1.5">
-                  <span>{td.addingProducts}</span>
-                  <span className="tabular-nums font-medium">{addProgress.done} / {addProgress.total}</span>
-                </div>
-                <div className="h-2 bg-border rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-emerald rounded-full transition-[width] duration-300"
-                    style={{ width: `${addProgress.total > 0 ? Math.min(100, Math.round((addProgress.done / addProgress.total) * 100)) : 0}%` }}
-                  />
-                </div>
-              </div>
-            )}
+          <div className="text-center space-y-1 max-w-xs">
+            <p className="text-sm font-semibold text-ink">{td.creatingShipment}</p>
           </div>
-        )
+          {isAdmin && logs.length > 0 && <ProgressLog title={td.importing} logs={logs} />}
+        </div>
       )}
 
       {/* ── DONE ── */}
@@ -1859,113 +1630,85 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           <div className="card-enter w-full max-w-lg bg-surface rounded-3xl border border-border shadow-lg overflow-hidden">
 
             {/* Hero band */}
-            <div className={`px-6 pt-8 pb-6 flex flex-col items-center text-center ${importResult.ok ? "bg-emerald/6" : "bg-red-500/6"}`}>
+            <div className={`px-6 pt-8 pb-6 flex flex-col items-center text-center ${importResult.errors.length === 0 ? "bg-emerald/6" : "bg-amber-500/6"}`}>
               {/* Animated icon */}
-              <div className={`done-icon w-16 h-16 rounded-full flex items-center justify-center text-3xl mb-4 ${importResult.ok ? "bg-emerald text-white shadow-[0_0_24px_rgba(26,125,69,0.4)]" : "bg-red-500 text-white shadow-[0_0_24px_rgba(239,68,68,0.4)]"}`}>
-                {importResult.ok ? "✓" : "✗"}
+              <div className={`done-icon w-16 h-16 rounded-full flex items-center justify-center text-3xl mb-4 ${importResult.errors.length === 0 ? "bg-emerald text-white shadow-[0_0_24px_rgba(26,125,69,0.4)]" : "bg-amber-500 text-white shadow-[0_0_24px_rgba(245,158,11,0.4)]"}`}>
+                {importResult.errors.length === 0 ? "✓" : "!"}
               </div>
-              <h2 className={`text-lg font-bold mb-1 ${importResult.ok ? "text-emerald" : "text-red-500"}`}>
-                {importResult.ok ? td.batchCreated : td.importFailed}
+              <h2 className={`text-lg font-bold mb-1 ${importResult.errors.length === 0 ? "text-emerald" : "text-amber-600"}`}>
+                {importResult.errors.length === 0 ? td.batchCreated : td.importPartial}
               </h2>
               {importResult.batch_id && (
-                <p className="text-xs text-ink-3 font-mono">{td.batchId}: <span className="font-semibold text-ink-2">{importResult.batch_id}</span></p>
+                <p className="text-xs text-ink-3 font-mono">{td.batchId}: <span className="font-semibold text-ink-2">{importResult.number || importResult.batch_id}</span></p>
+              )}
+              {existingBatch && (
+                <p className="text-xs text-blue-500 mt-1">{td.addedToExistingBatch(existingBatch.number)}</p>
               )}
 
               {/* Stat chips */}
-              {addStage === "done" && addResult && (
-                <div className="flex gap-2 mt-4 flex-wrap justify-center">
+              <div className="flex gap-2 mt-4 flex-wrap justify-center">
+                <StatChip
+                  value={importResult.stock_entries_ok.length}
+                  label={td.statAddedN(importResult.stock_entries_ok.length)}
+                  color="emerald"
+                  delay="0ms"
+                />
+                {importResult.errors.length > 0 && (
                   <StatChip
-                    value={addResult.lines_added}
-                    label={td.statAddedN(addResult.lines_added)}
-                    color="emerald"
-                    delay="0ms"
+                    value={importResult.errors.length}
+                    label={td.statFailedN(importResult.errors.length)}
+                    color="red"
+                    delay="60ms"
                   />
-                  {addResult.lines_failed > 0 && (
-                    <StatChip
-                      value={addResult.lines_failed}
-                      label={td.statFailedN(addResult.lines_failed)}
-                      color="red"
-                      delay="60ms"
-                    />
-                  )}
-                  {addResult.lines_skipped > 0 && (
-                    <StatChip
-                      value={addResult.lines_skipped}
-                      label={td.statSkippedN(addResult.lines_skipped)}
-                      color="amber"
-                      delay="120ms"
-                    />
-                  )}
-                </div>
-              )}
-
-              {/* FreshPortal link */}
-              {importResult.batch_url && importResult.batch_url !== "#" && (
-                <a
-                  href={importResult.batch_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-5 inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-emerald text-white text-sm font-semibold hover:bg-emerald-dark transition-colors shadow-sm"
-                >
-                  {td.viewBatch}
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="opacity-80"><path d="M3 7h8M7 3l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                </a>
-              )}
+                )}
+                {importResult.skipped_unmatched.length > 0 && (
+                  <StatChip
+                    value={importResult.skipped_unmatched.length}
+                    label={td.statSkippedN(importResult.skipped_unmatched.length)}
+                    color="amber"
+                    delay="120ms"
+                  />
+                )}
+              </div>
             </div>
 
-            {/* Product list */}
-            {addStage === "done" && addResult && addResult.details.length > 0 && (
+            {/* Failed lines + retry */}
+            {importResult.errors.length > 0 && (
               <div className="px-6 py-4 border-t border-border">
-                <p className="text-xs font-semibold text-ink-3 uppercase tracking-wide mb-2">{addResult.message}</p>
-                <div className="max-h-52 overflow-y-auto space-y-0.5 pr-1">
-                  {[...addResult.details]
-                    .sort((a, b) => {
-                      const isErr = (s: string) => s !== "added";
-                      return isErr(a.status) === isErr(b.status) ? 0 : isErr(a.status) ? -1 : 1;
-                    })
-                    .map((d, i) => {
-                      const isAdded = d.status === "added";
-                      const isSidebar = d.status === "sidebar_not_found" || d.status === "sidebar_aborted";
-                      const colorCls = isAdded ? "text-emerald" : isSidebar ? "text-red-500 font-semibold" : "text-red-400";
-                      const label = isAdded ? null : isSidebar ? td.statusNotInCatalogue : td.statusFailed;
-                      return (
-                        <div key={i} className={`flex items-baseline gap-1.5 text-xs font-mono py-0.5 ${colorCls}`}>
-                          <span className="shrink-0">{isAdded ? "✓" : "✗"}</span>
-                          <span className="truncate">{d.product}</span>
-                          {label && <span className="ml-auto shrink-0 font-normal opacity-70">{label}</span>}
-                        </div>
-                      );
-                    })
-                  }
+                <p className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">{td.statFailedN(importResult.errors.length)}</p>
+                <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+                  {importResult.errors.map((e, i) => (
+                    <div key={i} className="text-xs font-mono text-red-500">
+                      <span className="font-semibold">{e.product_number}</span>
+                      {e.length ? <span className="text-ink-3"> ({e.length}cm)</span> : null}
+                      <span className="block text-red-400">{e.message}</span>
+                    </div>
+                  ))}
                 </div>
+                <button
+                  onClick={handleRetryFailed}
+                  disabled={retrying}
+                  className="mt-2 text-xs text-emerald underline disabled:opacity-40"
+                >
+                  {retrying ? td.retryingBtn : td.retryBtn}
+                </button>
               </div>
             )}
 
-            {/* Add-products error + retry */}
-            {addStage === "error" && (
+            {/* Skipped (unmatched) lines */}
+            {importResult.skipped_unmatched.length > 0 && (
               <div className="px-6 py-4 border-t border-border">
-                <p className="text-sm font-semibold text-red-500 mb-1">{td.addProductsFailed}</p>
-                <div className="font-mono text-xs text-red-400 space-y-0.5 max-h-32 overflow-y-auto">
-                  {addLogs.map((l, i) => <div key={i}>{l}</div>)}
+                <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">{td.statSkippedN(importResult.skipped_unmatched.length)}</p>
+                <div className="max-h-32 overflow-y-auto space-y-0.5 pr-1">
+                  {importResult.skipped_unmatched.map((p, i) => (
+                    <div key={i} className="text-xs font-mono text-amber-600 truncate">{p}</div>
+                  ))}
                 </div>
-                <button onClick={handleAddProducts} className="mt-2 text-xs text-emerald underline">
-                  {td.retryBtn}
-                </button>
               </div>
             )}
 
             {/* Collapsible logs */}
             <div className="px-6 pb-5 pt-2 border-t border-border space-y-2">
-              {addStage === "done" && addLogs.length > 0 && (
-                <details className="text-xs">
-                  <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.fullLog(addLogs.length)}</summary>
-                  <div className="mt-1 bg-ground rounded-xl p-2 max-h-48 overflow-y-auto font-mono space-y-0.5">
-                    {addLogs.map((l, i) => (
-                      <div key={i} className={l.startsWith("  ✓") ? "text-emerald" : l.startsWith("  ✗") ? "text-red-400" : "text-ink-3"}>{l}</div>
-                    ))}
-                  </div>
-                </details>
-              )}
               <details className="text-xs">
                 <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.batchLog(logs.length)}</summary>
                 <div className="mt-1 bg-ground rounded-xl p-2 max-h-40 overflow-y-auto font-mono space-y-0.5">
@@ -2056,7 +1799,7 @@ function DeliveryStepBar({
 }) {
   const current = allDone ? steps.length
     : stage === "idle" || stage === "parsing" || stage === "error" ? 0
-    : stage === "preview" || stage === "syncing" ? 1
+    : stage === "preview" ? 1
     : 2;
 
   return (

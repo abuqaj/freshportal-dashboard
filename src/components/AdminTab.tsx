@@ -46,7 +46,6 @@ const SYSTEM_DEFS: { id: string; label: string; dot: string; modules: { perm: st
     id: "ecuador", label: "Ecuador", dot: "bg-[#E8A200]",
     modules: [
       { perm: "delivery:import", label: "Delivery Import" },
-      { perm: "catalogue:sync",  label: "Catalogue Sync" },
     ],
   },
   { id: "piazza",      label: "Piazza dei Fiori", dot: "bg-[#009246]", modules: [] },
@@ -61,7 +60,6 @@ const PERM_LABELS: Record<string, string> = {
   "products:create": "New Products",
   "photos:upload":   "Photo Uploader",
   "delivery:import": "Delivery Import",
-  "catalogue:sync":  "Catalogue Sync",
   "admin:manage":    "Admin",
 }
 
