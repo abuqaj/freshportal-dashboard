@@ -1791,6 +1791,9 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
                 m, u = match_order_to_products(order, cached_matches)
                 matched_count += m
                 unmatched_count += u
+                for line in order.lines:
+                    log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
+                              line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
             result_orders.append(order_to_dict(order))
 
         log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
@@ -2080,6 +2083,9 @@ def delivery_api_create(
     except Exception as exc:
         raise HTTPException(400, f"Invalid order payload: {exc}")
 
+    log.info("[delivery/api/create] received from client: %s",
+              [(l.nm_variety, l.nu_length, l.fp_product_id) for l in order.lines])
+
     order.supplier_fp_id = req.supplier_fp_id
     resolve_supplier(cfg, order)
     if not order.supplier_fp_id:
@@ -2092,6 +2098,7 @@ def delivery_api_create(
 
     try:
         payload = build_batch_payload(order, customer_id=req.customer_id)
+        log.info("[delivery/api/create] POST payload: %s", payload)
         result = dfg_create_batch(cfg, payload)
     except DfgApiError as exc:
         raise HTTPException(400, str(exc))
@@ -2131,6 +2138,10 @@ def delivery_api_retry(
         order = _order_from_dict(req.order)
     except Exception as exc:
         raise HTTPException(400, f"Invalid order payload: {exc}")
+
+    log.info("[delivery/api/retry] received from client: batch_id=%s supplier_fp_id=%s lines=%s",
+              req.batch_id, req.supplier_fp_id,
+              [(l.nm_variety, l.nu_length, l.fp_product_id) for l in order.lines])
 
     matched_lines = [l for l in order.lines if l.fp_product_id]
     if not matched_lines:
