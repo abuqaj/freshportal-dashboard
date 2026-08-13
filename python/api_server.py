@@ -1840,6 +1840,51 @@ def delivery_product_search(
     }
 
 
+@app.get("/delivery/debug-match")
+def delivery_debug_match(
+    variety: str,
+    nu_length: int = 0,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Debug matching for a single variety name against the products master DB.
+
+    Shows the raw DB candidates and their _variety_sim() scores so you can see
+    why a given product_number was (or wasn't) picked — length is intentionally
+    NOT part of the score (see match_line_to_catalogue docstring), so this is
+    the fastest way to check whether that's causing a wrong pick.
+
+    Example: GET /delivery/debug-match?variety=Pink%20Mondial&nu_length=80
+    """
+    from parser_delivery import _variety_sim, _extract_variety, _norm
+    from delivery_product_match import _catalogue_rows_for_query
+
+    candidates = _catalogue_rows_for_query(variety)
+    if not candidates:
+        return {"error": f"No DB candidates for query={variety!r}"}
+
+    scored = []
+    for e in candidates:
+        nm = e.get("nm_product") or ""
+        s = _variety_sim(variety, nm)
+        scored.append({
+            "fp_product_id": e.get("fp_product_id"),
+            "nm_product": nm,
+            "id_floricode": e.get("id_floricode"),
+            "extracted_variety": _extract_variety(nm),
+            "delivery_norm": _norm(variety),
+            "sim": round(s, 4),
+        })
+
+    scored.sort(key=lambda x: -x["sim"])
+    return {
+        "delivery_variety": variety,
+        "nu_length": nu_length,
+        "candidate_count": len(candidates),
+        "top_10_by_sim": scored[:10],
+        "would_match": scored[0] if scored and scored[0]["sim"] >= 0.80 else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Delivery import log  (/delivery/import-log)
 # ---------------------------------------------------------------------------
