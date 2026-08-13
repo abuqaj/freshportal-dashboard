@@ -1870,12 +1870,14 @@ def delivery_debug_match(
             "fp_product_id": e.get("fp_product_id"),
             "nm_product": nm,
             "id_floricode": e.get("id_floricode"),
+            "has_gtin": bool(e.get("has_gtin")),
             "extracted_variety": _extract_variety(nm),
             "delivery_norm": _norm(variety),
             "sim": round(s, 4),
         })
 
-    scored.sort(key=lambda x: -x["sim"])
+    # Matches _scan()'s real priority: GTIN presence beats similarity score.
+    scored.sort(key=lambda x: (x["has_gtin"], x["sim"]), reverse=True)
     return {
         "delivery_variety": variety,
         "nu_length": nu_length,

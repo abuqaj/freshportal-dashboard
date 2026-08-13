@@ -323,7 +323,7 @@ def upsert_products(products: list[dict]) -> int:
 
 _FTS_SELECT = """
     SELECT product_id, product_number, name, short_name,
-           vbn_number, color, origin, product_group, change_moment,
+           vbn_number, color, origin, product_group, change_moment, product_gtin,
            ts_rank(
                to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(short_name,'')),
                to_tsquery('simple', %s)
@@ -331,7 +331,7 @@ _FTS_SELECT = """
     FROM products
     WHERE to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(short_name,''))
           @@ to_tsquery('simple', %s)
-    ORDER BY rank DESC
+    ORDER BY rank DESC, (product_gtin IS NOT NULL AND product_gtin <> '') DESC, product_number ASC
     LIMIT %s
 """
 
@@ -375,9 +375,9 @@ def search_products_db(query: str, limit: int = 20) -> list[dict]:
                 params.append(limit)
                 cur.execute(
                     f"SELECT product_id, product_number, name, short_name, "
-                    f"vbn_number, color, origin, product_group, change_moment, "
+                    f"vbn_number, color, origin, product_group, change_moment, product_gtin, "
                     f"0.3 AS rank FROM products WHERE {conditions} "
-                    f"ORDER BY name LIMIT %s",
+                    f"ORDER BY (product_gtin IS NOT NULL AND product_gtin <> '') DESC, name, product_number LIMIT %s",
                     params,
                 )
                 rows = cur.fetchall()

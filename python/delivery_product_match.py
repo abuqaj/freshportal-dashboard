@@ -30,6 +30,7 @@ def _catalogue_rows_for_query(query: str) -> list[dict]:
             "fp_product_id": r.get("product_number") or "",
             "nm_product": r.get("name") or "",
             "id_floricode": r.get("vbn_number") or "",
+            "has_gtin": bool(r.get("product_gtin")),
         }
         for r in rows
         if r.get("product_number")

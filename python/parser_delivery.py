@@ -861,14 +861,20 @@ def match_line_to_catalogue(
     def _scan(entries: list[dict], min_sim: float) -> tuple[dict | None, float]:
         """Return (best_entry, best_sim) from entries above min_sim threshold.
 
-        EC entries beat Garden entries when variety similarity is equal.
+        Entries with a GTIN take priority over those without — regardless of
+        similarity score — since a filled GTIN indicates a complete, actively
+        maintained catalogue entry rather than a legacy/duplicate one. EC
+        entries beat Garden entries when GTIN status and similarity are equal.
         """
-        best_e, best_s = None, 0.0
+        best_e, best_s, best_gtin = None, 0.0, False
         for e in entries:
             nm = e.get("nm_product") or ""
             s = _variety_sim(variety, nm) + _origin_bonus(nm)
-            if s >= min_sim and s > best_s:
-                best_e, best_s = e, s
+            if s < min_sim:
+                continue
+            gtin = bool(e.get("has_gtin"))
+            if best_e is None or (gtin, s) > (best_gtin, best_s):
+                best_e, best_s, best_gtin = e, s, gtin
         return best_e, best_s
 
     # Length is adjusted manually during creation — match only by variety name,
