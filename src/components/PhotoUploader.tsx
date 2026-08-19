@@ -9,7 +9,7 @@ const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 interface Props { lang: Lang; }
 
 type PhotoPhase = "idle" | "analyzing" | "review" | "uploading" | "done";
-type ProductMatchItem = { product_id: string; name: string; vbn_number: string; similarity: number };
+type ProductMatchItem = { product_id: string; name: string; vbn_number: string; product_group: string; similarity: number };
 type ReviewItem = {
   filename: string;
   thumbnailUrl: string;
@@ -354,98 +354,113 @@ export default function PhotoUploader({ lang }: Props) {
                 {reviewItems.map((item, idx) => (
                   <div key={item.filename} className="card-enter" style={{ animationDelay: `${Math.min(idx * 25, 400)}ms` }}>
                     <div className={`px-5 py-4 transition-opacity ${!item.approved ? "opacity-40" : ""}`}>
+                      <div className="flex items-start gap-3">
 
-                      {/* Top: number + name + checkbox */}
-                      <div className="flex items-center gap-2 mb-3">
-                        <span className="text-[10px] font-semibold text-ink-3 tabular-nums w-5 text-right flex-shrink-0">{idx + 1}</span>
-                        <p className="text-xs font-semibold text-ink flex-1 truncate">{item.normalized_name}</p>
+                        {/* Approve toggle — leftmost, left of thumbnail + table */}
                         <button
                           onClick={() => setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r))}
                           disabled={item.selected.length === 0}
-                          className={`flex-shrink-0 w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
+                          title={t.photo.approved}
+                          className={`flex-shrink-0 w-8 h-8 mt-0.5 rounded-lg border-2 flex items-center justify-center transition-all ${
                             item.approved
                               ? "bg-emerald border-emerald text-white"
                               : "border-border text-transparent hover:border-emerald/50 disabled:opacity-30"
                           }`}
                         >
-                          <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          <svg width="13" height="13" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                         </button>
-                      </div>
 
-                      {/* Body: 3-column grid — thumbnail | selected | alternatives */}
-                      <div className={`grid grid-cols-[56px_1fr_1fr] gap-x-4 pl-7 ${!item.approved ? "pointer-events-none" : ""}`}>
-
-                        {/* Col 1: Thumbnail */}
+                        {/* Bigger thumbnail */}
                         <div
-                          className="w-14 h-14 rounded-xl overflow-hidden bg-muted flex-shrink-0 ring-1 ring-border"
+                          className="w-24 h-24 rounded-xl overflow-hidden bg-muted flex-shrink-0 ring-1 ring-border"
                           onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
                           onMouseLeave={handleThumbnailLeave}
                         >
                           {item.thumbnailUrl
                             ? <img src={item.thumbnailUrl} alt="" className="w-full h-full object-cover" />
                             : <div className="w-full h-full flex items-center justify-center text-ink-3">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/><path d="M3 15l5-5 4 4 3-3 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/><path d="M3 15l5-5 4 4 3-3 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                               </div>
                           }
                         </div>
 
-                        {/* Col 2: Selected matches — full names */}
-                        <div className="min-w-0">
-                          <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-1.5">{t.photo.foundMatches}</p>
-                          {item.selected.length > 0 ? (
-                            <div className="rounded-lg border border-emerald/25 bg-emerald-light/20 overflow-hidden">
-                              {item.selected.map((p, pi) => (
-                                <div key={p.product_id} className={`flex items-start gap-2 px-2.5 py-1.5 group ${pi > 0 ? "border-t border-emerald/15" : ""}`}>
-                                  <span className="text-[9px] font-bold text-emerald/50 w-3 text-center flex-shrink-0 tabular-nums mt-0.5">{pi + 1}</span>
-                                  <span className="text-xs font-medium text-emerald-dark flex-1 leading-snug">{p.name}</span>
-                                  <span className={`text-[10px] font-semibold flex-shrink-0 mt-0.5 mr-1 ${
-                                    p.similarity >= 0.9 ? "text-emerald/70" : p.similarity >= 0.6 ? "text-amber-500/80" : "text-ember/70"
-                                  }`}>{Math.round(p.similarity * 100)}%</span>
-                                  <button
-                                    onClick={() => setReviewItems(prev => prev.map((r, ri) => ri !== idx ? r : {
-                                      ...r,
-                                      selected: r.selected.filter(s => s.product_id !== p.product_id),
-                                      alternatives: [p, ...r.alternatives],
-                                      approved: r.selected.length > 1,
-                                    }))}
-                                    className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-ink-3 hover:text-ember mt-0.5"
-                                  >
-                                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                                  </button>
-                                </div>
-                              ))}
+                        {/* Filename on top, match table below */}
+                        <div className={`flex-1 min-w-0 ${!item.approved ? "pointer-events-none" : ""}`}>
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-[10px] font-semibold text-ink-3 tabular-nums flex-shrink-0">{idx + 1}</span>
+                            <p className="text-sm font-semibold text-ink truncate">{item.normalized_name}</p>
+                          </div>
+                          <p className="text-[11px] text-ink-3 truncate mb-2">{item.filename}</p>
+
+                          {(item.selected.length > 0 || item.alternatives.length > 0) ? (
+                            <div className="rounded-lg border border-border overflow-hidden overflow-x-auto">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="bg-ground/60 text-[10px] font-semibold text-ink-3 uppercase tracking-wide">
+                                    <th className="w-8 px-2 py-1.5" />
+                                    <th className="text-left px-2 py-1.5">{t.photo.foundMatches}</th>
+                                    <th className="text-left px-2 py-1.5 whitespace-nowrap">{t.photo.colVbn}</th>
+                                    <th className="text-left px-2 py-1.5">{t.photo.colGroup}</th>
+                                    <th className="text-right px-2.5 py-1.5">{t.photo.colSimilarity}</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {[
+                                    ...item.selected.map(p => ({ ...p, isSelected: true })),
+                                    ...item.alternatives.map(p => ({ ...p, isSelected: false })),
+                                  ]
+                                    .sort((a, b) => b.similarity - a.similarity)
+                                    .map(c => (
+                                    <tr
+                                      key={c.product_id}
+                                      onClick={() => setReviewItems(prev => prev.map((r, ri) => {
+                                        if (ri !== idx) return r;
+                                        const plain: ProductMatchItem = {
+                                          product_id: c.product_id, name: c.name,
+                                          vbn_number: c.vbn_number, product_group: c.product_group,
+                                          similarity: c.similarity,
+                                        };
+                                        if (c.isSelected) {
+                                          return {
+                                            ...r,
+                                            selected: r.selected.filter(s => s.product_id !== c.product_id),
+                                            alternatives: [plain, ...r.alternatives],
+                                            approved: r.selected.length > 1,
+                                          };
+                                        }
+                                        return {
+                                          ...r,
+                                          selected: [...r.selected, plain],
+                                          alternatives: r.alternatives.filter(a => a.product_id !== c.product_id),
+                                          approved: true,
+                                        };
+                                      }))}
+                                      className={`cursor-pointer border-t border-border transition-colors ${
+                                        c.isSelected ? "bg-emerald-light/25 hover:bg-emerald-light/40" : "hover:bg-muted"
+                                      }`}
+                                    >
+                                      <td className="px-2 py-1.5">
+                                        <span className={`inline-flex w-4 h-4 rounded border-2 items-center justify-center ${
+                                          c.isSelected ? "bg-emerald border-emerald text-white" : "border-border text-transparent"
+                                        }`}>
+                                          <svg width="8" height="8" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                        </span>
+                                      </td>
+                                      <td className={`px-2 py-1.5 font-medium leading-snug ${c.isSelected ? "text-emerald-dark" : "text-ink"}`}>{c.name}</td>
+                                      <td className="px-2 py-1.5 text-ink-3 whitespace-nowrap">{c.vbn_number || "—"}</td>
+                                      <td className="px-2 py-1.5 text-ink-3 truncate max-w-[140px]">{c.product_group || "—"}</td>
+                                      <td className="px-2.5 py-1.5 text-right">
+                                        <span className={`text-base font-bold tabular-nums ${
+                                          c.similarity >= 0.9 ? "text-emerald" : c.similarity >= 0.6 ? "text-amber-500" : "text-ember"
+                                        }`}>{Math.round(c.similarity * 100)}%</span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
                             </div>
                           ) : (
                             <p className="text-xs text-ink-3 italic">{t.photo.noMatch}</p>
-                          )}
-                        </div>
-
-                        {/* Col 3: Alternative suggestions — full names, list layout */}
-                        <div className="min-w-0 border-l border-border pl-4">
-                          <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-wider mb-1.5">{t.photo.suggestions}</p>
-                          {item.alternatives.length > 0 ? (
-                            <div className="flex flex-col gap-1">
-                              {item.alternatives.map(alt => (
-                                <button
-                                  key={alt.product_id}
-                                  onClick={() => setReviewItems(prev => prev.map((r, ri) => ri !== idx ? r : {
-                                    ...r,
-                                    selected: [...r.selected, alt],
-                                    alternatives: r.alternatives.filter(a => a.product_id !== alt.product_id),
-                                    approved: true,
-                                  }))}
-                                  className="flex items-start gap-2 text-left text-[11px] text-ink-3 hover:text-ink bg-ground hover:bg-muted border border-border rounded-md px-2.5 py-1.5 transition-colors group w-full"
-                                >
-                                  <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className="text-ink-3 flex-shrink-0 mt-0.5 group-hover:text-emerald transition-colors"><path d="M4 1v6M1 4h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                                  <span className="flex-1 leading-snug">{alt.name}</span>
-                                  <span className={`text-[10px] font-semibold flex-shrink-0 mt-0.5 ${
-                                    alt.similarity >= 0.8 ? "text-emerald" : alt.similarity >= 0.5 ? "text-amber-500" : "text-ember"
-                                  }`}>{Math.round(alt.similarity * 100)}%</span>
-                                </button>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-xs text-ink-3 italic">{t.photo.noSuggestions}</p>
                           )}
                         </div>
 
@@ -456,7 +471,7 @@ export default function PhotoUploader({ lang }: Props) {
               </div>
 
               {/* Footer — sticky inside the scroll container so it's always visible */}
-              <div className="sticky bottom-0 px-5 py-3.5 border-t border-border bg-surface flex justify-end gap-2 shadow-[0_-4px_12px_-4px_rgba(0,0,0,0.06)]">
+              <div className="sticky bottom-0 px-5 py-3.5 border-t border-border bg-surface flex justify-start gap-2 shadow-[0_-4px_12px_-4px_rgba(0,0,0,0.06)]">
                 <button
                   onClick={resetPhotoUploader}
                   className="text-xs text-ink-3 border border-border rounded-lg px-3 py-2 hover:bg-muted transition-colors"

@@ -104,7 +104,7 @@ def _fast_candidates(normalized: str, limit: int = 300) -> list[dict]:
                 conditions = " AND ".join("name ILIKE %s" for _ in search_words)
                 params = [f"%{w}%" for w in search_words]
                 cur.execute(
-                    f"SELECT product_id, name, short_name, vbn_number "
+                    f"SELECT product_id, name, short_name, vbn_number, product_group "
                     f"FROM products WHERE {conditions} ORDER BY name LIMIT %s",
                     params + [limit],
                 )
@@ -117,7 +117,7 @@ def _fast_candidates(normalized: str, limit: int = 300) -> list[dict]:
                     prefixes = [genus] + [t[:4] for t in variety_words]
                     prefix_conds = " AND ".join("name ILIKE %s" for _ in prefixes)
                     cur.execute(
-                        f"SELECT product_id, name, short_name, vbn_number "
+                        f"SELECT product_id, name, short_name, vbn_number, product_group "
                         f"FROM products WHERE {prefix_conds} ORDER BY name LIMIT %s",
                         [f"%{p}%" for p in prefixes] + [limit],
                     )
@@ -139,7 +139,7 @@ def match_single_photo(filename: str, cfg=None, top_k: int = 5) -> dict:  # noqa
     Uses a fast single AND-ILIKE query instead of the multi-query n-gram
     path in search_products — photo filenames don't need typo resistance.
 
-    Returns {filename, normalized_name, matches: [{product_id, name, vbn_number, similarity}]}
+    Returns {filename, normalized_name, matches: [{product_id, name, vbn_number, product_group, similarity}]}
     """
     normalized = normalize_filename(filename)
     try:
@@ -150,6 +150,7 @@ def match_single_photo(filename: str, cfg=None, top_k: int = 5) -> dict:  # noqa
                     "product_id": r["product_id"],
                     "name": r["name"],
                     "vbn_number": r.get("vbn_number") or "",
+                    "product_group": r.get("product_group") or "",
                     "similarity": round(_photo_similarity(normalized, r["name"]), 3),
                 }
                 for r in rows

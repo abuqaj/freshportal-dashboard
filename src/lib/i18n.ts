@@ -173,6 +173,9 @@ const en = {
     suggestions:        "Suggestions",
     noSuggestions:      "No other suggestions",
     reviewInstruction:  "Review matched photos — adjust or remove assignments, then upload to FreshPortal.",
+    colVbn:             "VBN",
+    colGroup:           "Group",
+    colSimilarity:      "Match",
   },
   hub: {
     title:            "What are you working on?",
@@ -647,6 +650,9 @@ const nl: typeof en = {
     suggestions:        "Suggesties",
     noSuggestions:      "Geen andere suggesties",
     reviewInstruction:  "Controleer de fotokoppelingen — pas aan of verwijder waar nodig, en upload daarna naar FreshPortal.",
+    colVbn:             "VBN",
+    colGroup:           "Groep",
+    colSimilarity:      "Match",
   },
   hub: {
     title:            "Waar wil je mee aan de slag?",
@@ -1111,6 +1117,9 @@ const pl: typeof en = {
     suggestions:        "Sugestie",
     noSuggestions:      "Brak innych sugestii",
     reviewInstruction:  "Sprawdź przypisania zdjęć — dostosuj lub usuń dopasowania, następnie uploaduj do FreshPortal.",
+    colVbn:             "VBN",
+    colGroup:           "Grupa",
+    colSimilarity:      "Dopasowanie",
   },
   hub: {
     title:            "Nad czym chcesz pracować?",
@@ -1575,6 +1584,9 @@ const es: typeof en = {
     suggestions:        "Sugerencias",
     noSuggestions:      "Sin otras sugerencias",
     reviewInstruction:  "Revisa las asignaciones de fotos — ajusta o elimina coincidencias, luego sube a FreshPortal.",
+    colVbn:             "VBN",
+    colGroup:           "Grupo",
+    colSimilarity:      "Coincidencia",
   },
   hub: {
     title:            "¿En qué quieres trabajar?",
