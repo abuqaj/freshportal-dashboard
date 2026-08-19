@@ -379,7 +379,7 @@ export default function PhotoUploader({ lang }: Props) {
                               onClick={() => setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r))}
                               disabled={item.selected.length === 0}
                               title={t.photo.approved}
-                              className={`flex-shrink-0 w-8 h-8 rounded-lg border-2 flex items-center justify-center transition-all ${
+                              className={`pointer-events-auto flex-shrink-0 w-8 h-8 rounded-lg border-2 flex items-center justify-center transition-all ${
                                 item.approved
                                   ? "bg-emerald border-emerald text-white"
                                   : "border-border text-transparent hover:border-emerald/50 disabled:opacity-30"
