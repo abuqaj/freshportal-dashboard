@@ -354,25 +354,11 @@ export default function PhotoUploader({ lang }: Props) {
                 {reviewItems.map((item, idx) => (
                   <div key={item.filename} className="card-enter" style={{ animationDelay: `${Math.min(idx * 25, 400)}ms` }}>
                     <div className={`px-5 py-4 transition-opacity ${!item.approved ? "opacity-40" : ""}`}>
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-stretch gap-3">
 
-                        {/* Approve toggle — leftmost, left of thumbnail + table */}
-                        <button
-                          onClick={() => setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r))}
-                          disabled={item.selected.length === 0}
-                          title={t.photo.approved}
-                          className={`flex-shrink-0 w-8 h-8 mt-0.5 rounded-lg border-2 flex items-center justify-center transition-all ${
-                            item.approved
-                              ? "bg-emerald border-emerald text-white"
-                              : "border-border text-transparent hover:border-emerald/50 disabled:opacity-30"
-                          }`}
-                        >
-                          <svg width="13" height="13" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        </button>
-
-                        {/* Bigger thumbnail */}
+                        {/* Thumbnail — fills the full height of the card */}
                         <div
-                          className="w-24 h-24 rounded-xl overflow-hidden bg-muted flex-shrink-0 ring-1 ring-border"
+                          className="w-24 self-stretch rounded-xl overflow-hidden bg-muted flex-shrink-0 ring-1 ring-border"
                           onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
                           onMouseLeave={handleThumbnailLeave}
                         >
@@ -384,11 +370,23 @@ export default function PhotoUploader({ lang }: Props) {
                           }
                         </div>
 
-                        {/* Filename on top, match table below */}
+                        {/* Filename + approve toggle on top, match table below */}
                         <div className={`flex-1 min-w-0 ${!item.approved ? "pointer-events-none" : ""}`}>
-                          <div className="flex items-baseline gap-2">
+                          <div className="flex items-center gap-2">
                             <span className="text-[10px] font-semibold text-ink-3 tabular-nums flex-shrink-0">{idx + 1}</span>
-                            <p className="text-sm font-semibold text-ink truncate">{item.normalized_name}</p>
+                            <p className="text-sm font-semibold text-ink flex-1 truncate">{item.normalized_name}</p>
+                            <button
+                              onClick={() => setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r))}
+                              disabled={item.selected.length === 0}
+                              title={t.photo.approved}
+                              className={`flex-shrink-0 w-8 h-8 rounded-lg border-2 flex items-center justify-center transition-all ${
+                                item.approved
+                                  ? "bg-emerald border-emerald text-white"
+                                  : "border-border text-transparent hover:border-emerald/50 disabled:opacity-30"
+                              }`}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                            </button>
                           </div>
                           <p className="text-[11px] text-ink-3 truncate mb-2">{item.filename}</p>
 
