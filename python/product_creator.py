@@ -103,6 +103,8 @@ class ProductMatch:
     vbn_number: str
     similarity: float
     color: str = ""
+    product_group: str = ""
+    application: str = ""
 
 
 # ── FreshPortal search ───────────────────────────────────────────────────────
@@ -199,6 +201,8 @@ def search_products(
                     vbn_number=r.get("vbn_number", ""),
                     similarity=sim,
                     color=r.get("color", ""),
+                    product_group=r.get("product_group", ""),
+                    application=r.get("application", ""),
                 ))
 
     def _run_phases(fetch_fn: Callable[[str], list[dict]]) -> None:
@@ -594,6 +598,7 @@ def copy_and_create(
             # ── Fill VBN code (best-effort — field name varies by FreshPortal config) ──
             if vbn_code:
                 _s(msg(lang, "filling_vbn", code=vbn_code))
+                vbn_field_found = False
                 for vbn_sel in [
                     "fps-input[name='product_index_form_vbn_number']",
                     "fps-input[name*='form_vbn']",
@@ -603,13 +608,18 @@ def copy_and_create(
                         el = page.query_selector(vbn_sel)
                         if el:
                             _fill_fps(el.get_attribute("name") or vbn_sel, vbn_code)
+                            vbn_field_found = True
                             break
                     except Exception as exc:
                         logger.debug("VBN fill failed for %s: %s", vbn_sel, exc)
+                if not vbn_field_found:
+                    logger.warning("VBN field not found on copy form — template's original VBN (%s) will be submitted unchanged", template_id)
+                    _s(f"⚠ VBN field not found on form — template's VBN kept as-is (not {vbn_code})")
 
             # ── Fill color (best-effort) ─────────────────────────────────────
             if color_id:
                 _s(msg(lang, "filling_color", name=color_id))
+                color_field_set = False
                 for color_sel in [
                     "fps-select[name*='color_id']",
                     "fps-select[name*='form_color']",
@@ -621,10 +631,10 @@ def copy_and_create(
                             # fps-select uses Shadow DOM; set value on inner <select>.
                             # Try exact value match first (Floricode numeric ID), then
                             # fall back to matching by option text label (DB color name).
-                            page.evaluate(
+                            color_field_set = page.evaluate(
                                 """([el, val]) => {
                                     const s = el.shadowRoot?.querySelector('select');
-                                    if (!s) return;
+                                    if (!s) return false;
                                     if (Array.from(s.options).some(o => o.value === val)) {
                                         s.value = val;
                                     } else {
@@ -632,15 +642,20 @@ def copy_and_create(
                                             o => o.textContent.trim().toLowerCase() === val.toLowerCase()
                                         );
                                         if (match) s.value = match.value;
-                                        else return;
+                                        else return false;
                                     }
                                     s.dispatchEvent(new Event('change', {bubbles: true}));
+                                    return true;
                                 }""",
                                 [el, color_id],
                             )
-                            break
+                            if color_field_set:
+                                break
                     except Exception as exc:
                         logger.debug("Color fill failed for %s: %s", color_sel, exc)
+                if not color_field_set:
+                    logger.warning("Color field not found/matched on copy form — template's original color will be submitted unchanged")
+                    _s("⚠ Color field not found or option not matched — template's color kept as-is")
 
             time.sleep(1)
 

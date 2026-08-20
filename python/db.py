@@ -475,7 +475,7 @@ def search_products_ilike_term(term: str, limit: int = 100) -> list[dict]:
                 like = f"%{term}%"
                 cur.execute("""
                     SELECT product_id, product_number, name, short_name,
-                           vbn_number, color, origin, product_group
+                           vbn_number, color, origin, product_group, application
                     FROM products
                     WHERE name ILIKE %s OR short_name ILIKE %s
                     ORDER BY name

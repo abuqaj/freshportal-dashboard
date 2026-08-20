@@ -104,7 +104,7 @@ export default function ProductCreator({ lang }: Props) {
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
-  const [pendingCreate, setPendingCreate] = useState<{ templateId: string; templateName: string } | null>(null);
+  const [pendingCreate, setPendingCreate] = useState<{ templateId: string; templateName: string; templateGroup: string; templateApplication: string } | null>(null);
   const [finalName, setFinalName] = useState("");
   const [productNumber, setProductNumber] = useState("");
   const [numberChecking, setNumberChecking] = useState(false);
@@ -238,23 +238,24 @@ export default function ProductCreator({ lang }: Props) {
     }
   }
 
+  function fuzzyWordSim(w1: string, w2: string): number {
+    if (w1 === w2) return 1;
+    const longer = w1.length >= w2.length ? w1 : w2;
+    const shorter = w1.length < w2.length ? w1 : w2;
+    if (longer.length === 0) return 1;
+    let matches = 0, si = 0;
+    for (let li = 0; li < longer.length && si < shorter.length; li++) {
+      if (longer[li] === shorter[si]) { matches++; si++; }
+    }
+    return (2 * matches) / (longer.length + shorter.length);
+  }
+
   function wordJaccard(a: string, b: string): number {
     const wordsA = a.toLowerCase().trim().split(/\s+/).filter(Boolean);
     const wordsB = b.toLowerCase().trim().split(/\s+/).filter(Boolean);
     if (wordsA.length === 0 && wordsB.length === 0) return 1;
     const maxWords = Math.max(wordsA.length, wordsB.length);
     if (maxWords === 0) return 1;
-    function fuzzyWordSim(w1: string, w2: string): number {
-      if (w1 === w2) return 1;
-      const longer = w1.length >= w2.length ? w1 : w2;
-      const shorter = w1.length < w2.length ? w1 : w2;
-      if (longer.length === 0) return 1;
-      let matches = 0, si = 0;
-      for (let li = 0; li < longer.length && si < shorter.length; li++) {
-        if (longer[li] === shorter[si]) { matches++; si++; }
-      }
-      return (2 * matches) / (longer.length + shorter.length);
-    }
     const usedB = new Set<number>();
     let totalSim = 0;
     for (const wA of wordsA) {
@@ -269,8 +270,36 @@ export default function ProductCreator({ lang }: Props) {
     return totalSim / maxWords;
   }
 
+  // How much of *query*'s words are covered by *candidate* — ignores extra
+  // descriptive words in candidate (brand prefixes like "FT", pack-size
+  // suffixes like "x20") that would otherwise dilute wordJaccard's symmetric
+  // score even when every word the user typed matches perfectly.
+  function queryCoverage(query: string, candidate: string): number {
+    const wordsQ = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const wordsC = candidate.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    if (wordsQ.length === 0) return 0;
+    const usedC = new Set<number>();
+    let total = 0;
+    for (const wQ of wordsQ) {
+      let bestSim = 0, bestJ = -1;
+      for (let j = 0; j < wordsC.length; j++) {
+        if (usedC.has(j)) continue;
+        const s = fuzzyWordSim(wQ, wordsC[j]);
+        if (s > bestSim) { bestSim = s; bestJ = j; }
+      }
+      if (bestJ >= 0 && bestSim >= 0.80) { total += bestSim; usedC.add(bestJ); }
+    }
+    return total / wordsQ.length;
+  }
+
   function toTitleCase(s: string): string {
     return s.trim().replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function validateProductName(name: string): string | null {
+    if (/\s{2,}/.test(name)) return t.create.nameErrDoubleSpace;
+    if (/[^\p{L}\p{N}\s'-]/u.test(name)) return t.create.nameErrSpecialChars;
+    return null;
   }
 
   function genProductNumber(name: string): string {
@@ -350,11 +379,11 @@ export default function ProductCreator({ lang }: Props) {
     }
   }
 
-  const handleCreateFromTemplate = useCallback((templateId: string, templateName: string, templateVbn = "", templateColor = "") => {
+  const handleCreateFromTemplate = useCallback((templateId: string, templateName: string, templateVbn = "", templateColor = "", templateGroup = "", templateApplication = "") => {
     const name = toTitleCase(createInput);
     const initialNumber = genProductNumber(name);
     initialFormName.current = name;
-    setPendingCreate({ templateId, templateName });
+    setPendingCreate({ templateId, templateName, templateGroup, templateApplication });
 
     setColorForCreate("");
     setColorSearch("");
@@ -387,8 +416,13 @@ export default function ProductCreator({ lang }: Props) {
 
     // If typed name is ≥70% similar to template name, the template VBN is likely correct.
     // Below 70% the user is creating a different product — let AI determine the right VBN.
+    // Symmetric Jaccard alone under-scores cases like typing "Miniroses" against a template
+    // named "FT Miniroses x20" — the brand prefix/pack-size suffix dilute the score even
+    // though every word the user typed matches perfectly. queryCoverage catches that: full
+    // coverage of the typed words is trusted even if the template has extra descriptive words.
     const nameSimilarity = wordJaccard(name, templateName);
-    const useTemplateVbn = nameSimilarity >= 0.70;
+    const coverage = queryCoverage(name, templateName);
+    const useTemplateVbn = nameSimilarity >= 0.70 || coverage >= 0.99;
 
     setVbnForCreate(useTemplateVbn ? templateVbn : "");
     setVbnForCreateInfo(null);
@@ -523,6 +557,8 @@ export default function ProductCreator({ lang }: Props) {
       setCreateStatus(null);
     }
   }
+
+  const nameValidationError = createInput ? validateProductName(createInput) : null;
 
   // Derived step from existing state
   const step = creating ? "creating"
@@ -671,18 +707,19 @@ export default function ProductCreator({ lang }: Props) {
                   type="text"
                   value={createInput}
                   onChange={(e) => setCreateInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleProductSearch()}
+                  onKeyDown={(e) => e.key === "Enter" && !nameValidationError && handleProductSearch()}
                   placeholder={t.create.namePlaceholder}
-                  className="flex-1 border border-border rounded-xl px-4 py-3 text-sm bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
+                  className={`flex-1 border rounded-xl px-4 py-3 text-sm bg-ground focus:outline-none focus:ring-2 transition-colors ${nameValidationError ? "border-ember/50 focus:ring-ember/30 focus:border-ember/60" : "border-border focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface"}`}
                   autoFocus
                 />
                 <button
                   onClick={handleProductSearch}
-                  disabled={!createInput.trim()}
+                  disabled={!createInput.trim() || !!nameValidationError}
                   className="bg-ember hover:bg-ember-dark disabled:opacity-40 text-white text-sm font-semibold px-5 py-3 rounded-xl transition-colors"
                 >{t.create.searchBtn}</button>
               </div>
-              {searchError && <p className="mt-3 text-sm text-ember bg-ember-light border border-ember/30 rounded-xl px-4 py-3">⚠ {searchError}</p>}
+              {nameValidationError && <p className="mt-3 text-sm text-ember bg-ember-light border border-ember/30 rounded-xl px-4 py-3">⚠ {nameValidationError}</p>}
+              {!nameValidationError && searchError && <p className="mt-3 text-sm text-ember bg-ember-light border border-ember/30 rounded-xl px-4 py-3">⚠ {searchError}</p>}
             </div>
             {syncStatus?.running && (
               <div className="flex items-center gap-2 text-xs text-emerald">
@@ -741,7 +778,7 @@ export default function ProductCreator({ lang }: Props) {
                         if (r.similarity >= 1.0) {
                           setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name, templateColor: r.color ?? "" });
                         } else {
-                          handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "");
+                          handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "", r.product_group ?? "", r.application ?? "");
                         }
                       }}
                       className={`w-full text-left px-4 py-3 rounded-xl border transition-all hover:shadow-sm group ${r.similarity >= 1.0 ? "border-ember/40 bg-ember-light/30 hover:bg-ember-light/50" : r.similarity >= 0.80 ? "border-amber-200 bg-amber-50/60 hover:bg-amber-50" : "border-border bg-surface hover:bg-ground"}`}
@@ -750,6 +787,11 @@ export default function ProductCreator({ lang }: Props) {
                         <div className="min-w-0">
                           <p className="font-medium text-sm text-ink truncate">{r.name}</p>
                           {r.short_name && <p className="text-xs text-ink-3 truncate mt-0.5">{r.short_name}</p>}
+                          {(r.product_group || r.application) && (
+                            <p className="text-[11px] text-ink-3/70 truncate mt-0.5">
+                              {[r.product_group, r.application].filter(Boolean).join(" · ")}
+                            </p>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
                           {r.vbn_number && <span className="text-[11px] font-mono text-ink-3">{r.vbn_number}</span>}
@@ -787,6 +829,11 @@ export default function ProductCreator({ lang }: Props) {
               <p className="text-xs text-ink-3 mt-0.5">
                 {t.create.templateLabel} <span className="font-medium text-ink">{pendingCreate.templateName}</span>
                 <span className="ml-1.5 opacity-40">#{pendingCreate.templateId}</span>
+                {(pendingCreate.templateGroup || pendingCreate.templateApplication) && (
+                  <span className="ml-1.5 opacity-70">
+                    ({[pendingCreate.templateGroup, pendingCreate.templateApplication].filter(Boolean).join(" · ")})
+                  </span>
+                )}
                 <span className="mx-1.5 opacity-30">·</span>
                 <button
                   onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setNameFromTemplate(null); setTemplateColorName(""); }}

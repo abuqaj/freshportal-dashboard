@@ -978,6 +978,9 @@ def product_search(req: ProductSearchRequest, _: dict = Depends(require_permissi
                 "short_name": m.short_name,
                 "vbn_number": m.vbn_number,
                 "similarity": round(m.similarity, 3),
+                "color": getattr(m, "color", ""),
+                "product_group": getattr(m, "product_group", ""),
+                "application": getattr(m, "application", ""),
             }
             for m in matches
         ]
@@ -993,6 +996,8 @@ def _matches_to_results(matches) -> list[dict]:
             "vbn_number": m.vbn_number,
             "similarity": round(m.similarity, 3),
             "color": getattr(m, "color", ""),
+            "product_group": getattr(m, "product_group", ""),
+            "application": getattr(m, "application", ""),
         }
         for m in matches
     ]

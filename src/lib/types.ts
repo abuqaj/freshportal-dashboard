@@ -26,6 +26,8 @@ export type ProductSearchResult = {
   vbn_number: string;
   similarity: number;
   color?: string;
+  product_group?: string;
+  application?: string;
 };
 
 export type FixEntry = { product_id: string; name: string; old_vbn: string; new_vbn: string };
