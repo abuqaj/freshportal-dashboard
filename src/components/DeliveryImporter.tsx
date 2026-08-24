@@ -233,8 +233,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [multiFileError, setMultiFileError] = useState(false);
   const [fileLoaded, setFileLoaded] = useState(false);
 
+  // Keyed by variety name only (length excluded) — a confirmed product match is a
+  // variety-identity decision, so it applies to every line sharing the name in this
+  // order (any length) and is cached across future deliveries for the same supplier.
   function deliveryKey(line: DeliveryLine): string {
-    return `${(line.nm_variety ?? "").toLowerCase().trim()}|${line.nu_length || ""}`;
+    return (line.nm_variety ?? "").toLowerCase().trim();
   }
 
   const addLog = useCallback((msg: string) => {
@@ -808,7 +811,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
     if (showOnlyUnmatched) {
       lines = lines.filter(l => {
-        const dk = `${(l.nm_variety ?? "").toLowerCase().trim()}|${l.nu_length || ""}`;
+        const dk = deliveryKey(l);
         return !(lineEdits[dk]?.fp_product_id ?? l.fp_product_id);
       });
     }
@@ -1443,12 +1446,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           {editLine ? td.editMatchTitle : td.editNoMatchTitle}
                         </p>
                         {editLine && (
-                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-ink-3">
+                          <div className="mt-1.5 text-xs text-ink-3">
                             <span className="font-medium text-ink">{editLine.nm_variety}</span>
-                            {editLine.nm_species && <span>{editLine.nm_species}</span>}
-                            {editLine.nu_length > 0 && <span>{editLine.nu_length} cm</span>}
-                            {editLine.nu_stems_bunch > 0 && <span>{editLine.nu_stems_bunch} st/bos</span>}
-                            {editLine.nu_bunches > 0 && <span>{editLine.nu_bunches} bossen</span>}
                           </div>
                         )}
                         {currentMatchName && (

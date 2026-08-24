@@ -695,9 +695,15 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
 # Catalogue matching
 # ---------------------------------------------------------------------------
 
-def delivery_key(nm_variety: str | None, nu_length: int | None) -> str:
-    """Stable cache key for a delivery line: '<variety_lower>|<length>'."""
-    return f"{(nm_variety or '').lower().strip()}|{nu_length or ''}"
+def delivery_key(nm_variety: str | None) -> str:
+    """Stable cache key for a delivery line: '<variety_lower>'.
+
+    Keyed by variety name only (length excluded) — a confirmed product match
+    is a variety-identity decision, not a per-length one, so it should apply
+    to every line sharing the name (any length) in this order and in future
+    deliveries for the same supplier.
+    """
+    return (nm_variety or "").lower().strip()
 
 
 # Origin tokens that appear between genus and variety in FP catalogue names.
@@ -842,7 +848,7 @@ def match_line_to_catalogue(
 
     Length is intentionally ignored — it is adjusted manually during stock creation.
     """
-    key = delivery_key(line.nm_variety, line.nu_length)
+    key = delivery_key(line.nm_variety)
 
     # 0. Cache lookup — only use approved or manual entries as authoritative
     if cached_matches and key in cached_matches:
