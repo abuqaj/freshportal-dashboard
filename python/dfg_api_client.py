@@ -97,7 +97,9 @@ def get_batch(cfg: Config, supplier_id: str, batch_number: str) -> dict[str, Any
         "supplier_id": supplier_id,
         "batch_number": batch_number,
     })
-    if resp.status_code == 404:
+    # FreshPortal returns 204 (valid query, no matching shipment) as well as the
+    # more conventional 404 — both mean "not found, safe to create" (2026-08-24).
+    if resp.status_code in (204, 404):
         return None
     resp.raise_for_status()
     return resp.json()
