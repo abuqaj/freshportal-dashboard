@@ -19,7 +19,6 @@ from parser_delivery import (
     DeliveryOrder,
     _normalise_box,
     _resolve_grower_id,
-    _PACKAGING_VOLUME_WEIGHT,
 )
 
 log = logging.getLogger(__name__)
@@ -133,9 +132,6 @@ def build_stock_entry(line: DeliveryLine) -> dict[str, Any]:
         )
 
     fust = _normalise_box(line.nm_box)
-    volume_weight = _PACKAGING_VOLUME_WEIGHT.get(fust)
-    if volume_weight is None:
-        raise DfgApiError(f"No volume_weight mapping for fust {fust!r} (product {line.nm_product!r})")
 
     manufacturer_id = _resolve_grower_id(line.nm_location)
     if not manufacturer_id:
@@ -149,10 +145,14 @@ def build_stock_entry(line: DeliveryLine) -> dict[str, Any]:
         "quantity": line.nu_physical_boxes,
         "quantity_per_pack": line.nu_stems_total,
         "weight": line.nu_weight,
-        "volume_weight": volume_weight,
+        "box_weight": line.nu_box_weight,
         "price": line.mny_rate_stem,
         "characteristics": {
             "length": line.nu_length,
+            # FreshPortal has no equivalent data for these — always sent as fixed values
+            # per explicit decision (2026-08-24).
+            "quality": "AA",
+            "maturity": "033",
             "number_of_bunches": str(line.nu_bunches),
             "stems_per_bunch": str(line.nu_stems_bunch),
         },

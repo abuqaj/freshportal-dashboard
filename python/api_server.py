@@ -2009,6 +2009,7 @@ def _order_from_dict(raw: dict) -> DeliveryOrder:
             match_method=l.get("match_method", "none"),
             catalogue_nm_product=l.get("catalogue_nm_product", ""),
             nu_weight=float(l.get("nu_weight") or 0),
+            nu_box_weight=float(l.get("nu_box_weight") or 0),
         )
         for l in raw.get("lines", [])
     ]

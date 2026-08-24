@@ -21,6 +21,9 @@ class DeliveryLine:
     nm_product: str
     # Weight of a single stem (kg). Only present in the Elite/Alissroses JSON format.
     nu_weight: float = 0
+    # Physical weight of the box this line came from (kg), from boxes[].nu_box_weight.
+    # Same value shared by every line derived from a mix box. Elite/Alissroses format only.
+    nu_box_weight: float = 0
     # Box code: HB (or original tp_box) for single-variety boxes;
     # MB1, MB2 … for mix-box products (sequential within the invoice)
     nm_box: str = ""
@@ -297,6 +300,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             nm_box=box_code,
                             nm_location=(prod.get("nm_location") or "").strip(),
                             nu_weight=float(prod.get("nu_weight") or 0),
+                            nu_box_weight=float(box.get("nu_box_weight") or 0),
                         )
                     keys_new_in_this_box.add(key)
             else:
@@ -337,6 +341,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             nm_box=tp_box,
                             nm_location=(prod.get("nm_location") or "").strip(),
                             nu_weight=float(prod.get("nu_weight") or 0),
+                            nu_box_weight=float(box.get("nu_box_weight") or 0),
                         )
                     keys_new_in_this_box.add(key)
 
@@ -955,6 +960,8 @@ def order_to_dict(order: DeliveryOrder) -> dict:
                 "match_method": l.match_method,
                 "catalogue_nm_product": l.catalogue_nm_product,
                 "nm_location": l.nm_location,
+                "nu_weight": l.nu_weight,
+                "nu_box_weight": l.nu_box_weight,
             }
             for l in order.lines
         ],
