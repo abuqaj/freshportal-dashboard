@@ -150,6 +150,15 @@ const DEMO_IMPORT_RESULT: DfgCreateResult = {
   skipped_unmatched: ["Gerbera Mini Pink 45cm"],
 };
 
+// Fixed customer list for the invoice target — DFG API only ever invoices to
+// one of these 4 FreshPortal customers for this integration (2026-08-24).
+const DFG_CUSTOMERS: { id: number; code: string; name: string }[] = [
+  { id: 2,  code: "OZE",   name: "OZ-Hami - Actual weight" },
+  { id: 12, code: "OZEDS", name: "OZ-Hami - Direct Sales" },
+  { id: 14, code: "OZEG",  name: "OZ-Hami - Gypso" },
+  { id: 16, code: "COLSUM", name: "Coloriginz - Summerflowers" },
+];
+
 const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   variety_length:       { label: "exact",        cls: "bg-emerald/15 text-emerald border-emerald/20" },
   variety_nolen:        { label: "exact~len",    cls: "bg-emerald/10 text-emerald border-emerald/15" },
@@ -1220,13 +1229,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Customer (invoice target) — optional, omit to create shipment without an invoice */}
           <div className="flex items-center gap-2">
             <label className="text-xs text-ink-3 whitespace-nowrap">{td.customerIdLabel}</label>
-            <input
+            <select
               value={customerId}
-              onChange={e => setCustomerId(e.target.value.replace(/[^0-9]/g, ""))}
-              placeholder={td.customerIdPlaceholder}
-              inputMode="numeric"
-              className="h-8 w-40 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 placeholder:text-ink-3/50 transition-colors"
-            />
+              onChange={e => setCustomerId(e.target.value)}
+              className="h-8 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors"
+            >
+              <option value="">{td.customerIdPlaceholder}</option>
+              {DFG_CUSTOMERS.map(c => (
+                <option key={c.id} value={c.id}>{c.name} ({c.code})</option>
+              ))}
+            </select>
           </div>
 
           {parseResult!.unmatched_count > 0 && (
