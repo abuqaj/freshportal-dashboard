@@ -91,7 +91,7 @@ interface ParseResult {
   unmatched_count: number;
 }
 
-type Stage = "idle" | "parsing" | "preview" | "importing" | "done" | "error";
+type Stage = "idle" | "parsing" | "shipment" | "preview" | "importing" | "done" | "error";
 
 interface DfgLineError {
   product_number: string;
@@ -189,6 +189,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [importResult, setImportResult] = useState<DfgCreateResult | null>(null);
   const [error, setError] = useState("");
   const [customerId, setCustomerId] = useState("");
+  const [orderDateOverride, setOrderDateOverride] = useState("");
+  const [shipmentEditOpen, setShipmentEditOpen] = useState(false);
   // Set when /delivery/api/check finds the shipment already exists — blocks
   // create until the user explicitly chooses to add the missing lines instead.
   const [existingBatch, setExistingBatch] = useState<{ id: number; number: string } | null>(null);
@@ -245,6 +247,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // order (any length) and is cached across future deliveries for the same supplier.
   function deliveryKey(line: DeliveryLine): string {
     return (line.nm_variety ?? "").toLowerCase().trim();
+  }
+
+  // order.dt_fly is always normalised to "DD-MM-YYYY" by the parser; <input type="date">
+  // needs "YYYY-MM-DD" — convert only at the UI boundary, never change the stored format.
+  function ddmmyyyyToIso(s: string): string {
+    const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(s);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : "";
+  }
+  function isoToDdmmyyyy(s: string): string {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : "";
   }
 
   const addLog = useCallback((msg: string) => {
@@ -367,7 +380,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const res = await fetch(`${RAILWAY}/catalogue/${supplierId}/matches`, { method: "DELETE" });
       if (!res.ok) throw new Error(await res.text());
       // Re-parse the currently loaded JSON so the table reflects fresh matching.
-      await handleParse(supplierId);
+      await handleParse(supplierId, true);
     } catch { alert(td.clearCacheError); }
     finally { setClearingCache(false); }
   }
@@ -401,7 +414,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Parse & match ──────────────────────────────────────────────────────
 
-  async function handleParse(supplierIdOverride?: string) {
+  async function handleParse(supplierIdOverride?: string, keepStage = false) {
     if (!jsonText.trim()) return;
     setStage("parsing");
     setDuplicateWarning([]);
@@ -440,7 +453,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         }
       }
       setApprovedKeys(preApproved);
-      setStage("preview");
+      if (!keepStage) setStage("shipment");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
       setStage("error");
@@ -537,6 +550,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setStage("error");
       return;
     }
+    if (!customerId) {
+      // Shouldn't be reachable via the UI — the shipment step gates on this —
+      // but guard defensively since this function can also run on retry paths.
+      setStage("shipment");
+      return;
+    }
 
     // Check if all matched lines are approved — show modal if not
     if (!skipPartialCheck) {
@@ -561,6 +580,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
     const orderWithEdits: DeliveryOrder = {
       ...order,
+      dt_fly: orderDateOverride || order.dt_fly,
       lines: order.lines
         .filter(line => approvedKeys.has(deliveryKey(line)))
         .map(line => {
@@ -610,7 +630,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           skipped_unmatched: skippedUnmatched,
         };
         setImportResult(result);
-        await logImportResult(order, result);
+        await logImportResult(orderWithEdits, result);
         setStage("done");
         return;
       }
@@ -622,14 +642,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         body: JSON.stringify({
           order: orderWithEdits,
           supplier_fp_id: supplierFpId,
-          customer_id: customerId.trim() ? Number(customerId.trim()) : null,
+          customer_id: Number(customerId),
         }),
       });
       if (!res.ok) throw new Error(await res.text());
       const result: DfgCreateResult = await res.json();
       result.skipped_unmatched = skippedUnmatched;
       setImportResult(result);
-      await logImportResult(order, result);
+      await logImportResult(orderWithEdits, result);
       setStage("done");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -749,6 +769,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setImportResult(null);
     setExistingBatch(null);
     setCustomerId("");
+    setOrderDateOverride("");
+    setShipmentEditOpen(false);
     setApprovedKeys(new Set());
     setLineEdits({});
     setEditingKey(null);
@@ -847,17 +869,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     return lines;
   }, [parseResult, activeOrderIdx, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits]);
 
-  type AllTourStep = TourStep & { tourStage: "idle" | "preview" | "done" };
+  type AllTourStep = TourStep & { tourStage: "idle" | "shipment" | "preview" | "done" };
 
   const allTourSteps = useMemo((): AllTourStep[] => [
-    { tourStage: "idle",    targetRef: refDropZone        as React.RefObject<HTMLElement|null>, title: td.tourStep1Title, body: td.tourStep1Body },
-    { tourStage: "idle",    targetRef: refParseBtn        as React.RefObject<HTMLElement|null>, title: td.tourStep2Title, body: td.tourStep2Body },
-    { tourStage: "preview", targetRef: refSupplierRow     as React.RefObject<HTMLElement|null>, title: td.tourStep3Title, body: td.tourStep3Body },
-    { tourStage: "preview", targetRef: refCatalogueStatus as React.RefObject<HTMLElement|null>, title: td.tourStep4Title, body: td.tourStep4Body },
-    { tourStage: "preview", targetRef: refApproveToolbar  as React.RefObject<HTMLElement|null>, title: td.tourStep5Title, body: td.tourStep5Body },
-    { tourStage: "preview", targetRef: refTable           as React.RefObject<HTMLElement|null>, title: td.tourStep6Title, body: td.tourStep6Body },
-    { tourStage: "preview", targetRef: refActionBtns      as React.RefObject<HTMLElement|null>, title: td.tourStep7Title, body: td.tourStep7Body },
-    { tourStage: "done",    targetRef: refImportResult    as React.RefObject<HTMLElement|null>, title: td.tourStep8Title, body: td.tourStep8Body },
+    { tourStage: "idle",     targetRef: refDropZone        as React.RefObject<HTMLElement|null>, title: td.tourStep1Title, body: td.tourStep1Body },
+    { tourStage: "idle",     targetRef: refParseBtn        as React.RefObject<HTMLElement|null>, title: td.tourStep2Title, body: td.tourStep2Body },
+    { tourStage: "shipment", targetRef: refSupplierRow     as React.RefObject<HTMLElement|null>, title: td.tourStep3Title, body: td.tourStep3Body },
+    { tourStage: "preview",  targetRef: refCatalogueStatus as React.RefObject<HTMLElement|null>, title: td.tourStep4Title, body: td.tourStep4Body },
+    { tourStage: "preview",  targetRef: refApproveToolbar  as React.RefObject<HTMLElement|null>, title: td.tourStep5Title, body: td.tourStep5Body },
+    { tourStage: "preview",  targetRef: refTable           as React.RefObject<HTMLElement|null>, title: td.tourStep6Title, body: td.tourStep6Body },
+    { tourStage: "preview",  targetRef: refActionBtns      as React.RefObject<HTMLElement|null>, title: td.tourStep7Title, body: td.tourStep7Body },
+    { tourStage: "done",     targetRef: refImportResult    as React.RefObject<HTMLElement|null>, title: td.tourStep8Title, body: td.tourStep8Body },
   ], [td]);
 
   function handleTourNext() {
@@ -866,7 +888,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const nextStage = allTourSteps[nextIdx].tourStage;
     const currStage = allTourSteps[tourStep].tourStage;
     if (nextStage !== currStage) {
-      if (nextStage === "preview") {
+      if (nextStage === "shipment") {
         const preApproved = new Set<string>();
         DEMO_PARSE_RESULT.orders[0].lines.forEach(l => { if (l.fp_product_id) preApproved.add(deliveryKey(l)); });
         setParseResult(DEMO_PARSE_RESULT);
@@ -878,6 +900,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         setSortCol(null);
         setColFilters({});
         setApprovedKeys(preApproved);
+        setCustomerId(String(DFG_CUSTOMERS[0].id));
+        setStage("shipment");
+      } else if (nextStage === "preview") {
         setStage("preview");
       } else if (nextStage === "done") {
         setImportResult(DEMO_IMPORT_RESULT);
@@ -893,7 +918,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         <div>
           <h2 className="text-lg font-bold text-ink">{td.title}</h2>
           <p className="text-sm text-ink-3 mt-0.5">
-            {stage === "preview" ? td.descReview
+            {stage === "shipment" ? td.descShipment
+             : stage === "preview" ? td.descReview
              : stage === "importing" ? td.descImport
              : stage === "done" ? td.descProducts
              : td.descUpload}
@@ -931,7 +957,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       <DeliveryStepBar
         stage={stage}
         allDone={stage === "done" && (importResult?.errors.length ?? 0) === 0}
-        steps={[td.stepUpload, td.stepReview, td.stepImport]}
+        steps={[td.stepUpload, td.stepReviewShipment, td.stepReviewProducts, td.stepImport]}
       />
 
       {/* ── PARSING ── */}
@@ -951,7 +977,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       {/* ── IDLE / INPUT ── */}
       {stage === "idle" && (
-        <div className="flex flex-col gap-4">
+        <div key="idle" className="step-enter flex flex-col gap-4">
           {/* Multi-file error */}
           {multiFileError && (
             <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600">
@@ -1044,8 +1070,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       )}
 
       {/* ── PREVIEW ── */}
-      {stage === "preview" && order && (
-        <div className="flex flex-col gap-5">
+      {stage === "shipment" && order && (
+        <div key="shipment" className="step-enter flex flex-col gap-5">
 
           {/* Supplier confirmation popup */}
           {supplierConfirmOpen && resolvedSupplier && (
@@ -1080,6 +1106,194 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </div>
             </>
           )}
+
+          {/* Order tabs if multiple invoices */}
+          {parseResult!.orders.length > 1 && (
+            <div className="flex gap-2 flex-wrap">
+              {parseResult!.orders.map((o, i) => (
+                <button
+                  key={i}
+                  onClick={() => setActiveOrderIdx(i)}
+                  className={`px-3 py-1 rounded-lg text-xs font-medium border transition-colors
+                    ${i === activeOrderIdx ? "bg-emerald text-white border-transparent" : "border-border text-ink-3 hover:text-ink"}`}
+                >
+                  {o.id_invoice}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Shipment details pill */}
+          <div className="card-enter rounded-2xl border border-border bg-muted p-4 relative">
+            <div className="flex items-start justify-between gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm flex-1">
+                <Row label={td.supplier} value={order.tx_company} />
+                <Row label={td.invoiceNr} value={order.id_invoice} />
+                {shipmentEditOpen ? (
+                  <div className="flex gap-2 items-center">
+                    <span className="text-ink-3 shrink-0 w-28">{td.deliveryDate}</span>
+                    <input
+                      type="date"
+                      value={ddmmyyyyToIso(orderDateOverride || order.dt_fly)}
+                      onChange={e => setOrderDateOverride(isoToDdmmyyyy(e.target.value))}
+                      className="h-8 px-2 rounded-lg text-sm border border-emerald/40 bg-surface outline-none focus:border-emerald transition-colors"
+                    />
+                  </div>
+                ) : (
+                  <Row label={td.deliveryDate} value={orderDateOverride || order.dt_fly} />
+                )}
+                <Row label={td.awb} value={order.tx_awb} />
+                <Row label={td.boxes} value={String(order.nu_boxes)} />
+                <Row label={td.stemsTotal} value={order.nu_stems_total.toLocaleString()} />
+                <Row label={td.valueTotal} value={`$${order.mny_total.toFixed(2)}`} />
+              </div>
+              <button
+                onClick={() => setShipmentEditOpen(v => !v)}
+                title={td.editShipmentBtn}
+                className={`shrink-0 w-7 h-7 rounded-full border flex items-center justify-center transition-colors
+                  ${shipmentEditOpen ? "border-emerald bg-emerald/10 text-emerald" : "border-border text-ink-3 hover:text-ink hover:border-emerald/40"}`}
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </button>
+            </div>
+
+            {/* FreshPortal supplier resolution row */}
+            <div ref={refSupplierRow} className="flex items-center gap-2 text-sm mt-3 pt-3 border-t border-border/60">
+              <span className="text-ink-3 shrink-0">{td.fpSupplierLabel}</span>
+              {resolvedSupplier ? (
+                <>
+                  <span className="font-medium text-ink">{resolvedSupplier.nm_supplier}</span>
+                  <span className="text-ink-3/50 text-xs">#{resolvedSupplier.fp_supplier_id}</span>
+                  {shipmentEditOpen && (
+                    <button
+                      onClick={openSupplierPicker}
+                      className="ml-1 h-6 px-2.5 rounded-lg text-xs font-medium border border-emerald/40 text-emerald hover:bg-emerald/8 transition-colors"
+                    >
+                      {td.changeSupplierBtn}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="text-amber-600 text-xs">{td.supplierNoMatch}</span>
+                  <button
+                    onClick={openSupplierPicker}
+                    className="h-6 px-2.5 rounded-lg text-xs font-medium border border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors"
+                  >
+                    {td.selectSupplierBtn}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Assign to customer — required before continuing */}
+          <div className="card-enter rounded-2xl border-2 border-emerald/25 bg-emerald-light p-4 flex flex-col gap-2">
+            <label className="text-sm font-semibold text-emerald-dark flex items-center gap-1.5">
+              {td.customerIdLabel}
+              <span
+                title={td.customerIdTooltip}
+                className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-emerald/40 text-emerald text-[10px] leading-none cursor-help shrink-0"
+              >
+                i
+              </span>
+            </label>
+            <select
+              value={customerId}
+              onChange={e => setCustomerId(e.target.value)}
+              className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors"
+            >
+              <option value="" disabled>{td.customerIdPlaceholder}</option>
+              {DFG_CUSTOMERS.map(c => (
+                <option key={c.id} value={c.id}>{c.name} ({c.code})</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Continue to products */}
+          <div className="flex items-center justify-between gap-3">
+            <button onClick={handleStartOver} className="text-xs text-ink-3 hover:text-ink transition-colors">
+              {td.startOver}
+            </button>
+            <div className="flex flex-col items-end gap-1">
+              {!customerId && (
+                <span className="text-[11px] text-ember">{td.customerRequiredHint}</span>
+              )}
+              <button
+                onClick={() => setStage("preview")}
+                disabled={!resolvedSupplier || !customerId}
+                className="h-10 px-6 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
+              >
+                {td.continueToProductsBtn} →
+              </button>
+            </div>
+          </div>
+
+          {/* Supplier picker modal */}
+          {supplierPickerOpen && (
+            <>
+              <div
+                className="fixed inset-0 bg-black/60 z-[200]"
+                onClick={() => setSupplierPickerOpen(false)}
+              />
+              <div className="fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+                  <div>
+                    <span className="text-sm font-semibold text-ink">{td.selectSupplierTitle}</span>
+                    <p className="text-xs text-ink-3 mt-0.5">{td.supplierForLabel} {parseResult?.orders[activeOrderIdx]?.tx_company}</p>
+                  </div>
+                  <button onClick={() => setSupplierPickerOpen(false)} className="text-xs text-ink-3 hover:text-ink">✕</button>
+                </div>
+                <div className="px-3 py-2 border-b border-border shrink-0">
+                  <input
+                    autoFocus
+                    value={supplierSearch}
+                    onChange={e => setSupplierSearch(e.target.value)}
+                    placeholder={td.searchSupplierPlaceholder}
+                    className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
+                  />
+                </div>
+                <div className="overflow-y-auto flex-1 bg-surface">
+                  {supplierList.length === 0 ? (
+                    <p className="text-xs text-ink-3 px-4 py-3">{td.loadingSuppliers}</p>
+                  ) : (
+                    supplierList
+                      .filter(s => s.nm_supplier.toLowerCase().includes(supplierSearch.toLowerCase()))
+                      .map(s => (
+                        <button
+                          key={s.fp_supplier_id}
+                          onClick={() => handleSelectSupplier(s)}
+                          className={`w-full text-left px-4 py-2.5 text-sm border-b border-border/60 last:border-0 transition-colors
+                            ${resolvedSupplier?.fp_supplier_id === s.fp_supplier_id
+                              ? "bg-emerald/10 text-emerald font-medium"
+                              : "bg-surface text-ink hover:bg-muted"}`}
+                        >
+                          {s.nm_supplier}
+                          <span className="ml-2 text-xs text-ink-3">#{s.fp_supplier_id}</span>
+                        </button>
+                      ))
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+
+        </div>
+      )}
+
+      {stage === "preview" && order && (
+        <div key="preview" className="step-enter flex flex-col gap-5">
+
+          {/* Back to shipment */}
+          <button
+            onClick={() => setStage("shipment")}
+            className="self-start flex items-center gap-1 text-xs text-ink-3 hover:text-ink transition-colors"
+          >
+            ← {td.backToShipmentBtn}
+          </button>
 
           {/* Partial approve confirmation modal */}
           {partialApproveOpen && (() => {
@@ -1116,64 +1330,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             );
           })()}
 
-          {/* Order tabs if multiple invoices */}
-          {parseResult!.orders.length > 1 && (
-            <div className="flex gap-2 flex-wrap">
-              {parseResult!.orders.map((o, i) => (
-                <button
-                  key={i}
-                  onClick={() => setActiveOrderIdx(i)}
-                  className={`px-3 py-1 rounded-lg text-xs font-medium border transition-colors
-                    ${i === activeOrderIdx ? "bg-emerald text-white border-transparent" : "border-border text-ink-3 hover:text-ink"}`}
-                >
-                  {o.id_invoice}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Order header */}
-          <div className="bg-muted rounded-2xl p-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <Row label={td.supplier} value={order.tx_company} />
-            <Row label={td.invoiceNr} value={order.id_invoice} />
-            <Row label={td.deliveryDate} value={order.dt_fly} />
-            <Row label={td.awb} value={order.tx_awb} />
-            <Row label={td.boxes} value={String(order.nu_boxes)} />
-            <Row label={td.stemsTotal} value={order.nu_stems_total.toLocaleString()} />
-            <Row label={td.valueTotal} value={`$${order.mny_total.toFixed(2)}`} />
-          </div>
-
-          {/* FreshPortal supplier resolution row */}
-          <div ref={refSupplierRow} className="flex items-center gap-2 text-sm">
-            <span className="text-ink-3 shrink-0">{td.fpSupplierLabel}</span>
-            {resolvedSupplier ? (
-              <>
-                <span className="font-medium text-ink">{resolvedSupplier.nm_supplier}</span>
-                <span className="text-ink-3/50 text-xs">#{resolvedSupplier.fp_supplier_id}</span>
-                <button
-                  onClick={openSupplierPicker}
-                  title={td.changeSupplierBtn}
-                  className="ml-1 text-ink-3 hover:text-ink opacity-60 hover:opacity-100 transition-opacity"
-                >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                  </svg>
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="text-amber-600 text-xs">{td.supplierNoMatch}</span>
-                <button
-                  onClick={openSupplierPicker}
-                  className="h-6 px-2.5 rounded-lg text-xs font-medium border border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors"
-                >
-                  {td.selectSupplierBtn}
-                </button>
-              </>
-            )}
-          </div>
-
           {/* Match status */}
           <div ref={refCatalogueStatus} className="flex items-center gap-3 text-sm flex-wrap">
             <span className="px-2.5 py-1 rounded-full border text-xs text-emerald bg-emerald/10 border-emerald/20">
@@ -1201,29 +1357,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 {clearingCache ? td.clearingCache : td.clearCache}
               </button>
             </div>
-          </div>
-
-          {/* Customer (invoice target) — optional, omit to create shipment without an invoice */}
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-ink-3 whitespace-nowrap flex items-center gap-1">
-              {td.customerIdLabel}
-              <span
-                title={td.customerIdTooltip}
-                className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-ink-3/40 text-ink-3 text-[9px] leading-none cursor-help shrink-0"
-              >
-                i
-              </span>
-            </label>
-            <select
-              value={customerId}
-              onChange={e => setCustomerId(e.target.value)}
-              className="h-8 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors"
-            >
-              <option value="">{td.customerIdPlaceholder}</option>
-              {DFG_CUSTOMERS.map(c => (
-                <option key={c.id} value={c.id}>{c.name} ({c.code})</option>
-              ))}
-            </select>
           </div>
 
           {parseResult!.unmatched_count > 0 && (
@@ -1490,61 +1623,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             );
           })()}
 
-          {/* Supplier picker modal */}
-          {supplierPickerOpen && (
-            <>
-              <div
-                className="fixed inset-0 bg-black/60 z-[200]"
-                onClick={() => setSupplierPickerOpen(false)}
-              />
-              <div className="fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
-                <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-                  <div>
-                    <span className="text-sm font-semibold text-ink">{td.selectSupplierTitle}</span>
-                    <p className="text-xs text-ink-3 mt-0.5">{td.supplierForLabel} {parseResult?.orders[activeOrderIdx]?.tx_company}</p>
-                  </div>
-                  <button onClick={() => setSupplierPickerOpen(false)} className="text-xs text-ink-3 hover:text-ink">✕</button>
-                </div>
-                <div className="px-3 py-2 border-b border-border shrink-0">
-                  <input
-                    autoFocus
-                    value={supplierSearch}
-                    onChange={e => setSupplierSearch(e.target.value)}
-                    placeholder={td.searchSupplierPlaceholder}
-                    className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
-                  />
-                </div>
-                <div className="overflow-y-auto flex-1 bg-surface">
-                  {supplierList.length === 0 ? (
-                    <p className="text-xs text-ink-3 px-4 py-3">{td.loadingSuppliers}</p>
-                  ) : (
-                    supplierList
-                      .filter(s => s.nm_supplier.toLowerCase().includes(supplierSearch.toLowerCase()))
-                      .map(s => (
-                        <button
-                          key={s.fp_supplier_id}
-                          onClick={() => handleSelectSupplier(s)}
-                          className={`w-full text-left px-4 py-2.5 text-sm border-b border-border/60 last:border-0 transition-colors
-                            ${resolvedSupplier?.fp_supplier_id === s.fp_supplier_id
-                              ? "bg-emerald/10 text-emerald font-medium"
-                              : "bg-surface text-ink hover:bg-muted"}`}
-                        >
-                          {s.nm_supplier}
-                          <span className="ml-2 text-xs text-ink-3">#{s.fp_supplier_id}</span>
-                        </button>
-                      ))
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-
         </div>
       )}
 
       {/* ── IMPORTING ── */}
       {stage === "importing" && (
-        <div className="flex flex-col items-center gap-5 py-8">
+        <div key="importing" className="step-enter flex flex-col items-center gap-5 py-8">
           <div className="relative flex items-center justify-center">
             <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
               <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
@@ -1562,7 +1646,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       {/* ── DONE ── */}
       {stage === "done" && importResult && (
-        <div ref={refImportResult} className="flex justify-center py-4">
+        <div key="done" ref={refImportResult} className="step-enter flex justify-center py-4">
           <div className="card-enter w-full max-w-lg bg-surface rounded-3xl border border-border shadow-lg overflow-hidden">
 
             {/* Hero band */}
@@ -1667,7 +1751,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       {/* ── ERROR ── */}
       {stage === "error" && (
-        <div className="flex flex-col gap-3">
+        <div key="error" className="step-enter flex flex-col gap-3">
           <div className="p-4 rounded-2xl bg-red-500/8 border border-red-500/20">
             <p className="text-sm font-semibold text-red-500">{t.common.error}</p>
             <p className="text-xs text-red-400 mt-1 font-mono">{error}</p>
@@ -1735,8 +1819,9 @@ function DeliveryStepBar({
 }) {
   const current = allDone ? steps.length
     : stage === "idle" || stage === "parsing" || stage === "error" ? 0
-    : stage === "preview" ? 1
-    : 2;
+    : stage === "shipment" ? 1
+    : stage === "preview" ? 2
+    : 3;
 
   return (
     <div className="flex items-start w-full">
@@ -1746,24 +1831,27 @@ function DeliveryStepBar({
         return (
           <React.Fragment key={i}>
             <div className="flex flex-col items-center gap-2 flex-shrink-0">
-              <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ring-2 transition-all
+              <div className={`relative w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ring-2 transition-all duration-300
                 ${done    ? "bg-emerald ring-emerald text-white"
-                : active  ? "bg-surface ring-emerald text-emerald"
+                : active  ? "bg-surface ring-emerald text-emerald scale-110"
                 :           "bg-surface ring-border text-ink-3"}`}>
+                {active && <span className="absolute inset-0 rounded-full ring-2 ring-emerald/40 animate-ping" />}
                 {done ? (
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <svg key={`done-${i}`} className="w-4 h-4 step-dot-pop" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="20 6 9 17 4 12"/>
                   </svg>
                 ) : i + 1}
               </div>
-              <span className={`text-[11px] font-medium text-center whitespace-nowrap
+              <span className={`text-[11px] font-medium text-center whitespace-nowrap transition-colors duration-300
                 ${active ? "text-emerald" : done ? "text-ink-3" : "text-ink-3/50"}`}>
                 {label}
               </span>
             </div>
             {i < steps.length - 1 && (
-              <div className={`flex-1 h-0.5 mt-[18px] mx-2 rounded-full transition-colors
-                ${done ? "bg-emerald" : "bg-border"}`} />
+              <div className="flex-1 mt-[18px] mx-2 rounded-full bg-border overflow-hidden">
+                <div className={`h-0.5 bg-emerald rounded-full transition-transform duration-500 ease-out origin-left
+                  ${done ? "scale-x-100" : "scale-x-0"}`} />
+              </div>
             )}
           </React.Fragment>
         );

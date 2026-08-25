@@ -2059,7 +2059,7 @@ def delivery_api_check(
 class DfgCreateRequest(BaseModel):
     order: dict
     supplier_fp_id: str = ""
-    customer_id: int | None = None
+    customer_id: int
 
 
 @app.post("/delivery/api/create")
@@ -2067,7 +2067,10 @@ def delivery_api_create(
     req: DfgCreateRequest,
     _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
-    """POST /dfg/v1/batch — create the shipment (+ invoice if customer_id given).
+    """POST /dfg/v1/batch — create the shipment, invoiced to customer_id.
+
+    customer_id is mandatory (2026-08-25 business rule: every shipment must be
+    allocated to a customer invoice, no bare shipments).
 
     Only lines with a resolved product_number (fp_product_id) are sent; unmatched
     lines are skipped and reported back in `skipped_unmatched` so the UI can flag
@@ -2083,6 +2086,9 @@ def delivery_api_create(
         cfg.validate()
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+    if not req.customer_id:
+        raise HTTPException(400, "customer_id is required — every shipment must be allocated to a customer invoice")
 
     try:
         order = _order_from_dict(req.order)
