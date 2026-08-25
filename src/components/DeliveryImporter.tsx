@@ -264,6 +264,26 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLogs(prev => [...prev, msg]);
   }, []);
 
+  // POST helper that logs the outgoing request body and the raw response
+  // (status + body) into the shipment-creation log, so failures can be
+  // diagnosed from the exact bytes exchanged with the DFG API instead of
+  // just a one-line summary.
+  const loggedRequest = useCallback(async (url: string, body: unknown, label: string): Promise<any> => {
+    addLog(`${label}\n→ POST ${url.replace(RAILWAY, "")}\n${JSON.stringify(body, null, 2)}`);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let data: unknown;
+    try { data = JSON.parse(text); } catch { data = text; }
+    const pretty = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    addLog(`${res.ok ? "  ✓" : "  ⚠"} ${res.status} ${res.ok ? "OK" : "ERROR"}\n${pretty}`);
+    if (!res.ok) throw new Error(pretty);
+    return data;
+  }, [addLog]);
+
   // ── Tour ──────────────────────────────────────────────────────────────────
 
   // Auto-show for new users (delay for module-enter animation to complete)
@@ -592,14 +612,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const skippedUnmatched = order.lines.filter(l => !l.fp_product_id).map(l => l.nm_product);
 
     try {
-      addLog(td.checkingExisting);
-      const checkRes = await fetch(`${RAILWAY}/delivery/api/check`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ supplier_fp_id: supplierFpId, batch_number: order.id_invoice }),
-      });
-      if (!checkRes.ok) throw new Error(await checkRes.text());
-      const checkData = await checkRes.json();
+      const checkData = await loggedRequest(
+        `${RAILWAY}/delivery/api/check`,
+        { supplier_fp_id: supplierFpId, batch_number: order.id_invoice },
+        td.checkingExisting,
+      );
 
       if (checkData.exists) {
         const batch = checkData.batch;
@@ -616,14 +633,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           return;
         }
 
-        addLog(td.addingMissingToExisting(batch.number, missingLines.length));
-        const retryRes = await fetch(`${RAILWAY}/delivery/api/retry`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ batch_id: batch.id, supplier_fp_id: supplierFpId, order: { ...orderWithEdits, lines: missingLines } }),
-        });
-        if (!retryRes.ok) throw new Error(await retryRes.text());
-        const retryData = await retryRes.json();
+        const retryData = await loggedRequest(
+          `${RAILWAY}/delivery/api/retry`,
+          { batch_id: batch.id, supplier_fp_id: supplierFpId, order: { ...orderWithEdits, lines: missingLines } },
+          td.addingMissingToExisting(batch.number, missingLines.length),
+        );
         const result: DfgCreateResult = {
           batch_id: retryData.batch_id, number: retryData.number, created: false,
           stock_entries_ok: retryData.stock_entries_ok, errors: retryData.errors,
@@ -635,18 +649,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         return;
       }
 
-      addLog(td.creatingShipment);
-      const res = await fetch(`${RAILWAY}/delivery/api/create`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          order: orderWithEdits,
-          supplier_fp_id: supplierFpId,
-          customer_id: Number(customerId),
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const result: DfgCreateResult = await res.json();
+      const created = await loggedRequest(
+        `${RAILWAY}/delivery/api/create`,
+        { order: orderWithEdits, supplier_fp_id: supplierFpId, customer_id: Number(customerId) },
+        td.creatingShipment,
+      );
+      const result: DfgCreateResult = created as DfgCreateResult;
       result.skipped_unmatched = skippedUnmatched;
       setImportResult(result);
       await logImportResult(orderWithEdits, result);
@@ -676,13 +684,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
     setRetrying(true);
     try {
-      const res = await fetch(`${RAILWAY}/delivery/api/retry`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batch_id: importResult.batch_id, supplier_fp_id: supplierFpId, order: { ...order, lines: retryLines } }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const retryData = await res.json();
+      const retryData = await loggedRequest(
+        `${RAILWAY}/delivery/api/retry`,
+        { batch_id: importResult.batch_id, supplier_fp_id: supplierFpId, order: { ...order, lines: retryLines } },
+        td.retryingBtn,
+      );
       setImportResult(prev => prev ? {
         ...prev,
         stock_entries_ok: [...prev.stock_entries_ok, ...retryData.stock_entries_ok],
@@ -868,6 +874,27 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     }
     return lines;
   }, [parseResult, activeOrderIdx, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits]);
+
+  // Per-line outcome for the "done" screen's expandable product list — derived
+  // from the same approval/match state used to build the request, cross-
+  // referenced against the result's errors/skipped_unmatched (stock_entries_ok's
+  // shape isn't reliably typed, so success is inferred by elimination instead).
+  type DoneLineStatus = "added" | "failed" | "skipped" | "notApproved";
+  const doneLineStatuses = useMemo((): { line: DeliveryLine; status: DoneLineStatus; message: string }[] => {
+    const o = parseResult?.orders[activeOrderIdx];
+    if (!o || !importResult) return [];
+    const failedMsg = new Map(importResult.errors.map(e => [`${e.product_number}|${e.length}`, e.message]));
+    return o.lines.map(line => {
+      const dk = deliveryKey(line);
+      const edit = lineEdits[dk];
+      const fpId = edit?.fp_product_id ?? line.fp_product_id;
+      if (!fpId) return { line, status: "skipped" as const, message: "" };
+      if (!approvedKeys.has(dk)) return { line, status: "notApproved" as const, message: "" };
+      const key = `${fpId}|${line.nu_length}`;
+      if (failedMsg.has(key)) return { line, status: "failed" as const, message: failedMsg.get(key) ?? "" };
+      return { line, status: "added" as const, message: "" };
+    });
+  }, [parseResult, activeOrderIdx, importResult, lineEdits, approvedKeys]);
 
   type AllTourStep = TourStep & { tourStage: "idle" | "shipment" | "preview" | "done" };
 
@@ -1727,12 +1754,51 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </div>
             )}
 
+            {/* Product lines — full added/failed/skipped/excluded breakdown */}
+            <div className="px-6 pt-4 pb-2 border-t border-border">
+              <details className="text-xs">
+                <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.productLinesLog(doneLineStatuses.length)}</summary>
+                <div className="mt-2 max-h-64 overflow-y-auto space-y-1 pr-1">
+                  {doneLineStatuses.map(({ line, status, message }, i) => {
+                    const badge = {
+                      added:        { label: td.lineStatusAdded,        cls: "bg-emerald/10 text-emerald border-emerald/20" },
+                      failed:       { label: td.lineStatusFailed,       cls: "bg-red-500/10 text-red-500 border-red-500/20" },
+                      skipped:      { label: td.lineStatusSkipped,      cls: "bg-amber-500/10 text-amber-600 border-amber-500/20" },
+                      notApproved:  { label: td.lineStatusNotApproved,  cls: "bg-muted text-ink-3 border-border" },
+                    }[status];
+                    return (
+                      <div key={i} className="flex items-start justify-between gap-2 py-1 border-b border-border/40 last:border-0">
+                        <div className="min-w-0">
+                          <p className="font-medium text-ink truncate">
+                            {line.nm_variety}
+                            {line.nu_length > 0 && <span className="text-ink-3 font-normal"> · {line.nu_length}cm</span>}
+                          </p>
+                          {message && <p className="text-red-400 font-mono text-[11px] truncate">{message}</p>}
+                        </div>
+                        <span className={`shrink-0 px-2 py-0.5 rounded-full border text-[11px] font-medium whitespace-nowrap ${badge.cls}`}>
+                          {badge.label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            </div>
+
             {/* Collapsible logs */}
-            <div className="px-6 pb-5 pt-2 border-t border-border space-y-2">
+            <div className="px-6 pb-5 pt-2 space-y-2">
               <details className="text-xs">
                 <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.batchLog(logs.length)}</summary>
-                <div className="mt-1 bg-ground rounded-xl p-2 max-h-40 overflow-y-auto font-mono space-y-0.5">
-                  {logs.map((l, i) => <div key={i} className="text-ink-3">{l}</div>)}
+                <div className="mt-1 bg-ground rounded-xl p-2 max-h-64 overflow-y-auto font-mono">
+                  {logs.map((l, i) => (
+                    <div
+                      key={i}
+                      className={`whitespace-pre-wrap break-all py-1.5 border-b border-border/40 last:border-0
+                        ${l.startsWith("  ⚠") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
+                    >
+                      {l}
+                    </div>
+                  ))}
                 </div>
               </details>
 
@@ -1877,9 +1943,13 @@ function ProgressLog({ title, logs }: { title: string; logs: string[] }) {
         </svg>
         <span className="text-sm font-semibold text-ink">{title}</span>
       </div>
-      <div ref={containerRef} className="bg-muted rounded-2xl p-4 h-72 overflow-y-auto font-mono text-xs space-y-0.5">
+      <div ref={containerRef} className="bg-muted rounded-2xl p-4 h-72 overflow-y-auto font-mono text-xs">
         {logs.map((l, i) => (
-          <div key={i} className={`${l.startsWith("  ⚠") || l.startsWith("Error") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}>
+          <div
+            key={i}
+            className={`whitespace-pre-wrap break-all py-1.5 border-b border-border/40 last:border-0
+              ${l.startsWith("  ⚠") || l.startsWith("Error") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
+          >
             {l}
           </div>
         ))}
