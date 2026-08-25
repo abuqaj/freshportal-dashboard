@@ -225,7 +225,7 @@ const MODULE_WIDTH: Record<Tab, string> = {
   create:    "max-w-3xl",
   photos:    "max-w-5xl",
   admin:     "max-w-3xl",
-  delivery:  "max-w-5xl",
+  delivery:  "max-w-7xl",
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, onSelectTab, children }: {
