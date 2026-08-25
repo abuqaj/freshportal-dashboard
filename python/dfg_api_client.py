@@ -48,6 +48,7 @@ class BatchResult:
     stock_entries_ok: list[dict[str, Any]]
     errors: list[BatchLineError]
     raw: dict[str, Any]
+    batch_url: str = ""  # FreshPortal web UI link to view the batch, set once batch_id is known
 
 
 _token: str | None = None
@@ -206,13 +207,24 @@ def _parse_batch_response(data: dict[str, Any], fallback_number: str = "") -> Ba
     )
 
 
+def _batch_url(cfg: Config, batch_id: int | None) -> str:
+    """FreshPortal web UI link to view a batch. Same URL the old Playwright
+    scraper landed on after submitting the batch form (batch_v2 module) —
+    still valid for batches created via the DFG API."""
+    if not batch_id:
+        return ""
+    return f"{cfg.freshportal_url}/batch_v2/stock_entry/index/BAT_ID/{batch_id}/"
+
+
 def create_batch(cfg: Config, payload: dict[str, Any]) -> BatchResult:
     """POST /dfg/v1/batch — create a new shipment. Always returns a BatchResult
     on HTTP 200; check `.errors` for lines that failed individually (partial
     success). Must be preceded by get_batch() to avoid creating a duplicate."""
     resp = _request(cfg, "POST", "/dfg/v1/batch", json=payload)
     resp.raise_for_status()
-    return _parse_batch_response(resp.json(), fallback_number=payload.get("number", ""))
+    result = _parse_batch_response(resp.json(), fallback_number=payload.get("number", ""))
+    result.batch_url = _batch_url(cfg, result.batch_id)
+    return result
 
 
 def add_stock_entries(cfg: Config, batch_id: int, supplier_id: str, lines: list[DeliveryLine]) -> BatchResult:
@@ -231,4 +243,6 @@ def add_stock_entries(cfg: Config, batch_id: int, supplier_id: str, lines: list[
     }
     resp = _request(cfg, "POST", "/dfg/v1/batch_stock_entry", json=payload)
     resp.raise_for_status()
-    return _parse_batch_response(resp.json())
+    result = _parse_batch_response(resp.json())
+    result.batch_url = _batch_url(cfg, result.batch_id or batch_id)
+    return result

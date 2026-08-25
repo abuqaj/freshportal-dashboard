@@ -106,6 +106,7 @@ interface DfgCreateResult {
   stock_entries_ok: unknown[];
   errors: DfgLineError[];
   skipped_unmatched: string[];
+  batch_url?: string;
 }
 
 // ── Demo data for guided tour ─────────────────────────────────────────────
@@ -641,7 +642,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         const result: DfgCreateResult = {
           batch_id: retryData.batch_id, number: retryData.number, created: false,
           stock_entries_ok: retryData.stock_entries_ok, errors: retryData.errors,
-          skipped_unmatched: skippedUnmatched,
+          skipped_unmatched: skippedUnmatched, batch_url: retryData.batch_url,
         };
         setImportResult(result);
         await logImportResult(orderWithEdits, result);
@@ -1687,6 +1688,22 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </h2>
               {importResult.batch_id && (
                 <p className="text-xs text-ink-3 font-mono">{td.batchId}: <span className="font-semibold text-ink-2">{importResult.number || importResult.batch_id}</span></p>
+              )}
+              {importResult.batch_url && (
+                <a
+                  href={importResult.batch_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={td.batchUrl}
+                  className="mt-2 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
+                >
+                  {td.viewBatch}
+                  <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                    <path d="M15 3h6v6"/>
+                    <path d="M10 14 21 3"/>
+                  </svg>
+                </a>
               )}
               {existingBatch && (
                 <p className="text-xs text-blue-500 mt-1">{td.addedToExistingBatch(existingBatch.number)}</p>

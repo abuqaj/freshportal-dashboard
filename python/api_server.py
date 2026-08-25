@@ -2125,6 +2125,7 @@ def delivery_api_create(
         "stock_entries_ok": result.stock_entries_ok,
         "errors": [e.__dict__ for e in result.errors],
         "skipped_unmatched": skipped,
+        "batch_url": result.batch_url,
     }
 
 
@@ -2172,6 +2173,7 @@ def delivery_api_retry(
         "number": result.number,
         "stock_entries_ok": result.stock_entries_ok,
         "errors": [e.__dict__ for e in result.errors],
+        "batch_url": result.batch_url,
     }
 
 
