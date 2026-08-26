@@ -27,6 +27,29 @@ function resolvePomarosaGrower(nmLocation: string): string {
   return POMAROSA_GROWER_NAMES[key] ?? nmLocation;
 }
 
+// Grower overrides are keyed by nm_location (not deliveryKey/variety) — the
+// grower is a property of the box's origin, so overriding it for one line
+// correctly applies to every line sharing that same origin in this order.
+function growerLocationKey(nmLocation: string): string {
+  return nmLocation.replace(/\s+/g, "").toLowerCase();
+}
+
+// Distinct Pomarosa growers (deduplicated from POMAROSA_GROWER_NAMES' id/name
+// pairs — mirrors parser_delivery.py's _POMAROSA_GROWER_MAP), for the grower
+// edit picker. Pomarosa is the only supplier where a line's grower can
+// legitimately differ from the auto-resolved one, hence the manual override.
+const POMAROSA_GROWERS: { id: string; name: string }[] = [
+  { id: "57396", name: "Ecuanros" },
+  { id: "61370", name: "Solera" },
+  { id: "60649", name: "Positano" },
+  { id: "57369", name: "Tessa" },
+  { id: "57366", name: "Growerfarms S.A" },
+  { id: "57426", name: "Arcoflor Floress Arcoiris" },
+  { id: "57344", name: "Inversiones Pontetresa" },
+];
+const POMAROSA_GROWER_ID_TO_NAME: Record<string, string> =
+  Object.fromEntries(POMAROSA_GROWERS.map(g => [g.id, g.name]));
+
 type MatchMethod =
   | "variety_length" | "variety_nolen" | "variety_anylength"
   | "floricode"
@@ -61,6 +84,7 @@ interface DeliveryLine {
   match_method: MatchMethod;
   catalogue_nm_product: string;
   nm_location: string;
+  manufacturer_id: string;
 }
 
 interface DeliveryOrder {
@@ -134,11 +158,11 @@ const DEMO_PARSE_RESULT: ParseResult = {
     dt_fly: "2024-06-15", dt_invoice: "2024-06-12", tx_awb: "176-12345678", tx_hawb: "HAW-001",
     nu_boxes: 8, nu_stems_total: 1575, mny_total: 441.00,
     lines: [
-      { gu_product: "d1", nm_variety: "ROSES RED NAOMI", nm_species: "Rosa", nu_length: 60, nu_stems_bunch: 25, nu_bunches: 10, nu_stems_total: 250, mny_rate_stem: 0.38, mny_total: 95.00, id_floricode: "VB401010", nm_product: "Roses Red Naomi 60cm", nm_box: "FB", nu_physical_boxes: 2, fp_product_id: "10001", match_method: "variety_length", catalogue_nm_product: "Roses Red Naomi 60cm", nm_location: "" },
-      { gu_product: "d2", nm_variety: "CHRYSANTH ANASTASIA WHITE", nm_species: "Chrysanthemum", nu_length: 70, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.22, mny_total: 44.00, id_floricode: "VB120020", nm_product: "Chrysanth Anastasia White 70cm", nm_box: "HB", nu_physical_boxes: 2, fp_product_id: "10002", match_method: "fuzzy_variety", catalogue_nm_product: "Chrysanthemum Anastasia White 70", nm_location: "" },
-      { gu_product: "d3", nm_variety: "ALSTROEM PINK FLOYD", nm_species: "Alstroemeria", nu_length: 60, nu_stems_bunch: 5, nu_bunches: 30, nu_stems_total: 150, mny_rate_stem: 0.14, mny_total: 21.00, id_floricode: "VB110030", nm_product: "Alstroem Pink Floyd 60cm", nm_box: "MB", nu_physical_boxes: 1, fp_product_id: "10003", match_method: "cached", catalogue_nm_product: "Alstroemeria Pink Floyd 60", nm_location: "" },
-      { gu_product: "d4", nm_variety: "GERBERA MINI PINK", nm_species: "Gerbera", nu_length: 45, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.18, mny_total: 36.00, id_floricode: "VB210040", nm_product: "", nm_box: "MB", nu_physical_boxes: 2, fp_product_id: "", match_method: "none", catalogue_nm_product: "", nm_location: "" },
-      { gu_product: "d5", nm_variety: "TULIP RED DYNASTY", nm_species: "Tulipa", nu_length: 40, nu_stems_bunch: 10, nu_bunches: 25, nu_stems_total: 250, mny_rate_stem: 0.16, mny_total: 40.00, id_floricode: "VB300050", nm_product: "Tulip Red Dynasty 40cm", nm_box: "HB", nu_physical_boxes: 1, fp_product_id: "10005", match_method: "variety_nolen", catalogue_nm_product: "Tulip Red Dynasty", nm_location: "" },
+      { gu_product: "d1", nm_variety: "ROSES RED NAOMI", nm_species: "Rosa", nu_length: 60, nu_stems_bunch: 25, nu_bunches: 10, nu_stems_total: 250, mny_rate_stem: 0.38, mny_total: 95.00, id_floricode: "VB401010", nm_product: "Roses Red Naomi 60cm", nm_box: "FB", nu_physical_boxes: 2, fp_product_id: "10001", match_method: "variety_length", catalogue_nm_product: "Roses Red Naomi 60cm", nm_location: "", manufacturer_id: "" },
+      { gu_product: "d2", nm_variety: "CHRYSANTH ANASTASIA WHITE", nm_species: "Chrysanthemum", nu_length: 70, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.22, mny_total: 44.00, id_floricode: "VB120020", nm_product: "Chrysanth Anastasia White 70cm", nm_box: "HB", nu_physical_boxes: 2, fp_product_id: "10002", match_method: "fuzzy_variety", catalogue_nm_product: "Chrysanthemum Anastasia White 70", nm_location: "", manufacturer_id: "" },
+      { gu_product: "d3", nm_variety: "ALSTROEM PINK FLOYD", nm_species: "Alstroemeria", nu_length: 60, nu_stems_bunch: 5, nu_bunches: 30, nu_stems_total: 150, mny_rate_stem: 0.14, mny_total: 21.00, id_floricode: "VB110030", nm_product: "Alstroem Pink Floyd 60cm", nm_box: "MB", nu_physical_boxes: 1, fp_product_id: "10003", match_method: "cached", catalogue_nm_product: "Alstroemeria Pink Floyd 60", nm_location: "", manufacturer_id: "" },
+      { gu_product: "d4", nm_variety: "GERBERA MINI PINK", nm_species: "Gerbera", nu_length: 45, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.18, mny_total: 36.00, id_floricode: "VB210040", nm_product: "", nm_box: "MB", nu_physical_boxes: 2, fp_product_id: "", match_method: "none", catalogue_nm_product: "", nm_location: "", manufacturer_id: "" },
+      { gu_product: "d5", nm_variety: "TULIP RED DYNASTY", nm_species: "Tulipa", nu_length: 40, nu_stems_bunch: 10, nu_bunches: 25, nu_stems_total: 250, mny_rate_stem: 0.16, mny_total: 40.00, id_floricode: "VB300050", nm_product: "Tulip Red Dynasty 40cm", nm_box: "HB", nu_physical_boxes: 1, fp_product_id: "10005", match_method: "variety_nolen", catalogue_nm_product: "Tulip Red Dynasty", nm_location: "", manufacturer_id: "" },
     ],
   }],
   supplier_id: "210", supplier_nm: "Demo Grower B.V.", supplier_confirmed: true, matched_count: 4, unmatched_count: 1,
@@ -220,6 +244,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [editSearch, setEditSearch] = useState("");
   const [editSearchResults, setEditSearchResults] = useState<CatalogueProduct[]>([]);
   const [savingApproved, setSavingApproved] = useState(false);
+
+  // ── Grower (manufacturer) override — Pomarosa only ─────────────────────────
+  const [growerEdits, setGrowerEdits] = useState<Record<string, string>>({});
+  const [editingGrowerKey, setEditingGrowerKey] = useState<string | null>(null);
 
   // ── Supplier picker ───────────────────────────────────────────────────────
   const [resolvedSupplier, setResolvedSupplier] = useState<FPSupplier | null>(null);
@@ -607,7 +635,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         .map(line => {
           const dk = deliveryKey(line);
           const edit = lineEdits[dk];
-          return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
+          const growerOverride = growerEdits[growerLocationKey(line.nm_location)];
+          return {
+            ...line,
+            fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
+            catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
+            manufacturer_id: growerOverride ?? line.manufacturer_id,
+          };
         }),
     };
     const skippedUnmatched = order.lines.filter(l => !l.fp_product_id).map(l => l.nm_product);
@@ -678,7 +712,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       .map(line => {
         const dk = deliveryKey(line);
         const edit = lineEdits[dk];
-        return edit ? { ...line, fp_product_id: edit.fp_product_id, catalogue_nm_product: edit.catalogue_nm_product } : line;
+        const growerOverride = growerEdits[growerLocationKey(line.nm_location)];
+        return {
+          ...line,
+          fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
+          catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
+          manufacturer_id: growerOverride ?? line.manufacturer_id,
+        };
       })
       .filter(l => failedSet.has(`${l.fp_product_id}|${l.nu_length}`));
     if (!retryLines.length) return;
@@ -782,6 +822,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLineEdits({});
     setEditingKey(null);
     setEditModalOpen(false);
+    setGrowerEdits({});
+    setEditingGrowerKey(null);
     setPartialApproveOpen(false);
     setResolvedSupplier(null);
     setSupplierPickerOpen(false);
@@ -1525,11 +1567,32 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           <div className="text-ink-3 font-normal">{displayCatName}</div>
                         )}
                       </td>
-                      {isPomarosa && (
-                        <td className="px-3 py-2 text-ink-3 whitespace-nowrap">
-                          {line.nm_location ? resolvePomarosaGrower(line.nm_location) : "—"}
-                        </td>
-                      )}
+                      {isPomarosa && (() => {
+                        const locKey = growerLocationKey(line.nm_location);
+                        const growerOverrideId = growerEdits[locKey];
+                        const growerName = growerOverrideId
+                          ? (POMAROSA_GROWER_ID_TO_NAME[growerOverrideId] ?? growerOverrideId)
+                          : (line.nm_location ? resolvePomarosaGrower(line.nm_location) : "—");
+                        return (
+                          <td className="px-3 py-2 text-ink-3 whitespace-nowrap">
+                            <div className="flex items-center gap-1">
+                              <span>{growerName}</span>
+                              {line.nm_location && (
+                                <button
+                                  onClick={() => setEditingGrowerKey(locKey)}
+                                  title={td.editGrowerBtn}
+                                  className="text-ink-3 hover:text-ink opacity-50 hover:opacity-100 transition-opacity"
+                                >
+                                  <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        );
+                      })()}
                       <td className="px-3 py-2">
                         {line.nm_box ? (
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium
@@ -1642,6 +1705,41 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             ${isCurrentMatch ? "bg-emerald/8" : "bg-surface hover:bg-muted"}`}
                         >
                           <div className={`text-sm font-medium leading-snug ${isCurrentMatch ? "text-emerald" : "text-ink"}`}>{p.nm_product}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            );
+          })()}
+
+          {/* Grower (manufacturer) edit modal — Pomarosa only */}
+          {editingGrowerKey && (() => {
+            const locKey = editingGrowerKey;
+            const currentGrowerId = growerEdits[locKey];
+            return (
+              <>
+                <div className="fixed inset-0 bg-black/60 z-[200]" onClick={() => setEditingGrowerKey(null)} />
+                <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[201] max-w-sm mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
+                  <div className="px-4 py-3 border-b border-border shrink-0 flex items-center justify-between">
+                    <span className="text-sm font-semibold text-ink">{td.editGrowerTitle}</span>
+                    <button onClick={() => setEditingGrowerKey(null)} className="text-ink-3 hover:text-ink">✕</button>
+                  </div>
+                  <div className="overflow-y-auto">
+                    {POMAROSA_GROWERS.map(g => {
+                      const isCurrent = currentGrowerId === g.id;
+                      return (
+                        <button
+                          key={g.id}
+                          onClick={() => {
+                            setGrowerEdits(prev => ({ ...prev, [locKey]: g.id }));
+                            setEditingGrowerKey(null);
+                          }}
+                          className={`w-full text-left px-4 py-2.5 text-sm border-b border-border/60 last:border-0 transition-colors
+                            ${isCurrent ? "bg-emerald/8 text-emerald font-medium" : "bg-surface text-ink hover:bg-muted"}`}
+                        >
+                          {g.name}
                         </button>
                       );
                     })}

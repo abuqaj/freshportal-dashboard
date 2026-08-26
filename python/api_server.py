@@ -45,7 +45,7 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                get_user_flag, set_user_flag)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
 from auth_middleware import require_permission, require_any_permission, get_token_payload
-from parser_delivery import parse_delivery_json, order_to_dict, DeliveryOrder, DeliveryLine
+from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
 from delivery_product_match import match_order_to_products
 from dfg_api_client import (
     DfgApiError, resolve_supplier, get_batch as dfg_get_batch,
@@ -1799,6 +1799,7 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
                 for line in order.lines:
                     log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
                               line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
+            resolve_growers(order)
             result_orders.append(order_to_dict(order))
 
         log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
@@ -2010,6 +2011,7 @@ def _order_from_dict(raw: dict) -> DeliveryOrder:
             catalogue_nm_product=l.get("catalogue_nm_product", ""),
             nu_weight=float(l.get("nu_weight") or 0),
             nu_box_weight=float(l.get("nu_box_weight") or 0),
+            manufacturer_id=l.get("manufacturer_id", ""),
         )
         for l in raw.get("lines", [])
     ]

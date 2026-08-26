@@ -18,7 +18,6 @@ from parser_delivery import (
     DeliveryLine,
     DeliveryOrder,
     _normalise_box,
-    _resolve_grower_id,
 )
 
 log = logging.getLogger(__name__)
@@ -136,7 +135,9 @@ def build_stock_entry(line: DeliveryLine) -> dict[str, Any]:
 
     fust = _normalise_box(line.nm_box)
 
-    manufacturer_id = _resolve_grower_id(line.nm_location)
+    # Resolved by resolve_growers() during /delivery/parse (and user-editable
+    # for Pomarosa in the UI) — used as-is here, not re-resolved.
+    manufacturer_id = line.manufacturer_id
     if not manufacturer_id:
         log.warning("No grower mapping for nm_location=%r (product %r) — omitting manufacturer_id",
                     line.nm_location, line.nm_product)

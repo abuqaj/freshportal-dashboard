@@ -418,6 +418,8 @@ const en = {
     resumingImportSeparator: "── Resuming import ─────────────────────────",
     resumeSeparator:         "── Resume ───────────────────────────────────",
     colGrower:               "Grower",
+    editGrowerBtn:           "Edit grower",
+    editGrowerTitle:         "Select grower",
     statusNotInCatalogue:    "not in catalogue",
   },
   login: {
@@ -924,6 +926,8 @@ const nl: typeof en = {
     resumingImportSeparator: "── Importeren hervatten ─────────────────────",
     resumeSeparator:         "── Hervatten ────────────────────────────────",
     colGrower:               "Kweker",
+    editGrowerBtn:           "Kweker wijzigen",
+    editGrowerTitle:         "Kweker selecteren",
     statusNotInCatalogue:    "niet in catalogus",
   },
   history: {
@@ -1398,6 +1402,8 @@ const pl: typeof en = {
     resumingImportSeparator: "── Wznawianie importu ───────────────────────",
     resumeSeparator:         "── Wznowienie ───────────────────────────────",
     colGrower:               "Grower",
+    editGrowerBtn:           "Zmień growera",
+    editGrowerTitle:         "Wybierz growera",
     statusNotInCatalogue:    "nie ma w katalogu",
   },
   history: {
@@ -1872,6 +1878,8 @@ const es: typeof en = {
     resumingImportSeparator: "── Reanudando importación ───────────────────",
     resumeSeparator:         "── Reanudar ─────────────────────────────────",
     colGrower:               "Cultivador",
+    editGrowerBtn:           "Editar cultivador",
+    editGrowerTitle:         "Seleccionar cultivador",
     statusNotInCatalogue:    "no está en catálogo",
   },
   history: {

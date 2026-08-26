@@ -37,6 +37,11 @@ class DeliveryLine:
     fp_product_id: str = ""
     match_method: str = "none"
     catalogue_nm_product: str = ""
+    # Filled by resolve_growers() after parsing — FP grower (manufacturer) id.
+    # User-editable in the UI for Pomarosa only (the only supplier with more
+    # than one possible grower); every other supplier maps 1:1 so this is
+    # always the same value for all lines in the order.
+    manufacturer_id: str = ""
 
     @property
     def nu_stems_total(self) -> int:
@@ -165,11 +170,98 @@ _POMAROSA_GROWER_MAP: dict[str, str] = {
     "tessa-r3":  "57344",  # Inversiones Pontetresa
 }
 
+# Every other supplier maps 1:1 to a single grower (manufacturer_id) — keyed
+# by tx_company (the JSON's supplier name), lowercased/trimmed at lookup time.
+# Pomarosa is deliberately excluded here — it is the only supplier with more
+# than one grower, resolved separately via _POMAROSA_GROWER_MAP (2026-08-26).
+_SUPPLIER_GROWER_MAP: dict[str, str] = {
+    "agrinag s.a.": "57361",
+    "agrirose cia. ltda.": "57362",
+    "agrocoex s.a.": "57363",
+    "agrogana s.a.": "57384",
+    "agroterranorte s.a.": "57524",
+    "albra roses": "57451",
+    "art roses": "57525",
+    "attar roses": "59961",
+    "azulina flowers s.a.s.": "57526",
+    "bellarosa": "57521",
+    "bosque flowers s.a": "60990",
+    "breeza sa": "57518",
+    "c.i. flores de aposentos sas": "42623",
+    "calinama capital offshore sal": "60465",
+    "cantiza flores s.a.": "57551",
+    "colibri flowers s.a.": "57541",
+    "comercializadora amn almanti": "60545",
+    "d.r. ecuador roses s.a.": "25319",
+    "davinciroses exportaciones cia ltda": "58641",
+    "ecoflor groupchile cia. ltda.": "60144",
+    "ecoroses s.a.": "57448",
+    "eqr roses": "57545",
+    "ever green rose farm": "60100",
+    "fiorentina flowers": "58592",
+    "flodecol s.a.": "57528",
+    "floraroma s.a": "57407",
+    "florecal": "57346",
+    "flores de la hacienda": "61794",
+    "floricola bloomingacres s.a": "61662",
+    "floricola la rosaleda s.a.": "57522",
+    "floricola tierra verde cia ltda": "61770",
+    "florisol cia ltda": "58580",
+    "florsani": "57348",
+    "greenex s.a.s.": "58524",
+    "guaisa s.a.": "58865",
+    "gutimilko s.a.s": "61079",
+    "holex ecuador s.a.s": "62098",
+    "jet fresh flower distributors": "59735",
+    "josarflor s.a.": "57383",
+    "kiara / el chaupi": "57370",
+    "la gaitana farms s.a.": "42632",
+    "lartisan-roses s.a.s": "61830",
+    "lomcem s.c": "57365",
+    "lopez andrade maria anabel": "61367",
+    "montebellofarms cia ltda": "61692",
+    "monterosas farms": "57536",
+    "myj flowers": "61829",
+    "mystic flowers s.a.": "57353",
+    "naranjo roses": "57379",
+    "natuflor s.a.": "57389",
+    "pablo renan flores herrera - terrapacific": "60562",
+    "pablo viteri": "60773",
+    "platonoff roses": "61287",
+    "proteassolandino s.a": "61490",
+    "qualisa": "57357",
+    "rosadex cia ltda": "58686",
+    "rosaprima coloriginz": "58685",
+    "rosaprima pfc": "58685",
+    "rosas del corazon": "60102",
+    "sociedad civil y comercial nikita flowers": "60556",
+    "sol pacific": "59571",
+    "stampsybox cia. ltda.": "57517",
+    "utopia farms utf s.a.s": "57352",
+    "valle verde": "57514",
+    "valthoming": "57551",
+}
 
-def _resolve_grower_id(nm_location: str) -> str:
-    """Return FP grower_id for the given nm_location, or '' if not mapped."""
-    key = _re.sub(r"\s+", "", nm_location).lower()
-    return _POMAROSA_GROWER_MAP.get(key, "")
+
+def _resolve_grower_id(tx_company: str, nm_location: str) -> str:
+    """Return FP grower (manufacturer) id for a delivery line.
+
+    Pomarosa is the only supplier with more than one grower — resolved per
+    line from nm_location (box origin code). Every other supplier maps 1:1
+    via _SUPPLIER_GROWER_MAP, keyed by tx_company.
+    """
+    company_key = _re.sub(r"\s+", " ", tx_company or "").strip().lower()
+    if "pomarosa" in company_key:
+        loc_key = _re.sub(r"\s+", "", nm_location or "").lower()
+        return _POMAROSA_GROWER_MAP.get(loc_key, "")
+    return _SUPPLIER_GROWER_MAP.get(company_key, "")
+
+
+def resolve_growers(order: "DeliveryOrder") -> None:
+    """Set manufacturer_id on every line of order, in place. Call once after
+    catalogue matching during /delivery/parse."""
+    for line in order.lines:
+        line.manufacturer_id = _resolve_grower_id(order.tx_company, line.nm_location)
 
 
 def _normalise_label(label: str) -> str:
@@ -968,6 +1060,7 @@ def order_to_dict(order: DeliveryOrder) -> dict:
                 "nm_location": l.nm_location,
                 "nu_weight": l.nu_weight,
                 "nu_box_weight": l.nu_box_weight,
+                "manufacturer_id": l.manufacturer_id,
             }
             for l in order.lines
         ],
