@@ -38,6 +38,12 @@ class Config:
     dfg_api_base_url: str = field(
         default_factory=lambda: os.getenv("DFG_API_BASE_URL", "https://850255-api.freshportal.com")
     )
+    bi_sync_api_key: str = field(
+        default_factory=lambda: os.getenv("BI_SYNC_API_KEY", "")
+    )
+    bi_sync_api_base_url: str = field(
+        default_factory=lambda: os.getenv("BI_SYNC_API_BASE_URL", "https://850255-api.freshportal.com")
+    )
     vbn_to_check: str = field(
         default_factory=lambda: os.getenv("VBN_TO_CHECK", "595")
     )

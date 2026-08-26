@@ -11,14 +11,15 @@ import PhotoUploader from "@/components/PhotoUploader";
 import HistoryTab from "@/components/HistoryTab";
 import AdminTab from "@/components/AdminTab";
 import DeliveryImporter from "@/components/DeliveryImporter";
+import AnalysisTool from "@/components/AnalysisTool";
 import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
 import { useSystem } from "@/contexts/SystemContext";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery";
+type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis";
 
 const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
-const ECUADOR_ONLY_TABS:      Tab[] = ["delivery"];
+const ECUADOR_ONLY_TABS:      Tab[] = ["delivery", "analysis"];
 
 const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "vbn",       gradient: "from-emerald to-[#0D5430]",   perm: "vbn:check" },
@@ -27,6 +28,7 @@ const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "history",   gradient: "from-[#C43320] to-[#8B1E14]", perm: "admin:manage" },
   { id: "admin",     gradient: "from-[#374151] to-[#111827]", perm: "admin:manage" },
   { id: "delivery",  gradient: "from-[#0F4C8A] to-[#0A2E54]", perm: "delivery:import" },
+  { id: "analysis",  gradient: "from-[#7C3AED] to-[#4C1D95]", perm: "admin:manage" },
 ];
 
 /* ─── 3-D tilt hook ─── */
@@ -152,6 +154,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     : tab === "history" ? t.nav.history
     : tab === "admin" ? "Admin"
     : tab === "delivery" ? t.nav.deliveryImporter
+    : tab === "analysis" ? t.nav.analysisTool
     : null;
 
   return (
@@ -226,6 +229,7 @@ const MODULE_WIDTH: Record<Tab, string> = {
   photos:    "max-w-5xl",
   admin:     "max-w-3xl",
   delivery:  "max-w-7xl",
+  analysis:  "max-w-4xl",
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, onSelectTab, children }: {
@@ -517,6 +521,20 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
         </svg>
       ),
     },
+    {
+      id: "analysis",
+      perm: "admin:manage",
+      label: t.nav.analysisTool,
+      desc: t.hub.analysisDesc,
+      gradient: "bg-gradient-to-br from-[#7C3AED] to-[#4C1D95]",
+      stat: t.hub.analysisStat,
+      statColor: "text-white/60",
+      icon: (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M4 20V10M12 20V4M20 20v-7" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+        </svg>
+      ),
+    },
   ];
 
   const isStamgegevens = system.id === "stamgegevens";
@@ -713,6 +731,7 @@ export default function Dashboard() {
             {tab === "history"  && <HistoryTab      lang={lang}/>}
             {tab === "admin"    && <AdminTab        currentUsername={username}/>}
             {tab === "delivery"  && <DeliveryImporter lang={lang}/>}
+            {tab === "analysis"  && <AnalysisTool     lang={lang}/>}
           </ModuleCard>
         )}
       </div>

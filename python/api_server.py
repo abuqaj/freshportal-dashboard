@@ -597,6 +597,32 @@ def sync_history_ecuador(limit: int = 10, offset: int = 0, _: dict = Depends(req
     return {"history": rows[:limit], "hasMore": has_more, "productCount": get_ecuador_product_count()}
 
 
+@app.get("/bi-sync/debug-pull")
+def bi_sync_debug_pull(
+    mutation_datetime: str,
+    tables: str = "",
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """TEMP admin debug endpoint (2026-08-26) — pull a BI Sync export and
+    summarize what's in it (columns, row counts, a few sample rows per file),
+    to confirm the connection works and the data can be read correctly ahead
+    of building the real analytics module. `tables` is an optional
+    comma-separated substring filter (e.g. "stock_entry,order_lines");
+    omit it to see every file in the export.
+    """
+    from bi_sync_client import pull_and_summarize, BiSyncError
+
+    cfg = Config()
+    table_filter = tuple(t.strip() for t in tables.split(",") if t.strip())
+    try:
+        return pull_and_summarize(cfg, mutation_datetime, tables_of_interest=table_filter)
+    except BiSyncError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.exception("[bi-sync/debug-pull] failed")
+        raise HTTPException(502, f"BI Sync error: {exc}")
+
+
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:
     """Try Floricode API first; fall back to distinct colors from the products DB.
 
