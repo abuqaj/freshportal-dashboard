@@ -33,7 +33,7 @@ from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colou
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
 from ai_helper import ai_analyze_product
-from db import (search_products_db, get_products_by_vbn, get_product_count, get_last_sync,
+from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_distinct_colors, get_setting, set_setting, get_recent_created_products,
                log_vbn_auto_start, log_vbn_auto_finish, get_vbn_auto_history,
                upsert_suppliers, get_suppliers, get_suppliers_count,
@@ -42,8 +42,9 @@ from db import (search_products_db, get_products_by_vbn, get_product_count, get_
                set_delivery_match, delete_delivery_match, clear_delivery_matches,
                create_delivery_import_log, update_delivery_import_log, get_delivery_import_logs,
                upsert_fust_entries, get_all_fust, get_fust_count,
-               get_user_flag, set_user_flag)
-from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message
+               get_user_flag, set_user_flag,
+               get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db)
+from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
 from delivery_product_match import match_order_to_products
@@ -573,6 +574,27 @@ def sync_run(full: bool = False, _: dict = Depends(require_permission("admin:man
         return {"ok": True, "message": "Full sync started in background"}
     threading.Thread(target=run_incremental_sync, args=(cfg,), daemon=True).start()
     return {"ok": True, "message": "Incremental sync started in background"}
+
+
+@app.post("/sync/ecuador/run")
+def sync_run_ecuador(_: dict = Depends(require_permission("admin:manage"))):
+    """Manually trigger a full sync of FFS Ecuador's own product list
+    (non-blocking) into ecuador_products. One-time in practice — Ecuador's
+    catalog doesn't diverge on its own — re-run only if it needs a refresh.
+    """
+    if is_sync_running():
+        raise HTTPException(409, "Sync already running")
+    cfg = get_ecuador_cfg()
+    threading.Thread(target=run_full_sync_ecuador, args=(cfg,), daemon=True).start()
+    return {"ok": True, "message": "Ecuador product sync started in background"}
+
+
+@app.get("/sync/ecuador/history")
+def sync_history_ecuador(limit: int = 10, offset: int = 0, _: dict = Depends(require_permission("admin:manage"))):
+    """Last N Ecuador sync runs with their full message logs, with pagination."""
+    rows = get_ecuador_sync_history(limit + 1, offset)
+    has_more = len(rows) > limit
+    return {"history": rows[:limit], "hasMore": has_more, "productCount": get_ecuador_product_count()}
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:
@@ -1830,12 +1852,13 @@ def delivery_product_search(
     req: DeliveryProductSearchRequest,
     _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
-    """Live search against the products master DB, for the manual match-correction
-    modal in DeliveryImporter (replaces the old preloaded supplier-catalogue list —
-    the products table is ~44k rows, too large to preload client-side)."""
+    """Live search against ecuador_products (not the Stamgegevens `products` table)
+    for the manual match-correction modal in DeliveryImporter — a manual override
+    must only ever offer products actually provisioned in Ecuador, otherwise it
+    can reproduce the exact "not usable" failure it's meant to fix."""
     if len(req.query.strip()) < 2:
         return {"results": []}
-    rows = search_products_db(req.query.strip(), limit=req.limit)
+    rows = search_ecuador_products_db(req.query.strip(), limit=req.limit)
     return {
         "results": [
             {

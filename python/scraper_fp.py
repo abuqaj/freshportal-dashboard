@@ -66,6 +66,10 @@ class FPProduct:
     main_group: str = ""
     creation_moment: str = ""
     change_moment: str = ""
+    # Only present on system-local product lists (e.g. FFS Ecuador) that link
+    # back to the originating Stamgegevens product_id. Empty when scraping
+    # Stamgegevens itself (2026-08-26).
+    external_id: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +118,9 @@ _HEADER_MAP: dict[str, str] = {
     # Main group
     "main group": "main_group",
     "maingroup": "main_group",
+    # External ID — links a system-local product (e.g. FFS Ecuador) back to
+    # its originating Stamgegevens product_id. th data-sort-field="PRO_ExternalID".
+    "external id": "external_id",
     # Timestamps
     "creation moment": "creation_moment",
     "created": "creation_moment",
@@ -202,6 +209,7 @@ def _parse_rows_html(soup: BeautifulSoup, col_map: dict[str, int]) -> list[FPPro
             main_group=_cell(cells, "main_group"),
             creation_moment=_cell(cells, "creation_moment"),
             change_moment=_cell(cells, "change_moment"),
+            external_id=_cell(cells, "external_id"),
         ))
     return products
 

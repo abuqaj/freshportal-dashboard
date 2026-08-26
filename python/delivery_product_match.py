@@ -1,30 +1,36 @@
-"""Match delivery JSON lines against the master `products` DB (same table VBN
-Checker / Nowe produkty use), for the DFG BatchV1 API path.
+"""Match delivery JSON lines against the `ecuador_products` DB (FFS Ecuador's
+own product list), for the DFG BatchV1 API path.
 
 Replaces the old scraper_catalogue.py / supplier_catalogue matching, which
 resolved to STE_ID (an internal FreshPortal stock-entry row ID meant for DOM
 navigation) — not usable as the API's `product_number`.
 
+Matches against ecuador_products rather than the shared Stamgegevens
+`products` table (2026-08-26): a product can exist in Stamgegevens without
+being provisioned in Ecuador, which the DFG API rejects at delivery-creation
+time (e.g. RECQUI). Matching only against what Ecuador actually has
+guarantees a suggested match is always usable.
+
 Reuses parser_delivery.match_line_to_catalogue() — the same variety-extraction
 / similarity / floricode / cache logic already proven against the Ecuador
-supplier catalogue — just fed "catalogue" rows sourced from the products DB
-instead of supplier_catalogue.
+supplier catalogue — just fed "catalogue" rows sourced from the DB instead of
+supplier_catalogue.
 """
 from __future__ import annotations
 
 import logging
 
-from db import search_products_db
+from db import search_ecuador_products_db
 from parser_delivery import DeliveryOrder, match_line_to_catalogue
 
 log = logging.getLogger(__name__)
 
 
 def _catalogue_rows_for_query(query: str) -> list[dict]:
-    """Fetch candidate products DB rows for one variety, shaped like a catalogue entry."""
+    """Fetch candidate ecuador_products rows for one variety, shaped like a catalogue entry."""
     if not query:
         return []
-    rows = search_products_db(query, limit=20)
+    rows = search_ecuador_products_db(query, limit=20)
     return [
         {
             "fp_product_id": r.get("product_number") or "",

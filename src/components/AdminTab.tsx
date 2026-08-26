@@ -800,12 +800,72 @@ function GroupsTable() {
   )
 }
 
+/* ─── TEMP: one-time Ecuador product sync trigger — delete this whole block
+   (EcuadorSyncPanel + its usage below) once the sync has been run (2026-08-26) ─── */
+const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? ""
+
+function EcuadorSyncPanel() {
+  const [history, setHistory] = useState<{ status: string; product_count: number; error: string | null }[]>([])
+  const [productCount, setProductCount] = useState<number | null>(null)
+  const [starting, setStarting] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch(`${RAILWAY}/sync/ecuador/history?limit=1`)
+      const d = await r.json()
+      setHistory(d.history ?? [])
+      setProductCount(d.productCount ?? null)
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const latest = history[0]
+  const running = latest?.status === "running"
+
+  useEffect(() => {
+    if (!running) return
+    const poll = setInterval(load, 5000)
+    return () => clearInterval(poll)
+  }, [running, load])
+
+  async function runSync() {
+    setStarting(true)
+    try {
+      await fetch(`${RAILWAY}/sync/ecuador/run`, { method: "POST" })
+      await load()
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  return (
+    <div className="m-4 p-4 rounded-xl border-2 border-dashed border-amber-400 bg-amber-50">
+      <p className="text-xs font-bold text-amber-700 mb-1">TEMP — one-time Ecuador product sync (remove after running)</p>
+      <p className="text-xs text-ink-3 mb-2">
+        {productCount != null ? `${productCount} products in ecuador_products` : "…"}
+        {running && " — syncing…"}
+        {latest?.error && <span className="text-red-500"> — {latest.error}</span>}
+      </p>
+      <button
+        onClick={runSync}
+        disabled={starting || running}
+        className="h-8 px-3 rounded-lg text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-40 transition-colors"
+      >
+        {starting || running ? "Syncing…" : "Sync Ecuador products"}
+      </button>
+    </div>
+  )
+}
+
 /* ─── Main ─── */
 export default function AdminTab({ currentUsername }: { currentUsername?: string }) {
   const [activeTab, setActiveTab] = useState<"users" | "groups">("users")
 
   return (
     <div>
+      <EcuadorSyncPanel />
+
       <div className="px-5 py-4 border-b border-border">
         <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
           {(["users", "groups"] as const).map(tab => (
