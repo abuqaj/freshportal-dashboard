@@ -131,6 +131,7 @@ interface DfgCreateResult {
   errors: DfgLineError[];
   skipped_unmatched: string[];
   batch_url?: string;
+  invoice_id?: number | null;
 }
 
 // ── Demo data for guided tour ─────────────────────────────────────────────
@@ -677,6 +678,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           batch_id: retryData.batch_id, number: retryData.number, created: false,
           stock_entries_ok: retryData.stock_entries_ok, errors: retryData.errors,
           skipped_unmatched: skippedUnmatched, batch_url: retryData.batch_url,
+          invoice_id: retryData.invoice_id,
         };
         setImportResult(result);
         await logImportResult(orderWithEdits, result);
@@ -1786,6 +1788,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </h2>
               {importResult.batch_id && (
                 <p className="text-xs text-ink-3 font-mono">{td.batchId}: <span className="font-semibold text-ink-2">{importResult.number || importResult.batch_id}</span></p>
+              )}
+              {importResult.invoice_id != null && (
+                <p className="text-xs text-ink-3 font-mono">{td.invoiceIdLabel}: <span className="font-semibold text-ink-2">{importResult.invoice_id}</span></p>
               )}
               {importResult.batch_url && (
                 <a

@@ -2128,6 +2128,7 @@ def delivery_api_create(
         "errors": [e.__dict__ for e in result.errors],
         "skipped_unmatched": skipped,
         "batch_url": result.batch_url,
+        "invoice_id": result.invoice_id,
     }
 
 
@@ -2176,6 +2177,7 @@ def delivery_api_retry(
         "stock_entries_ok": result.stock_entries_ok,
         "errors": [e.__dict__ for e in result.errors],
         "batch_url": result.batch_url,
+        "invoice_id": result.invoice_id,
     }
 
 

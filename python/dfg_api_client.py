@@ -48,6 +48,7 @@ class BatchResult:
     errors: list[BatchLineError]
     raw: dict[str, Any]
     batch_url: str = ""  # FreshPortal web UI link to view the batch, set once batch_id is known
+    invoice_id: int | None = None  # Invoice the batch was allocated to (2026-08-26 API change)
 
 
 _token: str | None = None
@@ -205,6 +206,7 @@ def _parse_batch_response(data: dict[str, Any], fallback_number: str = "") -> Ba
         stock_entries_ok=batch.get("stock_entries", []),
         errors=errors,
         raw=data,
+        invoice_id=data.get("invoice_id") or batch.get("invoice_id"),
     )
 
 
