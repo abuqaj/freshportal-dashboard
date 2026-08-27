@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Lang } from "@/lib/i18n";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
@@ -19,6 +19,21 @@ interface PullResult {
   zip_size_bytes?: number;
 }
 
+interface BiStats {
+  stock_entry_dim_count?: number;
+  stock_entry_daily_count?: number;
+  snapshot_days?: number;
+  order_lines_count?: number;
+}
+
+interface BiSyncRun {
+  status: string;
+  error: string | null;
+  stock_entries_seen: number | null;
+  order_lines_seen: number | null;
+  mutation_from: string | null;
+}
+
 function defaultMutationDate(): string {
   const d = new Date();
   d.setDate(d.getDate() - 1);
@@ -34,6 +49,45 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PullResult | null>(null);
   const [error, setError] = useState("");
+
+  // Real ingestion (bi_stock_entry_dim / bi_stock_entry_daily / bi_order_lines)
+  // — manual trigger for now, will become a daily scheduled job once the
+  // pipeline is validated (2026-08-27).
+  const [stats, setStats] = useState<BiStats | null>(null);
+  const [latestRun, setLatestRun] = useState<BiSyncRun | null>(null);
+  const [syncStarting, setSyncStarting] = useState(false);
+
+  const loadBiHistory = useCallback(async () => {
+    try {
+      const res = await fetch(`${RAILWAY}/bi-sync/history?limit=1`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setStats(data.stats ?? null);
+      setLatestRun(data.history?.[0] ?? null);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { loadBiHistory(); }, [loadBiHistory]);
+
+  const syncRunning = latestRun?.status === "running";
+
+  useEffect(() => {
+    if (!syncRunning) return;
+    const poll = setInterval(loadBiHistory, 4000);
+    return () => clearInterval(poll);
+  }, [syncRunning, loadBiHistory]);
+
+  async function runBiSync() {
+    setSyncStarting(true);
+    try {
+      const url = new URL(`${RAILWAY}/bi-sync/run`);
+      url.searchParams.set("mutation_datetime", mutationDate);
+      await fetch(url.toString(), { method: "POST" });
+      await loadBiHistory();
+    } finally {
+      setSyncStarting(false);
+    }
+  }
 
   const pull = useCallback(async (tables: string) => {
     setLoading(true);
@@ -62,6 +116,36 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
           In development. This screen is a temporary test harness for the BI Sync connection
           (stock_entry / order_lines pull) — not the real analytics UI yet.
         </p>
+      </div>
+
+      {/* Real ingestion — manual trigger for now, daily scheduled job later */}
+      <div className="rounded-2xl border-2 border-emerald/25 bg-emerald-light p-4 flex flex-col gap-3">
+        <div>
+          <p className="text-sm font-semibold text-emerald-dark">Data pipeline (bi_stock_entry_dim / daily / bi_order_lines)</p>
+          <p className="text-xs text-ink-3 mt-0.5">
+            Manual trigger for now — pulls the export for the date above, upserts stock_entry into the
+            dim/daily mirror tables, and order_lines scoped to customer 12 (OZ-Hami Direct Sales / OZEDS).
+          </p>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={runBiSync}
+            disabled={syncStarting || syncRunning}
+            className="h-9 px-4 rounded-lg text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
+          >
+            {syncStarting || syncRunning ? "Syncing…" : "Run BI sync"}
+          </button>
+          {stats && (
+            <span className="text-xs text-ink-3">
+              {stats.stock_entry_dim_count?.toLocaleString() ?? 0} stock_entries ·{" "}
+              {stats.snapshot_days ?? 0} snapshot day(s) ·{" "}
+              {stats.order_lines_count?.toLocaleString() ?? 0} order_lines (OZEDS)
+            </span>
+          )}
+        </div>
+        {latestRun?.error && (
+          <p className="text-xs text-red-500 font-mono whitespace-pre-wrap break-all">{latestRun.error}</p>
+        )}
       </div>
 
       <div className="flex items-end gap-3 flex-wrap">

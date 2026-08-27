@@ -12,7 +12,7 @@ import os
 import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Generator
+from typing import Any, Generator
 
 import psycopg2
 import psycopg2.extras
@@ -1001,10 +1001,9 @@ def upsert_suppliers(fp_url: str, suppliers: list[dict]) -> int:
 
 
 def get_suppliers(fp_url: str) -> list[dict]:
-    """Return all suppliers for fp_url joined with catalogue sync status."""
+    """Return all suppliers for fp_url."""
     try:
         ensure_suppliers_table()
-        ensure_catalogue_meta_table()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
@@ -1012,25 +1011,17 @@ def get_suppliers(fp_url: str) -> list[dict]:
                         s.fp_supplier_id,
                         s.nm_supplier,
                         s.discovered_at,
-                        s.updated_at,
-                        m.item_count,
-                        m.synced_at,
-                        (m.synced_at IS NOT NULL) AS synced
+                        s.updated_at
                     FROM fp_suppliers s
-                    LEFT JOIN catalogue_meta m
-                        ON m.supplier_id = s.fp_supplier_id
-                       AND m.fp_url      = s.fp_url
                     WHERE s.fp_url = %s
                     ORDER BY s.nm_supplier
                 """, (fp_url,))
                 rows = []
                 for r in cur.fetchall():
                     d = dict(r)
-                    for k in ("discovered_at", "updated_at", "synced_at"):
+                    for k in ("discovered_at", "updated_at"):
                         if d.get(k) and hasattr(d[k], "isoformat"):
                             d[k] = d[k].isoformat()
-                    d["synced"] = bool(d.get("synced"))
-                    d["item_count"] = d.get("item_count") or 0
                     rows.append(d)
                 return rows
     except Exception as exc:
@@ -1182,329 +1173,6 @@ def find_supplier_fp_id(fp_url: str, company_name: str) -> str:
     except Exception as exc:
         logger.warning("find_supplier_fp_id failed: %s", exc)
     return ""
-
-
-# ---------------------------------------------------------------------------
-# Supplier catalogue
-# ---------------------------------------------------------------------------
-
-def ensure_catalogue_table() -> None:
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS supplier_catalogue (
-                    id             SERIAL PRIMARY KEY,
-                    supplier_id    TEXT NOT NULL,
-                    fp_product_id  TEXT NOT NULL,
-                    nm_product     TEXT,
-                    nm_variety     TEXT,
-                    nm_species     TEXT,
-                    nu_length      INT,
-                    nu_stems_bunch INT,
-                    id_floricode   TEXT,
-                    extra          JSONB DEFAULT '{}'::jsonb,
-                    synced_at      TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(supplier_id, fp_product_id)
-                )
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS catalogue_supplier_idx
-                ON supplier_catalogue(supplier_id)
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS catalogue_floricode_idx
-                ON supplier_catalogue(id_floricode)
-            """)
-
-
-def upsert_catalogue_items(supplier_id: str, items: list[dict]) -> int:
-    """Bulk upsert catalogue items. Returns number of rows processed."""
-    if not items:
-        return 0
-    ensure_catalogue_table()
-    now = datetime.now(timezone.utc).isoformat()
-    total = 0
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            for item in items:
-                cur.execute("""
-                    INSERT INTO supplier_catalogue
-                        (supplier_id, fp_product_id, nm_product, nm_variety,
-                         nm_species, nu_length, nu_stems_bunch, id_floricode, synced_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (supplier_id, fp_product_id) DO UPDATE SET
-                        nm_product     = EXCLUDED.nm_product,
-                        nm_variety     = EXCLUDED.nm_variety,
-                        nm_species     = EXCLUDED.nm_species,
-                        nu_length      = EXCLUDED.nu_length,
-                        nu_stems_bunch = EXCLUDED.nu_stems_bunch,
-                        id_floricode   = EXCLUDED.id_floricode,
-                        synced_at      = EXCLUDED.synced_at
-                """, (
-                    supplier_id,
-                    item.get("fp_product_id", ""),
-                    item.get("nm_product"),
-                    item.get("nm_variety"),
-                    item.get("nm_species"),
-                    item.get("nu_length"),
-                    item.get("nu_stems_bunch"),
-                    item.get("id_floricode"),
-                    now,
-                ))
-                total += 1
-        conn.commit()
-    return total
-
-
-def get_catalogue(supplier_id: str) -> list[dict]:
-    """Return all catalogue entries for a supplier.
-
-    Prefers the per-supplier table (catalogue_sup_{id}); falls back to the
-    legacy shared supplier_catalogue table if the per-supplier table is empty.
-    """
-    # Try new per-supplier table first
-    per_sup = get_supplier_catalogue(supplier_id)
-    if per_sup:
-        return per_sup
-    # Fall back to legacy shared table
-    try:
-        ensure_catalogue_table()
-        with _conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT fp_product_id, nm_product, nm_variety, nm_species,
-                           nu_length, nu_stems_bunch, id_floricode, synced_at
-                    FROM supplier_catalogue
-                    WHERE supplier_id = %s
-                    ORDER BY nm_product
-                """, (supplier_id,))
-                rows = []
-                for r in cur.fetchall():
-                    d = dict(r)
-                    if d.get("synced_at") and hasattr(d["synced_at"], "isoformat"):
-                        d["synced_at"] = d["synced_at"].isoformat()
-                    rows.append(d)
-                return rows
-    except Exception as exc:
-        logger.warning("get_catalogue failed: %s", exc)
-        return []
-
-
-def get_catalogue_count(supplier_id: str) -> int:
-    try:
-        ensure_catalogue_table()
-        with _conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) FROM supplier_catalogue WHERE supplier_id = %s",
-                    (supplier_id,),
-                )
-                return cur.fetchone()[0]
-    except Exception:
-        return 0
-
-
-# ---------------------------------------------------------------------------
-# Per-supplier catalogue tables  (catalogue_sup_{id} + catalogue_meta)
-# ---------------------------------------------------------------------------
-
-def _safe_sup_id(supplier_id: str) -> str:
-    """Return a safe identifier usable as part of a table name."""
-    return re.sub(r"[^a-zA-Z0-9]", "_", str(supplier_id))
-
-
-def _cat_table(supplier_id: str) -> str:
-    return f"catalogue_sup_{_safe_sup_id(supplier_id)}"
-
-
-def ensure_catalogue_meta_table() -> None:
-    """Create the supplier registry table that tracks sync state per supplier."""
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS catalogue_meta (
-                    supplier_id   TEXT PRIMARY KEY,
-                    nm_supplier   TEXT,
-                    fp_url        TEXT,
-                    item_count    INTEGER DEFAULT 0,
-                    synced_at     TIMESTAMPTZ,
-                    created_at    TIMESTAMPTZ DEFAULT NOW()
-                )
-            """)
-
-
-def ensure_supplier_catalogue_table(supplier_id: str) -> None:
-    """Create catalogue_sup_{id} table if it does not exist yet."""
-    table = _cat_table(supplier_id)
-    ensure_catalogue_meta_table()
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"""
-                CREATE TABLE IF NOT EXISTS {table} (
-                    fp_product_id  TEXT PRIMARY KEY,
-                    nm_product     TEXT,
-                    nu_length      INTEGER,
-                    nu_stems_bunch INTEGER,
-                    nu_stems_pack  INTEGER,
-                    nm_packaging   TEXT,
-                    nm_maturity    TEXT,
-                    id_floricode   TEXT,
-                    extra          JSONB DEFAULT '{{}}'::jsonb,
-                    synced_at      TIMESTAMPTZ DEFAULT NOW()
-                )
-            """)
-            cur.execute(f"CREATE INDEX IF NOT EXISTS {table}_floricode_idx ON {table}(id_floricode)")
-            # Migrate existing tables that predate these columns
-            for col, coltype in [
-                ("nu_stems_pack", "INTEGER"),
-                ("nm_packaging",  "TEXT"),
-                ("nm_maturity",   "TEXT"),
-            ]:
-                cur.execute(f"""
-                    ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {coltype}
-                """)
-
-
-def clear_supplier_catalogue(supplier_id: str) -> int:
-    """Delete all rows for this supplier. Returns rows deleted."""
-    table = _cat_table(supplier_id)
-    try:
-        with _conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"DELETE FROM {table}")
-                return cur.rowcount
-    except Exception:
-        return 0
-
-
-def sync_supplier_catalogue(supplier_id: str, nm_supplier: str, fp_url: str, items: list[dict]) -> int:
-    """Full re-sync: clear existing rows then bulk insert. Returns items saved."""
-    table = _cat_table(supplier_id)
-    ensure_supplier_catalogue_table(supplier_id)
-    ensure_catalogue_meta_table()
-
-    now = datetime.now(timezone.utc)
-    # Deduplicate by fp_product_id — keep last occurrence (most complete data)
-    seen: dict[str, dict] = {}
-    for item in items:
-        pid = item.get("fp_product_id", "")
-        if pid:
-            seen[pid] = item
-    rows = [
-        (
-            item.get("fp_product_id", ""),
-            item.get("nm_product"),
-            item.get("nu_length"),
-            item.get("nu_stems_bunch"),
-            item.get("nu_stems_pack"),
-            item.get("nm_packaging"),
-            item.get("nm_maturity"),
-            item.get("id_floricode"),
-            now,
-        )
-        for item in seen.values()
-    ]
-
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"DELETE FROM {table}")
-            psycopg2.extras.execute_values(cur, f"""
-                INSERT INTO {table}
-                    (fp_product_id, nm_product,
-                     nu_length, nu_stems_bunch, nu_stems_pack,
-                     nm_packaging, nm_maturity, id_floricode, synced_at)
-                VALUES %s
-                ON CONFLICT (fp_product_id) DO UPDATE SET
-                    nm_product     = EXCLUDED.nm_product,
-                    nu_length      = EXCLUDED.nu_length,
-                    nu_stems_bunch = EXCLUDED.nu_stems_bunch,
-                    nu_stems_pack  = EXCLUDED.nu_stems_pack,
-                    nm_packaging   = EXCLUDED.nm_packaging,
-                    nm_maturity    = EXCLUDED.nm_maturity,
-                    id_floricode   = EXCLUDED.id_floricode,
-                    synced_at      = EXCLUDED.synced_at
-            """, rows, page_size=100)
-
-            cur.execute("""
-                INSERT INTO catalogue_meta (supplier_id, nm_supplier, fp_url, item_count, synced_at)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (supplier_id) DO UPDATE SET
-                    nm_supplier = EXCLUDED.nm_supplier,
-                    fp_url      = EXCLUDED.fp_url,
-                    item_count  = EXCLUDED.item_count,
-                    synced_at   = EXCLUDED.synced_at
-            """, (supplier_id, nm_supplier, fp_url, len(rows), now))
-
-        conn.commit()
-
-    return len(rows)
-
-
-def get_supplier_catalogue(supplier_id: str) -> list[dict]:
-    """Return all catalogue items for supplier from its own table."""
-    table = _cat_table(supplier_id)
-    try:
-        with _conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(f"""
-                    SELECT fp_product_id, nm_product,
-                           nu_length, nu_stems_bunch, nu_stems_pack,
-                           nm_packaging, nm_maturity, id_floricode, synced_at
-                    FROM {table}
-                    ORDER BY nm_product
-                """)
-                rows = []
-                for r in cur.fetchall():
-                    d = dict(r)
-                    if d.get("synced_at") and hasattr(d["synced_at"], "isoformat"):
-                        d["synced_at"] = d["synced_at"].isoformat()
-                    rows.append(d)
-                return rows
-    except Exception:
-        return []
-
-
-def get_all_catalogue_meta() -> list[dict]:
-    """Return all rows from catalogue_meta (one per synced supplier)."""
-    try:
-        ensure_catalogue_meta_table()
-        with _conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT supplier_id, nm_supplier, fp_url, item_count, synced_at
-                    FROM catalogue_meta
-                    ORDER BY nm_supplier
-                """)
-                rows = []
-                for r in cur.fetchall():
-                    d = dict(r)
-                    if d.get("synced_at") and hasattr(d["synced_at"], "isoformat"):
-                        d["synced_at"] = d["synced_at"].isoformat()
-                    rows.append(d)
-                return rows
-    except Exception:
-        return []
-
-
-def get_supplier_meta_one(supplier_id: str) -> dict | None:
-    """Return catalogue_meta row for one supplier, or None if not synced."""
-    try:
-        ensure_catalogue_meta_table()
-        with _conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT supplier_id, nm_supplier, fp_url, item_count, synced_at
-                    FROM catalogue_meta WHERE supplier_id = %s
-                """, (supplier_id,))
-                row = cur.fetchone()
-                if not row:
-                    return None
-                d = dict(row)
-                if d.get("synced_at") and hasattr(d["synced_at"], "isoformat"):
-                    d["synced_at"] = d["synced_at"].isoformat()
-                return d
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1740,6 +1408,344 @@ def ensure_delivery_import_log() -> None:
         conn.commit()
 
 
+# ---------------------------------------------------------------------------
+# BI Sync analytics mirror — webshop stock_entry / order_lines (2026-08-27)
+#
+# stock_entry is long-lived and repeatedly mutated (not one-row-per-delivery),
+# so it's split dim (rarely-changing descriptive fields, upserted, retained
+# forever even once a stock_entry stops appearing in exports — needed so old
+# order_lines can still resolve product/farm) + daily fact (one row per
+# stock_entry per sync day, only the fields that actually change day to day).
+# order_lines is append-only and pre-filtered to customer_id=12 (OZ-Hami
+# Direct Sales / OZEDS) at ingest time — see bi_sync.py — since webshop sale
+# price is customer-specific and OZEDS is the agreed reference customer.
+# ---------------------------------------------------------------------------
+
+def ensure_bi_tables() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_stock_entry_dim (
+                    stock_entry_id    TEXT PRIMARY KEY,
+                    product_id        TEXT,
+                    manufacturer_id   TEXT,
+                    supplier_id       TEXT,
+                    location_id       TEXT,
+                    fust              TEXT,
+                    color_id          TEXT,
+                    length            INTEGER,
+                    stems_per_bunch   INTEGER,
+                    cut_stage_id      TEXT,
+                    pot_size          TEXT,
+                    description       TEXT,
+                    first_seen_at     TIMESTAMPTZ DEFAULT NOW(),
+                    last_seen_at      TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_stock_entry_dim_product_idx ON bi_stock_entry_dim(product_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_stock_entry_dim_mfr_idx     ON bi_stock_entry_dim(manufacturer_id)")
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_stock_entry_daily (
+                    stock_entry_id       TEXT NOT NULL,
+                    snapshot_date        DATE NOT NULL,
+                    quantity             NUMERIC,
+                    quantity_per_pack    NUMERIC,
+                    quantity_available   NUMERIC,
+                    price                NUMERIC,
+                    price_plus           NUMERIC,
+                    retail_price         NUMERIC,
+                    cost                 NUMERIC,
+                    visible              BOOLEAN,
+                    source_mutation_time TIMESTAMPTZ,
+                    synced_at            TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (stock_entry_id, snapshot_date)
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_stock_entry_daily_date_idx ON bi_stock_entry_daily(snapshot_date)")
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_order_lines (
+                    id                       TEXT PRIMARY KEY,
+                    invoice_id               TEXT,
+                    main_invoice_id          TEXT,
+                    created_from_stock_entry_id TEXT,
+                    product_id               TEXT,
+                    customer_id              TEXT,
+                    quantity                 NUMERIC,
+                    quantity_per_pack        NUMERIC,
+                    supplier_price           NUMERIC,
+                    store_price              NUMERIC,
+                    creation_date_time       TIMESTAMPTZ,
+                    synced_at                TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_product_idx  ON bi_order_lines(product_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_created_idx  ON bi_order_lines(creation_date_time)")
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_stockent_idx ON bi_order_lines(created_from_stock_entry_id)")
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_sync_log (
+                    id             SERIAL PRIMARY KEY,
+                    started_at     TIMESTAMPTZ DEFAULT NOW(),
+                    finished_at    TIMESTAMPTZ,
+                    mutation_from  TEXT,
+                    stock_entries_seen INT,
+                    order_lines_seen   INT,
+                    status         TEXT DEFAULT 'running',
+                    error          TEXT,
+                    messages       JSONB DEFAULT '[]'::jsonb
+                )
+            """)
+        conn.commit()
+
+
+def _num(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bool01(v: Any) -> bool | None:
+    if v is None or v == "":
+        return None
+    return str(v).strip() not in ("0", "false", "False", "")
+
+
+def upsert_bi_stock_entry_dim(rows: list[dict]) -> int:
+    """Upsert descriptive fields for stock_entry rows. Never deletes — a
+    stock_entry that stops appearing in future exports is left as-is, so
+    historical order_lines can still resolve its product/farm."""
+    if not rows:
+        return 0
+    ensure_bi_tables()
+    now = datetime.now(timezone.utc)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(rows), _BATCH_SIZE):
+                batch = rows[i:i + _BATCH_SIZE]
+                values = [
+                    (
+                        r.get("id"), r.get("product_id"), r.get("manufacturer_id"),
+                        r.get("supplier_id"), r.get("location_id"), r.get("fust"),
+                        r.get("color_id"), int(_num(r.get("length")) or 0) or None,
+                        int(_num(r.get("stems_per_bunch")) or 0) or None,
+                        r.get("cut_stage_id"), r.get("pot_size"), r.get("description"),
+                        now, now,
+                    )
+                    for r in batch if r.get("id")
+                ]
+                if not values:
+                    continue
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO bi_stock_entry_dim (
+                        stock_entry_id, product_id, manufacturer_id, supplier_id,
+                        location_id, fust, color_id, length, stems_per_bunch,
+                        cut_stage_id, pot_size, description, first_seen_at, last_seen_at
+                    ) VALUES %s
+                    ON CONFLICT (stock_entry_id) DO UPDATE SET
+                        product_id      = EXCLUDED.product_id,
+                        manufacturer_id = EXCLUDED.manufacturer_id,
+                        supplier_id     = EXCLUDED.supplier_id,
+                        location_id     = EXCLUDED.location_id,
+                        fust            = EXCLUDED.fust,
+                        color_id        = EXCLUDED.color_id,
+                        length          = EXCLUDED.length,
+                        stems_per_bunch = EXCLUDED.stems_per_bunch,
+                        cut_stage_id    = EXCLUDED.cut_stage_id,
+                        pot_size        = EXCLUDED.pot_size,
+                        description     = EXCLUDED.description,
+                        last_seen_at    = EXCLUDED.last_seen_at
+                """, values)
+                conn.commit()
+    return len(rows)
+
+
+def upsert_bi_stock_entry_daily(rows: list[dict], snapshot_date: str) -> int:
+    """One row per stock_entry for snapshot_date (idempotent — safe to re-run
+    the same day's sync; ON CONFLICT overwrites with the latest pulled values)."""
+    if not rows:
+        return 0
+    ensure_bi_tables()
+    now = datetime.now(timezone.utc)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(rows), _BATCH_SIZE):
+                batch = rows[i:i + _BATCH_SIZE]
+                values = [
+                    (
+                        r.get("id"), snapshot_date,
+                        _num(r.get("quantity")), _num(r.get("quantity_per_pack")),
+                        _num(r.get("quantity_available")), _num(r.get("price")),
+                        _num(r.get("price_plus")), _num(r.get("retail_price")),
+                        _num(r.get("cost")), _bool01(r.get("visible")),
+                        r.get("mutation_date_time") or None, now,
+                    )
+                    for r in batch if r.get("id")
+                ]
+                if not values:
+                    continue
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO bi_stock_entry_daily (
+                        stock_entry_id, snapshot_date, quantity, quantity_per_pack,
+                        quantity_available, price, price_plus, retail_price, cost,
+                        visible, source_mutation_time, synced_at
+                    ) VALUES %s
+                    ON CONFLICT (stock_entry_id, snapshot_date) DO UPDATE SET
+                        quantity             = EXCLUDED.quantity,
+                        quantity_per_pack     = EXCLUDED.quantity_per_pack,
+                        quantity_available    = EXCLUDED.quantity_available,
+                        price                = EXCLUDED.price,
+                        price_plus           = EXCLUDED.price_plus,
+                        retail_price         = EXCLUDED.retail_price,
+                        cost                 = EXCLUDED.cost,
+                        visible              = EXCLUDED.visible,
+                        source_mutation_time = EXCLUDED.source_mutation_time,
+                        synced_at            = EXCLUDED.synced_at
+                """, values)
+                conn.commit()
+    return len(rows)
+
+
+def upsert_bi_order_lines(rows: list[dict]) -> int:
+    """Append-only (order_lines never really change once created) — upsert
+    only to make re-running a sync safe, not because rows are expected to
+    change."""
+    if not rows:
+        return 0
+    ensure_bi_tables()
+    now = datetime.now(timezone.utc)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(rows), _BATCH_SIZE):
+                batch = rows[i:i + _BATCH_SIZE]
+                values = [
+                    (
+                        r.get("id"), r.get("invoice_id"), r.get("main_invoice_id"),
+                        r.get("created_from_stock_entry_id"), r.get("product_id"),
+                        r.get("customer_id"),
+                        _num(r.get("quantity")), _num(r.get("quantity_per_pack")),
+                        _num(r.get("supplier_price")), _num(r.get("store_price")),
+                        r.get("creation_date_time") or None, now,
+                    )
+                    for r in batch if r.get("id")
+                ]
+                if not values:
+                    continue
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO bi_order_lines (
+                        id, invoice_id, main_invoice_id, created_from_stock_entry_id,
+                        product_id, customer_id, quantity, quantity_per_pack,
+                        supplier_price, store_price, creation_date_time, synced_at
+                    ) VALUES %s
+                    ON CONFLICT (id) DO UPDATE SET
+                        invoice_id      = EXCLUDED.invoice_id,
+                        main_invoice_id = EXCLUDED.main_invoice_id,
+                        created_from_stock_entry_id = EXCLUDED.created_from_stock_entry_id,
+                        product_id      = EXCLUDED.product_id,
+                        customer_id     = EXCLUDED.customer_id,
+                        quantity        = EXCLUDED.quantity,
+                        quantity_per_pack = EXCLUDED.quantity_per_pack,
+                        supplier_price  = EXCLUDED.supplier_price,
+                        store_price     = EXCLUDED.store_price,
+                        creation_date_time = EXCLUDED.creation_date_time,
+                        synced_at       = EXCLUDED.synced_at
+                """, values)
+                conn.commit()
+    return len(rows)
+
+
+def log_bi_sync_start(mutation_from: str) -> int:
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bi_sync_log (started_at, mutation_from, status) VALUES (NOW(), %s, 'running') RETURNING id",
+                    (mutation_from,),
+                )
+                return cur.fetchone()[0]
+    except Exception as exc:
+        logger.error("log_bi_sync_start: %s", exc)
+        return -1
+
+
+def append_bi_sync_message(sync_id: int, message: str) -> None:
+    if sync_id < 0:
+        return
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bi_sync_log SET messages = messages || %s::jsonb WHERE id = %s",
+                    (json.dumps([message]), sync_id),
+                )
+    except Exception as exc:
+        logger.warning("append_bi_sync_message: %s", exc)
+
+
+def log_bi_sync_finish(sync_id: int, stock_entries_seen: int, order_lines_seen: int, error: str = "") -> None:
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE bi_sync_log
+                    SET finished_at        = NOW(),
+                        stock_entries_seen = %s,
+                        order_lines_seen   = %s,
+                        status             = %s,
+                        error              = %s
+                    WHERE id = %s
+                """, (stock_entries_seen, order_lines_seen, "error" if error else "ok", error or None, sync_id))
+        conn.commit()
+    except Exception as exc:
+        logger.error("log_bi_sync_finish: %s", exc)
+
+
+def get_bi_sync_history(limit: int = 20, offset: int = 0) -> list[dict]:
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, started_at, finished_at, mutation_from,
+                           stock_entries_seen, order_lines_seen, status, error, messages
+                    FROM bi_sync_log ORDER BY id DESC LIMIT %s OFFSET %s
+                """, (limit, offset))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.error("get_bi_sync_history: %s", exc)
+        return []
+
+
+def get_bi_stats() -> dict:
+    """Row counts for the Analysis Tool test panel."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM bi_stock_entry_dim")
+                dim_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM bi_stock_entry_daily")
+                daily_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(DISTINCT snapshot_date) FROM bi_stock_entry_daily")
+                snapshot_days = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM bi_order_lines")
+                order_lines_count = cur.fetchone()[0]
+                return {
+                    "stock_entry_dim_count": dim_count,
+                    "stock_entry_daily_count": daily_count,
+                    "snapshot_days": snapshot_days,
+                    "order_lines_count": order_lines_count,
+                }
+    except Exception as exc:
+        logger.warning("get_bi_stats failed: %s", exc)
+        return {}
+
+
 def create_delivery_import_log(entry: dict) -> int:
     """Insert a new delivery import log entry. Returns the new row id."""
     ensure_delivery_import_log()
@@ -1823,21 +1829,6 @@ def get_delivery_import_logs(fp_url: str, limit: int = 20, offset: int = 0) -> t
     except Exception:
         return [], False
 
-
-def get_catalogue_last_sync(supplier_id: str) -> str | None:
-    try:
-        ensure_catalogue_table()
-        with _conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT MAX(synced_at) FROM supplier_catalogue WHERE supplier_id = %s
-                """, (supplier_id,))
-                row = cur.fetchone()
-                if row and row[0]:
-                    return row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0])
-                return None
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------

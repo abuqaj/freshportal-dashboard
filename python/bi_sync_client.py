@@ -127,3 +127,46 @@ def pull_and_summarize(cfg: Config, mutation_datetime: str, tables_of_interest: 
     summary["export_url_host"] = export_url.split("?", 1)[0]
     summary["zip_size_bytes"] = len(zip_bytes)
     return summary
+
+
+def _decode_csv_text(raw: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise BiSyncError("could not decode CSV as text (tried utf-8-sig, utf-8, latin-1)")
+
+
+def read_csv_rows(raw: bytes) -> list[dict[str, str]]:
+    """Full CSV read (unlike _sniff_and_read_csv, which only samples a few rows
+    for the debug endpoint) — every row as {column_name: value}."""
+    text = _decode_csv_text(raw)
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    return [dict(row) for row in reader]
+
+
+def find_table_file(zip_bytes: bytes, table_name: str) -> str | None:
+    """Return the zip entry name matching table_name (substring match on the
+    filename stem, case-insensitive — same convention as summarize_export)."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for name in zf.namelist():
+            stem = name.rsplit("/", 1)[-1].lower()
+            if table_name.lower() in stem:
+                return name
+    return None
+
+
+def read_table(zip_bytes: bytes, table_name: str) -> list[dict[str, str]]:
+    """Read every row of one table from the export zip. Returns [] if the
+    table isn't present in this export (e.g. nothing mutated that day)."""
+    name = find_table_file(zip_bytes, table_name)
+    if not name:
+        return []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        raw = zf.read(name)
+    return read_csv_rows(raw)

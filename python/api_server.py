@@ -43,8 +43,10 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                create_delivery_import_log, update_delivery_import_log, get_delivery_import_logs,
                upsert_fust_entries, get_all_fust, get_fust_count,
                get_user_flag, set_user_flag,
-               get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db)
+               get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
+               get_bi_sync_history, get_bi_stats)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
+from bi_sync import run_bi_sync, is_bi_sync_running
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
 from delivery_product_match import match_order_to_products
@@ -621,6 +623,29 @@ def bi_sync_debug_pull(
     except Exception as exc:
         log.exception("[bi-sync/debug-pull] failed")
         raise HTTPException(502, f"BI Sync error: {exc}")
+
+
+@app.post("/bi-sync/run")
+def bi_sync_run(
+    mutation_datetime: str,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Manually trigger a BI Sync ingestion run (non-blocking). Analysis Tool
+    test-phase trigger — the eventual production version runs this on a daily
+    schedule instead (2026-08-27)."""
+    if is_bi_sync_running():
+        raise HTTPException(409, "BI sync already running")
+    cfg = Config()
+    threading.Thread(target=run_bi_sync, args=(cfg, mutation_datetime), daemon=True).start()
+    return {"ok": True, "message": "BI sync started in background"}
+
+
+@app.get("/bi-sync/history")
+def bi_sync_history(limit: int = 10, offset: int = 0, _: dict = Depends(require_permission("admin:manage"))):
+    """Last N BI sync runs with their message logs, plus current row counts."""
+    rows = get_bi_sync_history(limit + 1, offset)
+    has_more = len(rows) > limit
+    return {"history": rows[:limit], "hasMore": has_more, "stats": get_bi_stats()}
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:
@@ -2341,7 +2366,7 @@ def catalogue_suppliers(
     _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
     cfg: Config = Depends(get_cfg),
 ):
-    """Return supplier list with catalogue sync status.
+    """Return the FreshPortal supplier list.
 
     Serves from DB cache by default.  Pass ?refresh=true to re-scrape
     and update the cache.  ?debug=true adds page diagnostics (same
@@ -2370,7 +2395,6 @@ def catalogue_suppliers(
     # Persist to DB
     upsert_suppliers(fp_url, scraped)
 
-    # Return with catalogue sync status (from DB join)
     suppliers = get_suppliers(fp_url)
 
     response: dict = {"suppliers": suppliers, "source": "scraped"}
