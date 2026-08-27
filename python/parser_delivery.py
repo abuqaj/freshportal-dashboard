@@ -246,14 +246,19 @@ _SUPPLIER_GROWER_MAP: dict[str, str] = {
 def _resolve_grower_id(tx_company: str, nm_location: str) -> str:
     """Return FP grower (manufacturer) id for a delivery line.
 
-    Pomarosa is the only supplier with more than one grower — resolved per
-    line from nm_location (box origin code). Every other supplier maps 1:1
-    via _SUPPLIER_GROWER_MAP, keyed by tx_company.
+    The Tessa/Pomarosa farm network is checked by nm_location first,
+    regardless of tx_company — the same physical farms (tessa-e1, tessa-e2,
+    …) can appear in deliveries invoiced under a different trading company
+    name (e.g. "Supreme Ross"), not just under "Pomarosa" itself (found
+    2026-08-27: a Supreme Ross delivery with nm_location=TESSA-E2 was
+    getting no grower at all, since tx_company didn't contain "pomarosa").
+    Every other location falls through to the 1:1 _SUPPLIER_GROWER_MAP,
+    keyed by tx_company.
     """
+    loc_key = _re.sub(r"\s+", "", nm_location or "").lower()
+    if loc_key in _POMAROSA_GROWER_MAP:
+        return _POMAROSA_GROWER_MAP[loc_key]
     company_key = _re.sub(r"\s+", " ", tx_company or "").strip().lower()
-    if "pomarosa" in company_key:
-        loc_key = _re.sub(r"\s+", "", nm_location or "").lower()
-        return _POMAROSA_GROWER_MAP.get(loc_key, "")
     return _SUPPLIER_GROWER_MAP.get(company_key, "")
 
 

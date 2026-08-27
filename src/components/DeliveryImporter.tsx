@@ -862,7 +862,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const order = parseResult?.orders[activeOrderIdx];
   const isPomarosa = !!(
     order?.tx_company?.toLowerCase().includes("pomarosa") ||
-    resolvedSupplier?.nm_supplier?.toLowerCase().includes("pomarosa")
+    resolvedSupplier?.nm_supplier?.toLowerCase().includes("pomarosa") ||
+    // Tessa/Pomarosa farm codes can appear in deliveries invoiced under a
+    // different trading company (e.g. "Supreme Ross") — show the grower
+    // column/editor whenever any line actually references one, not just
+    // when the company name says "Pomarosa" (matches the backend's
+    // location-first grower resolution, parser_delivery._resolve_grower_id).
+    order?.lines.some(l => POMAROSA_GROWER_NAMES[growerLocationKey(l.nm_location)])
   );
 
   const displayLines = useMemo(() => {
