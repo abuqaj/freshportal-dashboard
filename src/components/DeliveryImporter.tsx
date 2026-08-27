@@ -132,6 +132,7 @@ interface DfgCreateResult {
   skipped_unmatched: string[];
   batch_url?: string;
   invoice_id?: number | null;
+  invoice_url?: string;
 }
 
 // ── Demo data for guided tour ─────────────────────────────────────────────
@@ -227,7 +228,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Tour refs ─────────────────────────────────────────────────────────────
   const refDropZone        = useRef<HTMLDivElement>(null);
   const refParseBtn        = useRef<HTMLButtonElement>(null);
-  const refSupplierRow     = useRef<HTMLDivElement>(null);
+  const refShipmentPill    = useRef<HTMLDivElement>(null);
+  const refCustomerCard    = useRef<HTMLDivElement>(null);
   const refCatalogueStatus = useRef<HTMLDivElement>(null);
   const refApproveToolbar  = useRef<HTMLDivElement>(null);
   const refTable           = useRef<HTMLDivElement>(null);
@@ -678,7 +680,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           batch_id: retryData.batch_id, number: retryData.number, created: false,
           stock_entries_ok: retryData.stock_entries_ok, errors: retryData.errors,
           skipped_unmatched: skippedUnmatched, batch_url: retryData.batch_url,
-          invoice_id: retryData.invoice_id,
+          invoice_id: retryData.invoice_id, invoice_url: retryData.invoice_url,
         };
         setImportResult(result);
         await logImportResult(orderWithEdits, result);
@@ -946,7 +948,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const allTourSteps = useMemo((): AllTourStep[] => [
     { tourStage: "idle",     targetRef: refDropZone        as React.RefObject<HTMLElement|null>, title: td.tourStep1Title, body: td.tourStep1Body },
     { tourStage: "idle",     targetRef: refParseBtn        as React.RefObject<HTMLElement|null>, title: td.tourStep2Title, body: td.tourStep2Body },
-    { tourStage: "shipment", targetRef: refSupplierRow     as React.RefObject<HTMLElement|null>, title: td.tourStep3Title, body: td.tourStep3Body },
+    { tourStage: "shipment", targetRef: refShipmentPill    as React.RefObject<HTMLElement|null>, title: td.tourStep3Title, body: td.tourStep3Body },
+    { tourStage: "shipment", targetRef: refCustomerCard    as React.RefObject<HTMLElement|null>, title: td.tourStepCustomerTitle, body: td.tourStepCustomerBody },
     { tourStage: "preview",  targetRef: refCatalogueStatus as React.RefObject<HTMLElement|null>, title: td.tourStep4Title, body: td.tourStep4Body },
     { tourStage: "preview",  targetRef: refApproveToolbar  as React.RefObject<HTMLElement|null>, title: td.tourStep5Title, body: td.tourStep5Body },
     { tourStage: "preview",  targetRef: refTable           as React.RefObject<HTMLElement|null>, title: td.tourStep6Title, body: td.tourStep6Body },
@@ -1196,7 +1199,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           )}
 
           {/* Shipment details pill */}
-          <div className="card-enter rounded-2xl border border-border bg-muted p-4 relative">
+          <div ref={refShipmentPill} className="card-enter rounded-2xl border border-border bg-muted p-4 relative">
             <div className="flex items-start justify-between gap-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm flex-1">
                 <Row label={td.supplier} value={order.tx_company} />
@@ -1233,7 +1236,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
 
             {/* FreshPortal supplier resolution row */}
-            <div ref={refSupplierRow} className="flex items-center gap-2 text-sm mt-3 pt-3 border-t border-border/60">
+            <div className="flex items-center gap-2 text-sm mt-3 pt-3 border-t border-border/60">
               <span className="text-ink-3 shrink-0">{td.fpSupplierLabel}</span>
               {resolvedSupplier ? (
                 <>
@@ -1263,7 +1266,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
 
           {/* Assign to customer — required before continuing */}
-          <div className="card-enter rounded-2xl border-2 border-emerald/25 bg-emerald-light p-4 flex flex-col gap-2">
+          <div ref={refCustomerCard} className="card-enter rounded-2xl border-2 border-emerald/25 bg-emerald-light p-4 flex flex-col gap-2">
             <label className="text-sm font-semibold text-emerald-dark flex items-center gap-1.5">
               {td.customerIdLabel}
               <span
@@ -1792,21 +1795,40 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               {importResult.invoice_id != null && (
                 <p className="text-xs text-ink-3 font-mono">{td.invoiceIdLabel}: <span className="font-semibold text-ink-2">{importResult.invoice_id}</span></p>
               )}
-              {importResult.batch_url && (
-                <a
-                  href={importResult.batch_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={td.batchUrl}
-                  className="mt-2 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
-                >
-                  {td.viewBatch}
-                  <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                    <path d="M15 3h6v6"/>
-                    <path d="M10 14 21 3"/>
-                  </svg>
-                </a>
+              {(importResult.batch_url || importResult.invoice_url) && (
+                <div className="mt-2 flex items-center gap-2 flex-wrap justify-center">
+                  {importResult.batch_url && (
+                    <a
+                      href={importResult.batch_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={td.batchUrl}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
+                    >
+                      {td.viewBatch}
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                        <path d="M15 3h6v6"/>
+                        <path d="M10 14 21 3"/>
+                      </svg>
+                    </a>
+                  )}
+                  {importResult.invoice_url && (
+                    <a
+                      href={importResult.invoice_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-blue-500/30 text-blue-600 bg-blue-500/8 hover:bg-blue-500/15 transition-colors"
+                    >
+                      {td.viewInvoice}
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                        <path d="M15 3h6v6"/>
+                        <path d="M10 14 21 3"/>
+                      </svg>
+                    </a>
+                  )}
+                </div>
               )}
               {existingBatch && (
                 <p className="text-xs text-blue-500 mt-1">{td.addedToExistingBatch(existingBatch.number)}</p>
@@ -1876,7 +1898,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
             {/* Product lines — full added/failed/skipped/excluded breakdown */}
             <div className="px-6 pt-4 pb-2 border-t border-border">
-              <details className="text-xs">
+              <details className="text-xs" open>
                 <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.productLinesLog(doneLineStatuses.length)}</summary>
                 <div className="mt-2 max-h-64 overflow-y-auto space-y-1 pr-1">
                   {doneLineStatuses.map(({ line, status, message }, i) => {
@@ -1924,7 +1946,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
               <div className="flex justify-end pt-1">
                 <button
-                  onClick={handleStartOver}
+                  onClick={reset}
                   className="h-9 px-5 rounded-xl text-sm font-semibold border border-border text-ink-2 hover:bg-muted hover:text-ink transition-colors"
                 >
                   {td.startOver}

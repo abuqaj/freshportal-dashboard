@@ -49,6 +49,7 @@ class BatchResult:
     raw: dict[str, Any]
     batch_url: str = ""  # FreshPortal web UI link to view the batch, set once batch_id is known
     invoice_id: int | None = None  # Invoice the batch was allocated to (2026-08-26 API change)
+    invoice_url: str = ""  # FreshPortal web UI link to view that invoice
 
 
 _token: str | None = None
@@ -228,6 +229,13 @@ def _batch_url(cfg: Config, batch_id: int | None) -> str:
     return f"{cfg.freshportal_url}/batch_v2/stock_entry/index/BAT_ID/{batch_id}/"
 
 
+def _invoice_url(cfg: Config, invoice_id: int | None) -> str:
+    """FreshPortal web UI link to view the invoice a batch was allocated to."""
+    if not invoice_id:
+        return ""
+    return f"{cfg.freshportal_url}/invoice/invoice/details/INV_ID/{invoice_id}/"
+
+
 def create_batch(cfg: Config, payload: dict[str, Any]) -> BatchResult:
     """POST /dfg/v1/batch — create a new shipment. Always returns a BatchResult
     on HTTP 200; check `.errors` for lines that failed individually (partial
@@ -236,6 +244,7 @@ def create_batch(cfg: Config, payload: dict[str, Any]) -> BatchResult:
     resp.raise_for_status()
     result = _parse_batch_response(resp.json(), fallback_number=payload.get("number", ""))
     result.batch_url = _batch_url(cfg, result.batch_id)
+    result.invoice_url = _invoice_url(cfg, result.invoice_id)
     return result
 
 
@@ -257,4 +266,5 @@ def add_stock_entries(cfg: Config, batch_id: int, supplier_id: str, lines: list[
     resp.raise_for_status()
     result = _parse_batch_response(resp.json())
     result.batch_url = _batch_url(cfg, result.batch_id or batch_id)
+    result.invoice_url = _invoice_url(cfg, result.invoice_id)
     return result

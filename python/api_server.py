@@ -2178,6 +2178,7 @@ def delivery_api_create(
         "skipped_unmatched": skipped,
         "batch_url": result.batch_url,
         "invoice_id": result.invoice_id,
+        "invoice_url": result.invoice_url,
     }
 
 
@@ -2227,6 +2228,7 @@ def delivery_api_retry(
         "errors": [e.__dict__ for e in result.errors],
         "batch_url": result.batch_url,
         "invoice_id": result.invoice_id,
+        "invoice_url": result.invoice_url,
     }
 
 
