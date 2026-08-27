@@ -680,7 +680,8 @@ export default function Dashboard() {
               : nt.id === "create"    ? t.nav.newProducts
               : nt.id === "photos"    ? t.nav.photoUploader
               : nt.id === "history"   ? t.nav.history
-              : t.nav.deliveryImporter,
+              : nt.id === "delivery"  ? t.nav.deliveryImporter
+              : t.nav.analysisTool,
     }));
 
   // Show spinner while session loads
