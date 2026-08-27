@@ -1735,6 +1735,8 @@ def ensure_delivery_import_log() -> None:
                     updated_at           TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            cur.execute("ALTER TABLE delivery_import_log ADD COLUMN IF NOT EXISTS invoice_id  TEXT")
+            cur.execute("ALTER TABLE delivery_import_log ADD COLUMN IF NOT EXISTS invoice_url TEXT")
         conn.commit()
 
 
@@ -1750,9 +1752,9 @@ def create_delivery_import_log(entry: dict) -> int:
                 INSERT INTO delivery_import_log
                     (fp_url, fp_supplier_id, tx_company, id_invoice, dt_fly, tx_awb,
                      nu_boxes, nu_stems_total, mny_total, nu_lines_total, nu_lines_matched,
-                     batch_id, batch_url, batch_status, nm_user, details,
+                     batch_id, batch_url, batch_status, invoice_id, invoice_url, nm_user, details,
                      created_at, updated_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING id
             """, (
                 entry.get("fp_url"), entry.get("fp_supplier_id"),
@@ -1763,6 +1765,7 @@ def create_delivery_import_log(entry: dict) -> int:
                 entry.get("nu_lines_total", 0), entry.get("nu_lines_matched", 0),
                 entry.get("batch_id"), entry.get("batch_url"),
                 entry.get("batch_status", "ok"),
+                entry.get("invoice_id"), entry.get("invoice_url"),
                 entry.get("nm_user"),
                 _json.dumps(details) if details is not None else None,
                 now, now,
@@ -1806,9 +1809,9 @@ def get_delivery_import_logs(fp_url: str, limit: int = 20, offset: int = 0) -> t
                     SELECT id, fp_supplier_id, tx_company, id_invoice, dt_fly, tx_awb,
                            nu_boxes, nu_stems_total, mny_total,
                            nu_lines_total, nu_lines_matched,
-                           batch_id, batch_url, batch_status,
+                           batch_id, batch_url, batch_status, invoice_id, invoice_url,
                            nu_products_added, nu_products_failed, nu_products_skipped,
-                           products_status, nm_user, created_at
+                           products_status, nm_user, details, created_at
                     FROM delivery_import_log
                     WHERE fp_url = %s
                     ORDER BY created_at DESC

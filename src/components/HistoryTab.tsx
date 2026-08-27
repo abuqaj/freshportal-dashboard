@@ -92,12 +92,22 @@ export default function HistoryTab({ lang }: Props) {
     batch_id: string | null;
     batch_url: string | null;
     batch_status: string;
+    invoice_id: string | null;
+    invoice_url: string | null;
     nu_products_added: number | null;
     nu_products_failed: number | null;
     nu_products_skipped: number | null;
     products_status: string;
     nm_user: string | null;
     created_at: string;
+    details: {
+      productLines?: {
+        nm_variety: string; nu_length: number; nu_bunches: number;
+        match_method: string; catalogue_nm_product: string;
+        status: "added" | "failed" | "skipped" | "notApproved"; message: string;
+      }[];
+      requestLogs?: string[];
+    } | null;
   }
   const [deliveryHistory, setDeliveryHistory]       = useState<DeliveryImportRun[] | null>(null);
   const [deliveryHistLoading, setDeliveryHistLoading] = useState(false);
@@ -678,6 +688,15 @@ export default function HistoryTab({ lang }: Props) {
                               : <span className="font-mono text-ink">{run.batch_id ?? "—"}</span>
                             }
                           </div>
+                          {run.invoice_id && (
+                            <div className="flex gap-2">
+                              <span className="text-ink-3 w-28 flex-shrink-0">{t.delivery.invoiceIdLabel}</span>
+                              {run.invoice_url
+                                ? <a href={run.invoice_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline font-mono">{run.invoice_id}</a>
+                                : <span className="font-mono text-ink">{run.invoice_id}</span>
+                              }
+                            </div>
+                          )}
                           {!prodPending && (
                             <div className="flex gap-2">
                               <span className="text-ink-3 w-28 flex-shrink-0">{t.history.products}</span>
@@ -688,6 +707,57 @@ export default function HistoryTab({ lang }: Props) {
                               </span>
                             </div>
                           )}
+                        </div>
+                      )}
+
+                      {isExp && !!run.details?.productLines?.length && (
+                        <div className="border-t border-border px-4 sm:px-6 py-3">
+                          <details className="text-xs">
+                            <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{t.delivery.productLinesLog(run.details.productLines.length)}</summary>
+                            <div className="mt-2 max-h-64 overflow-y-auto space-y-1 pr-1">
+                              {run.details.productLines.map((pl, i) => {
+                                const badge = {
+                                  added:       { label: t.delivery.lineStatusAdded,       cls: "bg-emerald/10 text-emerald border-emerald/20" },
+                                  failed:      { label: t.delivery.lineStatusFailed,      cls: "bg-red-500/10 text-red-500 border-red-500/20" },
+                                  skipped:     { label: t.delivery.lineStatusSkipped,     cls: "bg-amber-500/10 text-amber-600 border-amber-500/20" },
+                                  notApproved: { label: t.delivery.lineStatusNotApproved, cls: "bg-muted text-ink-3 border-border" },
+                                }[pl.status];
+                                return (
+                                  <div key={i} className="flex items-start justify-between gap-2 py-1 border-b border-border/40 last:border-0">
+                                    <div className="min-w-0">
+                                      <p className="font-medium text-ink truncate">
+                                        {pl.nm_variety}
+                                        {pl.nu_length > 0 && <span className="text-ink-3 font-normal"> · {pl.nu_length}cm</span>}
+                                      </p>
+                                      {pl.message && <p className="text-red-400 font-mono text-[11px] truncate">{pl.message}</p>}
+                                    </div>
+                                    <span className={`shrink-0 px-2 py-0.5 rounded-full border text-[11px] font-medium whitespace-nowrap ${badge.cls}`}>
+                                      {badge.label}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        </div>
+                      )}
+
+                      {isExp && !!run.details?.requestLogs?.length && (
+                        <div className="border-t border-border px-4 sm:px-6 py-3">
+                          <details className="text-xs">
+                            <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{t.delivery.batchLog(run.details.requestLogs.length)}</summary>
+                            <div className="mt-2 bg-ground rounded-xl p-2 max-h-64 overflow-y-auto font-mono">
+                              {run.details.requestLogs.map((l, i) => (
+                                <div
+                                  key={i}
+                                  className={`whitespace-pre-wrap break-all py-1.5 border-b border-border/40 last:border-0
+                                    ${l.startsWith("  ⚠") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
+                                >
+                                  {l}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
                         </div>
                       )}
                     </div>

@@ -1963,6 +1963,8 @@ class DeliveryImportLogCreate(BaseModel):
     batch_id: str | None = None
     batch_url: str | None = None
     batch_status: str = "ok"
+    invoice_id: str | None = None
+    invoice_url: str | None = None
     nm_user: str | None = None
     details: dict | None = None
 

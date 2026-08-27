@@ -199,6 +199,31 @@ const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   none:                 { label: "no match",     cls: "bg-red-500/10 text-red-500 border-red-500/20" },
 };
 
+type DoneLineStatus = "added" | "failed" | "skipped" | "notApproved";
+
+// Shared by the "done" screen's live doneLineStatuses memo and by
+// logImportResult() (which persists the same breakdown into the delivery
+// import log so it's still visible later from History) — one source of
+// truth for "what actually happened to this line."
+function computeLineStatuses(
+  lines: DeliveryLine[],
+  importResult: DfgCreateResult,
+  lineEdits: Record<string, { fp_product_id?: string; catalogue_nm_product?: string; manufacturer_id?: string }>,
+  approvedKeys: Set<string>,
+): { line: DeliveryLine; status: DoneLineStatus; message: string }[] {
+  const failedMsg = new Map(importResult.errors.map(e => [`${e.product_number}|${e.length}`, e.message]));
+  return lines.map(line => {
+    const dk = (line.nm_variety ?? "").toLowerCase().trim();
+    const edit = lineEdits[dk];
+    const fpId = edit?.fp_product_id ?? line.fp_product_id;
+    if (!fpId) return { line, status: "skipped" as const, message: "" };
+    if (!approvedKeys.has(dk)) return { line, status: "notApproved" as const, message: "" };
+    const key = `${fpId}|${line.nu_length}`;
+    if (failedMsg.has(key)) return { line, status: "failed" as const, message: failedMsg.get(key) ?? "" };
+    return { line, status: "added" as const, message: "" };
+  });
+}
+
 export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const t = translations[lang];
   const td = t.delivery;
@@ -292,7 +317,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     return m ? `${m[3]}-${m[2]}-${m[1]}` : "";
   }
 
+  // React state updates aren't visible synchronously within the same async
+  // function (batched across awaits), so logImportResult can't rely on
+  // reading `logs` right after the create/retry calls finish — this ref
+  // always holds the up-to-date array for that purpose.
+  const logsRef = useRef<string[]>([]);
   const addLog = useCallback((msg: string) => {
+    logsRef.current = [...logsRef.current, msg];
     setLogs(prev => [...prev, msg]);
   }, []);
 
@@ -548,9 +579,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Import to FreshPortal ───────────────────────────────────────────────
 
-  async function logImportResult(order: DeliveryOrder, result: DfgCreateResult) {
+  async function logImportResult(order: DeliveryOrder, fullLines: DeliveryLine[], result: DfgCreateResult) {
     if (!result.batch_id) return;
     try {
+      const productLines = computeLineStatuses(fullLines, result, lineEdits, approvedKeys).map(({ line, status, message }) => ({
+        nm_variety: line.nm_variety,
+        nu_length: line.nu_length,
+        nu_bunches: line.nu_bunches,
+        match_method: line.match_method,
+        catalogue_nm_product: line.catalogue_nm_product,
+        status,
+        message,
+      }));
       const logRes = await fetch(`${RAILWAY}/delivery/import-log`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -563,17 +603,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           nu_boxes: order.nu_boxes,
           nu_stems_total: order.nu_stems_total,
           mny_total: order.mny_total,
-          nu_lines_total: order.lines.length,
-          nu_lines_matched: order.lines.filter((l: DeliveryLine) => l.fp_product_id).length,
+          nu_lines_total: fullLines.length,
+          nu_lines_matched: fullLines.filter((l: DeliveryLine) => l.fp_product_id).length,
           batch_id: String(result.batch_id),
-          batch_url: "",
+          batch_url: result.batch_url || "",
           batch_status: result.errors.length > 0 ? "partial" : "ok",
+          invoice_id: result.invoice_id != null ? String(result.invoice_id) : null,
+          invoice_url: result.invoice_url || "",
           nm_user: username ?? null,
-          details: { lines: order.lines.map((l: DeliveryLine) => ({
-            nm_variety: l.nm_variety, nu_length: l.nu_length,
-            nu_bunches: l.nu_bunches, match_method: l.match_method,
-            catalogue_nm_product: l.catalogue_nm_product,
-          })) },
+          details: {
+            productLines,
+            requestLogs: logsRef.current,
+          },
         }),
       });
       if (!logRes.ok) return;
@@ -626,6 +667,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     await handleApproveMatches(approvedKeys);
 
     setStage("importing");
+    logsRef.current = [];
     setLogs([]);
     setImportResult(null);
     setError("");
@@ -683,7 +725,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           invoice_id: retryData.invoice_id, invoice_url: retryData.invoice_url,
         };
         setImportResult(result);
-        await logImportResult(orderWithEdits, result);
+        await logImportResult(orderWithEdits, order.lines, result);
         setStage("done");
         return;
       }
@@ -696,7 +738,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const result: DfgCreateResult = created as DfgCreateResult;
       result.skipped_unmatched = skippedUnmatched;
       setImportResult(result);
-      await logImportResult(orderWithEdits, result);
+      await logImportResult(orderWithEdits, order.lines, result);
       setStage("done");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -815,6 +857,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setStage("idle");
     setJsonText("");
     setParseResult(null);
+    logsRef.current = [];
     setLogs([]);
     setError("");
     setImportResult(null);
@@ -932,21 +975,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // from the same approval/match state used to build the request, cross-
   // referenced against the result's errors/skipped_unmatched (stock_entries_ok's
   // shape isn't reliably typed, so success is inferred by elimination instead).
-  type DoneLineStatus = "added" | "failed" | "skipped" | "notApproved";
   const doneLineStatuses = useMemo((): { line: DeliveryLine; status: DoneLineStatus; message: string }[] => {
     const o = parseResult?.orders[activeOrderIdx];
     if (!o || !importResult) return [];
-    const failedMsg = new Map(importResult.errors.map(e => [`${e.product_number}|${e.length}`, e.message]));
-    return o.lines.map(line => {
-      const dk = deliveryKey(line);
-      const edit = lineEdits[dk];
-      const fpId = edit?.fp_product_id ?? line.fp_product_id;
-      if (!fpId) return { line, status: "skipped" as const, message: "" };
-      if (!approvedKeys.has(dk)) return { line, status: "notApproved" as const, message: "" };
-      const key = `${fpId}|${line.nu_length}`;
-      if (failedMsg.has(key)) return { line, status: "failed" as const, message: failedMsg.get(key) ?? "" };
-      return { line, status: "added" as const, message: "" };
-    });
+    return computeLineStatuses(o.lines, importResult, lineEdits, approvedKeys);
   }, [parseResult, activeOrderIdx, importResult, lineEdits, approvedKeys]);
 
   type AllTourStep = TourStep & { tourStage: "idle" | "shipment" | "preview" | "done" };
