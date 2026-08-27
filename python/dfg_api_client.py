@@ -143,12 +143,21 @@ def build_stock_entry(line: DeliveryLine) -> dict[str, Any]:
         log.warning("No grower mapping for nm_location=%r (product %r) — omitting manufacturer_id",
                     line.nm_location, line.nm_product)
 
+    # line.nu_bunches / nu_stems_total are TOTALS across every physical box merged
+    # into this line (see parser_delivery._parse_invoices_format), but the DFG API
+    # wants per-box figures — "quantity" already says how many physical boxes there
+    # are, so number_of_bunches/quantity_per_pack must be per-box, not the sum
+    # (bug found 2026-08-27: a 2-box, 4-bunch/box line was sent as 8 bunches —
+    # FreshPortal read it as 2 boxes × 8 bunches instead of 2 boxes × 4).
+    bunches_per_box = line.nu_bunches // max(1, line.nu_physical_boxes)
+    stems_per_box = bunches_per_box * line.nu_stems_bunch
+
     entry: dict[str, Any] = {
         "product_number": line.fp_product_id,
         "country": _COUNTRY,
         "fust": fust,
         "quantity": line.nu_physical_boxes,
-        "quantity_per_pack": line.nu_stems_total,
+        "quantity_per_pack": stems_per_box,
         "weight": line.nu_weight,
         "box_weight": line.nu_box_weight,
         "price": line.mny_rate_stem,
@@ -158,7 +167,7 @@ def build_stock_entry(line: DeliveryLine) -> dict[str, Any]:
             # per explicit decision (2026-08-24).
             "quality": "AA",
             "maturity": "033",
-            "number_of_bunches": str(line.nu_bunches),
+            "number_of_bunches": str(bunches_per_box),
             "stems_per_bunch": str(line.nu_stems_bunch),
         },
     }
