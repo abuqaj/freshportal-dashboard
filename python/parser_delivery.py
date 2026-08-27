@@ -243,7 +243,21 @@ _SUPPLIER_GROWER_MAP: dict[str, str] = {
 }
 
 
-def _resolve_grower_id(tx_company: str, nm_location: str) -> str:
+def _lookup_company_key(company: str) -> str:
+    """Exact, then substring-containment match of `company` against
+    _SUPPLIER_GROWER_MAP. Returns "" if nothing matches."""
+    company_key = _re.sub(r"\s+", " ", company or "").strip().lower()
+    if not company_key:
+        return ""
+    if company_key in _SUPPLIER_GROWER_MAP:
+        return _SUPPLIER_GROWER_MAP[company_key]
+    for name, grower_id in _SUPPLIER_GROWER_MAP.items():
+        if name in company_key:
+            return grower_id
+    return ""
+
+
+def _resolve_grower_id(tx_company: str, nm_location: str, resolved_supplier_nm: str = "") -> str:
     """Return FP grower (manufacturer) id for a delivery line.
 
     The Tessa/Pomarosa farm network is checked by nm_location first,
@@ -252,21 +266,39 @@ def _resolve_grower_id(tx_company: str, nm_location: str) -> str:
     name (e.g. "Supreme Ross"), not just under "Pomarosa" itself (found
     2026-08-27: a Supreme Ross delivery with nm_location=TESSA-E2 was
     getting no grower at all, since tx_company didn't contain "pomarosa").
-    Every other location falls through to the 1:1 _SUPPLIER_GROWER_MAP,
-    keyed by tx_company.
+
+    For everything else, `resolved_supplier_nm` — FreshPortal's own
+    canonical supplier name, already resolved via find_supplier_fp_id's
+    robust word-matching in api_server.py before this runs — is tried
+    first against _SUPPLIER_GROWER_MAP, since it's the single source of
+    truth for "which supplier is this" and doesn't vary between JSON
+    exports the way the raw tx_company text does. tx_company is kept only
+    as a fallback for the case where no supplier has been resolved yet
+    (e.g. a brand-new unconfirmed supplier — found 2026-08-28, same
+    underlying issue as the Pomarosa/Supreme Ross case: the same company
+    appears under different name variants across JSONs, e.g. "Quality
+    Service Qualisa S.A.S" vs FreshPortal's registered "Qualisa").
     """
     loc_key = _re.sub(r"\s+", "", nm_location or "").lower()
     if loc_key in _POMAROSA_GROWER_MAP:
         return _POMAROSA_GROWER_MAP[loc_key]
-    company_key = _re.sub(r"\s+", " ", tx_company or "").strip().lower()
-    return _SUPPLIER_GROWER_MAP.get(company_key, "")
+    grower_id = _lookup_company_key(resolved_supplier_nm)
+    if grower_id:
+        return grower_id
+    return _lookup_company_key(tx_company)
 
 
-def resolve_growers(order: "DeliveryOrder") -> None:
+def resolve_growers(order: "DeliveryOrder", resolved_supplier_nm: str = "") -> None:
     """Set manufacturer_id on every line of order, in place. Call once after
-    catalogue matching during /delivery/parse."""
+    catalogue matching during /delivery/parse.
+
+    resolved_supplier_nm should be FreshPortal's canonical name for
+    order.supplier_fp_id (get_supplier_name_by_id), when already resolved —
+    it's a more reliable grower-matching key than the raw tx_company JSON
+    field. Falls back to tx_company when not supplied.
+    """
     for line in order.lines:
-        line.manufacturer_id = _resolve_grower_id(order.tx_company, line.nm_location)
+        line.manufacturer_id = _resolve_grower_id(order.tx_company, line.nm_location, resolved_supplier_nm)
 
 
 def _normalise_label(label: str) -> str:

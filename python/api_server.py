@@ -1859,6 +1859,17 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
             cached_matches = get_delivery_matches(fp_url, supplier_id)
             log.info("[delivery/parse] supplier=%s cached_matches=%d", supplier_id, len(cached_matches))
 
+        # Resolved once, ahead of the loop, so grower resolution can match
+        # against FreshPortal's own canonical supplier name instead of the
+        # raw tx_company text from the JSON — the same delivery's tx_company
+        # varies in formatting between documents (e.g. "Quality Service
+        # Qualisa S.A.S" vs FreshPortal's registered "Qualisa"), which
+        # find_supplier_fp_id() above already resolved through robust
+        # word-based matching; reusing that result avoids re-solving the
+        # same "which supplier is this really" problem a second time in
+        # _resolve_grower_id() with a weaker heuristic (found 2026-08-28).
+        supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
+
         matched_count = 0
         unmatched_count = 0
 
@@ -1872,11 +1883,10 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
                 for line in order.lines:
                     log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
                               line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
-            resolve_growers(order)
+            resolve_growers(order, supplier_nm)
             result_orders.append(order_to_dict(order))
 
         log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
-        supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
         return {
             "orders": result_orders,
             "supplier_id": supplier_id,
