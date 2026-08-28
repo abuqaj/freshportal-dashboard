@@ -85,6 +85,7 @@ interface DeliveryLine {
   catalogue_nm_product: string;
   nm_location: string;
   manufacturer_id: string;
+  nu_box_weight: number;
 }
 
 interface DeliveryOrder {
@@ -160,11 +161,11 @@ const DEMO_PARSE_RESULT: ParseResult = {
     dt_fly: "2024-06-15", dt_invoice: "2024-06-12", tx_awb: "176-12345678", tx_hawb: "HAW-001",
     nu_boxes: 8, nu_stems_total: 1575, mny_total: 441.00,
     lines: [
-      { gu_product: "d1", nm_variety: "ROSES RED NAOMI", nm_species: "Rosa", nu_length: 60, nu_stems_bunch: 25, nu_bunches: 10, nu_stems_total: 250, mny_rate_stem: 0.38, mny_total: 95.00, id_floricode: "VB401010", nm_product: "Roses Red Naomi 60cm", nm_box: "FB", nu_physical_boxes: 2, fp_product_id: "10001", match_method: "variety_length", catalogue_nm_product: "Roses Red Naomi 60cm", nm_location: "", manufacturer_id: "" },
-      { gu_product: "d2", nm_variety: "CHRYSANTH ANASTASIA WHITE", nm_species: "Chrysanthemum", nu_length: 70, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.22, mny_total: 44.00, id_floricode: "VB120020", nm_product: "Chrysanth Anastasia White 70cm", nm_box: "HB", nu_physical_boxes: 2, fp_product_id: "10002", match_method: "fuzzy_variety", catalogue_nm_product: "Chrysanthemum Anastasia White 70", nm_location: "", manufacturer_id: "" },
-      { gu_product: "d3", nm_variety: "ALSTROEM PINK FLOYD", nm_species: "Alstroemeria", nu_length: 60, nu_stems_bunch: 5, nu_bunches: 30, nu_stems_total: 150, mny_rate_stem: 0.14, mny_total: 21.00, id_floricode: "VB110030", nm_product: "Alstroem Pink Floyd 60cm", nm_box: "MB", nu_physical_boxes: 1, fp_product_id: "10003", match_method: "cached", catalogue_nm_product: "Alstroemeria Pink Floyd 60", nm_location: "", manufacturer_id: "" },
-      { gu_product: "d4", nm_variety: "GERBERA MINI PINK", nm_species: "Gerbera", nu_length: 45, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.18, mny_total: 36.00, id_floricode: "VB210040", nm_product: "", nm_box: "MB", nu_physical_boxes: 2, fp_product_id: "", match_method: "none", catalogue_nm_product: "", nm_location: "", manufacturer_id: "" },
-      { gu_product: "d5", nm_variety: "TULIP RED DYNASTY", nm_species: "Tulipa", nu_length: 40, nu_stems_bunch: 10, nu_bunches: 25, nu_stems_total: 250, mny_rate_stem: 0.16, mny_total: 40.00, id_floricode: "VB300050", nm_product: "Tulip Red Dynasty 40cm", nm_box: "HB", nu_physical_boxes: 1, fp_product_id: "10005", match_method: "variety_nolen", catalogue_nm_product: "Tulip Red Dynasty", nm_location: "", manufacturer_id: "" },
+      { gu_product: "d1", nm_variety: "ROSES RED NAOMI", nm_species: "Rosa", nu_length: 60, nu_stems_bunch: 25, nu_bunches: 10, nu_stems_total: 250, mny_rate_stem: 0.38, mny_total: 95.00, id_floricode: "VB401010", nm_product: "Roses Red Naomi 60cm", nm_box: "FB", nu_physical_boxes: 2, fp_product_id: "10001", match_method: "variety_length", catalogue_nm_product: "Roses Red Naomi 60cm", nm_location: "", manufacturer_id: "", nu_box_weight: 0 },
+      { gu_product: "d2", nm_variety: "CHRYSANTH ANASTASIA WHITE", nm_species: "Chrysanthemum", nu_length: 70, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.22, mny_total: 44.00, id_floricode: "VB120020", nm_product: "Chrysanth Anastasia White 70cm", nm_box: "HB", nu_physical_boxes: 2, fp_product_id: "10002", match_method: "fuzzy_variety", catalogue_nm_product: "Chrysanthemum Anastasia White 70", nm_location: "", manufacturer_id: "", nu_box_weight: 0 },
+      { gu_product: "d3", nm_variety: "ALSTROEM PINK FLOYD", nm_species: "Alstroemeria", nu_length: 60, nu_stems_bunch: 5, nu_bunches: 30, nu_stems_total: 150, mny_rate_stem: 0.14, mny_total: 21.00, id_floricode: "VB110030", nm_product: "Alstroem Pink Floyd 60cm", nm_box: "MB", nu_physical_boxes: 1, fp_product_id: "10003", match_method: "cached", catalogue_nm_product: "Alstroemeria Pink Floyd 60", nm_location: "", manufacturer_id: "", nu_box_weight: 0 },
+      { gu_product: "d4", nm_variety: "GERBERA MINI PINK", nm_species: "Gerbera", nu_length: 45, nu_stems_bunch: 10, nu_bunches: 20, nu_stems_total: 200, mny_rate_stem: 0.18, mny_total: 36.00, id_floricode: "VB210040", nm_product: "", nm_box: "MB", nu_physical_boxes: 2, fp_product_id: "", match_method: "none", catalogue_nm_product: "", nm_location: "", manufacturer_id: "", nu_box_weight: 0 },
+      { gu_product: "d5", nm_variety: "TULIP RED DYNASTY", nm_species: "Tulipa", nu_length: 40, nu_stems_bunch: 10, nu_bunches: 25, nu_stems_total: 250, mny_rate_stem: 0.16, mny_total: 40.00, id_floricode: "VB300050", nm_product: "Tulip Red Dynasty 40cm", nm_box: "HB", nu_physical_boxes: 1, fp_product_id: "10005", match_method: "variety_nolen", catalogue_nm_product: "Tulip Red Dynasty", nm_location: "", manufacturer_id: "", nu_box_weight: 0 },
     ],
   }],
   supplier_id: "210", supplier_nm: "Demo Grower B.V.", supplier_confirmed: true, matched_count: 4, unmatched_count: 1,
@@ -271,11 +272,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editSearch, setEditSearch] = useState("");
   const [editSearchResults, setEditSearchResults] = useState<CatalogueProduct[]>([]);
+  const [editSearchLoading, setEditSearchLoading] = useState(false);
+  const [editSearchError, setEditSearchError] = useState(false);
   const [savingApproved, setSavingApproved] = useState(false);
 
   // ── Grower (manufacturer) override — Pomarosa only ─────────────────────────
   const [growerEdits, setGrowerEdits] = useState<Record<string, string>>({});
   const [editingGrowerKey, setEditingGrowerKey] = useState<string | null>(null);
+
+  // ── Box weight inline edit — keyed by deliveryKey, ArrowUp/Down moves focus
+  // between rows within the column (ref map indexed by displayLines position) ──
+  const [boxWeightEdits, setBoxWeightEdits] = useState<Record<string, number>>({});
+  const boxWeightInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
   // ── Supplier picker ───────────────────────────────────────────────────────
   const [resolvedSupplier, setResolvedSupplier] = useState<FPSupplier | null>(null);
@@ -383,9 +391,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   useEffect(() => {
     if (!editModalOpen || editSearch.trim().length < 2) {
       setEditSearchResults([]);
+      setEditSearchLoading(false);
+      setEditSearchError(false);
       return;
     }
     let cancelled = false;
+    setEditSearchLoading(true);
+    setEditSearchError(false);
     const timer = setTimeout(async () => {
       try {
         const res = await fetch(`${RAILWAY}/delivery/product-search`, {
@@ -393,11 +405,22 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ query: editSearch.trim(), limit: 30 }),
         });
-        if (!cancelled && res.ok) {
-          const data = await res.json();
-          setEditSearchResults(data.results ?? []);
+        if (cancelled) return;
+        if (!res.ok) {
+          setEditSearchResults([]);
+          setEditSearchError(true);
+          return;
         }
-      } catch {}
+        const data = await res.json();
+        setEditSearchResults(data.results ?? []);
+      } catch {
+        if (!cancelled) {
+          setEditSearchResults([]);
+          setEditSearchError(true);
+        }
+      } finally {
+        if (!cancelled) setEditSearchLoading(false);
+      }
     }, 300);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [editSearch, editModalOpen]);
@@ -686,6 +709,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
             catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
             manufacturer_id: growerOverride ?? line.manufacturer_id,
+            nu_box_weight: boxWeightEdits[dk] ?? line.nu_box_weight,
           };
         }),
     };
@@ -764,6 +788,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
           catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
           manufacturer_id: growerOverride ?? line.manufacturer_id,
+          nu_box_weight: boxWeightEdits[dk] ?? line.nu_box_weight,
         };
       })
       .filter(l => failedSet.has(`${l.fp_product_id}|${l.nu_length}`));
@@ -1558,6 +1583,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   {isPomarosa && <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colGrower}</th>}
                   <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="boxQty"     label={td.colBoxQty}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colBoxWeight}</th>
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colContent}</th>
                   <SortTh col="length"     label={td.colLength}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="stemsBunch" label={td.colStemsBunch} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
@@ -1571,13 +1597,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <tbody>
                 {displayLines.length === 0 ? (
                   <tr>
-                    <td colSpan={isPomarosa ? 13 : 12} className="px-4 py-6 text-center text-xs text-ink-3">
+                    <td colSpan={isPomarosa ? 14 : 13} className="px-4 py-6 text-center text-xs text-ink-3">
                       {showOnlyUnmatched ? td.showAll : "—"}
                     </td>
                   </tr>
                 ) : displayLines.map((line, i) => {
                   const dk = deliveryKey(line);
                   const edit = lineEdits[dk];
+                  const boxWeightValue = boxWeightEdits[dk] ?? line.nu_box_weight ?? 0;
                   const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
                   const isApproved = approvedKeys.has(dk);
                   const hasMatch = !!(edit?.fp_product_id ?? line.fp_product_id);
@@ -1651,6 +1678,34 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           ×{line.nu_physical_boxes ?? 1}
                         </span>
                       </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          ref={el => { boxWeightInputRefs.current[i] = el; }}
+                          value={boxWeightValue}
+                          onChange={e => {
+                            const v = e.target.value === "" ? 0 : Number(e.target.value);
+                            setBoxWeightEdits(prev => ({ ...prev, [dk]: v }));
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === "ArrowDown" || e.key === "Enter") {
+                              e.preventDefault();
+                              const next = boxWeightInputRefs.current[i + 1];
+                              next?.focus();
+                              next?.select();
+                            } else if (e.key === "ArrowUp") {
+                              e.preventDefault();
+                              const prevInput = boxWeightInputRefs.current[i - 1];
+                              prevInput?.focus();
+                              prevInput?.select();
+                            }
+                          }}
+                          className="w-16 px-1.5 py-1 text-xs text-right border border-transparent rounded-md bg-transparent
+                                     hover:border-border focus:border-emerald/50 focus:bg-surface outline-none transition-colors"
+                        />
+                      </td>
                       <td className="px-3 py-2 text-ink-3 text-center">
                         {Math.floor(line.nu_bunches / Math.max(1, line.nu_physical_boxes ?? 1)) * line.nu_stems_bunch}
                       </td>
@@ -1718,19 +1773,30 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     </div>
                   </div>
                   <div className="px-3 py-2 border-b border-border shrink-0">
-                    <input
-                      autoFocus
-                      value={editSearch}
-                      onChange={e => setEditSearch(e.target.value)}
-                      onKeyDown={e => { if (e.key === "Escape") { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); } }}
-                      placeholder={td.editSearchPlaceholder}
-                      className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
-                    />
+                    <div className="relative">
+                      <input
+                        autoFocus
+                        value={editSearch}
+                        onChange={e => setEditSearch(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Escape") { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); } }}
+                        placeholder={td.editSearchPlaceholder}
+                        className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
+                      />
+                      {editSearchLoading && (
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />
+                      )}
+                    </div>
                   </div>
                   <div className="overflow-y-auto flex-1">
                     {matchResults.length === 0 ? (
-                      <p className="text-xs text-ink-3 px-4 py-3">
-                        {editSearch.trim().length < 2 ? td.editSearchTypeToSearch : td.noProductsFound}
+                      <p className={`text-xs px-4 py-3 ${editSearchError ? "text-red-500" : "text-ink-3"}`}>
+                        {editSearch.trim().length < 2
+                          ? td.editSearchTypeToSearch
+                          : editSearchError
+                            ? td.editSearchFailed
+                            : editSearchLoading
+                              ? td.editSearchSearching
+                              : td.noProductsFound}
                       </p>
                     ) : matchResults.map(p => {
                       const isCurrentMatch = (currentEdit?.fp_product_id ?? editLine?.fp_product_id) === p.fp_product_id;
