@@ -154,6 +154,24 @@ def _normalise_box(tp: str) -> str:
     return _BOX_TYPE_MAP.get(tp.upper(), tp)
 
 
+# Per-stem weight (products[].nu_weight) isn't a thing roses are sold/
+# weighed by in this supplier network — a nonzero value on a rose line is
+# stray data (e.g. bled in from a neighbouring field in the source feed),
+# not a real per-stem weight. Values above 100kg per stem are also
+# physically impossible regardless of species. Both cases are dropped at
+# parse time so the bogus number is never carried into the DFG API payload
+# (found 2026-08-28, Qualisa JSON: a "MONDIAL" rose line had nu_weight=1075).
+_MAX_SANE_STEM_WEIGHT_KG = 100.0
+
+
+def _sane_stem_weight(nm_species: str, raw_weight: float) -> float:
+    if "rose" in (nm_species or "").lower():
+        return 0
+    if raw_weight > _MAX_SANE_STEM_WEIGHT_KG:
+        return 0
+    return raw_weight
+
+
 # Pomarosa grower lookup: nm_location (case-insensitive, spaces normalised) → FP grower_id
 _POMAROSA_GROWER_MAP: dict[str, str] = {
     "tessa-e1":  "57396",  # Ecuanros
@@ -428,7 +446,9 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=box_code,
                             nm_location=(prod.get("nm_location") or "").strip(),
-                            nu_weight=float(prod.get("nu_weight") or 0),
+                            nu_weight=_sane_stem_weight(
+                                prod.get("nm_species") or "", float(prod.get("nu_weight") or 0)
+                            ),
                             nu_box_weight=float(box.get("nu_box_weight") or 0),
                         )
                     keys_new_in_this_box.add(key)
@@ -469,7 +489,9 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=tp_box,
                             nm_location=(prod.get("nm_location") or "").strip(),
-                            nu_weight=float(prod.get("nu_weight") or 0),
+                            nu_weight=_sane_stem_weight(
+                                prod.get("nm_species") or "", float(prod.get("nu_weight") or 0)
+                            ),
                             nu_box_weight=float(box.get("nu_box_weight") or 0),
                         )
                     keys_new_in_this_box.add(key)
