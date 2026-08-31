@@ -100,9 +100,16 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
         # meant "exists"). Dropping soft-deleted rows here — rather than storing
         # them and filtering at query time — is what significantly shrinks the
         # mirror tables, per the user's explicit request.
-        stock_entries = [r for r in all_stock_entries if str(r.get("visible") or "0").strip() not in ("1", "true", "True")]
+        # stock_entry_type_id=1 rows are "default lots" — not real, individually
+        # offered stock — so they're irrelevant to this analyzer and dropped too
+        # (confirmed by the user 2026-08-31).
+        stock_entries = [
+            r for r in all_stock_entries
+            if str(r.get("visible") or "0").strip() not in ("1", "true", "True")
+            and str(r.get("stock_entry_type_id") or "").strip() != "1"
+        ]
         _s(f"Read {len(all_stock_entries)} stock_entry rows, {len(stock_entries)} still live "
-           f"(visible=0) after dropping soft-deleted — upserting…")
+           f"(visible=0, stock_entry_type_id≠1) after dropping soft-deleted/default-lots — upserting…")
         upsert_bi_stock_entry_dim(stock_entries)
         snapshot_date = date.today().isoformat()
         upsert_bi_stock_entry_daily(stock_entries, snapshot_date)
