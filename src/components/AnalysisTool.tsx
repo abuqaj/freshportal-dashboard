@@ -33,6 +33,7 @@ interface BiSyncRun {
   stock_entries_seen: number | null;
   order_lines_seen: number | null;
   mutation_from: string | null;
+  messages?: string[];
 }
 
 function defaultMutationDate(): string {
@@ -147,6 +148,16 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
         </div>
         {latestRun?.error && (
           <p className="text-xs text-red-500 font-mono whitespace-pre-wrap break-all">{latestRun.error}</p>
+        )}
+        {!!latestRun?.messages?.length && (
+          <details className="text-xs" open={!syncRunning}>
+            <summary className="cursor-pointer text-ink-3 hover:text-ink">
+              Last run log ({latestRun.mutation_from ?? "?"}, {latestRun.status})
+            </summary>
+            <div className="mt-1 bg-muted rounded-lg p-2 max-h-56 overflow-y-auto font-mono whitespace-pre-wrap break-all text-ink-3">
+              {latestRun.messages.map((m, i) => <div key={i}>{m}</div>)}
+            </div>
+          </details>
         )}
       </div>
 
