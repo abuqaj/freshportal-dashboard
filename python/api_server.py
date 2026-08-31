@@ -113,17 +113,28 @@ def _hourly_sync() -> None:
     log.info("Hourly sync finished: %s", result)
 
 
+_BI_AUTO_LAST_CHECK_KEY = "bi_auto_last_check"
+
+
 def _daily_bi_sync() -> None:
     """Pull yesterday's BI Sync export — yesterday, not today, since
     order_lines is filtered to rows created exactly on mutation_datetime
     (bi_sync.py) and today's data isn't complete yet while today is still
-    running. Matches the manual Analysis Tool UI's default date."""
+    running. Matches the manual Analysis Tool UI's default date.
+
+    Only records bi_auto_last_check on a genuine success (result["ok"]) —
+    same reasoning as _auto_vbn_check not updating its own last-check
+    setting on failure: a failed run leaves the "reference" at the last
+    real success, so the startup catch-up logic below correctly sees it as
+    still-overdue and retries soon instead of waiting a full day."""
     import datetime
     cfg = Config()
     yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
     log.info("Daily BI sync started (mutation_datetime=%s)", yesterday)
     result = run_bi_sync(cfg, yesterday)
     log.info("Daily BI sync finished: %s", result)
+    if result.get("ok"):
+        set_setting(_BI_AUTO_LAST_CHECK_KEY, datetime.datetime.now(datetime.timezone.utc).isoformat())
 
 
 def _auto_vbn_check() -> None:
@@ -221,11 +232,37 @@ async def _on_startup() -> None:
     _scheduler.add_job(_hourly_sync, "date", run_date=first_run, id="initial_sync")
     _scheduler.add_job(_hourly_sync, "interval", hours=1, id="hourly_sync")
 
-    # Staggered further out than the Ecuador sync's initial run (above) so the
-    # two don't hit the DB at the same moment right after a deploy/restart.
-    first_bi_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=180)
-    _scheduler.add_job(_daily_bi_sync, "date", run_date=first_bi_run, id="initial_bi_sync")
-    _scheduler.add_job(_daily_bi_sync, "interval", days=1, id="daily_bi_sync")
+    # Daily BI sync — DB-persisted schedule (mirrors the auto VBN check
+    # below) so a redeploy doesn't reset the 24h cadence or trigger a bonus
+    # same-day sync: reference is the last recorded *successful* run, not
+    # process-start time. Staggered a bit further out than the Ecuador
+    # sync's initial run (above) so the two don't hit the DB at the same
+    # moment right after a deploy/restart. Always scheduled (no enable
+    # toggle, unlike auto VBN check) — this one's meant to just always run.
+    bi_last_check_str = get_setting(_BI_AUTO_LAST_CHECK_KEY)
+    bi_reference_dt = None
+    if bi_last_check_str:
+        try:
+            bi_reference_dt = datetime.datetime.fromisoformat(bi_last_check_str)
+        except ValueError:
+            bi_reference_dt = None
+
+    if bi_reference_dt is None:
+        # Never run before (fresh DB / first deploy of this feature) — run
+        # soon rather than waiting a full day for the first data to land.
+        bi_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=180)
+        log.info("Daily BI sync: no prior successful run recorded — first run in 180 s")
+    else:
+        bi_elapsed = (datetime.datetime.now(datetime.timezone.utc) - bi_reference_dt).total_seconds()
+        if bi_elapsed >= 23 * 3600:
+            bi_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=180)
+            log.info("Daily BI sync: overdue by %.1f h — catch-up run in 180 s", bi_elapsed / 3600)
+        else:
+            bi_next_run = bi_reference_dt + datetime.timedelta(days=1)
+            log.info("Daily BI sync: %.1f h since last successful run — next run at %s",
+                      bi_elapsed / 3600, bi_next_run.isoformat())
+
+    _scheduler.add_job(_daily_bi_sync, "interval", days=1, id="daily_bi_sync", next_run_time=bi_next_run)
 
     # Restore auto VBN scheduler state from DB
     if get_setting("vbn_auto_enabled") == "1":
@@ -262,7 +299,8 @@ async def _on_startup() -> None:
         log.info("Auto VBN check scheduler restored (daily)")
 
     _scheduler.start()
-    log.info("APScheduler started — first product sync in 60 s (hourly), first BI sync in 180 s (daily)")
+    log.info("APScheduler started — first product sync in 60 s (hourly), next BI sync at %s (daily)",
+              bi_next_run.isoformat())
 
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
