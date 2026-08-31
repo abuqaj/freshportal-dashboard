@@ -466,7 +466,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (files.length > 1) { setMultiFileError(true); return; }
     setMultiFileError(false);
     const f = files[0];
-    if (f && f.name.endsWith(".json")) handleFile(f);
+    if (f && /\.(json|txt)$/i.test(f.name)) handleFile(f);
   }
 
   // ── Clear match cache ──────────────────────────────────────────────────
@@ -1191,7 +1191,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </div>
             </div>
           </div>
-          <input ref={fileInputRef} type="file" accept=".json" className="hidden"
+          <input ref={fileInputRef} type="file" accept=".json,.txt" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
 
           <div className="flex items-center justify-end gap-3">
