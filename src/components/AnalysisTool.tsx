@@ -24,6 +24,7 @@ interface BiStats {
   stock_entry_daily_count?: number;
   snapshot_days?: number;
   order_lines_count?: number;
+  invoice_customer_count?: number;
 }
 
 interface BiSyncRun {
@@ -139,7 +140,8 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             <span className="text-xs text-ink-3">
               {stats.stock_entry_dim_count?.toLocaleString() ?? 0} stock_entries ·{" "}
               {stats.snapshot_days ?? 0} snapshot day(s) ·{" "}
-              {stats.order_lines_count?.toLocaleString() ?? 0} order_lines (OZEDS)
+              {stats.order_lines_count?.toLocaleString() ?? 0} order_lines (OZEDS) ·{" "}
+              {stats.invoice_customer_count?.toLocaleString() ?? 0} invoice→customer mappings
             </span>
           )}
         </div>

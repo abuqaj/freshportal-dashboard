@@ -1419,6 +1419,13 @@ def ensure_delivery_import_log() -> None:
 # order_lines is append-only and pre-filtered to customer_id=12 (OZ-Hami
 # Direct Sales / OZEDS) at ingest time — see bi_sync.py — since webshop sale
 # price is customer-specific and OZEDS is the agreed reference customer.
+#
+# All price fields (bi_stock_entry_daily.price/price_plus/retail_price/cost,
+# bi_order_lines.supplier_price/store_price) are assumed EUR for now — the
+# source export doesn't carry a currency field. The `currency` column exists
+# so a future switch to USD doesn't require silently reinterpreting old rows:
+# it defaults to 'EUR' today and can be set explicitly once the ingestion
+# code has an actual per-row currency to write (2026-08-31).
 # ---------------------------------------------------------------------------
 
 def ensure_bi_tables() -> None:
@@ -1456,12 +1463,14 @@ def ensure_bi_tables() -> None:
                     price_plus           NUMERIC,
                     retail_price         NUMERIC,
                     cost                 NUMERIC,
+                    currency             TEXT DEFAULT 'EUR',
                     visible              BOOLEAN,
                     source_mutation_time TIMESTAMPTZ,
                     synced_at            TIMESTAMPTZ DEFAULT NOW(),
                     PRIMARY KEY (stock_entry_id, snapshot_date)
                 )
             """)
+            cur.execute("ALTER TABLE bi_stock_entry_daily ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'EUR'")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_stock_entry_daily_date_idx ON bi_stock_entry_daily(snapshot_date)")
 
             cur.execute("""
@@ -1476,13 +1485,33 @@ def ensure_bi_tables() -> None:
                     quantity_per_pack        NUMERIC,
                     supplier_price           NUMERIC,
                     store_price              NUMERIC,
+                    currency                 TEXT DEFAULT 'EUR',
                     creation_date_time       TIMESTAMPTZ,
                     synced_at                TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'EUR'")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_product_idx  ON bi_order_lines(product_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_created_idx  ON bi_order_lines(creation_date_time)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_stockent_idx ON bi_order_lines(created_from_stock_entry_id)")
+
+            # Accumulates invoice_id -> customer_id forever across every sync run
+            # (never truncated) — the /v2/export endpoint is a delta feed scoped to
+            # mutation_datetime, so an order_line synced today can reference an
+            # invoice that itself wasn't mutated today and therefore isn't in
+            # today's invoice.csv. Without this standing map, such an order_line's
+            # customer could never be resolved and it would be silently dropped
+            # from the OZEDS filter forever (found 2026-08-31: a fresh sync
+            # reported 7,552 stock_entries but 0 order_lines for customer 12,
+            # because the day's invoice table only covered invoices mutated that
+            # day, not every invoice referenced by that day's order_lines).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_invoice_customer (
+                    invoice_id  TEXT PRIMARY KEY,
+                    customer_id TEXT,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bi_sync_log (
@@ -1658,6 +1687,52 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
     return len(rows)
 
 
+def upsert_bi_invoice_customer(rows: list[dict]) -> int:
+    """Accumulate invoice_id -> customer_id forever (never truncated) — see
+    ensure_bi_tables() docstring on bi_invoice_customer for why this standing
+    map exists rather than resolving customer_id from the current sync's
+    invoice table alone."""
+    if not rows:
+        return 0
+    ensure_bi_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(rows), _BATCH_SIZE):
+                batch = rows[i:i + _BATCH_SIZE]
+                values = [(r.get("id"), r.get("customer_id")) for r in batch if r.get("id")]
+                if not values:
+                    continue
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO bi_invoice_customer (invoice_id, customer_id, updated_at)
+                    VALUES %s
+                    ON CONFLICT (invoice_id) DO UPDATE SET
+                        customer_id = EXCLUDED.customer_id,
+                        updated_at  = NOW()
+                """, values, template="(%s, %s, NOW())")
+                conn.commit()
+    return len(rows)
+
+
+def get_bi_invoice_customer_map(invoice_ids: list[str]) -> dict[str, str]:
+    """Batched lookup against the standing bi_invoice_customer map for ids not
+    resolved from the current sync's own invoice table."""
+    ids = [i for i in set(invoice_ids) if i]
+    if not ids:
+        return {}
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT invoice_id, customer_id FROM bi_invoice_customer WHERE invoice_id = ANY(%s)",
+                    (ids,),
+                )
+                return {r[0]: r[1] for r in cur.fetchall() if r[1]}
+    except Exception as exc:
+        logger.warning("get_bi_invoice_customer_map: %s", exc)
+        return {}
+
+
 def log_bi_sync_start(mutation_from: str) -> int:
     try:
         ensure_bi_tables()
@@ -1735,11 +1810,14 @@ def get_bi_stats() -> dict:
                 snapshot_days = cur.fetchone()[0]
                 cur.execute("SELECT COUNT(*) FROM bi_order_lines")
                 order_lines_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM bi_invoice_customer")
+                invoice_customer_count = cur.fetchone()[0]
                 return {
                     "stock_entry_dim_count": dim_count,
                     "stock_entry_daily_count": daily_count,
                     "snapshot_days": snapshot_days,
                     "order_lines_count": order_lines_count,
+                    "invoice_customer_count": invoice_customer_count,
                 }
     except Exception as exc:
         logger.warning("get_bi_stats failed: %s", exc)
