@@ -109,7 +109,11 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
         _s(f"Upserted {len(stock_entries)} stock_entry rows (snapshot_date={snapshot_date})")
 
         _s("Reading order_lines table…")
-        all_order_lines = read_table(zip_bytes, "order_lines")
+        # The export file is literally "order_line.csv" (singular) — confirmed
+        # 2026-08-31 by listing the zip's file names — not "order_lines", so the
+        # substring match in find_table_file() was silently matching nothing and
+        # returning [] every single sync (root cause of the 0 order_lines bug).
+        all_order_lines = read_table(zip_bytes, "order_line")
 
         # Resolve customer_id: prefer this run's own invoice table, fall back to
         # the accumulated bi_invoice_customer map for invoices not mutated today

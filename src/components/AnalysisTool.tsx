@@ -172,7 +172,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
           />
         </div>
         <button
-          onClick={() => pull("stock_entry,order_lines")}
+          onClick={() => pull("stock_entry,order_line")}
           disabled={loading}
           className="h-9 px-4 rounded-lg text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
         >
