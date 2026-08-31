@@ -1829,6 +1829,57 @@ def get_bi_stats() -> dict:
         return {}
 
 
+def get_bi_stock_entries_daily_series(days: int = 30) -> list[dict]:
+    """Live (already-filtered, see bi_sync.py) stock_entry count per
+    snapshot_date, most recent `days` snapshot days — first chart data for
+    the Analysis Tool."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT snapshot_date::text AS day, COUNT(*) AS count,
+                           AVG(price) AS avg_price
+                    FROM bi_stock_entry_daily
+                    GROUP BY snapshot_date
+                    ORDER BY snapshot_date DESC
+                    LIMIT %s
+                """, (days,))
+                rows = [dict(r) for r in cur.fetchall()]
+                rows.reverse()
+                return rows
+    except Exception as exc:
+        logger.warning("get_bi_stock_entries_daily_series: %s", exc)
+        return []
+
+
+def get_bi_order_lines_daily_series(days: int = 30) -> list[dict]:
+    """order_lines (OZEDS, already filtered — see bi_sync.py) count and
+    revenue per creation day, most recent `days` days with data — first
+    chart data for the Analysis Tool."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT creation_date_time::date::text AS day,
+                           COUNT(*) AS count,
+                           SUM(quantity) AS total_quantity,
+                           SUM(quantity * store_price) AS revenue
+                    FROM bi_order_lines
+                    WHERE creation_date_time IS NOT NULL
+                    GROUP BY creation_date_time::date
+                    ORDER BY creation_date_time::date DESC
+                    LIMIT %s
+                """, (days,))
+                rows = [dict(r) for r in cur.fetchall()]
+                rows.reverse()
+                return rows
+    except Exception as exc:
+        logger.warning("get_bi_order_lines_daily_series: %s", exc)
+        return []
+
+
 def create_delivery_import_log(entry: dict) -> int:
     """Insert a new delivery import log entry. Returns the new row id."""
     ensure_delivery_import_log()

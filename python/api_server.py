@@ -44,7 +44,8 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                upsert_fust_entries, get_all_fust, get_fust_count,
                get_user_flag, set_user_flag,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
-               get_bi_sync_history, get_bi_stats)
+               get_bi_sync_history, get_bi_stats,
+               get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, is_bi_sync_running
 from auth_middleware import require_permission, require_any_permission, get_token_payload
@@ -649,9 +650,9 @@ def bi_sync_run(
     mutation_datetime: str,
     _: dict = Depends(require_permission("admin:manage")),
 ):
-    """Manually trigger a BI Sync ingestion run (non-blocking). Analysis Tool
-    test-phase trigger — the eventual production version runs this on a daily
-    schedule instead (2026-08-27)."""
+    """Manually trigger a BI Sync ingestion run (non-blocking) — for backfills
+    or ad-hoc re-runs on a specific date. Also runs automatically once a day
+    via APScheduler (_daily_bi_sync, 2026-08-31)."""
     if is_bi_sync_running():
         raise HTTPException(409, "BI sync already running")
     cfg = Config()
@@ -665,6 +666,16 @@ def bi_sync_history(limit: int = 10, offset: int = 0, _: dict = Depends(require_
     rows = get_bi_sync_history(limit + 1, offset)
     has_more = len(rows) > limit
     return {"history": rows[:limit], "hasMore": has_more, "stats": get_bi_stats()}
+
+
+@app.get("/bi-sync/charts")
+def bi_sync_charts(days: int = 30, _: dict = Depends(require_permission("admin:manage"))):
+    """First aggregate series for the Analysis Tool — live stock_entry count
+    per snapshot_date, and order_lines (OZEDS) count/revenue per creation day."""
+    return {
+        "stock_entries_daily": get_bi_stock_entries_daily_series(days),
+        "order_lines_daily": get_bi_order_lines_daily_series(days),
+    }
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:

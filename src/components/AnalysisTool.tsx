@@ -36,6 +36,61 @@ interface BiSyncRun {
   messages?: string[];
 }
 
+interface StockEntryDailyPoint {
+  day: string;
+  count: number;
+  avg_price: number | null;
+}
+
+interface OrderLineDailyPoint {
+  day: string;
+  count: number;
+  total_quantity: number | null;
+  revenue: number | null;
+}
+
+interface ChartsData {
+  stock_entries_daily: StockEntryDailyPoint[];
+  order_lines_daily: OrderLineDailyPoint[];
+}
+
+function shortDay(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// Dependency-free bar chart — one bar per point, height scaled to the series
+// max, value shown above the bar and the day label below it.
+function BarChart<T extends { day: string }>({ points, valueOf, labelOf, barClassName }: {
+  points: T[];
+  valueOf: (p: T) => number;
+  labelOf: (p: T) => string;
+  barClassName: string;
+}) {
+  if (!points.length) {
+    return <p className="text-xs text-ink-3 px-1 py-6 text-center">No data yet</p>;
+  }
+  const max = Math.max(1, ...points.map(p => valueOf(p)));
+  return (
+    <div className="flex items-end gap-1.5 h-36 overflow-x-auto px-1">
+      {points.map((p, i) => {
+        const v = valueOf(p);
+        const heightPct = Math.max(2, (v / max) * 100);
+        return (
+          <div key={i} className="flex flex-col items-center gap-1 shrink-0 w-9" title={`${p.day}: ${labelOf(p)}`}>
+            <span className="text-[10px] text-ink-3 whitespace-nowrap">{v > 0 ? labelOf(p) : ""}</span>
+            <div className="w-full h-24 flex items-end">
+              <div className={`w-full rounded-t-md ${barClassName}`} style={{ height: `${heightPct}%` }} />
+            </div>
+            <span className="text-[10px] text-ink-3/70 whitespace-nowrap">{shortDay(p.day)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function defaultMutationDate(): string {
   const d = new Date();
   d.setDate(d.getDate() - 1);
@@ -58,6 +113,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   const [stats, setStats] = useState<BiStats | null>(null);
   const [latestRun, setLatestRun] = useState<BiSyncRun | null>(null);
   const [syncStarting, setSyncStarting] = useState(false);
+  const [charts, setCharts] = useState<ChartsData | null>(null);
 
   const loadBiHistory = useCallback(async () => {
     try {
@@ -69,15 +125,23 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     } catch { /* ignore */ }
   }, []);
 
-  useEffect(() => { loadBiHistory(); }, [loadBiHistory]);
+  const loadCharts = useCallback(async () => {
+    try {
+      const res = await fetch(`${RAILWAY}/bi-sync/charts?days=30`);
+      if (!res.ok) return;
+      setCharts(await res.json());
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { loadBiHistory(); loadCharts(); }, [loadBiHistory, loadCharts]);
 
   const syncRunning = latestRun?.status === "running";
 
   useEffect(() => {
     if (!syncRunning) return;
-    const poll = setInterval(loadBiHistory, 4000);
+    const poll = setInterval(() => { loadBiHistory(); loadCharts(); }, 4000);
     return () => clearInterval(poll);
-  }, [syncRunning, loadBiHistory]);
+  }, [syncRunning, loadBiHistory, loadCharts]);
 
   async function runBiSync() {
     setSyncStarting(true);
@@ -86,6 +150,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
       url.searchParams.set("mutation_datetime", mutationDate);
       await fetch(url.toString(), { method: "POST" });
       await loadBiHistory();
+      await loadCharts();
     } finally {
       setSyncStarting(false);
     }
@@ -162,6 +227,31 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             </div>
           </details>
         )}
+      </div>
+
+      {/* First charts — daily trend from whatever's accumulated so far.
+          Empty/sparse until a few days of automated syncs have landed. */}
+      <div className="grid sm:grid-cols-2 gap-4">
+        <div className="rounded-2xl border border-border p-4">
+          <p className="text-sm font-semibold text-ink">Live stock_entries per day</p>
+          <p className="text-xs text-ink-3 mt-0.5 mb-2">bi_stock_entry_daily — count of visible=0, non-default-lot rows per snapshot</p>
+          <BarChart
+            points={charts?.stock_entries_daily ?? []}
+            valueOf={(p: StockEntryDailyPoint) => p.count}
+            labelOf={(p: StockEntryDailyPoint) => p.count.toLocaleString()}
+            barClassName="bg-emerald/70"
+          />
+        </div>
+        <div className="rounded-2xl border border-border p-4">
+          <p className="text-sm font-semibold text-ink">OZEDS order_lines per day</p>
+          <p className="text-xs text-ink-3 mt-0.5 mb-2">bi_order_lines — count of lines created that day, customer 12 only</p>
+          <BarChart
+            points={charts?.order_lines_daily ?? []}
+            valueOf={(p: OrderLineDailyPoint) => p.count}
+            labelOf={(p: OrderLineDailyPoint) => p.count.toLocaleString()}
+            barClassName="bg-blue-500/70"
+          />
+        </div>
       </div>
 
       <div className="flex items-end gap-3 flex-wrap">
