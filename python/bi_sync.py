@@ -93,8 +93,16 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
            f"(accumulated map used as fallback for older invoices)")
 
         _s("Reading stock_entry table…")
-        stock_entries = read_table(zip_bytes, "stock_entry")
-        _s(f"Read {len(stock_entries)} stock_entry rows — upserting…")
+        all_stock_entries = read_table(zip_bytes, "stock_entry")
+        # visible=1 means the row is an old, already-used/soft-deleted entry —
+        # visible=0 is the actual "still live" state (confirmed by the user
+        # 2026-08-31, correcting an earlier 2026-08-27 assumption that visible=1
+        # meant "exists"). Dropping soft-deleted rows here — rather than storing
+        # them and filtering at query time — is what significantly shrinks the
+        # mirror tables, per the user's explicit request.
+        stock_entries = [r for r in all_stock_entries if str(r.get("visible") or "0").strip() not in ("1", "true", "True")]
+        _s(f"Read {len(all_stock_entries)} stock_entry rows, {len(stock_entries)} still live "
+           f"(visible=0) after dropping soft-deleted — upserting…")
         upsert_bi_stock_entry_dim(stock_entries)
         snapshot_date = date.today().isoformat()
         upsert_bi_stock_entry_daily(stock_entries, snapshot_date)
