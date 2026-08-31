@@ -112,6 +112,19 @@ def _hourly_sync() -> None:
     log.info("Hourly sync finished: %s", result)
 
 
+def _daily_bi_sync() -> None:
+    """Pull yesterday's BI Sync export — yesterday, not today, since
+    order_lines is filtered to rows created exactly on mutation_datetime
+    (bi_sync.py) and today's data isn't complete yet while today is still
+    running. Matches the manual Analysis Tool UI's default date."""
+    import datetime
+    cfg = Config()
+    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    log.info("Daily BI sync started (mutation_datetime=%s)", yesterday)
+    result = run_bi_sync(cfg, yesterday)
+    log.info("Daily BI sync finished: %s", result)
+
+
 def _auto_vbn_check() -> None:
     """Background task: verify VBN codes of products created today and auto-fix deterministic errors."""
     import datetime
@@ -207,6 +220,12 @@ async def _on_startup() -> None:
     _scheduler.add_job(_hourly_sync, "date", run_date=first_run, id="initial_sync")
     _scheduler.add_job(_hourly_sync, "interval", hours=1, id="hourly_sync")
 
+    # Staggered further out than the Ecuador sync's initial run (above) so the
+    # two don't hit the DB at the same moment right after a deploy/restart.
+    first_bi_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=180)
+    _scheduler.add_job(_daily_bi_sync, "date", run_date=first_bi_run, id="initial_bi_sync")
+    _scheduler.add_job(_daily_bi_sync, "interval", days=1, id="daily_bi_sync")
+
     # Restore auto VBN scheduler state from DB
     if get_setting("vbn_auto_enabled") == "1":
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -242,7 +261,7 @@ async def _on_startup() -> None:
         log.info("Auto VBN check scheduler restored (daily)")
 
     _scheduler.start()
-    log.info("APScheduler started — first product sync in 60 s, then every hour")
+    log.info("APScheduler started — first product sync in 60 s (hourly), first BI sync in 180 s (daily)")
 
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]

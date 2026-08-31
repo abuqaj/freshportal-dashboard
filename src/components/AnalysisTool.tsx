@@ -120,12 +120,15 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
         </p>
       </div>
 
-      {/* Real ingestion — manual trigger for now, daily scheduled job later */}
+      {/* Real ingestion — now also runs automatically once a day (api_server.py
+          _daily_bi_sync, ~180s after each server start then every 24h,
+          mutation_datetime = yesterday). Button below is for manual/backfill runs. */}
       <div className="rounded-2xl border-2 border-emerald/25 bg-emerald-light p-4 flex flex-col gap-3">
         <div>
           <p className="text-sm font-semibold text-emerald-dark">Data pipeline (bi_stock_entry_dim / daily / bi_order_lines)</p>
           <p className="text-xs text-ink-3 mt-0.5">
-            Manual trigger for now — pulls the export for the date above, upserts stock_entry into the
+            Runs automatically once a day (yesterday's data). Use the button below for a manual/backfill run
+            on a specific date — pulls the export for the date above, upserts stock_entry into the
             dim/daily mirror tables, and order_lines scoped to customer 12 (OZ-Hami Direct Sales / OZEDS).
           </p>
         </div>
