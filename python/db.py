@@ -1544,6 +1544,11 @@ def _bool01(v: Any) -> bool | None:
     return str(v).strip() not in ("0", "false", "False", "")
 
 
+def _int(v: Any) -> int | None:
+    n = _num(v)
+    return int(n) if n is not None else None
+
+
 def upsert_bi_stock_entry_dim(rows: list[dict]) -> int:
     """Upsert descriptive fields for stock_entry rows. Never deletes — a
     stock_entry that stops appearing in future exports is left as-is, so
@@ -1560,8 +1565,8 @@ def upsert_bi_stock_entry_dim(rows: list[dict]) -> int:
                     (
                         r.get("id"), r.get("product_id"), r.get("manufacturer_id"),
                         r.get("supplier_id"), r.get("location_id"), r.get("fust"),
-                        r.get("color_id"), int(_num(r.get("length")) or 0) or None,
-                        int(_num(r.get("stems_per_bunch")) or 0) or None,
+                        r.get("color_id"), _int(r.get("length")),
+                        _int(r.get("stems_per_bunch")),
                         r.get("cut_stage_id"), r.get("pot_size"), r.get("description"),
                         now, now,
                     )
@@ -1706,7 +1711,7 @@ def upsert_bi_invoice_customer(rows: list[dict]) -> int:
                     INSERT INTO bi_invoice_customer (invoice_id, customer_id, updated_at)
                     VALUES %s
                     ON CONFLICT (invoice_id) DO UPDATE SET
-                        customer_id = EXCLUDED.customer_id,
+                        customer_id = COALESCE(NULLIF(EXCLUDED.customer_id, ''), bi_invoice_customer.customer_id),
                         updated_at  = NOW()
                 """, values, template="(%s, %s, NOW())")
                 conn.commit()
