@@ -45,7 +45,8 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_user_flag, set_user_flag,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
                get_bi_sync_history, get_bi_stats,
-               get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series)
+               get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
+               get_dfg_customers, set_dfg_customer_flag)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, is_bi_sync_running
 from auth_middleware import require_permission, require_any_permission, get_token_payload
@@ -2215,7 +2216,7 @@ def delivery_api_check(
 class DfgCreateRequest(BaseModel):
     order: dict
     supplier_fp_id: str = ""
-    customer_id: int
+    customer_id: int | None = None
 
 
 @app.post("/delivery/api/create")
@@ -2225,8 +2226,12 @@ def delivery_api_create(
 ):
     """POST /dfg/v1/batch — create the shipment, invoiced to customer_id.
 
-    customer_id is mandatory (2026-08-25 business rule: every shipment must be
-    allocated to a customer invoice, no bare shipments).
+    customer_id is optional (reversed 2026-09-01 from the earlier 2026-08-25
+    "every shipment must be allocated" rule): the UI's customer picker now
+    has a "Stock" option (no customer_id sent) for shipments meant to be
+    manually allocated from stock in FreshPortal afterwards — the DFG API
+    and build_batch_payload() already supported an omitted customer_id, only
+    this endpoint's own validation was blocking it.
 
     Only lines with a resolved product_number (fp_product_id) are sent; unmatched
     lines are skipped and reported back in `skipped_unmatched` so the UI can flag
@@ -2242,9 +2247,6 @@ def delivery_api_create(
         cfg.validate()
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-
-    if not req.customer_id:
-        raise HTTPException(400, "customer_id is required — every shipment must be allocated to a customer invoice")
 
     try:
         order = _order_from_dict(req.order)
@@ -2335,6 +2337,28 @@ def delivery_api_retry(
         "invoice_id": result.invoice_id,
         "invoice_url": result.invoice_url,
     }
+
+
+class DfgCustomerFlagRequest(BaseModel):
+    customer_id: str
+    used_in_delivery_import: bool
+
+
+@app.get("/dfg-customers")
+def dfg_customers_list(_: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
+    """Full DFG customer master list with each one's used_in_delivery_import
+    flag. AdminTab's Customers tab shows/edits all of them; DeliveryImporter's
+    customer picker filters client-side to used_in_delivery_import=true."""
+    return {"customers": get_dfg_customers()}
+
+
+@app.post("/dfg-customers/set-flag")
+def dfg_customers_set_flag(
+    req: DfgCustomerFlagRequest,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    set_dfg_customer_flag(req.customer_id, req.used_in_delivery_import)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

@@ -178,14 +178,20 @@ const DEMO_IMPORT_RESULT: DfgCreateResult = {
   skipped_unmatched: ["Gerbera Mini Pink 45cm"],
 };
 
-// Fixed customer list for the invoice target — DFG API only ever invoices to
-// one of these 4 FreshPortal customers for this integration (2026-08-24).
-const DFG_CUSTOMERS: { id: number; code: string; name: string }[] = [
-  { id: 2,  code: "OZE",   name: "OZ-Hami - Actual weight" },
-  { id: 12, code: "OZEDS", name: "OZ-Hami - Direct Sales" },
-  { id: 14, code: "OZEG",  name: "OZ-Hami - Gypso" },
-  { id: 16, code: "COLSUM", name: "Coloriginz - Summerflowers" },
-];
+// The invoice-target customer list is now DB-managed (dfg_customers table,
+// AdminTab's Customers tab) instead of a hardcoded 4-entry list — fetched
+// at runtime, filtered to used_in_delivery_import=true (2026-09-01).
+interface DfgCustomer {
+  customer_id: string;
+  nm_customer: string;
+  used_in_delivery_import: boolean;
+}
+
+// Pseudo-customer, always pinned first in the picker — selecting it omits
+// customer_id entirely from the create-shipment payload, so the shipment
+// lands in FreshPortal unallocated for manual stock placement afterwards
+// (2026-09-01, reverses the earlier "customer_id always required" rule).
+const STOCK_CUSTOMER_ID = "stock";
 
 const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   variety_length:       { label: "exact",        cls: "bg-emerald/15 text-emerald border-emerald/20" },
@@ -225,6 +231,86 @@ function computeLineStatuses(
   });
 }
 
+interface ComboOption { id: string; name: string; }
+
+// Modern searchable single-select: type to filter, click/Enter to pick.
+// Closes on outside click (mousedown, so option clicks land before blur
+// would otherwise close it) or Escape. Used for the customer picker, which
+// now has ~60 DB-managed options instead of a fixed 4-entry <select>.
+function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel, className }: {
+  options: ComboOption[];
+  value: string;
+  onChange: (id: string) => void;
+  placeholder: string;
+  noMatchLabel: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [highlighted, setHighlighted] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const selected = options.find(o => o.id === value);
+
+  useEffect(() => {
+    function onDocMouseDown(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? options.filter(o => o.name.toLowerCase().includes(q) || o.id.toLowerCase().includes(q))
+    : options;
+
+  function selectOption(o: ComboOption) {
+    onChange(o.id);
+    setQuery("");
+    setOpen(false);
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <input
+        value={open ? query : (selected?.name ?? "")}
+        onChange={e => { setQuery(e.target.value); setHighlighted(0); if (!open) setOpen(true); }}
+        onFocus={() => { setOpen(true); setQuery(""); setHighlighted(0); }}
+        onKeyDown={e => {
+          if (e.key === "ArrowDown") { e.preventDefault(); setHighlighted(h => Math.min(h + 1, filtered.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setHighlighted(h => Math.max(h - 1, 0)); }
+          else if (e.key === "Enter") { e.preventDefault(); if (filtered[highlighted]) selectOption(filtered[highlighted]); }
+          else if (e.key === "Escape") { setOpen(false); }
+        }}
+        placeholder={placeholder}
+        className={className}
+      />
+      {open && (
+        <div className="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto rounded-xl border border-border bg-surface shadow-xl">
+          {filtered.length === 0 ? (
+            <p className="text-xs text-ink-3 px-3 py-2">{noMatchLabel}</p>
+          ) : filtered.map((o, i) => (
+            <button
+              key={o.id}
+              type="button"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => selectOption(o)}
+              className={`w-full text-left px-3 py-2 text-sm transition-colors
+                ${o.id === value ? "bg-emerald/10 text-emerald font-medium" : "text-ink"}
+                ${i === highlighted ? "bg-muted" : "hover:bg-muted"}`}
+            >
+              {o.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const t = translations[lang];
   const td = t.delivery;
@@ -242,6 +328,19 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [importResult, setImportResult] = useState<DfgCreateResult | null>(null);
   const [error, setError] = useState("");
   const [customerId, setCustomerId] = useState("");
+  const [dfgCustomers, setDfgCustomers] = useState<DfgCustomer[]>([]);
+  useEffect(() => {
+    fetch(`${RAILWAY}/dfg-customers`)
+      .then(r => r.ok ? r.json() : { customers: [] })
+      .then(d => setDfgCustomers(d.customers ?? []))
+      .catch(() => {});
+  }, []);
+  const customerOptions: ComboOption[] = useMemo(() => [
+    { id: STOCK_CUSTOMER_ID, name: td.stockOptionLabel },
+    ...dfgCustomers
+      .filter(c => c.used_in_delivery_import)
+      .map(c => ({ id: c.customer_id, name: c.nm_customer })),
+  ], [dfgCustomers, td.stockOptionLabel]);
   const [orderDateOverride, setOrderDateOverride] = useState("");
   const [shipmentEditOpen, setShipmentEditOpen] = useState(false);
   // Set when /delivery/api/check finds the shipment already exists — blocks
@@ -756,7 +855,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       const created = await loggedRequest(
         `${RAILWAY}/delivery/api/create`,
-        { order: orderWithEdits, supplier_fp_id: supplierFpId, customer_id: Number(customerId) },
+        {
+          order: orderWithEdits,
+          supplier_fp_id: supplierFpId,
+          customer_id: customerId === STOCK_CUSTOMER_ID ? null : Number(customerId),
+        },
         td.creatingShipment,
       );
       const result: DfgCreateResult = created as DfgCreateResult;
@@ -1038,7 +1141,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         setSortCol(null);
         setColFilters({});
         setApprovedKeys(preApproved);
-        setCustomerId(String(DFG_CUSTOMERS[0].id));
+        setCustomerId("12");
         setStage("shipment");
       } else if (nextStage === "preview") {
         setStage("preview");
@@ -1339,16 +1442,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 i
               </span>
             </label>
-            <select
+            <SearchableSelect
+              options={customerOptions}
               value={customerId}
-              onChange={e => setCustomerId(e.target.value)}
-              className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors"
-            >
-              <option value="" disabled>{td.customerIdPlaceholder}</option>
-              {DFG_CUSTOMERS.map(c => (
-                <option key={c.id} value={c.id}>{c.name} ({c.code})</option>
-              ))}
-            </select>
+              onChange={setCustomerId}
+              placeholder={td.customerIdPlaceholder}
+              noMatchLabel={td.noCustomersFound}
+              className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
+            />
           </div>
 
           {/* Continue to products */}

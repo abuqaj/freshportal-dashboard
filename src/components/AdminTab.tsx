@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 
+const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? ""
+
 function formatRelative(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
   const mins = Math.floor(diff / 60000)
@@ -800,15 +802,90 @@ function GroupsTable() {
   )
 }
 
+/* ─── Customers table ─── */
+interface DfgCustomer {
+  customer_id: string
+  nm_customer: string
+  used_in_delivery_import: boolean
+}
+
+function CustomersTable() {
+  const [customers, setCustomers] = useState<DfgCustomer[]>([])
+  const [loading, setLoading] = useState(true)
+  const [savingId, setSavingId] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await fetch(`${RAILWAY}/dfg-customers`).then(r => r.json())
+      setCustomers(r.customers ?? [])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  async function toggle(customer: DfgCustomer, checked: boolean) {
+    setSavingId(customer.customer_id)
+    setCustomers(prev => prev.map(c =>
+      c.customer_id === customer.customer_id ? { ...c, used_in_delivery_import: checked } : c
+    ))
+    try {
+      await fetch(`${RAILWAY}/dfg-customers/set-flag`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customer_id: customer.customer_id, used_in_delivery_import: checked }),
+      })
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead>
+          <tr className="border-b border-border bg-ground/60">
+            <Th>Customer</Th>
+            <Th>ID</Th>
+            <th className="px-4 py-2.5 text-center text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
+              Used in delivery import
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading ? (
+            <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
+          ) : customers.length === 0 ? (
+            <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-ink-3">No customers</td></tr>
+          ) : customers.map(c => (
+            <tr key={c.customer_id} className="border-b border-border hover:bg-ground/40 transition-colors">
+              <td className="px-4 py-3 text-sm font-medium text-ink">{c.nm_customer}</td>
+              <td className="px-4 py-3 text-xs text-ink-3 tabular-nums">#{c.customer_id}</td>
+              <td className="px-4 py-3 text-center">
+                <input type="checkbox" className="accent-emerald w-4 h-4 cursor-pointer"
+                  checked={c.used_in_delivery_import}
+                  disabled={savingId === c.customer_id}
+                  onChange={e => toggle(c, e.target.checked)} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 /* ─── Main ─── */
 export default function AdminTab({ currentUsername }: { currentUsername?: string }) {
-  const [activeTab, setActiveTab] = useState<"users" | "groups">("users")
+  const [activeTab, setActiveTab] = useState<"users" | "groups" | "customers">("users")
 
   return (
     <div>
       <div className="px-5 py-4 border-b border-border">
         <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
-          {(["users", "groups"] as const).map(tab => (
+          {(["users", "groups", "customers"] as const).map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
               className={`px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${
                 activeTab === tab ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink"
@@ -821,7 +898,9 @@ export default function AdminTab({ currentUsername }: { currentUsername?: string
 
       {activeTab === "users"
         ? <UsersTable currentUsername={currentUsername} />
-        : <GroupsTable />}
+        : activeTab === "groups"
+        ? <GroupsTable />
+        : <CustomersTable />}
     </div>
   )
 }

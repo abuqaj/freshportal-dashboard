@@ -1880,6 +1880,138 @@ def get_bi_order_lines_daily_series(days: int = 30) -> list[dict]:
         return []
 
 
+# ---------------------------------------------------------------------------
+# DFG customers — the fixed customer list an order can be invoiced to via the
+# DFG BatchV1 API (delivery-import). Was a hardcoded 4-entry list in
+# DeliveryImporter.tsx (DFG_CUSTOMERS); moved to DB so an admin can enable
+# more of the full FreshPortal customer list via AdminTab's Customers tab.
+# used_in_delivery_import is its own column rather than a single is_active
+# flag since the same master list may end up used elsewhere later
+# (2026-09-01).
+# ---------------------------------------------------------------------------
+
+_DFG_CUSTOMER_SEED: list[tuple[str, str]] = [
+    ("198", "Florca (Doha)"),
+    ("196", "OZ-Hami - PROMO"),
+    ("192", "Van den Bergh (Colombia - Qatar)"),
+    ("191", "DEEP FLOWERS TRADING LLC SPC"),
+    ("189", "Coloriginz - Colombia Direct"),
+    ("186", "The Parfum Flower Company (DS)"),
+    ("185", "The Parfum Flower Company-Colombia (DS)"),
+    ("184", "OZ-Hami - Colombia (DS)"),
+    ("183", "Waterdrinker"),
+    ("180", "Trade Fair 2025"),
+    ("179", "Coloriginz - Summerflowers (Sea)"),
+    ("177", "Kosten berekening EC-NL Holiday OZH"),
+    ("176", "Fresh From Source Kenya"),
+    ("175", "Transportgemeinschaft Wangen FT"),
+    ("174", "Willem Jan Dollar"),
+    ("173", "Willem Jan"),
+    ("168", "Kostenberekening Ecuador Coloriginz - Summerflowers 5 %"),
+    ("167", "Transportgemeinschaft Wangen (TGW04)"),
+    ("163", "My Peony"),
+    ("162", "Van Dijk Flora B.V. (Biedronka)"),
+    ("161", "Kosten berekening EC-NL DS"),
+    ("160", "OZ-Hami - Growers Offer"),
+    ("159", "OZ-Hami - Product bought"),
+    ("158", "MFO Holland B.V."),
+    ("148", "OZ-Hami - Holiday availability"),
+    ("147", "OZ-Hami (sea)"),
+    ("142", "The Parfum Flower Company (2TRC)"),
+    ("141", "The Parfum Flower Company (1TRC)"),
+    ("140", "Gebr. Barendsen B.V. - Direct Sales"),
+    ("133", "Coloriginz - OZ-Hami"),
+    ("132", "Kosten berekening EC-NL COL (CONS)"),
+    ("130", "A. Heemskerk - Direct Sales"),
+    ("118", "Fresh From Source Netherlands (CIF)"),
+    ("117", "Fresh From Source Netherlands"),
+    ("111", "Kosten berekening EC-NL COL (Fairtrade)"),
+    ("109", "Coloriginz - (DS Magic)"),
+    ("105", "Kosten berekening EC-NL (RSDR)"),
+    ("82",  "OZ-Hami (DS inc)"),
+    ("68",  "OZ-Hami (DS Magic)"),
+    ("67",  "Kosten berekening EC-NL (FFS)"),
+    ("65",  "OZ-Hami - Colombia"),
+    ("55",  "Coloriginz - Roses (Sea)"),
+    ("41",  "Coloriginz - Barendsen"),
+    ("40",  "Gebr. Barendsen B.V."),
+    ("38",  "Coloriginz - Roses (Fairtrade)"),
+    ("34",  "Parfum Flower Company - Roses Water"),
+    ("32",  "Kosten berekening EC-NL OZI"),
+    ("31",  "Kosten berekening EC-NL"),
+    ("29",  "FFSE OFFER"),
+    ("28",  "OZ-Hami - Weekly availability"),
+    ("22",  "Coloriginz"),
+    ("19",  "Coloriginz - (Direct Sales)"),
+    ("17",  "Coloriginz - Latitude Consignment"),
+    ("16",  "Coloriginz - Summerflowers"),
+    ("15",  "Coloriginz - Colombia (DS)"),
+    ("14",  "OZ-Hami - Gypso"),
+    ("12",  "OZ-Hami - Direct Sales"),
+    ("8",   "The Parfum Flower Company-Colombia"),
+    ("7",   "The Parfum Flower Company"),
+    ("6",   "Coloriginz - Roses"),
+    ("5",   "OZ-Hami - TFPO"),
+    ("2",   "OZ-Hami - Actual weight"),
+]
+
+# The 4 previously hardcoded in DFG_CUSTOMERS — seeded as
+# used_in_delivery_import=True so existing behavior doesn't change until an
+# admin explicitly enables more via the Customers tab.
+_DFG_CUSTOMER_SEED_DEFAULT_USED = {"2", "12", "14", "16"}
+
+
+def ensure_dfg_customers_table() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS dfg_customers (
+                    customer_id              TEXT PRIMARY KEY,
+                    nm_customer               TEXT NOT NULL,
+                    used_in_delivery_import   BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at                TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("SELECT COUNT(*) FROM dfg_customers")
+            if cur.fetchone()[0] == 0:
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO dfg_customers (customer_id, nm_customer, used_in_delivery_import)
+                    VALUES %s
+                """, [
+                    (cid, name, cid in _DFG_CUSTOMER_SEED_DEFAULT_USED)
+                    for cid, name in _DFG_CUSTOMER_SEED
+                ])
+        conn.commit()
+
+
+def get_dfg_customers() -> list[dict]:
+    try:
+        ensure_dfg_customers_table()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT customer_id, nm_customer, used_in_delivery_import
+                    FROM dfg_customers
+                    ORDER BY nm_customer
+                """)
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_dfg_customers: %s", exc)
+        return []
+
+
+def set_dfg_customer_flag(customer_id: str, used_in_delivery_import: bool) -> None:
+    ensure_dfg_customers_table()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE dfg_customers
+                SET used_in_delivery_import = %s, updated_at = NOW()
+                WHERE customer_id = %s
+            """, (used_in_delivery_import, customer_id))
+        conn.commit()
+
+
 def create_delivery_import_log(entry: dict) -> int:
     """Insert a new delivery import log entry. Returns the new row id."""
     ensure_delivery_import_log()

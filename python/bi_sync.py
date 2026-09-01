@@ -33,8 +33,8 @@ from db import (
 
 logger = logging.getLogger(__name__)
 
-# OZ-Hami Direct Sales — same customer_id as the "OZEDS" entry in
-# DeliveryImporter.tsx's DFG_CUSTOMERS list. The only customer this
+# OZ-Hami Direct Sales — same customer_id as the "OZ-Hami - Direct Sales"
+# entry in the dfg_customers table (db.py). The only customer this
 # analytics tool cares about (see module docstring).
 REFERENCE_CUSTOMER_ID = "12"
 
