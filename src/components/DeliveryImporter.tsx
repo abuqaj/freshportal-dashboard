@@ -304,6 +304,8 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
     <div ref={containerRef} className="relative">
       <input
         value={open ? query : (selected?.name ?? "")}
+        readOnly={!open}
+        onClick={() => { if (!open) { setOpen(true); setQuery(""); setHighlighted(0); } }}
         onChange={e => { setQuery(e.target.value); setHighlighted(0); if (!open) setOpen(true); }}
         onFocus={() => { setOpen(true); setQuery(""); setHighlighted(0); }}
         onKeyDown={e => {
@@ -313,7 +315,7 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
           else if (e.key === "Escape") { setOpen(false); }
         }}
         placeholder={placeholder}
-        className={className}
+        className={`${className} ${open ? "cursor-text" : "cursor-pointer"}`}
       />
       {open && typeof document !== "undefined" && createPortal(
         <div
