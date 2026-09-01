@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useSession } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
 import DeliveryTour, { TourStep } from "./DeliveryTour";
@@ -237,6 +238,13 @@ interface ComboOption { id: string; name: string; }
 // Closes on outside click (mousedown, so option clicks land before blur
 // would otherwise close it) or Escape. Used for the customer picker, which
 // now has ~60 DB-managed options instead of a fixed 4-entry <select>.
+//
+// The option list is rendered through a portal into document.body, positioned
+// with `fixed` coordinates computed from the input's own bounding rect —
+// not a plain `absolute` child of the input wrapper — because the shipment
+// card (and its ancestors) clip overflowing content, which silently cut the
+// list off after ~3 rows with no way to scroll to the rest (found
+// 2026-09-01). Repositions on scroll/resize while open so it stays anchored.
 function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel, className }: {
   options: ComboOption[];
   value: string;
@@ -248,15 +256,34 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState(0);
+  const [pos, setPos] = useState({ top: 0, left: 0, width: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const selected = options.find(o => o.id === value);
 
+  const updatePos = useCallback(() => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    updatePos();
+    window.addEventListener("scroll", updatePos, true);
+    window.addEventListener("resize", updatePos);
+    return () => {
+      window.removeEventListener("scroll", updatePos, true);
+      window.removeEventListener("resize", updatePos);
+    };
+  }, [open, updatePos]);
+
   useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      if (containerRef.current?.contains(target)) return;
+      if (dropdownRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
@@ -288,8 +315,12 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
         placeholder={placeholder}
         className={className}
       />
-      {open && (
-        <div className="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto rounded-xl border border-border bg-surface shadow-xl">
+      {open && typeof document !== "undefined" && createPortal(
+        <div
+          ref={dropdownRef}
+          style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width }}
+          className="z-[500] max-h-64 overflow-y-auto rounded-xl border border-border bg-surface shadow-2xl"
+        >
           {filtered.length === 0 ? (
             <p className="text-xs text-ink-3 px-3 py-2">{noMatchLabel}</p>
           ) : filtered.map((o, i) => (
@@ -305,7 +336,8 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
               {o.name}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
