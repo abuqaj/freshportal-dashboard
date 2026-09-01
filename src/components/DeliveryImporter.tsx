@@ -369,12 +369,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       .then(d => setDfgCustomers(d.customers ?? []))
       .catch(() => {});
   }, []);
+  // "Stock" (no customer) option pulled off main for now (2026-09-01) — DFG
+  // API returned 422 for an omitted/null customer_id; re-add once that's
+  // confirmed working on test_1.
   const customerOptions: ComboOption[] = useMemo(() => [
-    { id: STOCK_CUSTOMER_ID, name: td.stockOptionLabel },
     ...dfgCustomers
       .filter(c => c.used_in_delivery_import)
       .map(c => ({ id: c.customer_id, name: c.nm_customer })),
-  ], [dfgCustomers, td.stockOptionLabel]);
+  ], [dfgCustomers]);
   const [orderDateOverride, setOrderDateOverride] = useState("");
   const [shipmentEditOpen, setShipmentEditOpen] = useState(false);
   // Set when /delivery/api/check finds the shipment already exists — blocks
