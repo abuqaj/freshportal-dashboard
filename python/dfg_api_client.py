@@ -32,6 +32,19 @@ class DfgApiError(Exception):
     or a payload that's missing data required before it can even be sent)."""
 
 
+def _raise_for_status_with_body(resp: httpx.Response) -> None:
+    """resp.raise_for_status() alone only gives "422 Unprocessable Entity for
+    url ..." with no indication of *why* — the actual validation error (e.g.
+    which field DFG rejected) is in the response body, which raise_for_status()
+    doesn't include in its message. Callers were previously swallowing that
+    body entirely, making failures like a rejected customer_id impossible to
+    diagnose from the error the UI showed (found 2026-09-01)."""
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise DfgApiError(f"{exc} — response body: {resp.text}") from exc
+
+
 @dataclass
 class BatchLineError:
     product_number: str
@@ -62,7 +75,7 @@ def _authenticate(cfg: Config) -> str:
         json={"username": cfg.dfg_api_key, "type": "api"},
         timeout=30,
     )
-    resp.raise_for_status()
+    _raise_for_status_with_body(resp)
     token = resp.json().get("token")
     if not token:
         raise DfgApiError(f"Auth response missing 'token': {resp.text}")
@@ -103,7 +116,7 @@ def get_batch(cfg: Config, supplier_id: str, batch_number: str) -> dict[str, Any
     # more conventional 404 — both mean "not found, safe to create" (2026-08-24).
     if resp.status_code in (204, 404):
         return None
-    resp.raise_for_status()
+    _raise_for_status_with_body(resp)
     return resp.json()
 
 
@@ -182,21 +195,25 @@ def build_batch_payload(order: DeliveryOrder, customer_id: int | None = None) ->
 
     `order.supplier_fp_id` must already be resolved (matched from tx_company
     against the local supplier DB) before calling this. `customer_id` is
-    optional — omitting it creates the shipment without an invoice.
+    optional — the "Stock" picker option creates the shipment without an
+    invoice, for manual allocation in FreshPortal afterwards.
+
+    customer_id is always sent as a key, with an explicit null when not
+    provided, rather than omitted entirely — omitting it outright returned
+    422 Unprocessable Entity (found 2026-09-01), consistent with a schema
+    that requires the key present-but-nullable rather than absent.
     """
     if not order.supplier_fp_id:
         raise DfgApiError(f"supplier_fp_id not resolved for {order.tx_company!r} — cannot build payload")
 
-    payload: dict[str, Any] = {
+    return {
         "number": order.id_invoice,
         "date": _to_iso_date(order.dt_invoice),
         "delivery_date": _to_iso_date(order.dt_fly),
         "supplier_id": int(order.supplier_fp_id),
         "stock_entries": [build_stock_entry(line) for line in order.lines],
+        "customer_id": customer_id,
     }
-    if customer_id:
-        payload["customer_id"] = customer_id
-    return payload
 
 
 def _parse_batch_response(data: dict[str, Any], fallback_number: str = "") -> BatchResult:
@@ -241,7 +258,7 @@ def create_batch(cfg: Config, payload: dict[str, Any]) -> BatchResult:
     on HTTP 200; check `.errors` for lines that failed individually (partial
     success). Must be preceded by get_batch() to avoid creating a duplicate."""
     resp = _request(cfg, "POST", "/dfg/v1/batch", json=payload)
-    resp.raise_for_status()
+    _raise_for_status_with_body(resp)
     result = _parse_batch_response(resp.json(), fallback_number=payload.get("number", ""))
     result.batch_url = _batch_url(cfg, result.batch_id)
     result.invoice_url = _invoice_url(cfg, result.invoice_id)
@@ -263,7 +280,7 @@ def add_stock_entries(cfg: Config, batch_id: int, supplier_id: str, lines: list[
         "stock_entries": [build_stock_entry(line) for line in lines],
     }
     resp = _request(cfg, "POST", "/dfg/v1/batch_stock_entry", json=payload)
-    resp.raise_for_status()
+    _raise_for_status_with_body(resp)
     result = _parse_batch_response(resp.json())
     result.batch_url = _batch_url(cfg, result.batch_id or batch_id)
     result.invoice_url = _invoice_url(cfg, result.invoice_id)
