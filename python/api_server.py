@@ -46,7 +46,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
                get_bi_sync_history, get_bi_stats,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
-               get_dfg_customers, set_dfg_customer_flag)
+               get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, is_bi_sync_running
 from auth_middleware import require_permission, require_any_permission, get_token_payload
@@ -2358,6 +2358,20 @@ def dfg_customers_set_flag(
     _: dict = Depends(require_permission("admin:manage")),
 ):
     set_dfg_customer_flag(req.customer_id, req.used_in_delivery_import)
+    return {"ok": True}
+
+
+class DfgCustomersSetAllRequest(BaseModel):
+    used_in_delivery_import: bool
+
+
+@app.post("/dfg-customers/set-all-flags")
+def dfg_customers_set_all_flags(
+    req: DfgCustomersSetAllRequest,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Backs the Customers tab's "select all" header checkbox."""
+    set_all_dfg_customer_flags(req.used_in_delivery_import)
     return {"ok": True}
 
 

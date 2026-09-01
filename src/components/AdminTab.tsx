@@ -813,6 +813,8 @@ function CustomersTable() {
   const [customers, setCustomers] = useState<DfgCustomer[]>([])
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [savingAll, setSavingAll] = useState(false)
+  const selectAllRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -825,6 +827,13 @@ function CustomersTable() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  const allChecked = customers.length > 0 && customers.every(c => c.used_in_delivery_import)
+  const someChecked = customers.some(c => c.used_in_delivery_import)
+
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someChecked && !allChecked
+  }, [someChecked, allChecked])
 
   async function toggle(customer: DfgCustomer, checked: boolean) {
     setSavingId(customer.customer_id)
@@ -842,6 +851,20 @@ function CustomersTable() {
     }
   }
 
+  async function toggleAll(checked: boolean) {
+    setSavingAll(true)
+    setCustomers(prev => prev.map(c => ({ ...c, used_in_delivery_import: checked })))
+    try {
+      await fetch(`${RAILWAY}/dfg-customers/set-all-flags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ used_in_delivery_import: checked }),
+      })
+    } finally {
+      setSavingAll(false)
+    }
+  }
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full">
@@ -850,7 +873,16 @@ function CustomersTable() {
             <Th>Customer</Th>
             <Th>ID</Th>
             <th className="px-4 py-2.5 text-center text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
-              Used in delivery import
+              <div className="flex flex-col items-center gap-1">
+                <span>Used in delivery import</span>
+                <label className="flex items-center gap-1.5 normal-case font-medium text-ink-3 cursor-pointer">
+                  <input ref={selectAllRef} type="checkbox" className="accent-emerald w-3.5 h-3.5 cursor-pointer"
+                    checked={allChecked}
+                    disabled={savingAll || loading || customers.length === 0}
+                    onChange={e => toggleAll(e.target.checked)} />
+                  <span>Select all</span>
+                </label>
+              </div>
             </th>
           </tr>
         </thead>

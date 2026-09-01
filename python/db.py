@@ -2012,6 +2012,18 @@ def set_dfg_customer_flag(customer_id: str, used_in_delivery_import: bool) -> No
         conn.commit()
 
 
+def set_all_dfg_customer_flags(used_in_delivery_import: bool) -> None:
+    """Bulk set — backs the Customers tab's "select all" header checkbox."""
+    ensure_dfg_customers_table()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE dfg_customers
+                SET used_in_delivery_import = %s, updated_at = NOW()
+            """, (used_in_delivery_import,))
+        conn.commit()
+
+
 def create_delivery_import_log(entry: dict) -> int:
     """Insert a new delivery import log entry. Returns the new row id."""
     ensure_delivery_import_log()
