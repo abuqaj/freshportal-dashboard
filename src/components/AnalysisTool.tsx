@@ -265,16 +265,22 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   const [byProduct, setByProduct] = useState<SalesSeriesResult | null>(null);
   const [byProductLoading, setByProductLoading] = useState(false);
 
-  useEffect(() => {
-    fetch(`${RAILWAY}/bi-sync/suppliers?limit=200`)
-      .then(r => r.ok ? r.json() : { suppliers: [] })
-      .then(d => setSuppliers(d.suppliers ?? []))
-      .catch(() => {});
-    fetch(`${RAILWAY}/bi-sync/products?limit=300`)
-      .then(r => r.ok ? r.json() : { products: [] })
-      .then(d => setProducts(d.products ?? []))
-      .catch(() => {});
+  // Re-run after every sync completes (not just on mount) — otherwise the
+  // picker keeps showing stale data (e.g. raw supplier IDs instead of names
+  // once bi_suppliers has actually been populated by a newer sync) until
+  // the page is manually reloaded (found 2026-09-02).
+  const loadPickers = useCallback(async () => {
+    try {
+      const [sRes, pRes] = await Promise.all([
+        fetch(`${RAILWAY}/bi-sync/suppliers?limit=200`),
+        fetch(`${RAILWAY}/bi-sync/products?limit=300`),
+      ]);
+      setSuppliers(sRes.ok ? (await sRes.json()).suppliers ?? [] : []);
+      setProducts(pRes.ok ? (await pRes.json()).products ?? [] : []);
+    } catch { /* ignore */ }
   }, []);
+
+  useEffect(() => { loadPickers(); }, [loadPickers]);
 
   useEffect(() => {
     if (!selectedSupplierId) { setBySupplier(null); return; }
@@ -323,9 +329,9 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
   useEffect(() => {
     if (!syncRunning) return;
-    const poll = setInterval(() => { loadBiHistory(); loadCharts(); }, 4000);
+    const poll = setInterval(() => { loadBiHistory(); loadCharts(); loadPickers(); }, 4000);
     return () => clearInterval(poll);
-  }, [syncRunning, loadBiHistory, loadCharts]);
+  }, [syncRunning, loadBiHistory, loadCharts, loadPickers]);
 
   async function runBiSync() {
     setSyncStarting(true);
@@ -335,6 +341,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
       await fetch(url.toString(), { method: "POST" });
       await loadBiHistory();
       await loadCharts();
+      await loadPickers();
     } finally {
       setSyncStarting(false);
     }
@@ -349,6 +356,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
       await fetch(url.toString(), { method: "POST" });
       await loadBiHistory();
       await loadCharts();
+      await loadPickers();
     } finally {
       setSyncStarting(false);
     }
