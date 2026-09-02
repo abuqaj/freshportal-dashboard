@@ -1428,7 +1428,25 @@ def ensure_delivery_import_log() -> None:
 # code has an actual per-row currency to write (2026-08-31).
 # ---------------------------------------------------------------------------
 
+_bi_tables_ensured = False
+
+
 def ensure_bi_tables() -> None:
+    """Idempotent (IF NOT EXISTS everywhere) but not cheap — ~25 DDL
+    statements — and called from ~18 places across every bi_sync upsert/get
+    function (roughly 6 of them per single day of syncing). Each call used
+    to open its own fresh Postgres connection (db.py has no pooling — see
+    _conn()) just to run statements that are no-ops after the very first
+    time, which multiplied by every upsert call *and* every day of a range
+    backfill was the actual cause of a reported 10x sync slowdown
+    (2026-09-02) as this function grew larger over the session. Cached here
+    so the real DDL only runs once per process lifetime (i.e. once per
+    deploy — schema doesn't change again until the next one restarts the
+    process anyway) and every later call is a free no-op with zero DB
+    round-trips."""
+    global _bi_tables_ensured
+    if _bi_tables_ensured:
+        return
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -1550,6 +1568,7 @@ def ensure_bi_tables() -> None:
                 )
             """)
         conn.commit()
+    _bi_tables_ensured = True
 
 
 def _num(v: Any) -> float | None:
