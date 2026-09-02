@@ -54,36 +54,93 @@ interface ChartsData {
   order_lines_daily: OrderLineDailyPoint[];
 }
 
+// ── Price & supplier analysis (2026-09-02) ──────────────────────────────────
+interface ProductPickerItem {
+  product_id: string;
+  length: number | null;
+  description: string | null;
+  row_count: number;
+}
+
+interface PriceTrendPoint {
+  day: string;
+  avg_price: number | null;
+  total_quantity: number | null;
+  count: number;
+}
+
+interface PriceVsLengthPoint {
+  length: number;
+  avg_price: number | null;
+  total_quantity: number | null;
+  count: number;
+}
+
+interface SupplierPoint {
+  supplier_id: string;
+  avg_price: number | null;
+  count: number;
+}
+
+interface SupplierVolatilityPoint {
+  supplier_id: string;
+  price_stddev: number | null;
+  avg_price: number | null;
+  count: number;
+}
+
+interface SupplierDeviationPoint {
+  supplier_id: string;
+  avg_price: number | null;
+  market_avg: number | null;
+  deviation: number | null;
+}
+
+interface ProductAnalysis {
+  price_trend: PriceTrendPoint[];
+  price_vs_length: PriceVsLengthPoint[];
+  elasticity: PriceTrendPoint[];
+  supplier_comparison: SupplierPoint[];
+  supplier_volatility: SupplierVolatilityPoint[];
+  supplier_deviation: SupplierDeviationPoint[];
+}
+
 function shortDay(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function fmtPrice(v: number | null | undefined): string {
+  return v == null ? "" : `$${v.toFixed(3)}`;
+}
+
 // Dependency-free bar chart — one bar per point, height scaled to the series
-// max, value shown above the bar and the day label below it.
-function BarChart<T extends { day: string }>({ points, valueOf, labelOf, barClassName }: {
+// max (by absolute value, so negative series like supplier deviation still
+// render sensibly), value shown above the bar and an x-axis label below it.
+function BarChart<T>({ points, valueOf, labelOf, xLabelOf, barClassName }: {
   points: T[];
   valueOf: (p: T) => number;
   labelOf: (p: T) => string;
+  xLabelOf: (p: T) => string;
   barClassName: string;
 }) {
   if (!points.length) {
     return <p className="text-xs text-ink-3 px-1 py-6 text-center">No data yet</p>;
   }
-  const max = Math.max(1, ...points.map(p => valueOf(p)));
+  const max = Math.max(1, ...points.map(p => Math.abs(valueOf(p))));
   return (
     <div className="flex items-end gap-1.5 h-36 overflow-x-auto px-1">
       {points.map((p, i) => {
         const v = valueOf(p);
-        const heightPct = Math.max(2, (v / max) * 100);
+        const heightPct = Math.max(2, (Math.abs(v) / max) * 100);
         return (
-          <div key={i} className="flex flex-col items-center gap-1 shrink-0 w-9" title={`${p.day}: ${labelOf(p)}`}>
-            <span className="text-[10px] text-ink-3 whitespace-nowrap">{v > 0 ? labelOf(p) : ""}</span>
+          <div key={i} className="flex flex-col items-center gap-1 shrink-0 w-9" title={`${xLabelOf(p)}: ${labelOf(p)}`}>
+            <span className="text-[10px] text-ink-3 whitespace-nowrap">{v !== 0 ? labelOf(p) : ""}</span>
             <div className="w-full h-24 flex items-end">
-              <div className={`w-full rounded-t-md ${barClassName}`} style={{ height: `${heightPct}%` }} />
+              <div className={`w-full rounded-t-md ${v < 0 ? "bg-red-500/70" : barClassName}`} style={{ height: `${heightPct}%` }} />
             </div>
-            <span className="text-[10px] text-ink-3/70 whitespace-nowrap">{shortDay(p.day)}</span>
+            <span className="text-[10px] text-ink-3/70 whitespace-nowrap">{xLabelOf(p)}</span>
           </div>
         );
       })}
@@ -141,6 +198,36 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
       setCharts(await res.json());
     } catch { /* ignore */ }
   }, []);
+
+  // Price & supplier analysis — product/length picker + combined series for
+  // that selection. "productId|length" as the select value since both are
+  // needed together to identify one series.
+  const [products, setProducts] = useState<ProductPickerItem[]>([]);
+  const [selectedKey, setSelectedKey] = useState("");
+  const [analysis, setAnalysis] = useState<ProductAnalysis | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+
+  useEffect(() => {
+    fetch(`${RAILWAY}/bi-sync/products?limit=300`)
+      .then(r => r.ok ? r.json() : { products: [] })
+      .then(d => setProducts(d.products ?? []))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!selectedKey) { setAnalysis(null); return; }
+    const [productId, lengthStr] = selectedKey.split("|");
+    setAnalysisLoading(true);
+    const url = new URL(`${RAILWAY}/bi-sync/product-analysis`);
+    url.searchParams.set("product_id", productId);
+    url.searchParams.set("length", lengthStr);
+    url.searchParams.set("days", "90");
+    fetch(url.toString())
+      .then(r => r.ok ? r.json() : null)
+      .then(setAnalysis)
+      .catch(() => setAnalysis(null))
+      .finally(() => setAnalysisLoading(false));
+  }, [selectedKey]);
 
   useEffect(() => { loadBiHistory(); loadCharts(); }, [loadBiHistory, loadCharts]);
 
@@ -294,6 +381,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             points={charts?.stock_entries_daily ?? []}
             valueOf={(p: StockEntryDailyPoint) => p.count}
             labelOf={(p: StockEntryDailyPoint) => p.count.toLocaleString()}
+            xLabelOf={(p: StockEntryDailyPoint) => shortDay(p.day)}
             barClassName="bg-emerald/70"
           />
         </div>
@@ -304,9 +392,117 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             points={charts?.order_lines_daily ?? []}
             valueOf={(p: OrderLineDailyPoint) => p.count}
             labelOf={(p: OrderLineDailyPoint) => p.count.toLocaleString()}
+            xLabelOf={(p: OrderLineDailyPoint) => shortDay(p.day)}
             barClassName="bg-blue-500/70"
           />
         </div>
+      </div>
+
+      {/* Price & supplier analysis (2026-09-02) — rough first pass, one
+          product+length at a time. "Cena i rentowność" uses realized sale
+          price (bi_order_lines, customer 12/OZEDS only). "Dostawcy" uses
+          offer/listing price (bi_stock_entry_daily/dim) grouped by
+          stock_entry.supplier_id (the FreshPortal-registered supplier). */}
+      <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
+        <div>
+          <p className="text-sm font-semibold text-ink">Price & supplier analysis</p>
+          <p className="text-xs text-ink-3 mt-0.5">Pick a product + length to see its charts below (last 90 days).</p>
+        </div>
+        <select
+          value={selectedKey}
+          onChange={e => setSelectedKey(e.target.value)}
+          className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors max-w-md"
+        >
+          <option value="">— select product + length —</option>
+          {products.map(p => (
+            <option key={`${p.product_id}|${p.length}`} value={`${p.product_id}|${p.length}`}>
+              {(p.description || p.product_id)} — {p.length != null ? `${p.length}cm` : "?cm"} ({p.row_count})
+            </option>
+          ))}
+        </select>
+
+        {analysisLoading && <p className="text-xs text-ink-3">Loading…</p>}
+
+        {analysis && (
+          <>
+            <p className="text-xs font-semibold text-ink-3 uppercase tracking-wide mt-2">Cena i rentowność (sale price, OZEDS)</p>
+            <div className="grid sm:grid-cols-3 gap-4">
+              <div className="rounded-xl border border-border p-3">
+                <p className="text-xs font-semibold text-ink">Trend ceny sprzedaży w czasie</p>
+                <BarChart
+                  points={analysis.price_trend}
+                  valueOf={(p: PriceTrendPoint) => p.avg_price ?? 0}
+                  labelOf={(p: PriceTrendPoint) => fmtPrice(p.avg_price)}
+                  xLabelOf={(p: PriceTrendPoint) => shortDay(p.day)}
+                  barClassName="bg-emerald/70"
+                />
+              </div>
+              <div className="rounded-xl border border-border p-3">
+                <p className="text-xs font-semibold text-ink">Cena sprzedaży vs długość łodygi</p>
+                <BarChart
+                  points={analysis.price_vs_length}
+                  valueOf={(p: PriceVsLengthPoint) => p.avg_price ?? 0}
+                  labelOf={(p: PriceVsLengthPoint) => fmtPrice(p.avg_price)}
+                  xLabelOf={(p: PriceVsLengthPoint) => `${p.length}cm`}
+                  barClassName="bg-emerald/70"
+                />
+              </div>
+              <div className="rounded-xl border border-border p-3">
+                <p className="text-xs font-semibold text-ink">Elastyczność cenowa — wolumen vs cena</p>
+                <p className="text-[10px] text-ink-3 mb-1">Ilość sprzedana (góra) / cena sprzedaży (dół)</p>
+                <BarChart
+                  points={analysis.elasticity}
+                  valueOf={(p: PriceTrendPoint) => p.total_quantity ?? 0}
+                  labelOf={(p: PriceTrendPoint) => (p.total_quantity ?? 0).toLocaleString()}
+                  xLabelOf={(p: PriceTrendPoint) => shortDay(p.day)}
+                  barClassName="bg-purple-500/70"
+                />
+                <BarChart
+                  points={analysis.elasticity}
+                  valueOf={(p: PriceTrendPoint) => p.avg_price ?? 0}
+                  labelOf={(p: PriceTrendPoint) => fmtPrice(p.avg_price)}
+                  xLabelOf={(p: PriceTrendPoint) => shortDay(p.day)}
+                  barClassName="bg-emerald/70"
+                />
+              </div>
+            </div>
+
+            <p className="text-xs font-semibold text-ink-3 uppercase tracking-wide mt-2">Dostawcy (offer price, per supplier_id)</p>
+            <div className="grid sm:grid-cols-3 gap-4">
+              <div className="rounded-xl border border-border p-3">
+                <p className="text-xs font-semibold text-ink">Porównanie cen dostawców</p>
+                <BarChart
+                  points={analysis.supplier_comparison}
+                  valueOf={(p: SupplierPoint) => p.avg_price ?? 0}
+                  labelOf={(p: SupplierPoint) => fmtPrice(p.avg_price)}
+                  xLabelOf={(p: SupplierPoint) => `#${p.supplier_id}`}
+                  barClassName="bg-blue-500/70"
+                />
+              </div>
+              <div className="rounded-xl border border-border p-3">
+                <p className="text-xs font-semibold text-ink">Wahania cen (volatility) dostawcy</p>
+                <BarChart
+                  points={analysis.supplier_volatility}
+                  valueOf={(p: SupplierVolatilityPoint) => p.price_stddev ?? 0}
+                  labelOf={(p: SupplierVolatilityPoint) => fmtPrice(p.price_stddev)}
+                  xLabelOf={(p: SupplierVolatilityPoint) => `#${p.supplier_id}`}
+                  barClassName="bg-blue-500/70"
+                />
+              </div>
+              <div className="rounded-xl border border-border p-3">
+                <p className="text-xs font-semibold text-ink">Odchylenie od średniej rynkowej</p>
+                <p className="text-[10px] text-ink-3 mb-1">Czerwone = poniżej średniej rynkowej</p>
+                <BarChart
+                  points={analysis.supplier_deviation}
+                  valueOf={(p: SupplierDeviationPoint) => p.deviation ?? 0}
+                  labelOf={(p: SupplierDeviationPoint) => `${(p.deviation ?? 0) >= 0 ? "+" : ""}${fmtPrice(p.deviation)}`}
+                  xLabelOf={(p: SupplierDeviationPoint) => `#${p.supplier_id}`}
+                  barClassName="bg-blue-500/70"
+                />
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="flex items-end gap-3 flex-wrap">

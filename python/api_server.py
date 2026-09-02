@@ -46,6 +46,9 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
                get_bi_sync_history, get_bi_stats,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
+               get_bi_products_for_picker, get_bi_price_trend, get_bi_price_vs_length,
+               get_bi_price_elasticity, get_bi_supplier_price_comparison,
+               get_bi_supplier_price_volatility, get_bi_supplier_price_deviation,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
@@ -737,6 +740,33 @@ def bi_sync_charts(days: int = 30, _: dict = Depends(require_permission("admin:m
     return {
         "stock_entries_daily": get_bi_stock_entries_daily_series(days),
         "order_lines_daily": get_bi_order_lines_daily_series(days),
+    }
+
+
+@app.get("/bi-sync/products")
+def bi_sync_products(limit: int = 300, _: dict = Depends(require_permission("admin:manage"))):
+    """Product/length combos to populate the picker for the price & supplier
+    analysis charts — most data-rich first."""
+    return {"products": get_bi_products_for_picker(limit)}
+
+
+@app.get("/bi-sync/product-analysis")
+def bi_sync_product_analysis(
+    product_id: str,
+    length: int,
+    days: int = 90,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Combined payload for the price & supplier charts, all scoped to one
+    product+length. See db.py's "Price / supplier analytics queries" section
+    for exactly which table/price each series comes from."""
+    return {
+        "price_trend": get_bi_price_trend(product_id, length, days),
+        "price_vs_length": get_bi_price_vs_length(product_id, days),
+        "elasticity": get_bi_price_elasticity(product_id, length, days),
+        "supplier_comparison": get_bi_supplier_price_comparison(product_id, length, days),
+        "supplier_volatility": get_bi_supplier_price_volatility(product_id, length, days),
+        "supplier_deviation": get_bi_supplier_price_deviation(product_id, length, days),
     }
 
 
