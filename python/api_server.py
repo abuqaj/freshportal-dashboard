@@ -46,9 +46,8 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
                get_bi_sync_history, get_bi_stats,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
-               get_bi_products_for_picker, get_bi_price_trend, get_bi_price_vs_length,
-               get_bi_price_elasticity, get_bi_supplier_price_comparison,
-               get_bi_supplier_price_volatility, get_bi_supplier_price_deviation,
+               get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
+               get_bi_sales_by_supplier, get_bi_sales_by_product,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
@@ -745,29 +744,45 @@ def bi_sync_charts(days: int = 30, _: dict = Depends(require_permission("admin:m
 
 @app.get("/bi-sync/products")
 def bi_sync_products(limit: int = 300, _: dict = Depends(require_permission("admin:manage"))):
-    """Product/length combos to populate the picker for the price & supplier
-    analysis charts — most data-rich first."""
-    return {"products": get_bi_products_for_picker(limit)}
+    """Product picker (independent of length) for the "by product" sales chart."""
+    return {"products": get_bi_products_only_picker(limit)}
 
 
-@app.get("/bi-sync/product-analysis")
-def bi_sync_product_analysis(
-    product_id: str,
-    length: int,
+@app.get("/bi-sync/product-lengths")
+def bi_sync_product_lengths(product_id: str, _: dict = Depends(require_permission("admin:manage"))):
+    """Lengths available for one product — the optional refinement dropdown
+    in the "by product" sales chart."""
+    return {"lengths": get_bi_lengths_for_product(product_id)}
+
+
+@app.get("/bi-sync/suppliers")
+def bi_sync_suppliers(limit: int = 200, _: dict = Depends(require_permission("admin:manage"))):
+    """Supplier picker (only suppliers with actual sold lines) for the
+    "by supplier" sales chart."""
+    return {"suppliers": get_bi_suppliers_for_picker(limit)}
+
+
+@app.get("/bi-sync/sales-by-supplier")
+def bi_sync_sales_by_supplier(
+    supplier_id: str,
     days: int = 90,
     _: dict = Depends(require_permission("admin:manage")),
 ):
-    """Combined payload for the price & supplier charts, all scoped to one
-    product+length. See db.py's "Price / supplier analytics queries" section
-    for exactly which table/price each series comes from."""
-    return {
-        "price_trend": get_bi_price_trend(product_id, length, days),
-        "price_vs_length": get_bi_price_vs_length(product_id, days),
-        "elasticity": get_bi_price_elasticity(product_id, length, days),
-        "supplier_comparison": get_bi_supplier_price_comparison(product_id, length, days),
-        "supplier_volatility": get_bi_supplier_price_volatility(product_id, length, days),
-        "supplier_deviation": get_bi_supplier_price_deviation(product_id, length, days),
-    }
+    """Multi-series sale price over time for one supplier — one line per
+    product (top 7 by volume)."""
+    return get_bi_sales_by_supplier(supplier_id, days)
+
+
+@app.get("/bi-sync/sales-by-product")
+def bi_sync_sales_by_product(
+    product_id: str,
+    length: int | None = None,
+    days: int = 90,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Multi-series sale price over time for one product (optionally scoped
+    to one length) — one line per supplier (top 7 by volume)."""
+    return get_bi_sales_by_product(product_id, length, days)
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:

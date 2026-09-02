@@ -1484,6 +1484,7 @@ def ensure_bi_tables() -> None:
                     product_id               TEXT,
                     manufacturer_id          TEXT,
                     length                   INTEGER,
+                    supplier_id              TEXT,
                     customer_id              TEXT,
                     quantity                 NUMERIC,
                     quantity_per_pack        NUMERIC,
@@ -1497,10 +1498,25 @@ def ensure_bi_tables() -> None:
             cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'EUR'")
             cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS manufacturer_id TEXT")
             cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS length INTEGER")
+            cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS supplier_id TEXT")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_product_idx  ON bi_order_lines(product_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_mfr_idx      ON bi_order_lines(manufacturer_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_supplier_idx ON bi_order_lines(supplier_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_created_idx  ON bi_order_lines(creation_date_time)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_stockent_idx ON bi_order_lines(created_from_stock_entry_id)")
+
+            # id->name lookup for FreshPortal-registered suppliers — pure
+            # denormalized cache, refreshed every sync (upsert), used only to
+            # label chart legends (confirmed real columns 2026-09-02: id,
+            # type_id, group_id, number, code, gln_code, name, country_id —
+            # only id/name are captured here).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_suppliers (
+                    supplier_id TEXT PRIMARY KEY,
+                    name        TEXT,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
 
             # Accumulates invoice_id -> customer_id forever across every sync run
             # (never truncated) — the /v2/export endpoint is a delta feed scoped to
@@ -1670,7 +1686,7 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
                     (
                         r.get("id"), r.get("invoice_id"), r.get("main_invoice_id"),
                         r.get("created_from_stock_entry_id"), r.get("product_id"),
-                        r.get("manufacturer_id"), _int(r.get("length")),
+                        r.get("manufacturer_id"), _int(r.get("length")), r.get("supplier_id"),
                         r.get("customer_id"),
                         _num(r.get("quantity")), _num(r.get("quantity_per_pack")),
                         _num(r.get("supplier_price")), _num(r.get("store_price")),
@@ -1683,7 +1699,7 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
                 psycopg2.extras.execute_values(cur, """
                     INSERT INTO bi_order_lines (
                         id, invoice_id, main_invoice_id, created_from_stock_entry_id,
-                        product_id, manufacturer_id, length, customer_id, quantity, quantity_per_pack,
+                        product_id, manufacturer_id, length, supplier_id, customer_id, quantity, quantity_per_pack,
                         supplier_price, store_price, creation_date_time, synced_at
                     ) VALUES %s
                     ON CONFLICT (id) DO UPDATE SET
@@ -1693,6 +1709,7 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
                         product_id      = EXCLUDED.product_id,
                         manufacturer_id = EXCLUDED.manufacturer_id,
                         length          = EXCLUDED.length,
+                        supplier_id     = EXCLUDED.supplier_id,
                         customer_id     = EXCLUDED.customer_id,
                         quantity        = EXCLUDED.quantity,
                         quantity_per_pack = EXCLUDED.quantity_per_pack,
@@ -1894,184 +1911,209 @@ def get_bi_order_lines_daily_series(days: int = 30) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Price / supplier analytics queries — first-pass models requested by the
-# user 2026-09-02.
-#
-# "Cena i rentowność" (price trend, price-vs-length, elasticity) — all three
-# use *realized sale price* (bi_order_lines.store_price), not the offer/
-# listing price, per explicit user correction. Product+length scoped,
-# customer 12 (OZEDS) only — the only sales data this tool collects.
-#
-# "Dostawcy" (price comparison / volatility / deviation-from-market) — from
-# offer/limited-offer stock_entry data (bi_stock_entry_daily/dim), grouped by
-# stock_entry.supplier_id — the FreshPortal-registered supplier, confirmed by
-# the user as the intended meaning of "dostawca" here, as opposed to
-# manufacturer_id/farm. bi_order_lines doesn't carry supplier_id, so this
-# side can't be sale-price based without a further enrichment pass.
+# Sales-by-supplier / sales-by-product analytics — multi-series (up to 7
+# lines) time series, redesigned 2026-09-02 per user feedback: the first
+# pass (product-first, static per-supplier/per-length bars) wasn't the
+# angle they wanted. All series use *realized sale price*
+# (bi_order_lines.store_price), customer 12 (OZEDS) only — the only sales
+# data this tool collects. "Dostawca" = stock_entry.supplier_id (the
+# FreshPortal-registered supplier), enriched onto bi_order_lines the same
+# way as manufacturer_id/length (via created_from_stock_entry_id).
 # ---------------------------------------------------------------------------
 
-def get_bi_products_for_picker(limit: int = 300) -> list[dict]:
-    """Distinct (product_id, length) combos seen in bi_stock_entry_dim,
-    most data-rich first — powers the product/length picker for the price
-    and supplier charts below."""
+def upsert_bi_suppliers(rows: list[dict]) -> int:
+    """id->name lookup, refreshed every sync — chart legend labels only."""
+    if not rows:
+        return 0
+    ensure_bi_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(rows), _BATCH_SIZE):
+                batch = rows[i:i + _BATCH_SIZE]
+                values = [(r.get("id"), r.get("name")) for r in batch if r.get("id")]
+                if not values:
+                    continue
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO bi_suppliers (supplier_id, name, updated_at)
+                    VALUES %s
+                    ON CONFLICT (supplier_id) DO UPDATE SET
+                        name = COALESCE(NULLIF(EXCLUDED.name, ''), bi_suppliers.name),
+                        updated_at = NOW()
+                """, values, template="(%s, %s, NOW())")
+                conn.commit()
+    return len(rows)
+
+
+def get_bi_products_only_picker(limit: int = 300) -> list[dict]:
+    """Distinct products (independent of length) seen in bi_stock_entry_dim,
+    most data-rich first — powers the "by product" picker."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT product_id, length, MAX(description) AS description, COUNT(*) AS row_count
+                    SELECT product_id, MAX(description) AS description, COUNT(*) AS row_count
                     FROM bi_stock_entry_dim
                     WHERE product_id IS NOT NULL
-                    GROUP BY product_id, length
+                    GROUP BY product_id
                     ORDER BY row_count DESC
                     LIMIT %s
                 """, (limit,))
                 return [dict(r) for r in cur.fetchall()]
     except Exception as exc:
-        logger.warning("get_bi_products_for_picker: %s", exc)
+        logger.warning("get_bi_products_only_picker: %s", exc)
         return []
 
 
-def get_bi_price_trend(product_id: str, length: int, days: int = 90) -> list[dict]:
-    """Sale price trend over time for one product+length — realized
-    store_price from bi_order_lines (customer 12 / OZEDS only, the only
-    sales this tool tracks), not the offer/listing price."""
+def get_bi_lengths_for_product(product_id: str) -> list[int]:
+    """Distinct lengths seen for one product — populates the optional length
+    refinement dropdown in the "by product" view."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT creation_date_time::date::text AS day,
-                           AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity, COUNT(*) AS count
-                    FROM bi_order_lines
-                    WHERE product_id = %s AND length = %s
-                      AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
-                    GROUP BY creation_date_time::date
-                    ORDER BY creation_date_time::date
-                """, (product_id, length, days))
-                return [dict(r) for r in cur.fetchall()]
-    except Exception as exc:
-        logger.warning("get_bi_price_trend: %s", exc)
-        return []
-
-
-def get_bi_price_vs_length(product_id: str, days: int = 90) -> list[dict]:
-    """Sale price vs. stem length for one product — realized store_price
-    from bi_order_lines (customer 12 / OZEDS only), across all lengths sold."""
-    try:
-        ensure_bi_tables()
-        with _conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT length, AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity, COUNT(*) AS count
-                    FROM bi_order_lines
+                    SELECT DISTINCT length FROM bi_stock_entry_dim
                     WHERE product_id = %s AND length IS NOT NULL
-                      AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
-                    GROUP BY length
                     ORDER BY length
-                """, (product_id, days))
-                return [dict(r) for r in cur.fetchall()]
+                """, (product_id,))
+                return [r[0] for r in cur.fetchall()]
     except Exception as exc:
-        logger.warning("get_bi_price_vs_length: %s", exc)
+        logger.warning("get_bi_lengths_for_product: %s", exc)
         return []
 
 
-def get_bi_price_elasticity(product_id: str, length: int, days: int = 90) -> list[dict]:
-    """Sold quantity + realized sale price per day, for one product+length —
-    customer 12 (OZEDS) only, the only sales this tool tracks."""
+def get_bi_suppliers_for_picker(limit: int = 200) -> list[dict]:
+    """Suppliers that actually have sold lines (bi_order_lines), most
+    data-rich first — powers the "by supplier" picker. Name from
+    bi_suppliers, falls back to the raw id if unmatched."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT creation_date_time::date::text AS day,
-                           SUM(quantity) AS total_quantity, AVG(store_price) AS avg_price
+                    SELECT ol.supplier_id, COALESCE(s.name, ol.supplier_id) AS name, COUNT(*) AS row_count
+                    FROM bi_order_lines ol
+                    LEFT JOIN bi_suppliers s ON s.supplier_id = ol.supplier_id
+                    WHERE ol.supplier_id IS NOT NULL
+                    GROUP BY ol.supplier_id, s.name
+                    ORDER BY row_count DESC
+                    LIMIT %s
+                """, (limit,))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_bi_suppliers_for_picker: %s", exc)
+        return []
+
+
+def get_bi_sales_by_supplier(supplier_id: str, days: int = 90, max_series: int = 7) -> dict:
+    """Multi-series sale-price-over-time for one supplier — one line per
+    product (top `max_series` by row count), x=day, y=avg store_price."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT product_id, COUNT(*) AS cnt
                     FROM bi_order_lines
-                    WHERE product_id = %s AND length = %s
+                    WHERE supplier_id = %s AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
+                    GROUP BY product_id
+                    ORDER BY cnt DESC
+                    LIMIT %s
+                """, (supplier_id, days, max_series))
+                top_products = [r["product_id"] for r in cur.fetchall()]
+                if not top_products:
+                    return {"series": []}
+
+                cur.execute("""
+                    SELECT product_id, creation_date_time::date::text AS day, AVG(store_price) AS avg_price
+                    FROM bi_order_lines
+                    WHERE supplier_id = %s AND product_id = ANY(%s)
                       AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
-                    GROUP BY creation_date_time::date
-                    ORDER BY creation_date_time::date
-                """, (product_id, length, days))
-                return [dict(r) for r in cur.fetchall()]
+                    GROUP BY product_id, creation_date_time::date
+                    ORDER BY product_id, day
+                """, (supplier_id, top_products, days))
+                rows = cur.fetchall()
+
+                cur.execute("""
+                    SELECT product_id, MAX(description) AS description
+                    FROM bi_stock_entry_dim
+                    WHERE product_id = ANY(%s)
+                    GROUP BY product_id
+                """, (top_products,))
+                labels = {r["product_id"]: r["description"] for r in cur.fetchall()}
+
+        by_product: dict[str, list[dict]] = {pid: [] for pid in top_products}
+        for r in rows:
+            by_product[r["product_id"]].append({"day": r["day"], "value": float(r["avg_price"])})
+
+        return {
+            "series": [
+                {"key": pid, "label": labels.get(pid) or pid, "points": by_product.get(pid, [])}
+                for pid in top_products
+            ]
+        }
     except Exception as exc:
-        logger.warning("get_bi_price_elasticity: %s", exc)
-        return []
+        logger.warning("get_bi_sales_by_supplier: %s", exc)
+        return {"series": []}
 
 
-def get_bi_supplier_price_comparison(product_id: str, length: int, days: int = 90) -> list[dict]:
-    """Average offer price per supplier, for one product+length."""
+def get_bi_sales_by_product(product_id: str, length: int | None = None, days: int = 90, max_series: int = 7) -> dict:
+    """Multi-series sale-price-over-time for one product (optionally scoped
+    to one length — otherwise averaged across every length sold) — one line
+    per supplier (top `max_series` by row count), x=day, y=avg store_price."""
     try:
         ensure_bi_tables()
+        length_clause = "AND length = %s" if length is not None else ""
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT dim.supplier_id, AVG(d.price) AS avg_price, COUNT(*) AS count
-                    FROM bi_stock_entry_daily d
-                    JOIN bi_stock_entry_dim dim ON dim.stock_entry_id = d.stock_entry_id
-                    WHERE dim.product_id = %s AND dim.length = %s AND dim.supplier_id IS NOT NULL
-                      AND d.snapshot_date >= CURRENT_DATE - %s * INTERVAL '1 day'
-                    GROUP BY dim.supplier_id
-                    ORDER BY avg_price
-                """, (product_id, length, days))
-                return [dict(r) for r in cur.fetchall()]
+                params_top: list = [product_id]
+                if length is not None:
+                    params_top.append(length)
+                params_top += [days, max_series]
+                cur.execute(f"""
+                    SELECT supplier_id, COUNT(*) AS cnt
+                    FROM bi_order_lines
+                    WHERE product_id = %s {length_clause} AND supplier_id IS NOT NULL
+                      AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
+                    GROUP BY supplier_id
+                    ORDER BY cnt DESC
+                    LIMIT %s
+                """, params_top)
+                top_suppliers = [r["supplier_id"] for r in cur.fetchall()]
+                if not top_suppliers:
+                    return {"series": []}
+
+                params_rows: list = [product_id]
+                if length is not None:
+                    params_rows.append(length)
+                params_rows += [top_suppliers, days]
+                cur.execute(f"""
+                    SELECT supplier_id, creation_date_time::date::text AS day, AVG(store_price) AS avg_price
+                    FROM bi_order_lines
+                    WHERE product_id = %s {length_clause} AND supplier_id = ANY(%s)
+                      AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
+                    GROUP BY supplier_id, creation_date_time::date
+                    ORDER BY supplier_id, day
+                """, params_rows)
+                rows = cur.fetchall()
+
+                cur.execute("SELECT supplier_id, name FROM bi_suppliers WHERE supplier_id = ANY(%s)", (top_suppliers,))
+                labels = {r["supplier_id"]: r["name"] for r in cur.fetchall()}
+
+        by_supplier: dict[str, list[dict]] = {sid: [] for sid in top_suppliers}
+        for r in rows:
+            by_supplier[r["supplier_id"]].append({"day": r["day"], "value": float(r["avg_price"])})
+
+        return {
+            "series": [
+                {"key": sid, "label": labels.get(sid) or sid, "points": by_supplier.get(sid, [])}
+                for sid in top_suppliers
+            ]
+        }
     except Exception as exc:
-        logger.warning("get_bi_supplier_price_comparison: %s", exc)
-        return []
-
-
-def get_bi_supplier_price_volatility(product_id: str, length: int, days: int = 90) -> list[dict]:
-    """Price standard deviation per supplier, for one product+length — how
-    much each supplier's own price bounces around over the period."""
-    try:
-        ensure_bi_tables()
-        with _conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT dim.supplier_id, STDDEV(d.price) AS price_stddev,
-                           AVG(d.price) AS avg_price, COUNT(*) AS count
-                    FROM bi_stock_entry_daily d
-                    JOIN bi_stock_entry_dim dim ON dim.stock_entry_id = d.stock_entry_id
-                    WHERE dim.product_id = %s AND dim.length = %s AND dim.supplier_id IS NOT NULL
-                      AND d.snapshot_date >= CURRENT_DATE - %s * INTERVAL '1 day'
-                    GROUP BY dim.supplier_id
-                    HAVING COUNT(*) > 1
-                    ORDER BY price_stddev DESC NULLS LAST
-                """, (product_id, length, days))
-                return [dict(r) for r in cur.fetchall()]
-    except Exception as exc:
-        logger.warning("get_bi_supplier_price_volatility: %s", exc)
-        return []
-
-
-def get_bi_supplier_price_deviation(product_id: str, length: int, days: int = 90) -> list[dict]:
-    """Each supplier's average price vs. the overall market average, for one
-    product+length."""
-    try:
-        ensure_bi_tables()
-        with _conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
-                    WITH market AS (
-                        SELECT AVG(d.price) AS market_avg
-                        FROM bi_stock_entry_daily d
-                        JOIN bi_stock_entry_dim dim ON dim.stock_entry_id = d.stock_entry_id
-                        WHERE dim.product_id = %s AND dim.length = %s
-                          AND d.snapshot_date >= CURRENT_DATE - %s * INTERVAL '1 day'
-                    )
-                    SELECT dim.supplier_id, AVG(d.price) AS avg_price, market.market_avg,
-                           AVG(d.price) - market.market_avg AS deviation
-                    FROM bi_stock_entry_daily d
-                    JOIN bi_stock_entry_dim dim ON dim.stock_entry_id = d.stock_entry_id
-                    CROSS JOIN market
-                    WHERE dim.product_id = %s AND dim.length = %s AND dim.supplier_id IS NOT NULL
-                      AND d.snapshot_date >= CURRENT_DATE - %s * INTERVAL '1 day'
-                    GROUP BY dim.supplier_id, market.market_avg
-                    ORDER BY deviation
-                """, (product_id, length, days, product_id, length, days))
-                return [dict(r) for r in cur.fetchall()]
-    except Exception as exc:
-        logger.warning("get_bi_supplier_price_deviation: %s", exc)
-        return []
+        logger.warning("get_bi_sales_by_product: %s", exc)
+        return {"series": []}
 
 
 # ---------------------------------------------------------------------------

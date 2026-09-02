@@ -19,13 +19,17 @@ order_lines is additionally filtered to rows whose creation_date_time falls
 on mutation_datetime itself — /v2/export returns everything *mutated* since
 that date, which is broader than "created that day".
 
-order_lines is also enriched with manufacturer_id/length via
+order_lines is also enriched with manufacturer_id/length/supplier_id via
 created_from_stock_entry_id, looked up against *every* stock_entry row in
 that day's export (not just the offer/limited-offer ones kept in
 bi_stock_entry_dim) — a sold line's created_from_stock_entry_id points to a
 "standard" (physical) stock_entry, a different type than the
 offer/limited-offer lots bi_stock_entry_dim is scoped to, so this lookup
 can't reuse that table (confirmed 2026-09-02).
+
+The "supplier" table (id, name — the FreshPortal-registered supplier list,
+confirmed by the user 2026-09-02) is read every sync and kept in
+bi_suppliers, purely as an id->name lookup for chart legends.
 """
 from __future__ import annotations
 
@@ -38,6 +42,7 @@ from config import Config
 from db import (
     upsert_bi_stock_entry_dim, upsert_bi_stock_entry_daily, upsert_bi_order_lines,
     upsert_bi_invoice_customer, get_bi_invoice_customer_map,
+    upsert_bi_suppliers,
     log_bi_sync_start, log_bi_sync_finish, append_bi_sync_message,
 )
 
@@ -93,6 +98,11 @@ def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) ->
         upsert_bi_invoice_customer(invoices)
         _s(f"Loaded {len(customer_by_invoice)} invoice→customer mappings from this export "
            f"(accumulated map used as fallback for older invoices)")
+
+        _s("Reading supplier table…")
+        suppliers = read_table(zip_bytes, "supplier")
+        upsert_bi_suppliers(suppliers)
+        _s(f"Upserted {len(suppliers)} supplier names (id→name lookup for the price/supplier charts)")
 
         _s("Reading stock_entry table…")
         all_stock_entries = read_table(zip_bytes, "stock_entry")
@@ -172,6 +182,7 @@ def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) ->
             if source_entry:
                 line["manufacturer_id"] = source_entry.get("manufacturer_id")
                 line["length"] = source_entry.get("length")
+                line["supplier_id"] = source_entry.get("supplier_id")
             else:
                 unresolved_stock_entry += 1
             reference_lines.append(line)

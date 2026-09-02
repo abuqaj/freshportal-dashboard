@@ -54,55 +54,32 @@ interface ChartsData {
   order_lines_daily: OrderLineDailyPoint[];
 }
 
-// ── Price & supplier analysis (2026-09-02) ──────────────────────────────────
-interface ProductPickerItem {
+// ── Sales-by-supplier / sales-by-product analysis (redesigned 2026-09-02) ──
+interface ProductOnlyPickerItem {
   product_id: string;
-  length: number | null;
   description: string | null;
   row_count: number;
 }
 
-interface PriceTrendPoint {
+interface SupplierPickerItem {
+  supplier_id: string;
+  name: string | null;
+  row_count: number;
+}
+
+interface SeriesPoint {
   day: string;
-  avg_price: number | null;
-  total_quantity: number | null;
-  count: number;
+  value: number;
 }
 
-interface PriceVsLengthPoint {
-  length: number;
-  avg_price: number | null;
-  total_quantity: number | null;
-  count: number;
+interface Series {
+  key: string;
+  label: string;
+  points: SeriesPoint[];
 }
 
-interface SupplierPoint {
-  supplier_id: string;
-  avg_price: number | null;
-  count: number;
-}
-
-interface SupplierVolatilityPoint {
-  supplier_id: string;
-  price_stddev: number | null;
-  avg_price: number | null;
-  count: number;
-}
-
-interface SupplierDeviationPoint {
-  supplier_id: string;
-  avg_price: number | null;
-  market_avg: number | null;
-  deviation: number | null;
-}
-
-interface ProductAnalysis {
-  price_trend: PriceTrendPoint[];
-  price_vs_length: PriceVsLengthPoint[];
-  elasticity: PriceTrendPoint[];
-  supplier_comparison: SupplierPoint[];
-  supplier_volatility: SupplierVolatilityPoint[];
-  supplier_deviation: SupplierDeviationPoint[];
+interface SalesSeriesResult {
+  series: Series[];
 }
 
 function shortDay(iso: string): string {
@@ -144,6 +121,82 @@ function BarChart<T>({ points, valueOf, labelOf, xLabelOf, barClassName }: {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+const LINE_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6"];
+
+// Dependency-free multi-series line chart — x=day (shared across all series,
+// evenly spaced by position not by actual date gaps), y=value, up to 7
+// colored lines with a legend below. Points are only drawn where a series
+// actually has data for that day — consecutive available points are
+// connected directly, so a gap in a series draws a straight line across it
+// rather than showing a hole (acceptable for a first pass; the tooltip on
+// each dot still shows the exact day/value so gaps aren't hidden entirely).
+function MultiLineChart({ series, height = 280 }: { series: Series[]; height?: number }) {
+  const nonEmpty = series.filter(s => s.points.length > 0);
+  if (!nonEmpty.length) {
+    return <p className="text-xs text-ink-3 px-1 py-10 text-center">No data yet</p>;
+  }
+
+  const allDays = Array.from(new Set(nonEmpty.flatMap(s => s.points.map(p => p.day)))).sort();
+  const allValues = nonEmpty.flatMap(s => s.points.map(p => p.value));
+  const maxV = Math.max(...allValues);
+  const minV = Math.min(0, ...allValues);
+  const range = maxV - minV || 1;
+
+  const width = 1000;
+  const padL = 46, padR = 12, padT = 12, padB = 26;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  const xFor = (day: string) => {
+    const idx = allDays.indexOf(day);
+    return padL + (allDays.length <= 1 ? plotW / 2 : (idx / (allDays.length - 1)) * plotW);
+  };
+  const yFor = (v: number) => padT + plotH - ((v - minV) / range) * plotH;
+
+  const yTicks = [minV, minV + range / 2, maxV];
+  const xTickIdx = Array.from(new Set([0, Math.floor((allDays.length - 1) / 2), allDays.length - 1]));
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height }}>
+        {yTicks.map((v, i) => (
+          <g key={i}>
+            <line x1={padL} x2={width - padR} y1={yFor(v)} y2={yFor(v)} className="stroke-border" strokeWidth={1} />
+            <text x={2} y={yFor(v) + 3} fontSize={10} className="fill-ink-3">{fmtPrice(v)}</text>
+          </g>
+        ))}
+        {xTickIdx.map(i => (
+          <text key={i} x={xFor(allDays[i])} y={height - 6} fontSize={10} textAnchor="middle" className="fill-ink-3">
+            {shortDay(allDays[i])}
+          </text>
+        ))}
+        {nonEmpty.map((s, si) => {
+          const color = LINE_COLORS[si % LINE_COLORS.length];
+          const d = s.points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(p.day)} ${yFor(p.value)}`).join(" ");
+          return (
+            <g key={s.key}>
+              <path d={d} fill="none" stroke={color} strokeWidth={2} />
+              {s.points.map((p, i) => (
+                <circle key={i} cx={xFor(p.day)} cy={yFor(p.value)} r={3} fill={color}>
+                  <title>{`${s.label} — ${p.day}: ${fmtPrice(p.value)}`}</title>
+                </circle>
+              ))}
+            </g>
+          );
+        })}
+      </svg>
+      <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-2 px-2">
+        {nonEmpty.map((s, si) => (
+          <span key={s.key} className="inline-flex items-center gap-1.5 text-xs text-ink-3">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: LINE_COLORS[si % LINE_COLORS.length] }} />
+            {s.label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -199,15 +252,24 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     } catch { /* ignore */ }
   }, []);
 
-  // Price & supplier analysis — product/length picker + combined series for
-  // that selection. "productId|length" as the select value since both are
-  // needed together to identify one series.
-  const [products, setProducts] = useState<ProductPickerItem[]>([]);
-  const [selectedKey, setSelectedKey] = useState("");
-  const [analysis, setAnalysis] = useState<ProductAnalysis | null>(null);
-  const [analysisLoading, setAnalysisLoading] = useState(false);
+  // Sales-by-supplier / sales-by-product (redesigned 2026-09-02).
+  const [suppliers, setSuppliers] = useState<SupplierPickerItem[]>([]);
+  const [selectedSupplierId, setSelectedSupplierId] = useState("");
+  const [bySupplier, setBySupplier] = useState<SalesSeriesResult | null>(null);
+  const [bySupplierLoading, setBySupplierLoading] = useState(false);
+
+  const [products, setProducts] = useState<ProductOnlyPickerItem[]>([]);
+  const [selectedProductId, setSelectedProductId] = useState("");
+  const [productLengths, setProductLengths] = useState<number[]>([]);
+  const [selectedLength, setSelectedLength] = useState(""); // "" = all lengths (averaged)
+  const [byProduct, setByProduct] = useState<SalesSeriesResult | null>(null);
+  const [byProductLoading, setByProductLoading] = useState(false);
 
   useEffect(() => {
+    fetch(`${RAILWAY}/bi-sync/suppliers?limit=200`)
+      .then(r => r.ok ? r.json() : { suppliers: [] })
+      .then(d => setSuppliers(d.suppliers ?? []))
+      .catch(() => {});
     fetch(`${RAILWAY}/bi-sync/products?limit=300`)
       .then(r => r.ok ? r.json() : { products: [] })
       .then(d => setProducts(d.products ?? []))
@@ -215,19 +277,45 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   }, []);
 
   useEffect(() => {
-    if (!selectedKey) { setAnalysis(null); return; }
-    const [productId, lengthStr] = selectedKey.split("|");
-    setAnalysisLoading(true);
-    const url = new URL(`${RAILWAY}/bi-sync/product-analysis`);
-    url.searchParams.set("product_id", productId);
-    url.searchParams.set("length", lengthStr);
+    if (!selectedSupplierId) { setBySupplier(null); return; }
+    setBySupplierLoading(true);
+    const url = new URL(`${RAILWAY}/bi-sync/sales-by-supplier`);
+    url.searchParams.set("supplier_id", selectedSupplierId);
     url.searchParams.set("days", "90");
     fetch(url.toString())
       .then(r => r.ok ? r.json() : null)
-      .then(setAnalysis)
-      .catch(() => setAnalysis(null))
-      .finally(() => setAnalysisLoading(false));
-  }, [selectedKey]);
+      .then(setBySupplier)
+      .catch(() => setBySupplier(null))
+      .finally(() => setBySupplierLoading(false));
+  }, [selectedSupplierId]);
+
+  // Fetch the lengths a selected product is offered in, to populate the
+  // optional length-refinement dropdown; resets the length choice whenever
+  // the product itself changes.
+  useEffect(() => {
+    setSelectedLength("");
+    if (!selectedProductId) { setProductLengths([]); return; }
+    const url = new URL(`${RAILWAY}/bi-sync/product-lengths`);
+    url.searchParams.set("product_id", selectedProductId);
+    fetch(url.toString())
+      .then(r => r.ok ? r.json() : { lengths: [] })
+      .then(d => setProductLengths(d.lengths ?? []))
+      .catch(() => setProductLengths([]));
+  }, [selectedProductId]);
+
+  useEffect(() => {
+    if (!selectedProductId) { setByProduct(null); return; }
+    setByProductLoading(true);
+    const url = new URL(`${RAILWAY}/bi-sync/sales-by-product`);
+    url.searchParams.set("product_id", selectedProductId);
+    if (selectedLength) url.searchParams.set("length", selectedLength);
+    url.searchParams.set("days", "90");
+    fetch(url.toString())
+      .then(r => r.ok ? r.json() : null)
+      .then(setByProduct)
+      .catch(() => setByProduct(null))
+      .finally(() => setByProductLoading(false));
+  }, [selectedProductId, selectedLength]);
 
   useEffect(() => { loadBiHistory(); loadCharts(); }, [loadBiHistory, loadCharts]);
 
@@ -398,111 +486,68 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
         </div>
       </div>
 
-      {/* Price & supplier analysis (2026-09-02) — rough first pass, one
-          product+length at a time. "Cena i rentowność" uses realized sale
-          price (bi_order_lines, customer 12/OZEDS only). "Dostawcy" uses
-          offer/listing price (bi_stock_entry_daily/dim) grouped by
-          stock_entry.supplier_id (the FreshPortal-registered supplier). */}
+      {/* Sales analysis (redesigned 2026-09-02) — realized sale price
+          (bi_order_lines.store_price, customer 12/OZEDS only). Two angles:
+          by supplier (lines = products that supplier sold) and by product
+          (lines = suppliers who sold it, optionally scoped to one length —
+          otherwise averaged across every length sold). Up to 7 lines each. */}
       <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
         <div>
-          <p className="text-sm font-semibold text-ink">Price & supplier analysis</p>
-          <p className="text-xs text-ink-3 mt-0.5">Pick a product + length to see its charts below (last 90 days).</p>
+          <p className="text-sm font-semibold text-ink">Sprzedaż wg dostawcy</p>
+          <p className="text-xs text-ink-3 mt-0.5">Cena sprzedaży w czasie, jedna linia na produkt (top 7), OZEDS, ost. 90 dni.</p>
         </div>
         <select
-          value={selectedKey}
-          onChange={e => setSelectedKey(e.target.value)}
+          value={selectedSupplierId}
+          onChange={e => setSelectedSupplierId(e.target.value)}
           className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors max-w-md"
         >
-          <option value="">— select product + length —</option>
-          {products.map(p => (
-            <option key={`${p.product_id}|${p.length}`} value={`${p.product_id}|${p.length}`}>
-              {(p.description || p.product_id)} — {p.length != null ? `${p.length}cm` : "?cm"} ({p.row_count})
+          <option value="">— wybierz dostawcę —</option>
+          {suppliers.map(s => (
+            <option key={s.supplier_id} value={s.supplier_id}>
+              {s.name || s.supplier_id} ({s.row_count})
             </option>
           ))}
         </select>
+        {bySupplierLoading && <p className="text-xs text-ink-3">Loading…</p>}
+        {bySupplier && <MultiLineChart series={bySupplier.series} />}
+      </div>
 
-        {analysisLoading && <p className="text-xs text-ink-3">Loading…</p>}
-
-        {analysis && (
-          <>
-            <p className="text-xs font-semibold text-ink-3 uppercase tracking-wide mt-2">Cena i rentowność (sale price, OZEDS)</p>
-            <div className="grid sm:grid-cols-3 gap-4">
-              <div className="rounded-xl border border-border p-3">
-                <p className="text-xs font-semibold text-ink">Trend ceny sprzedaży w czasie</p>
-                <BarChart
-                  points={analysis.price_trend}
-                  valueOf={(p: PriceTrendPoint) => p.avg_price ?? 0}
-                  labelOf={(p: PriceTrendPoint) => fmtPrice(p.avg_price)}
-                  xLabelOf={(p: PriceTrendPoint) => shortDay(p.day)}
-                  barClassName="bg-emerald/70"
-                />
-              </div>
-              <div className="rounded-xl border border-border p-3">
-                <p className="text-xs font-semibold text-ink">Cena sprzedaży vs długość łodygi</p>
-                <BarChart
-                  points={analysis.price_vs_length}
-                  valueOf={(p: PriceVsLengthPoint) => p.avg_price ?? 0}
-                  labelOf={(p: PriceVsLengthPoint) => fmtPrice(p.avg_price)}
-                  xLabelOf={(p: PriceVsLengthPoint) => `${p.length}cm`}
-                  barClassName="bg-emerald/70"
-                />
-              </div>
-              <div className="rounded-xl border border-border p-3">
-                <p className="text-xs font-semibold text-ink">Elastyczność cenowa — wolumen vs cena</p>
-                <p className="text-[10px] text-ink-3 mb-1">Ilość sprzedana (góra) / cena sprzedaży (dół)</p>
-                <BarChart
-                  points={analysis.elasticity}
-                  valueOf={(p: PriceTrendPoint) => p.total_quantity ?? 0}
-                  labelOf={(p: PriceTrendPoint) => (p.total_quantity ?? 0).toLocaleString()}
-                  xLabelOf={(p: PriceTrendPoint) => shortDay(p.day)}
-                  barClassName="bg-purple-500/70"
-                />
-                <BarChart
-                  points={analysis.elasticity}
-                  valueOf={(p: PriceTrendPoint) => p.avg_price ?? 0}
-                  labelOf={(p: PriceTrendPoint) => fmtPrice(p.avg_price)}
-                  xLabelOf={(p: PriceTrendPoint) => shortDay(p.day)}
-                  barClassName="bg-emerald/70"
-                />
-              </div>
-            </div>
-
-            <p className="text-xs font-semibold text-ink-3 uppercase tracking-wide mt-2">Dostawcy (offer price, per supplier_id)</p>
-            <div className="grid sm:grid-cols-3 gap-4">
-              <div className="rounded-xl border border-border p-3">
-                <p className="text-xs font-semibold text-ink">Porównanie cen dostawców</p>
-                <BarChart
-                  points={analysis.supplier_comparison}
-                  valueOf={(p: SupplierPoint) => p.avg_price ?? 0}
-                  labelOf={(p: SupplierPoint) => fmtPrice(p.avg_price)}
-                  xLabelOf={(p: SupplierPoint) => `#${p.supplier_id}`}
-                  barClassName="bg-blue-500/70"
-                />
-              </div>
-              <div className="rounded-xl border border-border p-3">
-                <p className="text-xs font-semibold text-ink">Wahania cen (volatility) dostawcy</p>
-                <BarChart
-                  points={analysis.supplier_volatility}
-                  valueOf={(p: SupplierVolatilityPoint) => p.price_stddev ?? 0}
-                  labelOf={(p: SupplierVolatilityPoint) => fmtPrice(p.price_stddev)}
-                  xLabelOf={(p: SupplierVolatilityPoint) => `#${p.supplier_id}`}
-                  barClassName="bg-blue-500/70"
-                />
-              </div>
-              <div className="rounded-xl border border-border p-3">
-                <p className="text-xs font-semibold text-ink">Odchylenie od średniej rynkowej</p>
-                <p className="text-[10px] text-ink-3 mb-1">Czerwone = poniżej średniej rynkowej</p>
-                <BarChart
-                  points={analysis.supplier_deviation}
-                  valueOf={(p: SupplierDeviationPoint) => p.deviation ?? 0}
-                  labelOf={(p: SupplierDeviationPoint) => `${(p.deviation ?? 0) >= 0 ? "+" : ""}${fmtPrice(p.deviation)}`}
-                  xLabelOf={(p: SupplierDeviationPoint) => `#${p.supplier_id}`}
-                  barClassName="bg-blue-500/70"
-                />
-              </div>
-            </div>
-          </>
-        )}
+      <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
+        <div>
+          <p className="text-sm font-semibold text-ink">Sprzedaż wg produktu</p>
+          <p className="text-xs text-ink-3 mt-0.5">
+            Cena sprzedaży w czasie, jedna linia na dostawcę (top 7), OZEDS, ost. 90 dni.
+            Bez wyboru długości — średnia ze wszystkich długości tego produktu.
+          </p>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <select
+            value={selectedProductId}
+            onChange={e => setSelectedProductId(e.target.value)}
+            className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors max-w-md"
+          >
+            <option value="">— wybierz produkt —</option>
+            {products.map(p => (
+              <option key={p.product_id} value={p.product_id}>
+                {p.description || p.product_id} ({p.row_count})
+              </option>
+            ))}
+          </select>
+          {selectedProductId && (
+            <select
+              value={selectedLength}
+              onChange={e => setSelectedLength(e.target.value)}
+              className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors"
+            >
+              <option value="">wszystkie długości (średnia)</option>
+              {productLengths.map(l => (
+                <option key={l} value={l}>{l}cm</option>
+              ))}
+            </select>
+          )}
+        </div>
+        {byProductLoading && <p className="text-xs text-ink-3">Loading…</p>}
+        {byProduct && <MultiLineChart series={byProduct.series} />}
       </div>
 
       <div className="flex items-end gap-3 flex-wrap">
