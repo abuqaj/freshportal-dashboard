@@ -369,12 +369,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       .then(d => setDfgCustomers(d.customers ?? []))
       .catch(() => {});
   }, []);
+  // "Stock" (no customer) option removed 2026-09-02 — confirmed via the DFG
+  // API's own schema + a live 422 that batch creation always creates an
+  // invoice (invoice_id is mandatory in the response), and invoicing
+  // requires a customer. Not a payload bug on our side — needs the DFG API
+  // itself reworked with FreshPortal before this can exist. Left
+  // STOCK_CUSTOMER_ID and the customer_id:null branch in place below so
+  // it's a one-line re-add once that's resolved.
   const customerOptions: ComboOption[] = useMemo(() => [
-    { id: STOCK_CUSTOMER_ID, name: td.stockOptionLabel },
     ...dfgCustomers
       .filter(c => c.used_in_delivery_import)
       .map(c => ({ id: c.customer_id, name: c.nm_customer })),
-  ], [dfgCustomers, td.stockOptionLabel]);
+  ], [dfgCustomers]);
   const [orderDateOverride, setOrderDateOverride] = useState("");
   const [shipmentEditOpen, setShipmentEditOpen] = useState(false);
   // Set when /delivery/api/check finds the shipment already exists — blocks
