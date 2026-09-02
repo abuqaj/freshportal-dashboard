@@ -101,6 +101,12 @@ def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) ->
 
         _s("Reading supplier table…")
         suppliers = read_table(zip_bytes, "supplier")
+        # Diagnostic sample — supplier names not showing up in the picker
+        # despite a successful-looking upsert count; need to see the raw
+        # parsed (id, name) pairs to tell whether "name" is actually
+        # populated or empty/None for these rows (found 2026-09-02).
+        _s(f"Supplier columns: {list(suppliers[0].keys()) if suppliers else '(no rows)'}")
+        _s(f"Supplier sample (id, name): {[(s.get('id'), s.get('name')) for s in suppliers[:8]]}")
         upsert_bi_suppliers(suppliers)
         _s(f"Upserted {len(suppliers)} supplier names (id→name lookup for the price/supplier charts)")
 
