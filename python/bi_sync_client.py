@@ -151,12 +151,28 @@ def read_csv_rows(raw: bytes) -> list[dict[str, str]]:
 
 
 def find_table_file(zip_bytes: bytes, table_name: str) -> str | None:
-    """Return the zip entry name matching table_name (substring match on the
-    filename stem, case-insensitive — same convention as summarize_export)."""
+    """Return the zip entry name matching table_name.
+
+    Prefers an exact match (filename stem, minus extension, equal to
+    table_name) over a substring match, and only falls back to substring
+    matching if no exact match exists. A pure substring match picked the
+    wrong file for "supplier" — the export also has a "batch_supplier"
+    (or similarly-named) table containing "supplier" as a substring, and
+    whichever of the two happened to sort first in the zip silently won,
+    even though a literal "supplier.csv" exists (found 2026-09-02, same
+    class of bug as the earlier "order_line" vs "order_lines" mismatch).
+    """
+    target = table_name.lower()
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        for name in zf.namelist():
+        names = zf.namelist()
+        for name in names:
+            stem = name.rsplit("/", 1)[-1]
+            stem_no_ext = stem.rsplit(".", 1)[0].lower()
+            if stem_no_ext == target:
+                return name
+        for name in names:
             stem = name.rsplit("/", 1)[-1].lower()
-            if table_name.lower() in stem:
+            if target in stem:
                 return name
     return None
 
