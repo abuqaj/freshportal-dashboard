@@ -114,6 +114,14 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   const [latestRun, setLatestRun] = useState<BiSyncRun | null>(null);
   const [syncStarting, setSyncStarting] = useState(false);
   const [charts, setCharts] = useState<ChartsData | null>(null);
+  const [backfillEndDate, setBackfillEndDate] = useState(defaultMutationDate());
+
+  // Backend's live is_bi_sync_running() flag — not derived from latestRun.status,
+  // since that's the *latest bi_sync_log row*, which flips back to "ok" between
+  // each day of a multi-day range backfill (a new "running" row only appears once
+  // the next day's sync actually starts). Polling on that alone would drop the
+  // poll loop mid-backfill the moment one day finishes (found 2026-09-02).
+  const [serverRunning, setServerRunning] = useState(false);
 
   const loadBiHistory = useCallback(async () => {
     try {
@@ -122,6 +130,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
       const data = await res.json();
       setStats(data.stats ?? null);
       setLatestRun(data.history?.[0] ?? null);
+      setServerRunning(!!data.running);
     } catch { /* ignore */ }
   }, []);
 
@@ -135,7 +144,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
   useEffect(() => { loadBiHistory(); loadCharts(); }, [loadBiHistory, loadCharts]);
 
-  const syncRunning = latestRun?.status === "running";
+  const syncRunning = serverRunning;
 
   useEffect(() => {
     if (!syncRunning) return;
@@ -148,6 +157,20 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     try {
       const url = new URL(`${RAILWAY}/bi-sync/run`);
       url.searchParams.set("mutation_datetime", mutationDate);
+      await fetch(url.toString(), { method: "POST" });
+      await loadBiHistory();
+      await loadCharts();
+    } finally {
+      setSyncStarting(false);
+    }
+  }
+
+  async function runBiSyncRange() {
+    setSyncStarting(true);
+    try {
+      const url = new URL(`${RAILWAY}/bi-sync/run-range`);
+      url.searchParams.set("start_date", mutationDate);
+      url.searchParams.set("end_date", backfillEndDate);
       await fetch(url.toString(), { method: "POST" });
       await loadBiHistory();
       await loadCharts();
@@ -197,7 +220,16 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             dim/daily mirror tables, and order_lines scoped to customer 12 (OZ-Hami Direct Sales / OZEDS).
           </p>
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-end gap-3 flex-wrap">
+          <div>
+            <label className="block text-[11px] text-ink-3 mb-1">Date</label>
+            <input
+              type="date"
+              value={mutationDate}
+              onChange={e => setMutationDate(e.target.value)}
+              className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors"
+            />
+          </div>
           <button
             onClick={runBiSync}
             disabled={syncStarting || syncRunning}
@@ -213,6 +245,29 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
               {stats.invoice_customer_count?.toLocaleString() ?? 0} invoice→customer mappings
             </span>
           )}
+        </div>
+
+        {/* Backfill a range — one export pull per day (order_lines is scoped to
+            exactly one creation day per run), so this just loops run_bi_sync
+            server-side instead of clicking "Run BI sync" once per day. */}
+        <div className="flex items-end gap-3 flex-wrap pt-3 border-t border-emerald/15">
+          <div>
+            <label className="block text-[11px] text-ink-3 mb-1">Backfill: {mutationDate} (Date above) →</label>
+            <input
+              type="date"
+              value={backfillEndDate}
+              onChange={e => setBackfillEndDate(e.target.value)}
+              className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors"
+            />
+          </div>
+          <button
+            onClick={runBiSyncRange}
+            disabled={syncStarting || syncRunning || backfillEndDate < mutationDate}
+            className="h-9 px-4 rounded-lg text-sm font-semibold text-white bg-blue-600 disabled:opacity-40 transition-opacity"
+          >
+            {syncStarting || syncRunning ? "Running…" : "Backfill range"}
+          </button>
+          <span className="text-xs text-ink-3">Runs one sync per day in the range, sequentially — can take a while for multi-week backfills.</span>
         </div>
         {latestRun?.error && (
           <p className="text-xs text-red-500 font-mono whitespace-pre-wrap break-all">{latestRun.error}</p>

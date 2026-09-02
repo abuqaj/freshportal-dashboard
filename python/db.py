@@ -1482,6 +1482,8 @@ def ensure_bi_tables() -> None:
                     main_invoice_id          TEXT,
                     created_from_stock_entry_id TEXT,
                     product_id               TEXT,
+                    manufacturer_id          TEXT,
+                    length                   INTEGER,
                     customer_id              TEXT,
                     quantity                 NUMERIC,
                     quantity_per_pack        NUMERIC,
@@ -1493,7 +1495,10 @@ def ensure_bi_tables() -> None:
                 )
             """)
             cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'EUR'")
+            cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS manufacturer_id TEXT")
+            cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS length INTEGER")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_product_idx  ON bi_order_lines(product_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_mfr_idx      ON bi_order_lines(manufacturer_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_created_idx  ON bi_order_lines(creation_date_time)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_stockent_idx ON bi_order_lines(created_from_stock_entry_id)")
 
@@ -1665,6 +1670,7 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
                     (
                         r.get("id"), r.get("invoice_id"), r.get("main_invoice_id"),
                         r.get("created_from_stock_entry_id"), r.get("product_id"),
+                        r.get("manufacturer_id"), _int(r.get("length")),
                         r.get("customer_id"),
                         _num(r.get("quantity")), _num(r.get("quantity_per_pack")),
                         _num(r.get("supplier_price")), _num(r.get("store_price")),
@@ -1677,7 +1683,7 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
                 psycopg2.extras.execute_values(cur, """
                     INSERT INTO bi_order_lines (
                         id, invoice_id, main_invoice_id, created_from_stock_entry_id,
-                        product_id, customer_id, quantity, quantity_per_pack,
+                        product_id, manufacturer_id, length, customer_id, quantity, quantity_per_pack,
                         supplier_price, store_price, creation_date_time, synced_at
                     ) VALUES %s
                     ON CONFLICT (id) DO UPDATE SET
@@ -1685,6 +1691,8 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
                         main_invoice_id = EXCLUDED.main_invoice_id,
                         created_from_stock_entry_id = EXCLUDED.created_from_stock_entry_id,
                         product_id      = EXCLUDED.product_id,
+                        manufacturer_id = EXCLUDED.manufacturer_id,
+                        length          = EXCLUDED.length,
                         customer_id     = EXCLUDED.customer_id,
                         quantity        = EXCLUDED.quantity,
                         quantity_per_pack = EXCLUDED.quantity_per_pack,

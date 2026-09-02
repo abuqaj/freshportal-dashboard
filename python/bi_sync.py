@@ -2,8 +2,10 @@
 mirror tables (bi_stock_entry_dim / bi_stock_entry_daily / bi_order_lines).
 
 Usage:
-    from bi_sync import run_bi_sync
-    run_bi_sync(cfg, mutation_datetime="2026-08-20")   # blocking — call from a background thread
+    from bi_sync import run_bi_sync, run_bi_sync_range
+    run_bi_sync(cfg, mutation_datetime="2026-08-20")            # one day
+    run_bi_sync_range(cfg, "2026-08-01", "2026-08-20")          # backfill a range
+    # both blocking — call from a background thread
 
 order_lines is filtered to a single reference customer (OZ-Hami Direct
 Sales / OZEDS, customer_id=12) at ingest time: webshop sale price is
@@ -16,12 +18,20 @@ included in a given day's delta export can still be resolved.
 order_lines is additionally filtered to rows whose creation_date_time falls
 on mutation_datetime itself — /v2/export returns everything *mutated* since
 that date, which is broader than "created that day".
+
+order_lines is also enriched with manufacturer_id/length via
+created_from_stock_entry_id, looked up against *every* stock_entry row in
+that day's export (not just the offer/limited-offer ones kept in
+bi_stock_entry_dim) — a sold line's created_from_stock_entry_id points to a
+"standard" (physical) stock_entry, a different type than the
+offer/limited-offer lots bi_stock_entry_dim is scoped to, so this lookup
+can't reuse that table (confirmed 2026-09-02).
 """
 from __future__ import annotations
 
 import logging
 import threading
-from datetime import date
+from datetime import date, timedelta
 
 from bi_sync_client import get_export_url, download_export_zip, read_table
 from config import Config
@@ -51,18 +61,10 @@ def get_bi_sync_message() -> str:
     return _sync_message
 
 
-def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
-    """Pull one BI Sync export and upsert stock_entry / order_lines into the
-    mirror tables. Returns {"ok": bool, "stock_entries": int, "order_lines": int, "error": str}.
-    """
-    global _sync_running
-
-    if _sync_running:
-        return {"ok": False, "error": "BI sync already running", "stock_entries": 0, "order_lines": 0}
-
-    with _sync_lock:
-        _sync_running = True
-
+def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
+    """Actual single-day sync logic — no _sync_running management, callers
+    (run_bi_sync / run_bi_sync_range) own that at whatever scope is
+    appropriate for them (one day vs. a whole backfill range)."""
     sync_id = log_bi_sync_start(mutation_datetime)
 
     def _s(msg: str) -> None:
@@ -94,6 +96,12 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
 
         _s("Reading stock_entry table…")
         all_stock_entries = read_table(zip_bytes, "stock_entry")
+        # Full, unfiltered lookup by id — used below to enrich order_lines with
+        # manufacturer_id/length regardless of stock_entry_type_id, since a
+        # sold line's created_from_stock_entry_id points to a "standard" type
+        # row, not an offer/limited-offer one (see module docstring).
+        stock_entry_by_id = {r["id"]: r for r in all_stock_entries if r.get("id")}
+
         # Only "offer" (4) and "limited offer" (5) stock_entry_type_id rows are
         # the virtual/temporary-offer lots this analyzer cares about — created
         # once (sometimes years ago) and only ever mutated in place (price,
@@ -145,6 +153,7 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
         # touched again later would also come back).
         reference_lines = []
         skipped_wrong_day = 0
+        unresolved_stock_entry = 0
         for line in all_order_lines:
             customer_id = (
                 customer_by_invoice.get(line.get("invoice_id"))
@@ -159,9 +168,16 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
                 skipped_wrong_day += 1
                 continue
             line["customer_id"] = customer_id
+            source_entry = stock_entry_by_id.get(line.get("created_from_stock_entry_id"))
+            if source_entry:
+                line["manufacturer_id"] = source_entry.get("manufacturer_id")
+                line["length"] = source_entry.get("length")
+            else:
+                unresolved_stock_entry += 1
             reference_lines.append(line)
         _s(f"Read {len(all_order_lines)} order_lines, {len(reference_lines)} for customer {REFERENCE_CUSTOMER_ID} "
-           f"(OZEDS) created on {mutation_datetime} ({skipped_wrong_day} skipped — different creation day) — upserting…")
+           f"(OZEDS) created on {mutation_datetime} ({skipped_wrong_day} skipped — different creation day, "
+           f"{unresolved_stock_entry} missing farm/length — source stock_entry not in this export) — upserting…")
         upsert_bi_order_lines(reference_lines)
 
         log_bi_sync_finish(sync_id, len(stock_entries), len(reference_lines))
@@ -174,5 +190,67 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
         log_bi_sync_finish(sync_id, 0, 0, error)
         return {"ok": False, "stock_entries": 0, "order_lines": 0, "error": error}
 
+
+def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
+    """Pull one BI Sync export and upsert stock_entry / order_lines into the
+    mirror tables. Returns {"ok": bool, "stock_entries": int, "order_lines": int, "error": str}.
+    """
+    global _sync_running
+
+    if _sync_running:
+        return {"ok": False, "error": "BI sync already running", "stock_entries": 0, "order_lines": 0}
+
+    with _sync_lock:
+        _sync_running = True
+    try:
+        return _run_bi_sync_one_day(cfg, mutation_datetime, on_status)
+    finally:
+        _sync_running = False
+
+
+def run_bi_sync_range(cfg: Config, start_date: str, end_date: str, on_status=None) -> dict:
+    """Backfill every day in [start_date, end_date] (inclusive), sequentially
+    — one export pull per day, since order_lines is scoped to exactly one
+    creation day per run. _sync_running is held for the whole range (not
+    released between days) so the UI's "is a sync running" status stays
+    accurate throughout a multi-day backfill instead of flickering between
+    each day's individual run.
+    """
+    global _sync_running
+
+    if _sync_running:
+        return {"ok": False, "error": "BI sync already running", "days": [], "stock_entries": 0, "order_lines": 0}
+
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except ValueError as exc:
+        return {"ok": False, "error": f"Invalid date: {exc}", "days": [], "stock_entries": 0, "order_lines": 0}
+    if end < start:
+        return {"ok": False, "error": "end_date is before start_date", "days": [], "stock_entries": 0, "order_lines": 0}
+
+    with _sync_lock:
+        _sync_running = True
+    try:
+        days_results = []
+        d = start
+        while d <= end:
+            day_str = d.isoformat()
+            if on_status:
+                on_status(f"Backfill: day {day_str}…")
+            result = _run_bi_sync_one_day(cfg, day_str, on_status)
+            days_results.append({"date": day_str, **result})
+            d += timedelta(days=1)
+
+        ok = all(r["ok"] for r in days_results)
+        total_stock_entries = sum(r.get("stock_entries", 0) for r in days_results)
+        total_order_lines = sum(r.get("order_lines", 0) for r in days_results)
+        return {
+            "ok": ok,
+            "days": days_results,
+            "stock_entries": total_stock_entries,
+            "order_lines": total_order_lines,
+            "error": "" if ok else "One or more days failed — see individual day results",
+        }
     finally:
         _sync_running = False

@@ -48,7 +48,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
-from bi_sync import run_bi_sync, is_bi_sync_running
+from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
 from delivery_product_match import match_order_to_products
@@ -699,12 +699,35 @@ def bi_sync_run(
     return {"ok": True, "message": "BI sync started in background"}
 
 
+@app.post("/bi-sync/run-range")
+def bi_sync_run_range(
+    start_date: str,
+    end_date: str,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Backfill every day in [start_date, end_date] sequentially (non-blocking)
+    — one export pull per day, since order_lines is scoped to exactly one
+    creation day per run. Avoids clicking "Run BI sync" once per day when
+    catching up several weeks of history."""
+    if is_bi_sync_running():
+        raise HTTPException(409, "BI sync already running")
+    cfg = Config()
+    threading.Thread(target=run_bi_sync_range, args=(cfg, start_date, end_date), daemon=True).start()
+    return {"ok": True, "message": f"BI sync backfill started for {start_date}..{end_date}"}
+
+
 @app.get("/bi-sync/history")
 def bi_sync_history(limit: int = 10, offset: int = 0, _: dict = Depends(require_permission("admin:manage"))):
-    """Last N BI sync runs with their message logs, plus current row counts."""
+    """Last N BI sync runs with their message logs, plus current row counts
+    and whether a sync (single-day or a range backfill) is running right now."""
     rows = get_bi_sync_history(limit + 1, offset)
     has_more = len(rows) > limit
-    return {"history": rows[:limit], "hasMore": has_more, "stats": get_bi_stats()}
+    return {
+        "history": rows[:limit],
+        "hasMore": has_more,
+        "stats": get_bi_stats(),
+        "running": is_bi_sync_running(),
+    }
 
 
 @app.get("/bi-sync/charts")
