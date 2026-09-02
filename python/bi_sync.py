@@ -94,22 +94,25 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
 
         _s("Reading stock_entry table…")
         all_stock_entries = read_table(zip_bytes, "stock_entry")
-        # visible=1 means the row is an old, already-used/soft-deleted entry —
-        # visible=0 is the actual "still live" state (confirmed by the user
-        # 2026-08-31, correcting an earlier 2026-08-27 assumption that visible=1
-        # meant "exists"). Dropping soft-deleted rows here — rather than storing
-        # them and filtering at query time — is what significantly shrinks the
-        # mirror tables, per the user's explicit request.
-        # stock_entry_type_id=1 rows are "default lots" — not real, individually
-        # offered stock — so they're irrelevant to this analyzer and dropped too
-        # (confirmed by the user 2026-08-31).
+        # Only "offer" (4) and "limited offer" (5) stock_entry_type_id rows are
+        # the virtual/temporary-offer lots this analyzer cares about — created
+        # once (sometimes years ago) and only ever mutated in place (price,
+        # quantity, webshop_visible, available_from/until, ...), never
+        # soft-deleted (confirmed by the user 2026-09-02). Every other type —
+        # "default lot" (1) and "standard" (physical stock, created per order
+        # and consumed/soft-deleted via visible=1 on fulfillment) — has
+        # completely different lifecycle semantics (high-churn, order-driven)
+        # and would otherwise dominate/skew any "how much is offered" count.
+        # The visible=0 check is kept as a defensive no-op belt-and-suspenders
+        # filter — offer/limited-offer rows are never expected to have
+        # visible=1 in the first place.
         stock_entries = [
             r for r in all_stock_entries
             if str(r.get("visible") or "0").strip() not in ("1", "true", "True")
-            and str(r.get("stock_entry_type_id") or "").strip() != "1"
+            and str(r.get("stock_entry_type_id") or "").strip() in ("4", "5")
         ]
-        _s(f"Read {len(all_stock_entries)} stock_entry rows, {len(stock_entries)} still live "
-           f"(visible=0, stock_entry_type_id≠1) after dropping soft-deleted/default-lots — upserting…")
+        _s(f"Read {len(all_stock_entries)} stock_entry rows, {len(stock_entries)} offer/limited-offer "
+           f"lots (type 4/5, visible=0) after dropping other types — upserting…")
         upsert_bi_stock_entry_dim(stock_entries)
         snapshot_date = date.today().isoformat()
         upsert_bi_stock_entry_daily(stock_entries, snapshot_date)
