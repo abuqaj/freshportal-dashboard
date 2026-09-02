@@ -14,7 +14,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "FreshFromSource",
+  title: "Fresh From Source",
   description: "VBN Checker & Product Management for FreshFromSource",
 };
 

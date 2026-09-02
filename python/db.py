@@ -1433,22 +1433,24 @@ def ensure_bi_tables() -> None:
         with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bi_stock_entry_dim (
-                    stock_entry_id    TEXT PRIMARY KEY,
-                    product_id        TEXT,
-                    manufacturer_id   TEXT,
-                    supplier_id       TEXT,
-                    location_id       TEXT,
-                    fust              TEXT,
-                    color_id          TEXT,
-                    length            INTEGER,
-                    stems_per_bunch   INTEGER,
-                    cut_stage_id      TEXT,
-                    pot_size          TEXT,
-                    description       TEXT,
-                    first_seen_at     TIMESTAMPTZ DEFAULT NOW(),
-                    last_seen_at      TIMESTAMPTZ DEFAULT NOW()
+                    stock_entry_id     TEXT PRIMARY KEY,
+                    product_id         TEXT,
+                    manufacturer_id    TEXT,
+                    supplier_id        TEXT,
+                    location_id        TEXT,
+                    fust               TEXT,
+                    color_id           TEXT,
+                    length             INTEGER,
+                    stems_per_bunch    INTEGER,
+                    cut_stage_id       TEXT,
+                    pot_size           TEXT,
+                    description        TEXT,
+                    stock_entry_type_id TEXT,
+                    first_seen_at      TIMESTAMPTZ DEFAULT NOW(),
+                    last_seen_at       TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            cur.execute("ALTER TABLE bi_stock_entry_dim ADD COLUMN IF NOT EXISTS stock_entry_type_id TEXT")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_stock_entry_dim_product_idx ON bi_stock_entry_dim(product_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_stock_entry_dim_mfr_idx     ON bi_stock_entry_dim(manufacturer_id)")
 
@@ -1568,6 +1570,7 @@ def upsert_bi_stock_entry_dim(rows: list[dict]) -> int:
                         r.get("color_id"), _int(r.get("length")),
                         _int(r.get("stems_per_bunch")),
                         r.get("cut_stage_id"), r.get("pot_size"), r.get("description"),
+                        r.get("stock_entry_type_id"),
                         now, now,
                     )
                     for r in batch if r.get("id")
@@ -1578,7 +1581,8 @@ def upsert_bi_stock_entry_dim(rows: list[dict]) -> int:
                     INSERT INTO bi_stock_entry_dim (
                         stock_entry_id, product_id, manufacturer_id, supplier_id,
                         location_id, fust, color_id, length, stems_per_bunch,
-                        cut_stage_id, pot_size, description, first_seen_at, last_seen_at
+                        cut_stage_id, pot_size, description, stock_entry_type_id,
+                        first_seen_at, last_seen_at
                     ) VALUES %s
                     ON CONFLICT (stock_entry_id) DO UPDATE SET
                         product_id      = EXCLUDED.product_id,
@@ -1592,6 +1596,7 @@ def upsert_bi_stock_entry_dim(rows: list[dict]) -> int:
                         cut_stage_id    = EXCLUDED.cut_stage_id,
                         pot_size        = EXCLUDED.pot_size,
                         description     = EXCLUDED.description,
+                        stock_entry_type_id = EXCLUDED.stock_entry_type_id,
                         last_seen_at    = EXCLUDED.last_seen_at
                 """, values)
                 conn.commit()
