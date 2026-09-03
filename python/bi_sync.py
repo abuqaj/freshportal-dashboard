@@ -13,15 +13,30 @@ customer-specific, so mixing customers would make price/sell-through
 comparisons meaningless. The invoice table (in the same export) is read
 to resolve invoice_id -> customer_id for that filter, and also persisted
 into the standing bi_invoice_customer map (db.py) so older invoices not
-included in a given day's delta export can still be resolved.
+included in a given pull can still be resolved.
 
 order_lines is additionally filtered to rows whose creation_date_time falls
-on mutation_datetime itself — /v2/export returns everything *mutated* since
-that date, which is broader than "created that day".
+in [filter_start, filter_end] (inclusive) — /v2/export returns everything
+*mutated since* mutation_datetime, up to now, which is broader than
+"created on these specific days".
+
+IMPORTANT — one API call per sync run, never one per day: mutation_datetime
+is a "since" cursor, not a single-day filter — the export contains
+*everything* mutated between that date and today. A range backfill that
+looped day-by-day (mutation_datetime = each individual day) was therefore
+making N redundant, heavily overlapping calls: the pull for a day near the
+start of a long historical range already contains almost everything a pull
+for a later day would *also* return, plus more — so the earliest days in a
+long backfill were by far the most expensive (found 2026-09-02, after a
+2.5-year backfill took 12+ hours and only completed the most recent 1.5
+years). Since order_lines is filtered locally by creation_date_time anyway,
+a single pull anchored at the *oldest* requested date, split into
+day-buckets purely in local processing, covers the exact same ground in one
+network round-trip instead of hundreds.
 
 order_lines is also enriched with manufacturer_id/length/supplier_id via
 created_from_stock_entry_id, looked up against *every* stock_entry row in
-that day's export (not just the offer/limited-offer ones kept in
+the export (not just the offer/limited-offer ones kept in
 bi_stock_entry_dim) — a sold line's created_from_stock_entry_id points to a
 "standard" (physical) stock_entry, a different type than the
 offer/limited-offer lots bi_stock_entry_dim is scoped to, so this lookup
@@ -35,7 +50,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import date, timedelta
+from datetime import date
 
 from bi_sync_client import get_export_url, download_export_zip, read_table
 from config import Config
@@ -66,11 +81,19 @@ def get_bi_sync_message() -> str:
     return _sync_message
 
 
-def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
-    """Actual single-day sync logic — no _sync_running management, callers
-    (run_bi_sync / run_bi_sync_range) own that at whatever scope is
-    appropriate for them (one day vs. a whole backfill range)."""
-    sync_id = log_bi_sync_start(mutation_datetime)
+def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: str, filter_end: str, on_status=None) -> dict:
+    """Core sync logic — exactly one export pull, with order_lines locally
+    filtered to creation_date_time in [filter_start, filter_end] (inclusive).
+
+    mutation_datetime is the "since" cursor sent to the API — for a single
+    day it equals filter_start/filter_end; for a range backfill it's the
+    *oldest* date in the range (see module docstring for why one call
+    anchored at the oldest date covers the whole range).
+
+    No _sync_running management — callers (run_bi_sync / run_bi_sync_range)
+    own that at whatever scope is appropriate for them.
+    """
+    sync_id = log_bi_sync_start(f"{filter_start}..{filter_end}" if filter_start != filter_end else filter_start)
 
     def _s(msg: str) -> None:
         global _sync_message
@@ -90,32 +113,26 @@ def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) ->
         invoices = read_table(zip_bytes, "invoice")
         customer_by_invoice = {inv["id"]: inv.get("customer_id") for inv in invoices if inv.get("id")}
         # Persist into the standing invoice->customer map forever, not just for
-        # this run — /v2/export is a delta feed scoped to mutation_datetime, so
-        # today's invoice.csv only covers invoices mutated today. An order_line
-        # synced today can reference an older, unmutated invoice that won't be
-        # in today's export at all; the accumulated map is what lets that
-        # order_line still resolve its customer below (found 2026-08-31).
+        # this run — an even earlier order_line than this pull covers could
+        # still reference an invoice not included here; the accumulated map is
+        # what lets that order_line still resolve its customer below (found
+        # 2026-08-31).
         upsert_bi_invoice_customer(invoices)
         _s(f"Loaded {len(customer_by_invoice)} invoice→customer mappings from this export "
            f"(accumulated map used as fallback for older invoices)")
 
         _s("Reading supplier table…")
         suppliers = read_table(zip_bytes, "supplier")
-        # Diagnostic sample — supplier names not showing up in the picker
-        # despite a successful-looking upsert count; need to see the raw
-        # parsed (id, name) pairs to tell whether "name" is actually
-        # populated or empty/None for these rows (found 2026-09-02).
-        _s(f"Supplier columns: {list(suppliers[0].keys()) if suppliers else '(no rows)'}")
-        _s(f"Supplier sample (id, name): {[(s.get('id'), s.get('name')) for s in suppliers[:8]]}")
         upsert_bi_suppliers(suppliers)
         _s(f"Upserted {len(suppliers)} supplier names (id→name lookup for the price/supplier charts)")
 
         _s("Reading stock_entry table…")
         all_stock_entries = read_table(zip_bytes, "stock_entry")
         # Full, unfiltered lookup by id — used below to enrich order_lines with
-        # manufacturer_id/length regardless of stock_entry_type_id, since a
-        # sold line's created_from_stock_entry_id points to a "standard" type
-        # row, not an offer/limited-offer one (see module docstring).
+        # manufacturer_id/length/supplier_id regardless of stock_entry_type_id,
+        # since a sold line's created_from_stock_entry_id points to a
+        # "standard" type row, not an offer/limited-offer one (see module
+        # docstring).
         stock_entry_by_id = {r["id"]: r for r in all_stock_entries if r.get("id")}
 
         # Only "offer" (4) and "limited offer" (5) stock_entry_type_id rows are
@@ -150,8 +167,9 @@ def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) ->
         all_order_lines = read_table(zip_bytes, "order_line")
 
         # Resolve customer_id: prefer this run's own invoice table, fall back to
-        # the accumulated bi_invoice_customer map for invoices not mutated today
-        # (see the upsert_bi_invoice_customer call above for why that's needed).
+        # the accumulated bi_invoice_customer map for invoices not covered by
+        # this pull (see the upsert_bi_invoice_customer call above for why
+        # that's needed).
         unresolved_ids = {
             line.get("invoice_id") or line.get("main_invoice_id")
             for line in all_order_lines
@@ -163,10 +181,11 @@ def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) ->
             _s(f"Resolved {len(fallback_customer_by_invoice)} additional invoice→customer "
                f"mappings from accumulated history")
 
-        # Only lines actually created on the selected day — order_lines pulled by
-        # /v2/export are everything *mutated* since mutation_datetime, which is
-        # broader than "created on this day" (e.g. a line created earlier but
-        # touched again later would also come back).
+        # Only lines actually created within [filter_start, filter_end] —
+        # order_lines pulled by /v2/export are everything *mutated* since
+        # mutation_datetime, which is broader than "created in this range"
+        # (e.g. a line created earlier but touched again later would also
+        # come back).
         reference_lines = []
         skipped_wrong_day = 0
         unresolved_stock_entry = 0
@@ -179,8 +198,8 @@ def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) ->
             )
             if customer_id != REFERENCE_CUSTOMER_ID:
                 continue
-            created = line.get("creation_date_time") or ""
-            if not created.startswith(mutation_datetime):
+            created = (line.get("creation_date_time") or "")[:10]
+            if not (filter_start <= created <= filter_end):
                 skipped_wrong_day += 1
                 continue
             line["customer_id"] = customer_id
@@ -193,7 +212,7 @@ def _run_bi_sync_one_day(cfg: Config, mutation_datetime: str, on_status=None) ->
                 unresolved_stock_entry += 1
             reference_lines.append(line)
         _s(f"Read {len(all_order_lines)} order_lines, {len(reference_lines)} for customer {REFERENCE_CUSTOMER_ID} "
-           f"(OZEDS) created on {mutation_datetime} ({skipped_wrong_day} skipped — different creation day, "
+           f"(OZEDS) created in [{filter_start}, {filter_end}] ({skipped_wrong_day} skipped — outside range, "
            f"{unresolved_stock_entry} missing farm/length — source stock_entry not in this export) — upserting…")
         upsert_bi_order_lines(reference_lines)
 
@@ -220,54 +239,31 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
     with _sync_lock:
         _sync_running = True
     try:
-        return _run_bi_sync_one_day(cfg, mutation_datetime, on_status)
+        return _run_bi_sync_for_range(cfg, mutation_datetime, mutation_datetime, mutation_datetime, on_status)
     finally:
         _sync_running = False
 
 
 def run_bi_sync_range(cfg: Config, start_date: str, end_date: str, on_status=None) -> dict:
-    """Backfill every day in [start_date, end_date] (inclusive), sequentially
-    — one export pull per day, since order_lines is scoped to exactly one
-    creation day per run. _sync_running is held for the whole range (not
-    released between days) so the UI's "is a sync running" status stays
-    accurate throughout a multi-day backfill instead of flickering between
-    each day's individual run.
+    """Backfill [start_date, end_date] (inclusive) in a single API call,
+    anchored at start_date — see module docstring for why this replaces a
+    day-by-day loop (each day's own call would redundantly re-download
+    almost the same "everything since that day" export).
     """
     global _sync_running
 
     if _sync_running:
-        return {"ok": False, "error": "BI sync already running", "days": [], "stock_entries": 0, "order_lines": 0}
+        return {"ok": False, "error": "BI sync already running", "stock_entries": 0, "order_lines": 0}
 
     try:
-        start = date.fromisoformat(start_date)
-        end = date.fromisoformat(end_date)
+        if date.fromisoformat(end_date) < date.fromisoformat(start_date):
+            return {"ok": False, "error": "end_date is before start_date", "stock_entries": 0, "order_lines": 0}
     except ValueError as exc:
-        return {"ok": False, "error": f"Invalid date: {exc}", "days": [], "stock_entries": 0, "order_lines": 0}
-    if end < start:
-        return {"ok": False, "error": "end_date is before start_date", "days": [], "stock_entries": 0, "order_lines": 0}
+        return {"ok": False, "error": f"Invalid date: {exc}", "stock_entries": 0, "order_lines": 0}
 
     with _sync_lock:
         _sync_running = True
     try:
-        days_results = []
-        d = start
-        while d <= end:
-            day_str = d.isoformat()
-            if on_status:
-                on_status(f"Backfill: day {day_str}…")
-            result = _run_bi_sync_one_day(cfg, day_str, on_status)
-            days_results.append({"date": day_str, **result})
-            d += timedelta(days=1)
-
-        ok = all(r["ok"] for r in days_results)
-        total_stock_entries = sum(r.get("stock_entries", 0) for r in days_results)
-        total_order_lines = sum(r.get("order_lines", 0) for r in days_results)
-        return {
-            "ok": ok,
-            "days": days_results,
-            "stock_entries": total_stock_entries,
-            "order_lines": total_order_lines,
-            "error": "" if ok else "One or more days failed — see individual day results",
-        }
+        return _run_bi_sync_for_range(cfg, start_date, start_date, end_date, on_status)
     finally:
         _sync_running = False
