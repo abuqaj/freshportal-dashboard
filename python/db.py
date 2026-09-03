@@ -2195,6 +2195,69 @@ def get_bi_sales_by_product(
         return {"series": []}
 
 
+def get_bi_sales_overview(start_date: str, end_date: str, group_by: str = "supplier", max_series: int = 10) -> dict:
+    """Default "nothing selected yet" sales chart — one line per top
+    supplier or top product across the WHOLE order_lines set in the date
+    range (not scoped to one specific entity), same
+    {series:[{key,label,points:[{day,value,quantity}]}]} shape as
+    get_bi_sales_by_supplier/get_bi_sales_by_product so it renders through
+    the same chart component. Requested 2026-09-03 so the chart isn't blank
+    until the user picks something."""
+    try:
+        ensure_bi_tables()
+        id_col = "supplier_id" if group_by == "supplier" else "product_id"
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT {id_col} AS id, COUNT(*) AS cnt
+                    FROM bi_order_lines
+                    WHERE {id_col} IS NOT NULL AND creation_date_time::date BETWEEN %s AND %s
+                    GROUP BY {id_col}
+                    ORDER BY cnt DESC
+                    LIMIT %s
+                """, (start_date, end_date, max_series))
+                top_ids = [r["id"] for r in cur.fetchall()]
+                if not top_ids:
+                    return {"series": []}
+
+                cur.execute(f"""
+                    SELECT {id_col} AS id, creation_date_time::date::text AS day,
+                           AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity
+                    FROM bi_order_lines
+                    WHERE {id_col} = ANY(%s) AND creation_date_time::date BETWEEN %s AND %s
+                    GROUP BY {id_col}, creation_date_time::date
+                    ORDER BY {id_col}, day
+                """, (top_ids, start_date, end_date))
+                rows = cur.fetchall()
+
+                if group_by == "supplier":
+                    cur.execute("SELECT supplier_id AS id, name AS label FROM bi_suppliers WHERE supplier_id = ANY(%s)", (top_ids,))
+                else:
+                    cur.execute("""
+                        SELECT product_id AS id, MAX(description) AS label
+                        FROM bi_stock_entry_dim WHERE product_id = ANY(%s) GROUP BY product_id
+                    """, (top_ids,))
+                labels = {r["id"]: r["label"] for r in cur.fetchall()}
+
+        by_id: dict[str, list[dict]] = {i: [] for i in top_ids}
+        for r in rows:
+            by_id[r["id"]].append({
+                "day": r["day"],
+                "value": float(r["avg_price"]),
+                "quantity": float(r["total_quantity"] or 0),
+            })
+
+        return {
+            "series": [
+                {"key": i, "label": labels.get(i) or i, "points": by_id.get(i, [])}
+                for i in top_ids
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_sales_overview: %s", exc)
+        return {"series": []}
+
+
 # ---------------------------------------------------------------------------
 # DFG customers — the fixed customer list an order can be invoiced to via the
 # DFG BatchV1 API (delivery-import). Was a hardcoded 4-entry list in

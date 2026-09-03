@@ -5,20 +5,6 @@ import { Lang } from "@/lib/i18n";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
-interface TableSummary {
-  columns?: string[];
-  row_count?: number;
-  sample_rows?: string[][];
-  error?: string;
-}
-
-interface PullResult {
-  files_in_zip?: string[];
-  tables?: Record<string, TableSummary>;
-  export_url_host?: string;
-  zip_size_bytes?: number;
-}
-
 interface BiStats {
   stock_entry_dim_count?: number;
   stock_entry_daily_count?: number;
@@ -204,9 +190,6 @@ function defaultMutationDate(): string {
 
 export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   const [mutationDate, setMutationDate] = useState(defaultMutationDate());
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<PullResult | null>(null);
-  const [error, setError] = useState("");
 
   // Real ingestion (bi_stock_entry_dim / bi_stock_entry_daily / bi_order_lines)
   // — manual trigger, also runs automatically once a day. The trigger is a
@@ -322,15 +305,24 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
       .catch(() => setProductLengths([]));
   }, [viewMode, primaryId]);
 
+  // No primary selection yet -> load a default overview (top suppliers/
+  // products overall) instead of leaving the chart blank until the user
+  // picks something (requested 2026-09-03). Same {series:[...]} response
+  // shape either way, so the chart renders identically.
   useEffect(() => {
-    if (!primaryId) { setSalesSeries(null); return; }
     setSalesLoading(true);
-    const endpoint = viewMode === "supplier" ? "sales-by-supplier" : "sales-by-product";
-    const url = new URL(`${RAILWAY}/bi-sync/${endpoint}`);
-    url.searchParams.set(viewMode === "supplier" ? "supplier_id" : "product_id", primaryId);
+    let url: URL;
+    if (primaryId) {
+      const endpoint = viewMode === "supplier" ? "sales-by-supplier" : "sales-by-product";
+      url = new URL(`${RAILWAY}/bi-sync/${endpoint}`);
+      url.searchParams.set(viewMode === "supplier" ? "supplier_id" : "product_id", primaryId);
+      if (viewMode === "product" && selectedLength) url.searchParams.set("length", selectedLength);
+    } else {
+      url = new URL(`${RAILWAY}/bi-sync/sales-overview`);
+      url.searchParams.set("group_by", viewMode);
+    }
     url.searchParams.set("start_date", salesStartDate);
     url.searchParams.set("end_date", salesEndDate);
-    if (viewMode === "product" && selectedLength) url.searchParams.set("length", selectedLength);
     fetch(url.toString())
       .then(r => r.ok ? r.json() : null)
       .then(setSalesSeries)
@@ -368,25 +360,6 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
       setSyncStarting(false);
     }
   }
-
-  const pull = useCallback(async (tables: string) => {
-    setLoading(true);
-    setError("");
-    setResult(null);
-    try {
-      const url = new URL(`${RAILWAY}/bi-sync/debug-pull`);
-      url.searchParams.set("mutation_datetime", mutationDate);
-      if (tables) url.searchParams.set("tables", tables);
-      const res = await fetch(url.toString());
-      if (!res.ok) throw new Error(await res.text());
-      const data: PullResult = await res.json();
-      setResult(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [mutationDate]);
 
   const fullSeries = salesSeries?.series ?? [];
   const highlighted = fullSeries.find(s => s.key === highlightKey);
@@ -443,7 +416,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
           <p className="text-xs text-red-500 font-mono whitespace-pre-wrap break-all">{latestRun.error}</p>
         )}
         {!!latestRun?.messages?.length && (
-          <details className="text-xs" open={!syncRunning}>
+          <details className="text-xs">
             <summary className="cursor-pointer text-ink-3 hover:text-ink">
               Last run log ({latestRun.mutation_from ?? "?"}, {latestRun.status})
             </summary>
@@ -463,7 +436,8 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
         <div>
           <p className="text-sm font-semibold text-ink">Sprzedaż w czasie</p>
           <p className="text-xs text-ink-3 mt-0.5">
-            Cena sprzedaży (OZEDS) w wybranym zakresie dat. Najedź na punkt, żeby zobaczyć ilość sprzedanych pudełek.
+            Cena sprzedaży (OZEDS) w wybranym zakresie dat. Domyślnie top 10 {viewMode === "supplier" ? "dostawców" : "produktów"} ogółem —
+            wybierz konkretnego {viewMode === "supplier" ? "dostawcę" : "produkt"} poniżej, żeby zobaczyć szczegóły. Najedź na punkt, żeby zobaczyć ilość sprzedanych pudełek.
           </p>
         </div>
 
@@ -547,93 +521,11 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
         </div>
 
         {salesLoading && <p className="text-xs text-ink-3">Loading…</p>}
-        {!salesLoading && primaryId && !fullSeries.length && (
+        {!salesLoading && !fullSeries.length && (
           <p className="text-xs text-ink-3">Brak sprzedaży w wybranym zakresie.</p>
         )}
         {!!displaySeries.length && <MultiLineChart series={displaySeries} highlightKey={highlightKey} />}
       </div>
-
-      <div className="flex items-end gap-3 flex-wrap">
-        <div>
-          <label className="block text-xs text-ink-3 mb-1">mutation_datetime (since)</label>
-          <input
-            type="date"
-            value={mutationDate}
-            onChange={e => setMutationDate(e.target.value)}
-            className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors"
-          />
-        </div>
-        <button
-          onClick={() => pull("stock_entry,order_line")}
-          disabled={loading}
-          className="h-9 px-4 rounded-lg text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
-        >
-          {loading ? "Pulling…" : "Pull stock_entry + order_lines"}
-        </button>
-        <button
-          onClick={() => pull("")}
-          disabled={loading}
-          className="h-9 px-4 rounded-lg text-sm font-medium border border-border text-ink-3 hover:text-ink disabled:opacity-40 transition-colors"
-        >
-          {loading ? "Pulling…" : "List all files in export"}
-        </button>
-      </div>
-
-      {error && (
-        <div className="p-3 rounded-xl bg-red-500/8 border border-red-500/20 text-xs font-mono text-red-500 whitespace-pre-wrap break-all">
-          {error}
-        </div>
-      )}
-
-      {result && (
-        <div className="flex flex-col gap-4">
-          <div className="text-xs text-ink-3">
-            zip: {result.zip_size_bytes?.toLocaleString() ?? "?"} bytes · host: {result.export_url_host ?? "?"} · files in zip: {result.files_in_zip?.length ?? 0}
-          </div>
-
-          {!!result.files_in_zip?.length && (
-            <details className="text-xs">
-              <summary className="cursor-pointer text-ink-3 hover:text-ink">All files in zip ({result.files_in_zip.length})</summary>
-              <div className="mt-1 bg-muted rounded-lg p-2 max-h-40 overflow-y-auto font-mono">
-                {result.files_in_zip.map((f, i) => <div key={i} className="text-ink-3">{f}</div>)}
-              </div>
-            </details>
-          )}
-
-          {Object.entries(result.tables ?? {}).map(([name, tbl]) => (
-            <div key={name} className="rounded-xl border border-border overflow-hidden">
-              <div className="px-3 py-2 bg-muted text-sm font-semibold text-ink">{name}</div>
-              {tbl.error ? (
-                <p className="px-3 py-2 text-xs text-red-500">{tbl.error}</p>
-              ) : (
-                <div className="p-3 overflow-x-auto">
-                  <p className="text-xs text-ink-3 mb-2">
-                    {tbl.row_count?.toLocaleString() ?? "?"} rows · {tbl.columns?.length ?? 0} columns
-                  </p>
-                  <table className="text-xs font-mono border-collapse">
-                    <thead>
-                      <tr>
-                        {tbl.columns?.map((c, i) => (
-                          <th key={i} className="px-2 py-1 text-left border-b border-border text-ink-3 whitespace-nowrap">{c}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tbl.sample_rows?.map((row, ri) => (
-                        <tr key={ri}>
-                          {row.map((cell, ci) => (
-                            <td key={ci} className="px-2 py-1 border-b border-border/50 text-ink whitespace-nowrap">{cell}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

@@ -47,7 +47,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_sync_history, get_bi_stats,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
-               get_bi_sales_by_supplier, get_bi_sales_by_product,
+               get_bi_sales_by_supplier, get_bi_sales_by_product, get_bi_sales_overview,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
@@ -803,6 +803,23 @@ def bi_sync_sales_by_product(
     frontend can highlight one + show top 3 others), over the given
     [start_date, end_date] range."""
     return get_bi_sales_by_product(product_id, start_date, end_date, length)
+
+
+@app.get("/bi-sync/sales-overview")
+def bi_sync_sales_overview(
+    start_date: str,
+    end_date: str,
+    group_by: str = "supplier",
+    max_series: int = 10,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Default "nothing selected yet" sales chart — top suppliers or top
+    products overall (not scoped to one entity), same shape as
+    sales-by-supplier/sales-by-product so the frontend renders it through
+    the same chart component while no primary picker selection is made."""
+    if group_by not in ("supplier", "product"):
+        raise HTTPException(400, "group_by must be 'supplier' or 'product'")
+    return get_bi_sales_overview(start_date, end_date, group_by, max_series)
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:
