@@ -565,7 +565,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
           <Card
             title="Trend ceny w czasie"
-            hint={`Jedna linia na długość łodygi — ${productLabel || "produkt"}. Uzupełnia wykres „Sprzedaż" (tam linie to dostawcy); większość rozrzutu ceny w obrębie jednego produktu bierze się właśnie z długości.`}
+            hint={`Jedna linia na długość łodygi — ${productLabel || "produkt"}. Uzupełnia wykres „Sprzedaż” (tam linie to dostawcy); większość rozrzutu ceny w obrębie jednego produktu bierze się właśnie z długości.`}
           >
             <Loading when={trendLoading} />
             {!analysisProductId ? needProduct : <MultiLineChart series={trendData?.series ?? []} />}
@@ -616,12 +616,12 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
               <>
                 <strong>Co to pokazuje:</strong> każdy punkt to jeden tydzień. W poziomie — średnia cena
                 w tym tygodniu. W pionie — ile pudełek wtedy zeszło. Nie ma tu osi czasu: pytanie brzmi
-                „czy przy wyższej cenie sprzedajemy mniej", a nie „co się działo w marcu".
+                „czy przy wyższej cenie sprzedajemy mniej”, a nie „co się działo w marcu”.
                 <br />
                 <strong>Jak czytać:</strong> chmura opadająca w prawo (drożej → mniej sztuk) znaczy, że
                 klient reaguje na cenę i podwyżka kosztuje wolumen. Chmura płaska znaczy, że w badanym
                 przedziale cena nie rusza popytu — masz przestrzeń cenową. Chmura rosnąca prawie nigdy nie
-                znaczy „drożej = lepiej", tylko że sezon rządzi jednym i drugim (Walentynki: i ceny, i
+                znaczy „drożej = lepiej”, tylko że sezon rządzi jednym i drugim (Walentynki: i ceny, i
                 wolumen w górę naraz).
                 <br />
                 <strong>Do czego użyć:</strong> pierwsza sytuacja to argument, żeby nie podnosić ceny na
@@ -689,8 +689,8 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             <p className="text-xs text-ink-3 max-w-3xl">
               <strong>Zakres dwóch wykresów poniżej.</strong>{" "}
               <em>Wybrany produkt</em> — liczy tylko linie tego jednego produktu, czyli „jak ci dostawcy
-              zachowują się konkretnie przy {productLabel || "tym produkcie"}". <em>Wszystkie produkty</em> —
-              liczy cały asortyment każdego dostawcy, czyli „jak ten dostawca zachowuje się w ogóle",
+              zachowują się konkretnie przy {productLabel || "tym produkcie"}”. <em>Wszystkie produkty</em> —
+              liczy cały asortyment każdego dostawcy, czyli „jak ten dostawca zachowuje się w ogóle”,
               również na towarach, których nie ma w wykresie porównania wyżej. Porównanie zawsze liczone
               wewnątrz tej samej pary produkt+długość, więc szerszy zakres nie miesza róż z piwoniami.
             </p>
@@ -734,7 +734,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
           <Card
             title="Odchylenia od średniej rynkowej"
-            hint="O ile % dostawca jest droższy/tańszy od średniej dla tego samego produktu i tej samej długości w tym samym okresie. Porównanie liczone per linia, więc różnice asortymentu się nie przenoszą na wynik. „Rynek" to tu wyłącznie nasi właśni dostawcy w tym zakresie dat — nie zewnętrzny benchmark — więc przy jednym dostawcy odchylenie z definicji wyjdzie 0%."
+            hint="O ile % dostawca jest droższy/tańszy od średniej dla tego samego produktu i tej samej długości w tym samym okresie. Porównanie liczone per linia, więc różnice asortymentu się nie przenoszą na wynik. „Rynek” to tu wyłącznie nasi właśni dostawcy w tym zakresie dat — nie zewnętrzny benchmark — więc przy jednym dostawcy odchylenie z definicji wyjdzie 0%."
           >
             <Loading when={deviationLoading} />
             <DivergingBarChart
