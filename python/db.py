@@ -11,7 +11,7 @@ import logging
 import os
 import re
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Generator
 
 import psycopg2
@@ -2552,7 +2552,7 @@ def get_bi_supplier_price_comparison(
 
 
 def get_bi_supplier_volatility(
-    start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 10, limit: int = 15,
+    start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 4, limit: int = 15,
 ) -> dict:
     """Wahania cen (volatility) dostawcy — coefficient of variation
     (stddev/mean, %) of sale price.
@@ -2562,6 +2562,13 @@ def get_bi_supplier_volatility(
     whole book would mostly measure their product mix (roses vs peonies
     differ in price by more than any supplier varies over time), not their
     price stability — which is the thing being asked about.
+
+    Returns `excluded` — suppliers that traded in the window but had too
+    few lines to measure variability against. min_lines was 10 until
+    2026-09-03, which silently dropped most of a price-comparison ranking
+    (15 suppliers compared, 3 shown here) with no explanation on screen.
+    Variance still needs >=3 observations per pair to mean anything, so
+    some exclusions are unavoidable — they are now reported, not hidden.
     """
     try:
         ensure_bi_tables()
@@ -2569,7 +2576,7 @@ def get_bi_supplier_volatility(
         params: list = [start_date, end_date]
         if product_id:
             params.append(product_id)
-        params += [min_lines, limit]
+        params.append(min_lines)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
@@ -2591,6 +2598,7 @@ def get_bi_supplier_volatility(
                            SUM(p.n) AS line_count,
                            SUM((p.sd / p.avg_price) * p.n) / NULLIF(SUM(p.n), 0) * 100 AS cv_pct,
                            SUM(p.avg_price * p.n) / NULLIF(SUM(p.n), 0) AS avg_price,
+                           SUM(p.n) AS weighted_lines,
                            COUNT(*) AS product_count
                     FROM per_pair p
                     LEFT JOIN bi_suppliers s ON s.supplier_id = p.supplier_id
@@ -2598,9 +2606,22 @@ def get_bi_supplier_volatility(
                     GROUP BY p.supplier_id, s.name
                     HAVING SUM(p.n) >= %s
                     ORDER BY cv_pct DESC
-                    LIMIT %s
                 """, params)
                 rows = cur.fetchall()
+
+                # How many suppliers actually traded in this window at all —
+                # the difference is what the >=3-lines-per-product rule and
+                # min_lines dropped, so the UI can say so instead of leaving
+                # the reader to wonder where 12 of 15 suppliers went.
+                total_params: list = [start_date, end_date] + ([product_id] if product_id else [])
+                cur.execute(f"""
+                    SELECT COUNT(DISTINCT supplier_id) AS n
+                    FROM bi_order_lines
+                    WHERE supplier_id IS NOT NULL AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {product_clause}
+                """, total_params)
+                total_suppliers = cur.fetchone()["n"] or 0
 
         return {
             "points": [
@@ -2612,16 +2633,18 @@ def get_bi_supplier_volatility(
                     "line_count": int(r["line_count"]),
                     "product_count": r["product_count"],
                 }
-                for r in rows
-            ]
+                for r in rows[:limit]
+            ],
+            "total_suppliers": total_suppliers,
+            "excluded": max(0, total_suppliers - len(rows)),
         }
     except Exception as exc:
         logger.warning("get_bi_supplier_volatility: %s", exc)
-        return {"points": []}
+        return {"points": [], "total_suppliers": 0, "excluded": 0}
 
 
 def get_bi_supplier_market_deviation(
-    start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 10, limit: int = 15,
+    start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 3, limit: int = 15,
 ) -> dict:
     """Odchylenia od średniej rynkowej — how far above/below the market a
     supplier prices, in %.
@@ -2630,6 +2653,12 @@ def get_bi_supplier_market_deviation(
     window, computed per line and then averaged per supplier. Comparing a
     supplier's overall average against a global average would again just
     rank product mixes; this compares like with like.
+
+    min_lines was 10 until 2026-09-03, which dropped most of the suppliers
+    visible in the price comparison with nothing on screen to explain it.
+    A deviation is meaningful from a handful of lines (unlike variance,
+    which needs a spread), so the floor is low and `excluded` reports
+    whatever still falls below it.
     """
     try:
         ensure_bi_tables()
@@ -2637,7 +2666,7 @@ def get_bi_supplier_market_deviation(
         params: list = [start_date, end_date]
         if product_id:
             params.append(product_id)
-        params += [min_lines, limit]
+        params.append(min_lines)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
@@ -2673,9 +2702,18 @@ def get_bi_supplier_market_deviation(
                     GROUP BY j.supplier_id, s.name
                     HAVING COUNT(*) >= %s
                     ORDER BY deviation_pct DESC
-                    LIMIT %s
                 """, params)
                 rows = cur.fetchall()
+
+                total_params: list = [start_date, end_date] + ([product_id] if product_id else [])
+                cur.execute(f"""
+                    SELECT COUNT(DISTINCT supplier_id) AS n
+                    FROM bi_order_lines
+                    WHERE supplier_id IS NOT NULL AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {product_clause}
+                """, total_params)
+                total_suppliers = cur.fetchone()["n"] or 0
 
         return {
             "points": [
@@ -2687,12 +2725,14 @@ def get_bi_supplier_market_deviation(
                     "market_price": round(float(r["market_price"]), 4),
                     "line_count": r["line_count"],
                 }
-                for r in rows
-            ]
+                for r in rows[:limit]
+            ],
+            "total_suppliers": total_suppliers,
+            "excluded": max(0, total_suppliers - len(rows)),
         }
     except Exception as exc:
         logger.warning("get_bi_supplier_market_deviation: %s", exc)
-        return {"points": []}
+        return {"points": [], "total_suppliers": 0, "excluded": 0}
 
 
 def get_bi_seasonality(product_id: str | None = None) -> dict:
@@ -2726,6 +2766,11 @@ def get_bi_seasonality(product_id: str | None = None) -> dict:
                 "price": float(r["avg_price"]) if r["avg_price"] is not None else None,
             }
 
+        # Only months that actually have rows. Filling absent months with
+        # quantity 0 (as this did until 2026-09-03) was wrong and visibly
+        # misleading: a gap means "nothing synced for that month", not "we
+        # sold nothing" — and we always sell something. A missing month must
+        # leave a gap in the line, never a zero.
         return {
             "years": [
                 {
@@ -2733,10 +2778,10 @@ def get_bi_seasonality(product_id: str | None = None) -> dict:
                     "months": [
                         {
                             "month": m,
-                            "quantity": by_year[y].get(m, {}).get("quantity", 0.0),
-                            "price": by_year[y].get(m, {}).get("price"),
+                            "quantity": by_year[y][m]["quantity"],
+                            "price": by_year[y][m]["price"],
                         }
-                        for m in range(1, 13)
+                        for m in sorted(by_year[y])
                     ],
                 }
                 for y in years
@@ -2759,14 +2804,24 @@ _BI_EVENTS: list[tuple[str, tuple[int, int], tuple[int, int]]] = [
 ]
 
 
-def get_bi_event_impact(product_id: str | None = None) -> dict:
+def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) -> dict:
     """Wpływ świąt/wydarzeń — volume and price during each event's selling
-    window, as a % lift over that year's ordinary baseline.
+    window, as a % lift over a LOCAL baseline.
 
-    Baseline is that year's average day EXCLUDING every event window, so a
-    year with strong holidays doesn't inflate its own reference. Aggregated
-    in Python from daily totals (a few hundred rows) rather than in SQL —
-    the window logic is far clearer this way and the data is tiny.
+    Baseline is the ordinary (non-event) days within `baseline_days` either
+    side of the window, not the whole calendar year. A whole-year baseline
+    (used until 2026-09-03) produced nonsense like "Valentine's -63%
+    volume": it averages every ordinary day of the year, so any month that
+    is simply better covered by the backfill, or any strong ordinary
+    season, drags the reference above the event window and turns a real
+    peak into an apparent collapse. Comparing a window against the weeks
+    immediately around it controls for both backfill coverage and the
+    general shape of the season.
+
+    Days with no rows at all are absent from the input and are NOT counted
+    as zero-volume days — a day nothing was synced for is unknown, not idle.
+    Windows without enough covered days on either side are dropped rather
+    than reported at low confidence.
     """
     try:
         ensure_bi_tables()
@@ -2788,47 +2843,58 @@ def get_bi_event_impact(product_id: str | None = None) -> dict:
         if not rows:
             return {"events": []}
 
-        def in_window(day, start: tuple[int, int], end: tuple[int, int]) -> bool:
-            return start <= (day.month, day.day) <= end
+        by_day = {
+            r["day"]: (
+                float(r["total_quantity"] or 0),
+                float(r["avg_price"]) if r["avg_price"] is not None else None,
+            )
+            for r in rows
+        }
 
-        # Group days by year, splitting each year into event windows and the
-        # "ordinary" days that form its baseline.
-        years: dict[int, dict] = {}
-        for r in rows:
-            day = r["day"]
-            qty = float(r["total_quantity"] or 0)
-            price = float(r["avg_price"]) if r["avg_price"] is not None else None
-            y = years.setdefault(day.year, {"baseline": [], "events": {name: [] for name, _, _ in _BI_EVENTS}})
-            matched = None
-            for name, start, end in _BI_EVENTS:
-                if in_window(day, start, end):
-                    matched = name
-                    break
-            (y["events"][matched] if matched else y["baseline"]).append((qty, price))
+        def in_any_event(d: date) -> bool:
+            """Month/day test, so it holds for every year — keeps one event's
+            window out of a neighbouring event's baseline (Christmas + 45
+            days would otherwise swallow the next year's Valentine's)."""
+            return any(start <= (d.month, d.day) <= end for _, start, end in _BI_EVENTS)
 
-        def avg(vals: list[float]) -> float | None:
-            vals = [v for v in vals if v is not None]
-            return sum(vals) / len(vals) if vals else None
+        def avg(vals: list[float | None]) -> float | None:
+            clean = [v for v in vals if v is not None]
+            return sum(clean) / len(clean) if clean else None
 
+        observed_years = sorted({d.year for d in by_day})
         out = []
-        for name, _, _ in _BI_EVENTS:
+        for name, start, end in _BI_EVENTS:
             per_year = []
-            for year in sorted(years):
-                data = years[year]
-                ev = data["events"][name]
-                base = data["baseline"]
-                # A year that has no ordinary days, or barely any event days,
-                # can't produce a meaningful lift — skip rather than divide
-                # by a near-zero baseline and report a spurious 4000%.
-                if len(ev) < 3 or len(base) < 30:
+            for year in observed_years:
+                try:
+                    win_start = date(year, start[0], start[1])
+                    win_end = date(year, end[0], end[1])
+                except ValueError:
                     continue
-                base_qty, ev_qty = avg([q for q, _ in base]), avg([q for q, _ in ev])
-                base_price, ev_price = avg([p for _, p in base]), avg([p for _, p in ev])
+
+                ev_days = [d for d in by_day if win_start <= d <= win_end]
+                base_days = [
+                    d for d in by_day
+                    if win_start - timedelta(days=baseline_days) <= d <= win_end + timedelta(days=baseline_days)
+                    and not in_any_event(d)
+                ]
+                # Too little coverage on either side to say anything honest.
+                if len(ev_days) < 5 or len(base_days) < 15:
+                    continue
+
+                ev_qty = avg([by_day[d][0] for d in ev_days])
+                base_qty = avg([by_day[d][0] for d in base_days])
+                ev_price = avg([by_day[d][1] for d in ev_days])
+                base_price = avg([by_day[d][1] for d in base_days])
+
                 per_year.append({
                     "year": year,
                     "volume_lift_pct": round((ev_qty - base_qty) / base_qty * 100, 1) if base_qty else None,
                     "price_lift_pct": round((ev_price - base_price) / base_price * 100, 1) if base_price and ev_price else None,
-                    "event_days": len(ev),
+                    "event_avg_quantity": round(ev_qty, 1) if ev_qty is not None else None,
+                    "baseline_avg_quantity": round(base_qty, 1) if base_qty is not None else None,
+                    "event_days": len(ev_days),
+                    "baseline_days": len(base_days),
                 })
             if per_year:
                 out.append({"event": name, "years": per_year})

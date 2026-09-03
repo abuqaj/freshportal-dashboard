@@ -63,7 +63,22 @@ interface SeasonalityYear {
 
 interface EventImpact {
   event: string;
-  years: { year: number; volume_lift_pct: number | null; price_lift_pct: number | null; event_days: number }[];
+  years: {
+    year: number;
+    volume_lift_pct: number | null;
+    price_lift_pct: number | null;
+    event_avg_quantity: number | null;
+    baseline_avg_quantity: number | null;
+    event_days: number;
+    baseline_days: number;
+  }[];
+}
+
+/** Shared shape of the two supplier charts that drop low-volume suppliers. */
+interface ScopedResult<T> {
+  points: T[];
+  total_suppliers?: number;
+  excluded?: number;
 }
 
 type ViewMode = "supplier" | "product";
@@ -205,9 +220,14 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   // sales tab's own picker means switching tabs never silently rewrites the
   // other tab's selection.
   const [analysisProductId, setAnalysisProductId] = useState("");
+  // Keep the selection only while it's still in the (date-filtered) list,
+  // otherwise fall to the top seller. The old version cleared an invalid
+  // selection to "" and then never re-selected, because the effect doesn't
+  // re-run until `products` changes again — leaving the picker blank after
+  // narrowing the date range (fixed 2026-09-03).
   useEffect(() => {
-    if (!products.length) return;
-    setAnalysisProductId(prev => (prev && !products.some(p => p.product_id === prev)) ? "" : (prev || products[0].product_id));
+    setAnalysisProductId(prev =>
+      prev && products.some(p => p.product_id === prev) ? prev : (products[0]?.product_id ?? ""));
   }, [products]);
 
   const productLabel = useMemo(
@@ -307,10 +327,22 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   // a scope toggle rather than a hard requirement.
   const [supplierScopeAll, setSupplierScopeAll] = useState(false);
   const supplierScopeId = supplierScopeAll ? null : analysisProductId;
-  const { data: volatilityData, loading: volatilityLoading } = useFetch<{ points: VolatilityPoint[] }>(
+  const { data: volatilityData, loading: volatilityLoading } = useFetch<ScopedResult<VolatilityPoint>>(
     suppliersActive ? api("/bi-sync/supplier-volatility", { start_date: startDate, end_date: endDate, product_id: supplierScopeId }) : null, refreshTick);
-  const { data: deviationData, loading: deviationLoading } = useFetch<{ points: DeviationPoint[] }>(
+  const { data: deviationData, loading: deviationLoading } = useFetch<ScopedResult<DeviationPoint>>(
     suppliersActive ? api("/bi-sync/supplier-market-deviation", { start_date: startDate, end_date: endDate, product_id: supplierScopeId }) : null, refreshTick);
+
+  /** "Pokazano N z M — reszta ma za mało linii" — otherwise a ranking that
+   *  silently shrinks from 15 suppliers to 3 looks like a bug. */
+  function excludedNote(d: ScopedResult<unknown> | null): React.ReactNode {
+    if (!d?.excluded) return null;
+    return (
+      <p className="text-xs text-ink-3">
+        Pokazano {d.points.length} z {d.total_suppliers} dostawców w tym zakresie. Pominięto {d.excluded} —
+        mają za mało linii sprzedaży, żeby liczba była wiarygodna.
+      </p>
+    );
+  }
 
   // ── Tab: Sezonowość ─────────────────────────────────────────────────────
   const [seasonScopeAll, setSeasonScopeAll] = useState(true);
@@ -324,11 +356,15 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
   // One line per year, x = month, so the same months stack on top of each
   // other and a repeating pattern is visible at a glance.
+  // Only months the backend actually returned. It no longer pads absent
+  // months to zero — a month with nothing synced is a gap in the line, not
+  // a month with no sales (we always sell something), which is what made
+  // the old chart read as periodic collapses to zero.
   const seasonSeries: Series[] = useMemo(() => (seasonData?.years ?? []).map(y => ({
     key: String(y.year),
     label: String(y.year),
     points: y.months
-      .filter(m => (seasonMetric === "quantity" ? true : m.price != null))
+      .filter(m => (seasonMetric === "quantity" ? m.quantity > 0 : m.price != null))
       .map(m => ({
         day: String(m.month).padStart(2, "0"),
         value: seasonMetric === "quantity" ? m.quantity : (m.price ?? 0),
@@ -544,7 +580,23 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
           <Card
             title="Elastyczność cenowa (wolumen vs cena)"
-            hint="Jeden punkt na tydzień. Chmura opadająca w prawo znaczy, że popyt reaguje na cenę. Tygodnie, nie dni — dzienne punkty pokazują głównie rytm spływania zamówień, nie reakcję na cenę."
+            hint={
+              <>
+                <strong>Co to pokazuje:</strong> każdy punkt to jeden tydzień. W poziomie — średnia cena
+                w tym tygodniu. W pionie — ile pudełek wtedy zeszło. Nie ma tu osi czasu: pytanie brzmi
+                „czy przy wyższej cenie sprzedajemy mniej", a nie „co się działo w marcu".
+                <br />
+                <strong>Jak czytać:</strong> chmura opadająca w prawo (drożej → mniej sztuk) znaczy, że
+                klient reaguje na cenę i podwyżka kosztuje wolumen. Chmura płaska znaczy, że w badanym
+                przedziale cena nie rusza popytu — masz przestrzeń cenową. Chmura rosnąca prawie nigdy nie
+                znaczy „drożej = lepiej", tylko że sezon rządzi jednym i drugim (Walentynki: i ceny, i
+                wolumen w górę naraz).
+                <br />
+                <strong>Do czego użyć:</strong> pierwsza sytuacja to argument, żeby nie podnosić ceny na
+                tym produkcie; druga — że można spróbować.
+                Tygodnie, nie dni, bo dzienne punkty pokazują głównie rytm spływania zamówień.
+              </>
+            }
           >
             <Loading when={elasticityLoading} />
             {!analysisProductId ? needProduct : (
@@ -553,9 +605,12 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                   <span className="text-2xl font-bold text-ink tabular-nums">
                     {elasticityData?.correlation != null ? elasticityData.correlation.toFixed(2) : "—"}
                   </span>
-                  <span className="text-xs text-ink-3">korelacja cena↔wolumen · {elasticityVerdict(elasticityData?.correlation ?? null)}</span>
+                  <span className="text-xs text-ink-3">
+                    korelacja cena↔wolumen (−1 = im drożej tym mniej, 0 = brak związku, +1 = razem rosną)
+                    · {elasticityVerdict(elasticityData?.correlation ?? null)}
+                  </span>
                 </div>
-                <ScatterChart points={elasticityData?.points ?? []} xAxisLabel="Średnia cena sprzedaży" yAxisLabel="Pudełka" />
+                <ScatterChart points={elasticityData?.points ?? []} xAxisLabel="Średnia cena sprzedaży w tygodniu" yAxisLabel="Pudełka" />
               </>
             )}
           </Card>
@@ -588,16 +643,26 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                 points={(comparisonData?.points ?? []).map(p => ({
                   label: p.name,
                   value: p.avg_price,
-                  sublabel: `${fmtPrice(p.min_price)}–${fmtPrice(p.max_price)} · ${fmtNum(p.quantity)} pud.`,
+                  sublabel: `${fmtPrice(p.min_price)}–${fmtPrice(p.max_price)}`,
+                  volume: p.quantity,
                 }))}
                 format={fmtPrice}
+                valueHeader="Śr. cena (min–max)"
+                volumeHeader="Pudełka"
               />
             )}
           </Card>
 
-          <div className="rounded-2xl border border-border p-4 flex items-center gap-3 flex-wrap">
-            <span className="text-xs text-ink-3">Zakres dwóch wykresów poniżej:</span>
-            <div className="flex rounded-lg border border-border overflow-hidden">
+          <div className="rounded-2xl border border-border p-4 flex flex-col gap-2">
+            <p className="text-xs text-ink-3 max-w-3xl">
+              <strong>Zakres dwóch wykresów poniżej.</strong>{" "}
+              <em>Wybrany produkt</em> — liczy tylko linie tego jednego produktu, czyli „jak ci dostawcy
+              zachowują się konkretnie przy {productLabel || "tym produkcie"}". <em>Wszystkie produkty</em> —
+              liczy cały asortyment każdego dostawcy, czyli „jak ten dostawca zachowuje się w ogóle",
+              również na towarach, których nie ma w wykresie porównania wyżej. Porównanie zawsze liczone
+              wewnątrz tej samej pary produkt+długość, więc szerszy zakres nie miesza róż z piwoniami.
+            </p>
+            <div className="flex rounded-lg border border-border overflow-hidden w-fit">
               <button
                 onClick={() => setSupplierScopeAll(false)}
                 disabled={!analysisProductId}
@@ -624,11 +689,15 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                 label: p.name,
                 value: p.cv_pct ?? 0,
                 sublabel: `${fmtPrice(p.avg_price)} śr. · ${p.product_count} prod.`,
+                volume: p.line_count,
               }))}
               format={v => (v == null ? "—" : `${v.toFixed(1)}%`)}
               color={COLOR_ABOVE}
+              valueHeader="Zmienność"
+              volumeHeader="Linie"
               emptyText="Za mało linii, żeby policzyć zmienność w tym zakresie."
             />
+            {excludedNote(volatilityData)}
           </Card>
 
           <Card
@@ -640,10 +709,11 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
               points={(deviationData?.points ?? []).map(p => ({
                 label: p.name,
                 value: p.deviation_pct,
-                sublabel: `${fmtPrice(p.avg_price)} vs ${fmtPrice(p.market_price)}`,
+                sublabel: `${fmtPrice(p.avg_price)} vs ${fmtPrice(p.market_price)} rynek · ${fmtNum(p.line_count)} linii`,
               }))}
               emptyText="Za mało linii, żeby porównać z rynkiem w tym zakresie."
             />
+            {excludedNote(deviationData)}
           </Card>
         </>
       )}
@@ -652,9 +722,12 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
       {tab === "seasonality" && (
         <>
           <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
-            <p className="text-xs text-ink-3">
-              Te dwa wykresy celowo ignorują zakres dat powyżej — sezonowość wymaga pełnych lat, nie 90-dniowego okna.
-              Obejmują całą zsynchronizowaną historię.
+            <p className="text-xs text-ink-3 max-w-3xl">
+              Te dwa wykresy celowo ignorują zakres dat powyżej — sezonowość wymaga pełnych lat, nie
+              90-dniowego okna. Obejmują <strong>całą zsynchronizowaną historię</strong>, więc jeśli
+              masz dane od stycznia 2022, zobaczysz tu 2022 jako osobną linię bez żadnych ustawień.
+              Miesiąc, dla którego nic nie zsynchronizowano, zostawia <strong>przerwę w linii</strong> —
+              nie jest rysowany jako zero.
             </p>
             <div className="flex items-center gap-3 flex-wrap">
               <div className="flex rounded-lg border border-border overflow-hidden">
@@ -695,6 +768,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             <MultiLineChart
               series={seasonSeries}
               xLabel={monthLabel}
+              tipLabel={monthLabel}
               formatValue={seasonMetric === "quantity" ? fmtNum : fmtPrice}
               showQuantity={seasonMetric === "price"}
             />
@@ -702,7 +776,23 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
           <Card
             title="Wpływ świąt i wydarzeń"
-            hint="Okna sprzedażowe, nie same daty świąt — kwiaty na 14 lutego sprzedają się w poprzedzających dwóch tygodniach. Baseline to średni zwykły dzień danego roku z pominięciem wszystkich okien świątecznych, więc mocny rok nie zawyża własnego punktu odniesienia."
+            hint={
+              <>
+                <strong>Co to pokazuje:</strong> o ile % lepszy (lub gorszy) był przeciętny dzień w oknie
+                sprzedażowym święta niż przeciętny zwykły dzień <em>w tych samych tygodniach</em>. Słupek
+                +80% na Walentynkach znaczy: w oknie walentynkowym schodziło dziennie o 80% więcej pudełek
+                niż w zwykłe dni tuż obok.
+                <br />
+                <strong>Okna, nie same daty:</strong> kwiaty na 14 lutego sprzedają się w poprzedzających
+                dwóch tygodniach, więc okno to 25 stycznia – 11 lutego, a nie sam 14 lutego.
+                <br />
+                <strong>Punkt odniesienia:</strong> zwykłe dni w promieniu 45 dni od okna, z wykluczeniem
+                innych świąt. Wcześniej porównywaliśmy do średniej z całego roku — stąd absurdalne −63% na
+                Walentynki: średnia roczna jest zawyżana przez miesiące lepiej pokryte backfillem, więc
+                realny szczyt wychodził na spadek. Rok z niepełnymi danymi w danym oknie jest pomijany,
+                a nie pokazywany jako zero.
+              </>
+            }
           >
             <div className="flex rounded-lg border border-border overflow-hidden w-fit">
               {(["quantity", "price"] as Metric[]).map(m => (

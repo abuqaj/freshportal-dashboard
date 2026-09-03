@@ -24,6 +24,30 @@ export function shortDay(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** Full date including the year — always used in tooltips, where there is
+ *  room and ambiguity is unacceptable. */
+export function fullDay(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** Axis labeller chosen from the actual span of the data: past roughly a
+ *  year, "3 wrz" is ambiguous across years and day-level precision is
+ *  meaningless at that zoom, so switch to month + year (2026-09-03). */
+function makeDayLabeller(days: string[]): (iso: string) => string {
+  if (days.length < 2) return shortDay;
+  const first = new Date(days[0]).getTime();
+  const last = new Date(days[days.length - 1]).getTime();
+  if (isNaN(first) || isNaN(last)) return shortDay;
+  const spanDays = (last - first) / 86_400_000;
+  if (spanDays <= 300) return shortDay;
+  return (iso: string) => {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  };
+}
+
 /** "1".."12" -> "sty".."gru" — x-axis labels for the seasonality chart. */
 export function monthLabel(m: string): string {
   return MONTHS_PL[Number(m) - 1] ?? m;
@@ -97,14 +121,18 @@ export function MultiLineChart({
   series,
   highlightKey,
   height = 320,
-  xLabel = shortDay,
+  xLabel,
+  tipLabel,
   formatValue = fmtPrice,
   showQuantity = true,
 }: {
   series: Series[];
   highlightKey?: string;
   height?: number;
+  /** Axis labeller. Omit for date data — the span picks the format itself. */
   xLabel?: (v: string) => string;
+  /** Tooltip labeller; defaults to a full date including the year. */
+  tipLabel?: (v: string) => string;
   formatValue?: (v: number | null | undefined) => string;
   showQuantity?: boolean;
 }) {
@@ -113,6 +141,8 @@ export function MultiLineChart({
   if (!nonEmpty.length) return <Empty />;
 
   const allDays = Array.from(new Set(nonEmpty.flatMap(s => s.points.map(p => p.day)))).sort();
+  const axisLabel = xLabel ?? makeDayLabeller(allDays);
+  const tooltipLabel = tipLabel ?? (xLabel ?? fullDay);
   const allValues = nonEmpty.flatMap(s => s.points.map(p => p.value));
   const maxV = Math.max(...allValues);
   const minV = Math.min(0, ...allValues);
@@ -150,7 +180,7 @@ export function MultiLineChart({
         ))}
         {xTickIdx.map(i => (
           <text key={i} x={xFor(allDays[i])} y={height - 6} fontSize={10} textAnchor="middle" className="fill-ink-3">
-            {xLabel(allDays[i])}
+            {axisLabel(allDays[i])}
           </text>
         ))}
         {nonEmpty.map((s, si) => {
@@ -161,11 +191,23 @@ export function MultiLineChart({
           return (
             <g
               key={s.key}
-              opacity={isDimmed ? 0.35 : 1}
-              style={isHighlighted ? { filter: `drop-shadow(0 0 7px ${color})` } : undefined}
+              opacity={isDimmed ? 0.5 : 1}
+              // Dimmed lines are genuinely blurred, not just faded: with a
+              // highlight active they are context, and a sharp thin line
+              // still competes for attention at equal focus (2026-09-03).
+              style={
+                isHighlighted
+                  ? { filter: `drop-shadow(0 0 7px ${color})` }
+                  : isDimmed
+                    ? { filter: "blur(1.8px)" }
+                    : undefined
+              }
             >
               <path d={d} fill="none" stroke={color} strokeWidth={isHighlighted ? 4 : 2} />
-              {s.points.map((p, i) => (
+              {/* Points (and their hit targets) only on the line in focus —
+                  hovering a blurred context line would report a value the
+                  reader can't even see clearly. */}
+              {!isDimmed && s.points.map((p, i) => (
                 <g key={i}>
                   <circle cx={xFor(p.day)} cy={yFor(p.value)} r={isHighlighted ? 5 : 3} fill={color} />
                   <circle
@@ -186,7 +228,7 @@ export function MultiLineChart({
       {hover && (
         <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
           <div className="font-semibold">{hover.series.label}</div>
-          <div>{xLabel(hover.point.day)} · {formatValue(hover.point.value)}</div>
+          <div>{tooltipLabel(hover.point.day)} · {formatValue(hover.point.value)}</div>
           {showQuantity && <div>{fmtNum(hover.point.quantity)} pudełek sprzedanych</div>}
         </Tip>
       )}
@@ -399,19 +441,39 @@ export function HBarChart({
   format = fmtPrice,
   color = COLOR_BELOW,
   emptyText,
+  valueHeader,
+  volumeHeader = "Pudełka",
 }: {
-  points: { label: string; value: number; sublabel?: string }[];
+  points: { label: string; value: number; sublabel?: string; volume?: number }[];
   format?: (v: number | null | undefined) => string;
   color?: string;
   emptyText?: string;
+  valueHeader?: string;
+  volumeHeader?: string;
 }) {
   if (!points.length) return <Empty text={emptyText} />;
   const max = Math.max(...points.map(p => Math.abs(p.value))) || 1;
+  // Volume gets its own aligned, scannable column rather than being tacked
+  // onto the value as fine print — on a price ranking, "how much did they
+  // actually sell" decides whether a cheap average is even meaningful
+  // (requested 2026-09-03).
+  const hasVolume = points.some(p => p.volume != null);
+  const cols = hasVolume
+    ? "grid-cols-[minmax(0,11rem)_1fr_auto_auto]"
+    : "grid-cols-[minmax(0,11rem)_1fr_auto]";
 
   return (
     <div className="flex flex-col gap-1.5">
+      {(valueHeader || hasVolume) && (
+        <div className={`grid ${cols} items-center gap-3 text-[10px] uppercase tracking-wide text-ink-3`}>
+          <span />
+          <span />
+          <span className="text-right">{valueHeader ?? ""}</span>
+          {hasVolume && <span className="text-right min-w-[5.5rem]">{volumeHeader}</span>}
+        </div>
+      )}
       {points.map((p, i) => (
-        <div key={i} className="grid grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-xs">
+        <div key={i} className={`grid ${cols} items-center gap-3 text-xs`}>
           <span className="truncate text-ink" title={p.label}>{p.label}</span>
           <div className="h-5 bg-muted rounded-md overflow-hidden">
             <div
@@ -419,10 +481,15 @@ export function HBarChart({
               style={{ width: `${Math.max(1, (Math.abs(p.value) / max) * 100)}%`, background: color }}
             />
           </div>
-          <span className="text-ink tabular-nums font-medium whitespace-nowrap">
+          <span className="text-ink tabular-nums font-medium whitespace-nowrap text-right">
             {format(p.value)}
-            {p.sublabel && <span className="text-ink-3 font-normal ml-1.5">{p.sublabel}</span>}
+            {p.sublabel && <span className="block text-ink-3 font-normal text-[10px]">{p.sublabel}</span>}
           </span>
+          {hasVolume && (
+            <span className="text-ink tabular-nums whitespace-nowrap text-right min-w-[5.5rem]">
+              {fmtNum(p.volume)}
+            </span>
+          )}
         </div>
       ))}
     </div>
