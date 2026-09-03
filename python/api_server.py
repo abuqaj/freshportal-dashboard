@@ -48,6 +48,9 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
                get_bi_sales_by_supplier, get_bi_sales_by_product, get_bi_sales_overview,
+               get_bi_price_trend_by_length, get_bi_price_vs_length, get_bi_price_elasticity,
+               get_bi_supplier_price_comparison, get_bi_supplier_volatility,
+               get_bi_supplier_market_deviation, get_bi_seasonality, get_bi_event_impact,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
@@ -820,6 +823,108 @@ def bi_sync_sales_overview(
     if group_by not in ("supplier", "product"):
         raise HTTPException(400, "group_by must be 'supplier' or 'product'")
     return get_bi_sales_overview(start_date, end_date, group_by, max_series)
+
+
+# ── Analysis Tool: "Cena i rentowność" (2026-09-03) ────────────────────────
+
+@app.get("/bi-sync/price-trend-by-length")
+def bi_sync_price_trend_by_length(
+    product_id: str,
+    start_date: str,
+    end_date: str,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Trend ceny w czasie — one line per length for a single product."""
+    return get_bi_price_trend_by_length(product_id, start_date, end_date)
+
+
+@app.get("/bi-sync/price-vs-length")
+def bi_sync_price_vs_length(
+    product_id: str,
+    start_date: str,
+    end_date: str,
+    supplier_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Cena vs długość łodygi — avg sale price, purchase price and margin
+    per length (bar-chart shaped, x = length)."""
+    return get_bi_price_vs_length(product_id, start_date, end_date, supplier_id)
+
+
+@app.get("/bi-sync/price-elasticity")
+def bi_sync_price_elasticity(
+    product_id: str,
+    start_date: str,
+    end_date: str,
+    bucket: str = "week",
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Elastyczność cenowa — one point per week/day (price vs volume), plus
+    the Pearson correlation between them as a headline figure."""
+    if bucket not in ("week", "day"):
+        raise HTTPException(400, "bucket must be 'week' or 'day'")
+    return get_bi_price_elasticity(product_id, start_date, end_date, bucket)
+
+
+# ── Analysis Tool: "Dostawcy" (2026-09-03) ─────────────────────────────────
+
+@app.get("/bi-sync/supplier-price-comparison")
+def bi_sync_supplier_price_comparison(
+    product_id: str,
+    start_date: str,
+    end_date: str,
+    length: int | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Porównanie cen dostawców — sorted ranking for one product."""
+    return get_bi_supplier_price_comparison(product_id, start_date, end_date, length)
+
+
+@app.get("/bi-sync/supplier-volatility")
+def bi_sync_supplier_volatility(
+    start_date: str,
+    end_date: str,
+    product_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Wahania cen dostawcy — coefficient of variation (%), computed per
+    (supplier, product) then weighted per supplier so it measures price
+    stability rather than product mix."""
+    return get_bi_supplier_volatility(start_date, end_date, product_id)
+
+
+@app.get("/bi-sync/supplier-market-deviation")
+def bi_sync_supplier_market_deviation(
+    start_date: str,
+    end_date: str,
+    product_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Odchylenia od średniej rynkowej — % above/below the same
+    (product, length) average over the same window."""
+    return get_bi_supplier_market_deviation(start_date, end_date, product_id)
+
+
+# ── Analysis Tool: "Sezonowość i popyt" (2026-09-03) ───────────────────────
+
+@app.get("/bi-sync/seasonality")
+def bi_sync_seasonality(
+    product_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Sezonowość — volume and avg price per calendar month, one series per
+    year. Spans all available history, ignoring the sales date picker."""
+    return get_bi_seasonality(product_id)
+
+
+@app.get("/bi-sync/event-impact")
+def bi_sync_event_impact(
+    product_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Wpływ świąt/wydarzeń — volume and price lift (%) during each event's
+    selling window vs that year's non-event baseline."""
+    return get_bi_event_impact(product_id)
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:

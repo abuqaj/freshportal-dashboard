@@ -2259,6 +2259,528 @@ def get_bi_sales_overview(start_date: str, end_date: str, group_by: str = "suppl
 
 
 # ---------------------------------------------------------------------------
+# Analysis Tool — "Cena i rentowność" / "Dostawcy" / "Sezonowość i popyt"
+# (2026-09-03). All of these read realized SALE price (bi_order_lines.
+# store_price, customer 12/OZEDS only), not the offer/listing price —
+# established with the user 2026-09-02. supplier_price is the matching
+# purchase price on the same line, so margin is a real computed figure
+# rather than an estimate.
+#
+# Deliberately NOT all time series: length is an ordinal dimension, an
+# elasticity curve is a scatter, and a supplier ranking is a sorted bar.
+# Each function returns the shape its chart form needs, so the frontend
+# does no reshaping.
+# ---------------------------------------------------------------------------
+
+def _pearson(xs: list[float], ys: list[float]) -> float | None:
+    """Pearson correlation, or None when it isn't defined (fewer than 3
+    points, or one of the series is constant)."""
+    n = len(xs)
+    if n < 3:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    dx = [x - mx for x in xs]
+    dy = [y - my for y in ys]
+    num = sum(a * b for a, b in zip(dx, dy))
+    den = (sum(a * a for a in dx) ** 0.5) * (sum(b * b for b in dy) ** 0.5)
+    return round(num / den, 4) if den else None
+
+
+def get_bi_price_trend_by_length(product_id: str, start_date: str, end_date: str, max_series: int = 7) -> dict:
+    """Trend ceny w czasie — one line per LENGTH for a single product.
+
+    The existing sales chart already covers product->suppliers; this is the
+    missing third axis (product->lengths), which is where most of the price
+    spread on a single product actually lives.
+    """
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT length, COUNT(*) AS cnt
+                    FROM bi_order_lines
+                    WHERE product_id = %s AND length IS NOT NULL AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                    GROUP BY length
+                    ORDER BY cnt DESC
+                    LIMIT %s
+                """, (product_id, start_date, end_date, max_series))
+                lengths = [r["length"] for r in cur.fetchall()]
+                if not lengths:
+                    return {"series": []}
+
+                cur.execute("""
+                    SELECT length, creation_date_time::date::text AS day,
+                           AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity
+                    FROM bi_order_lines
+                    WHERE product_id = %s AND length = ANY(%s) AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                    GROUP BY length, creation_date_time::date
+                    ORDER BY length, day
+                """, (product_id, lengths, start_date, end_date))
+                rows = cur.fetchall()
+
+        by_length: dict[int, list[dict]] = {ln: [] for ln in lengths}
+        for r in rows:
+            by_length[r["length"]].append({
+                "day": r["day"],
+                "value": float(r["avg_price"]),
+                "quantity": float(r["total_quantity"] or 0),
+            })
+
+        # Sorted by length (not by volume) so the legend reads 40cm, 50cm, 60cm…
+        return {
+            "series": [
+                {"key": str(ln), "label": f"{ln}cm", "points": by_length.get(ln, [])}
+                for ln in sorted(lengths)
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_price_trend_by_length: %s", exc)
+        return {"series": []}
+
+
+def get_bi_price_vs_length(product_id: str, start_date: str, end_date: str, supplier_id: str | None = None) -> dict:
+    """Cena vs długość łodygi — avg sale price and purchase price per length
+    for one product. Bar-chart shaped (x = length, ordinal), not a time series.
+
+    NOT margin. `spread_pct` is (sale - purchase) / sale, i.e. the gross
+    spread over the goods price only. Real cost also carries commission and
+    handling, which live in the export's customer_stock_item_commission
+    table (rows where cost = 1 are the actual cost components, joined on
+    customer_stock_item_id) — that table isn't ingested yet, so anything
+    labelled "margin" here would overstate it. Confirmed by the user
+    2026-09-03; do not relabel this as margin until that join exists.
+    """
+    try:
+        ensure_bi_tables()
+        supplier_clause = "AND supplier_id = %s" if supplier_id else ""
+        params: list = [product_id, start_date, end_date]
+        if supplier_id:
+            params.append(supplier_id)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT length,
+                           AVG(store_price) AS avg_price,
+                           AVG(supplier_price) AS avg_supplier_price,
+                           SUM(quantity) AS total_quantity,
+                           COUNT(*) AS line_count
+                    FROM bi_order_lines
+                    WHERE product_id = %s AND length IS NOT NULL AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {supplier_clause}
+                    GROUP BY length
+                    ORDER BY length
+                """, params)
+                rows = cur.fetchall()
+
+        out = []
+        for r in rows:
+            price = float(r["avg_price"])
+            cost = float(r["avg_supplier_price"]) if r["avg_supplier_price"] is not None else None
+            out.append({
+                "length": r["length"],
+                "avg_price": round(price, 4),
+                "avg_supplier_price": round(cost, 4) if cost is not None else None,
+                "spread_pct": round((price - cost) / price * 100, 2) if cost is not None and price else None,
+                "quantity": float(r["total_quantity"] or 0),
+                "line_count": r["line_count"],
+            })
+        return {"points": out}
+    except Exception as exc:
+        logger.warning("get_bi_price_vs_length: %s", exc)
+        return {"points": []}
+
+
+def get_bi_price_elasticity(product_id: str, start_date: str, end_date: str, bucket: str = "week") -> dict:
+    """Elastyczność cenowa — one point per week (or day): avg price vs total
+    volume sold. Scatter-shaped; a downward-sloping cloud means demand
+    reacts to price. Returns a Pearson correlation as the headline figure.
+
+    Weekly buckets by default: daily points are dominated by order-arrival
+    noise rather than by price response.
+    """
+    try:
+        ensure_bi_tables()
+        trunc = "day" if bucket == "day" else "week"
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT date_trunc('{trunc}', creation_date_time)::date::text AS period,
+                           AVG(store_price) AS avg_price,
+                           SUM(quantity) AS total_quantity
+                    FROM bi_order_lines
+                    WHERE product_id = %s AND store_price IS NOT NULL AND store_price > 0
+                      AND creation_date_time::date BETWEEN %s AND %s
+                    GROUP BY 1
+                    HAVING SUM(quantity) > 0
+                    ORDER BY 1
+                """, (product_id, start_date, end_date))
+                rows = cur.fetchall()
+
+        points = [
+            {
+                "period": r["period"],
+                "price": round(float(r["avg_price"]), 4),
+                "quantity": float(r["total_quantity"] or 0),
+            }
+            for r in rows
+        ]
+        return {
+            "points": points,
+            "correlation": _pearson([p["price"] for p in points], [p["quantity"] for p in points]),
+            "bucket": trunc,
+        }
+    except Exception as exc:
+        logger.warning("get_bi_price_elasticity: %s", exc)
+        return {"points": [], "correlation": None, "bucket": bucket}
+
+
+def get_bi_supplier_price_comparison(
+    product_id: str, start_date: str, end_date: str, length: int | None = None, limit: int = 15,
+) -> dict:
+    """Porównanie cen dostawców — sorted ranking of suppliers by avg sale
+    price for one product (optionally one length). A sorted bar answers
+    "who is cheapest" far more directly than overlapping time series, which
+    the main sales chart already provides."""
+    try:
+        ensure_bi_tables()
+        length_clause = "AND length = %s" if length is not None else ""
+        params: list = [product_id]
+        if length is not None:
+            params.append(length)
+        params += [start_date, end_date, limit]
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT ol.supplier_id,
+                           COALESCE(s.name, ol.supplier_id) AS name,
+                           AVG(ol.store_price) AS avg_price,
+                           MIN(ol.store_price) AS min_price,
+                           MAX(ol.store_price) AS max_price,
+                           SUM(ol.quantity) AS total_quantity,
+                           COUNT(*) AS line_count
+                    FROM bi_order_lines ol
+                    LEFT JOIN bi_suppliers s ON s.supplier_id = ol.supplier_id
+                    WHERE ol.product_id = %s {length_clause} AND ol.supplier_id IS NOT NULL
+                      AND ol.store_price IS NOT NULL
+                      AND ol.creation_date_time::date BETWEEN %s AND %s
+                    GROUP BY ol.supplier_id, s.name
+                    ORDER BY avg_price ASC
+                    LIMIT %s
+                """, params)
+                rows = cur.fetchall()
+
+        return {
+            "points": [
+                {
+                    "supplier_id": r["supplier_id"],
+                    "name": r["name"],
+                    "avg_price": round(float(r["avg_price"]), 4),
+                    "min_price": round(float(r["min_price"]), 4),
+                    "max_price": round(float(r["max_price"]), 4),
+                    "quantity": float(r["total_quantity"] or 0),
+                    "line_count": r["line_count"],
+                }
+                for r in rows
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_supplier_price_comparison: %s", exc)
+        return {"points": []}
+
+
+def get_bi_supplier_volatility(
+    start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 10, limit: int = 15,
+) -> dict:
+    """Wahania cen (volatility) dostawcy — coefficient of variation
+    (stddev/mean, %) of sale price.
+
+    Computed per (supplier, product) pair and only then aggregated per
+    supplier, weighted by line count. A plain stddev over a supplier's
+    whole book would mostly measure their product mix (roses vs peonies
+    differ in price by more than any supplier varies over time), not their
+    price stability — which is the thing being asked about.
+    """
+    try:
+        ensure_bi_tables()
+        product_clause = "AND product_id = %s" if product_id else ""
+        params: list = [start_date, end_date]
+        if product_id:
+            params.append(product_id)
+        params += [min_lines, limit]
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    WITH per_pair AS (
+                        SELECT ol.supplier_id, ol.product_id,
+                               AVG(ol.store_price) AS avg_price,
+                               STDDEV_SAMP(ol.store_price) AS sd,
+                               COUNT(*) AS n
+                        FROM bi_order_lines ol
+                        WHERE ol.supplier_id IS NOT NULL AND ol.store_price IS NOT NULL
+                          AND ol.store_price > 0
+                          AND ol.creation_date_time::date BETWEEN %s AND %s
+                          {product_clause}
+                        GROUP BY ol.supplier_id, ol.product_id
+                        HAVING COUNT(*) >= 3 AND AVG(ol.store_price) > 0
+                    )
+                    SELECT p.supplier_id,
+                           COALESCE(s.name, p.supplier_id) AS name,
+                           SUM(p.n) AS line_count,
+                           SUM((p.sd / p.avg_price) * p.n) / NULLIF(SUM(p.n), 0) * 100 AS cv_pct,
+                           SUM(p.avg_price * p.n) / NULLIF(SUM(p.n), 0) AS avg_price,
+                           COUNT(*) AS product_count
+                    FROM per_pair p
+                    LEFT JOIN bi_suppliers s ON s.supplier_id = p.supplier_id
+                    WHERE p.sd IS NOT NULL
+                    GROUP BY p.supplier_id, s.name
+                    HAVING SUM(p.n) >= %s
+                    ORDER BY cv_pct DESC
+                    LIMIT %s
+                """, params)
+                rows = cur.fetchall()
+
+        return {
+            "points": [
+                {
+                    "supplier_id": r["supplier_id"],
+                    "name": r["name"],
+                    "cv_pct": round(float(r["cv_pct"]), 2) if r["cv_pct"] is not None else None,
+                    "avg_price": round(float(r["avg_price"]), 4) if r["avg_price"] is not None else None,
+                    "line_count": int(r["line_count"]),
+                    "product_count": r["product_count"],
+                }
+                for r in rows
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_supplier_volatility: %s", exc)
+        return {"points": []}
+
+
+def get_bi_supplier_market_deviation(
+    start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 10, limit: int = 15,
+) -> dict:
+    """Odchylenia od średniej rynkowej — how far above/below the market a
+    supplier prices, in %.
+
+    "Market" is the average for the same (product, length) over the same
+    window, computed per line and then averaged per supplier. Comparing a
+    supplier's overall average against a global average would again just
+    rank product mixes; this compares like with like.
+    """
+    try:
+        ensure_bi_tables()
+        product_clause = "AND product_id = %s" if product_id else ""
+        params: list = [start_date, end_date]
+        if product_id:
+            params.append(product_id)
+        params += [min_lines, limit]
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    WITH lines AS (
+                        SELECT supplier_id, product_id, length, store_price, quantity
+                        FROM bi_order_lines
+                        WHERE supplier_id IS NOT NULL AND store_price IS NOT NULL
+                          AND store_price > 0
+                          AND creation_date_time::date BETWEEN %s AND %s
+                          {product_clause}
+                    ),
+                    market AS (
+                        SELECT product_id, length, AVG(store_price) AS market_price
+                        FROM lines
+                        GROUP BY product_id, length
+                        HAVING AVG(store_price) > 0
+                    ),
+                    joined AS (
+                        SELECT l.supplier_id, l.store_price, m.market_price
+                        FROM lines l
+                        JOIN market m
+                          ON m.product_id = l.product_id
+                         AND m.length IS NOT DISTINCT FROM l.length
+                    )
+                    SELECT j.supplier_id,
+                           COALESCE(s.name, j.supplier_id) AS name,
+                           COUNT(*) AS line_count,
+                           AVG((j.store_price - j.market_price) / j.market_price) * 100 AS deviation_pct,
+                           AVG(j.store_price) AS avg_price,
+                           AVG(j.market_price) AS market_price
+                    FROM joined j
+                    LEFT JOIN bi_suppliers s ON s.supplier_id = j.supplier_id
+                    GROUP BY j.supplier_id, s.name
+                    HAVING COUNT(*) >= %s
+                    ORDER BY deviation_pct DESC
+                    LIMIT %s
+                """, params)
+                rows = cur.fetchall()
+
+        return {
+            "points": [
+                {
+                    "supplier_id": r["supplier_id"],
+                    "name": r["name"],
+                    "deviation_pct": round(float(r["deviation_pct"]), 2),
+                    "avg_price": round(float(r["avg_price"]), 4),
+                    "market_price": round(float(r["market_price"]), 4),
+                    "line_count": r["line_count"],
+                }
+                for r in rows
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_supplier_market_deviation: %s", exc)
+        return {"points": []}
+
+
+def get_bi_seasonality(product_id: str | None = None) -> dict:
+    """Sezonowość cen/popytu — volume and avg price per calendar month, one
+    series per year, so the same months line up on top of each other and a
+    repeating pattern becomes visible. Ignores the sales date-range picker
+    on purpose: seasonality needs whole years, not a 90-day window."""
+    try:
+        ensure_bi_tables()
+        product_clause = "AND product_id = %s" if product_id else ""
+        params: list = [product_id] if product_id else []
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT EXTRACT(YEAR FROM creation_date_time)::int AS year,
+                           EXTRACT(MONTH FROM creation_date_time)::int AS month,
+                           SUM(quantity) AS total_quantity,
+                           AVG(store_price) AS avg_price
+                    FROM bi_order_lines
+                    WHERE creation_date_time IS NOT NULL {product_clause}
+                    GROUP BY 1, 2
+                    ORDER BY 1, 2
+                """, params)
+                rows = cur.fetchall()
+
+        years = sorted({r["year"] for r in rows})
+        by_year: dict[int, dict[int, dict]] = {y: {} for y in years}
+        for r in rows:
+            by_year[r["year"]][r["month"]] = {
+                "quantity": float(r["total_quantity"] or 0),
+                "price": float(r["avg_price"]) if r["avg_price"] is not None else None,
+            }
+
+        return {
+            "years": [
+                {
+                    "year": y,
+                    "months": [
+                        {
+                            "month": m,
+                            "quantity": by_year[y].get(m, {}).get("quantity", 0.0),
+                            "price": by_year[y].get(m, {}).get("price"),
+                        }
+                        for m in range(1, 13)
+                    ],
+                }
+                for y in years
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_seasonality: %s", exc)
+        return {"years": []}
+
+
+# Selling windows, not the holiday dates themselves — flowers for Feb 14 are
+# ordered and shipped in the preceding two weeks, so a window centred on the
+# holiday would miss the peak entirely. Fixed month/day ranges; the moving
+# feasts (Mother's Day) use their usual NL/DE early-May position.
+_BI_EVENTS: list[tuple[str, tuple[int, int], tuple[int, int]]] = [
+    ("Walentynki", (1, 25), (2, 11)),
+    ("Dzień Kobiet", (2, 26), (3, 6)),
+    ("Dzień Matki (NL/DE)", (4, 28), (5, 9)),
+    ("Boże Narodzenie", (12, 1), (12, 20)),
+]
+
+
+def get_bi_event_impact(product_id: str | None = None) -> dict:
+    """Wpływ świąt/wydarzeń — volume and price during each event's selling
+    window, as a % lift over that year's ordinary baseline.
+
+    Baseline is that year's average day EXCLUDING every event window, so a
+    year with strong holidays doesn't inflate its own reference. Aggregated
+    in Python from daily totals (a few hundred rows) rather than in SQL —
+    the window logic is far clearer this way and the data is tiny.
+    """
+    try:
+        ensure_bi_tables()
+        product_clause = "AND product_id = %s" if product_id else ""
+        params: list = [product_id] if product_id else []
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT creation_date_time::date AS day,
+                           SUM(quantity) AS total_quantity,
+                           AVG(store_price) AS avg_price
+                    FROM bi_order_lines
+                    WHERE creation_date_time IS NOT NULL {product_clause}
+                    GROUP BY 1
+                    ORDER BY 1
+                """, params)
+                rows = cur.fetchall()
+
+        if not rows:
+            return {"events": []}
+
+        def in_window(day, start: tuple[int, int], end: tuple[int, int]) -> bool:
+            return start <= (day.month, day.day) <= end
+
+        # Group days by year, splitting each year into event windows and the
+        # "ordinary" days that form its baseline.
+        years: dict[int, dict] = {}
+        for r in rows:
+            day = r["day"]
+            qty = float(r["total_quantity"] or 0)
+            price = float(r["avg_price"]) if r["avg_price"] is not None else None
+            y = years.setdefault(day.year, {"baseline": [], "events": {name: [] for name, _, _ in _BI_EVENTS}})
+            matched = None
+            for name, start, end in _BI_EVENTS:
+                if in_window(day, start, end):
+                    matched = name
+                    break
+            (y["events"][matched] if matched else y["baseline"]).append((qty, price))
+
+        def avg(vals: list[float]) -> float | None:
+            vals = [v for v in vals if v is not None]
+            return sum(vals) / len(vals) if vals else None
+
+        out = []
+        for name, _, _ in _BI_EVENTS:
+            per_year = []
+            for year in sorted(years):
+                data = years[year]
+                ev = data["events"][name]
+                base = data["baseline"]
+                # A year that has no ordinary days, or barely any event days,
+                # can't produce a meaningful lift — skip rather than divide
+                # by a near-zero baseline and report a spurious 4000%.
+                if len(ev) < 3 or len(base) < 30:
+                    continue
+                base_qty, ev_qty = avg([q for q, _ in base]), avg([q for q, _ in ev])
+                base_price, ev_price = avg([p for _, p in base]), avg([p for _, p in ev])
+                per_year.append({
+                    "year": year,
+                    "volume_lift_pct": round((ev_qty - base_qty) / base_qty * 100, 1) if base_qty else None,
+                    "price_lift_pct": round((ev_price - base_price) / base_price * 100, 1) if base_price and ev_price else None,
+                    "event_days": len(ev),
+                })
+            if per_year:
+                out.append({"event": name, "years": per_year})
+
+        return {"events": out}
+    except Exception as exc:
+        logger.warning("get_bi_event_impact: %s", exc)
+        return {"events": []}
+
+
+# ---------------------------------------------------------------------------
 # DFG customers — the fixed customer list an order can be invoiced to via the
 # DFG BatchV1 API (delivery-import). Was a hardcoded 4-entry list in
 # DeliveryImporter.tsx (DFG_CUSTOMERS); moved to DB so an admin can enable
