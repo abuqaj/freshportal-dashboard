@@ -1969,31 +1969,35 @@ def get_bi_products_only_picker(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> list[dict]:
-    """Product picker for the "by product" chart.
+    """Product picker for the "by product" chart — count = order_lines
+    (sold, customer 12/OZEDS) in [start_date, end_date], so it updates
+    with the date range picker (requested by the user 2026-09-02, mirrors
+    get_bi_suppliers_for_picker). Optionally scoped to one supplier
+    (cascading — only products that supplier sold in the range).
 
-    Unscoped (no supplier_id): every product seen in bi_stock_entry_dim,
-    most data-rich first — independent of any particular sale.
-
-    Scoped to supplier_id (+ start_date/end_date, both required together):
-    only products that supplier actually sold in that date range — the
-    cascading filter requested by the user 2026-09-02, so picking a
-    supplier in the "by supplier" chart narrows the "by product" picker to
-    what's actually relevant instead of showing every product in the DB.
+    Falls back to an unscoped, all-time bi_stock_entry_dim count only if no
+    date range is given at all — defensive; the UI always passes one.
     """
     try:
         ensure_bi_tables()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                if supplier_id and start_date and end_date:
-                    cur.execute("""
+                if start_date and end_date:
+                    supplier_clause = "AND supplier_id = %s" if supplier_id else ""
+                    params: list = [start_date, end_date]
+                    if supplier_id:
+                        params.append(supplier_id)
+                    params.append(limit)
+                    cur.execute(f"""
                         SELECT product_id, COUNT(*) AS row_count
                         FROM bi_order_lines
-                        WHERE supplier_id = %s AND product_id IS NOT NULL
+                        WHERE product_id IS NOT NULL
                           AND creation_date_time::date BETWEEN %s AND %s
+                          {supplier_clause}
                         GROUP BY product_id
                         ORDER BY row_count DESC
                         LIMIT %s
-                    """, (supplier_id, start_date, end_date, limit))
+                    """, params)
                     rows = cur.fetchall()
                     product_ids = [r["product_id"] for r in rows]
                     if not product_ids:
@@ -2040,30 +2044,34 @@ def get_bi_lengths_for_product(product_id: str) -> list[int]:
         return []
 
 
-def get_bi_suppliers_for_picker(limit: int = 200) -> list[dict]:
+def get_bi_suppliers_for_picker(limit: int = 200, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     """Suppliers that actually have sold lines (bi_order_lines), most
     data-rich first — powers the "by supplier" picker. Name from
-    bi_suppliers, falls back to the raw id if unmatched."""
+    bi_suppliers, falls back to the raw id if unmatched. row_count is
+    scoped to [start_date, end_date] when given, so it updates with the
+    date range picker (requested by the user 2026-09-02)."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
+                date_clause = "AND ol.creation_date_time::date BETWEEN %s AND %s" if start_date and end_date else ""
+                params: list = [start_date, end_date] if start_date and end_date else []
+                cur.execute(f"""
                     SELECT ol.supplier_id, COALESCE(s.name, ol.supplier_id) AS name, COUNT(*) AS row_count
                     FROM bi_order_lines ol
                     LEFT JOIN bi_suppliers s ON s.supplier_id = ol.supplier_id
-                    WHERE ol.supplier_id IS NOT NULL
+                    WHERE ol.supplier_id IS NOT NULL {date_clause}
                     GROUP BY ol.supplier_id, s.name
                     ORDER BY row_count DESC
                     LIMIT %s
-                """, (limit,))
+                """, params + [limit])
                 return [dict(r) for r in cur.fetchall()]
     except Exception as exc:
         logger.warning("get_bi_suppliers_for_picker: %s", exc)
         return []
 
 
-def get_bi_sales_by_supplier(supplier_id: str, start_date: str, end_date: str, max_series: int = 7) -> dict:
+def get_bi_sales_by_supplier(supplier_id: str, start_date: str, end_date: str, max_series: int = 10) -> dict:
     """Multi-series sale-price-over-time for one supplier — one line per
     product (top `max_series` by row count), x=day, y=avg store_price.
     Each point also carries total_quantity sold that day, for the tooltip."""
@@ -2122,7 +2130,7 @@ def get_bi_sales_by_supplier(supplier_id: str, start_date: str, end_date: str, m
 
 
 def get_bi_sales_by_product(
-    product_id: str, start_date: str, end_date: str, length: int | None = None, max_series: int = 7,
+    product_id: str, start_date: str, end_date: str, length: int | None = None, max_series: int = 10,
 ) -> dict:
     """Multi-series sale-price-over-time for one product (optionally scoped
     to one length — otherwise averaged across every length sold) — one line

@@ -765,10 +765,16 @@ def bi_sync_product_lengths(product_id: str, _: dict = Depends(require_permissio
 
 
 @app.get("/bi-sync/suppliers")
-def bi_sync_suppliers(limit: int = 200, _: dict = Depends(require_permission("admin:manage"))):
+def bi_sync_suppliers(
+    limit: int = 200,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
     """Supplier picker (only suppliers with actual sold lines) for the
-    "by supplier" sales chart."""
-    return {"suppliers": get_bi_suppliers_for_picker(limit)}
+    "by supplier" sales chart. Pass start_date/end_date so the row_count next
+    to each supplier reflects the currently-selected date range."""
+    return {"suppliers": get_bi_suppliers_for_picker(limit, start_date, end_date)}
 
 
 @app.get("/bi-sync/sales-by-supplier")
@@ -779,7 +785,8 @@ def bi_sync_sales_by_supplier(
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Multi-series sale price over time for one supplier — one line per
-    product (top 7 by volume), over the given [start_date, end_date] range."""
+    product (top 10 by volume, so the frontend can highlight one + show top
+    3 others), over the given [start_date, end_date] range."""
     return get_bi_sales_by_supplier(supplier_id, start_date, end_date)
 
 
@@ -792,8 +799,9 @@ def bi_sync_sales_by_product(
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Multi-series sale price over time for one product (optionally scoped
-    to one length) — one line per supplier (top 7 by volume), over the
-    given [start_date, end_date] range."""
+    to one length) — one line per supplier (top 10 by volume, so the
+    frontend can highlight one + show top 3 others), over the given
+    [start_date, end_date] range."""
     return get_bi_sales_by_product(product_id, start_date, end_date, length)
 
 
