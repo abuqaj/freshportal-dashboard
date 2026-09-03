@@ -56,6 +56,7 @@ from bi_sync_client import get_export_url, download_export_zip, read_table
 from config import Config
 from db import (
     upsert_bi_stock_entry_dim, upsert_bi_stock_entry_daily, upsert_bi_order_lines,
+    upsert_bi_products,
     upsert_bi_invoice_customer, get_bi_invoice_customer_map,
     upsert_bi_suppliers,
     log_bi_sync_start, log_bi_sync_finish, append_bi_sync_message,
@@ -152,6 +153,11 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
             if str(r.get("visible") or "0").strip() not in ("1", "true", "True")
             and str(r.get("stock_entry_type_id") or "").strip() in ("4", "5")
         ]
+        # Product names come from the FULL list, not the type 4/5 subset —
+        # sold lines point at "standard" entries, whose products are absent
+        # from bi_stock_entry_dim and would otherwise render as raw ids.
+        upsert_bi_products(all_stock_entries)
+
         _s(f"Read {len(all_stock_entries)} stock_entry rows, {len(stock_entries)} offer/limited-offer "
            f"lots (type 4/5, visible=0) after dropping other types — upserting…")
         upsert_bi_stock_entry_dim(stock_entries)
@@ -208,6 +214,13 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
                 line["manufacturer_id"] = source_entry.get("manufacturer_id")
                 line["length"] = source_entry.get("length")
                 line["supplier_id"] = source_entry.get("supplier_id")
+                # product_id has to come from the stock_entry too — order_line
+                # itself carries no product reference, so before 2026-09-03
+                # every bi_order_lines row was written with product_id NULL.
+                # That silently emptied the product picker and made the
+                # supplier chart group all lines into one unlabelled series.
+                # Prefer the line's own value if a future export ever adds one.
+                line["product_id"] = line.get("product_id") or source_entry.get("product_id")
             else:
                 unresolved_stock_entry += 1
             reference_lines.append(line)

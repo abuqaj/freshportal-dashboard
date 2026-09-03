@@ -361,7 +361,18 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     { id: "seasonality", label: "Sezonowość i popyt" },
   ];
 
-  const needProduct = <p className="text-xs text-ink-3 py-6 text-center">Wybierz produkt powyżej.</p>;
+  // An empty product list is not the same as "you haven't picked one yet" —
+  // before the 2026-09-03 sync fix every order_line was stored with a NULL
+  // product_id, so the list stays empty until the range is re-synced.
+  const needProduct = products.length ? (
+    <p className="text-xs text-ink-3 py-6 text-center">Wybierz produkt powyżej.</p>
+  ) : (
+    <p className="text-xs text-ink-3 py-6 text-center max-w-xl mx-auto">
+      Brak produktów w tym zakresie dat. Jeśli lista jest pusta również dla szerszego zakresu,
+      uruchom ponownie sync — linie sprzedaży zapisane przed poprawką z 2026-09-03 nie mają
+      przypisanego produktu i trzeba je pobrać jeszcze raz.
+    </p>
+  );
 
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-5">
@@ -418,13 +429,19 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
         )}
       </div>
 
-      <div className="flex gap-1 border-b border-border overflow-x-auto">
+      {/* Wraps to further rows instead of scrolling horizontally — a scroll
+          container hides tabs off-screen with no affordance. Pill styling
+          rather than an underline strip, since a shared bottom border can't
+          follow tabs onto a second row. */}
+      <div className="flex flex-wrap gap-2">
         {TABS.map(t => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`px-4 h-10 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${
-              tab === t.id ? "border-emerald text-ink" : "border-transparent text-ink-3 hover:text-ink"
+            className={`px-4 h-9 rounded-lg text-sm font-medium whitespace-nowrap border transition-colors ${
+              tab === t.id
+                ? "bg-emerald text-white border-emerald"
+                : "border-border text-ink-3 hover:text-ink"
             }`}
           >
             {t.label}

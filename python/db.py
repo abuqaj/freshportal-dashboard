@@ -1536,6 +1536,21 @@ def ensure_bi_tables() -> None:
                 )
             """)
 
+            # product_id -> description, built from the FULL stock_entry table
+            # (every type), unlike bi_stock_entry_dim which only holds
+            # offer/limited-offer lots (type 4/5). A sold order_line points at
+            # a "standard" stock_entry, so its product is usually absent from
+            # the dim table and the picker would fall back to showing a raw
+            # numeric id — the same class of bug as the supplier names in
+            # 2026-09-02 (added 2026-09-03).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_products (
+                    product_id  TEXT PRIMARY KEY,
+                    description TEXT,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
             # Accumulates invoice_id -> customer_id forever across every sync run
             # (never truncated) — the /v2/export endpoint is a delta feed scoped to
             # mutation_datetime, so an order_line synced today can reference an
@@ -1687,6 +1702,35 @@ def upsert_bi_stock_entry_daily(rows: list[dict], snapshot_date: str) -> int:
                 """, values)
                 conn.commit()
     return len(rows)
+
+
+def upsert_bi_products(rows: list[dict]) -> int:
+    """product_id -> description, from the FULL stock_entry list (every
+    type). Keeps an existing description when a newer row has a blank one,
+    so a single odd export can't wipe a good label."""
+    if not rows:
+        return 0
+    ensure_bi_tables()
+    seen: dict[str, str] = {}
+    for r in rows:
+        pid, desc = r.get("product_id"), (r.get("description") or "").strip()
+        if pid and desc and pid not in seen:
+            seen[pid] = desc
+    if not seen:
+        return 0
+    items = list(seen.items())
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(items), _BATCH_SIZE):
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO bi_products (product_id, description, updated_at)
+                    VALUES %s
+                    ON CONFLICT (product_id) DO UPDATE SET
+                        description = COALESCE(NULLIF(EXCLUDED.description, ''), bi_products.description),
+                        updated_at  = NOW()
+                """, items[i:i + _BATCH_SIZE], template="(%s, %s, NOW())")
+                conn.commit()
+    return len(items)
 
 
 def upsert_bi_order_lines(rows: list[dict]) -> int:
@@ -1963,6 +2007,29 @@ def upsert_bi_suppliers(rows: list[dict]) -> int:
     return len(rows)
 
 
+def _product_labels(cur, product_ids: list[str]) -> dict[str, str]:
+    """product_id -> human description. bi_products wins over
+    bi_stock_entry_dim: the dim table only holds offer/limited-offer lots
+    (type 4/5), and a sold order_line points at a "standard" stock_entry,
+    so the dim usually has no row for it and the UI would fall back to a
+    raw numeric id. Requires a RealDictCursor."""
+    if not product_ids:
+        return {}
+    labels: dict[str, str] = {}
+    cur.execute("""
+        SELECT product_id, MAX(description) AS description
+        FROM bi_stock_entry_dim WHERE product_id = ANY(%s) GROUP BY product_id
+    """, (product_ids,))
+    for r in cur.fetchall():
+        if r["description"]:
+            labels[r["product_id"]] = r["description"]
+    cur.execute("SELECT product_id, description FROM bi_products WHERE product_id = ANY(%s)", (product_ids,))
+    for r in cur.fetchall():
+        if r["description"]:
+            labels[r["product_id"]] = r["description"]
+    return labels
+
+
 def get_bi_products_only_picker(
     limit: int = 300,
     supplier_id: str | None = None,
@@ -2002,11 +2069,7 @@ def get_bi_products_only_picker(
                     product_ids = [r["product_id"] for r in rows]
                     if not product_ids:
                         return []
-                    cur.execute("""
-                        SELECT product_id, MAX(description) AS description
-                        FROM bi_stock_entry_dim WHERE product_id = ANY(%s) GROUP BY product_id
-                    """, (product_ids,))
-                    labels = {r["product_id"]: r["description"] for r in cur.fetchall()}
+                    labels = _product_labels(cur, product_ids)
                     return [
                         {"product_id": r["product_id"], "description": labels.get(r["product_id"]), "row_count": r["row_count"]}
                         for r in rows
@@ -2027,14 +2090,19 @@ def get_bi_products_only_picker(
 
 
 def get_bi_lengths_for_product(product_id: str) -> list[int]:
-    """Distinct lengths seen for one product — populates the optional length
-    refinement dropdown in the "by product" view."""
+    """Distinct lengths actually SOLD for one product — populates the length
+    refinement dropdown.
+
+    Reads bi_order_lines, not bi_stock_entry_dim: the dim holds only
+    offer/limited-offer lots (type 4/5), which is the wrong population for a
+    filter that narrows sold lines, and would offer lengths that have no
+    sales behind them (fixed 2026-09-03)."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT DISTINCT length FROM bi_stock_entry_dim
+                    SELECT DISTINCT length FROM bi_order_lines
                     WHERE product_id = %s AND length IS NOT NULL
                     ORDER BY length
                 """, (product_id,))
@@ -2102,13 +2170,7 @@ def get_bi_sales_by_supplier(supplier_id: str, start_date: str, end_date: str, m
                 """, (supplier_id, top_products, start_date, end_date))
                 rows = cur.fetchall()
 
-                cur.execute("""
-                    SELECT product_id, MAX(description) AS description
-                    FROM bi_stock_entry_dim
-                    WHERE product_id = ANY(%s)
-                    GROUP BY product_id
-                """, (top_products,))
-                labels = {r["product_id"]: r["description"] for r in cur.fetchall()}
+                labels = _product_labels(cur, top_products)
 
         by_product: dict[str, list[dict]] = {pid: [] for pid in top_products}
         for r in rows:
@@ -2232,12 +2294,9 @@ def get_bi_sales_overview(start_date: str, end_date: str, group_by: str = "suppl
 
                 if group_by == "supplier":
                     cur.execute("SELECT supplier_id AS id, name AS label FROM bi_suppliers WHERE supplier_id = ANY(%s)", (top_ids,))
+                    labels = {r["id"]: r["label"] for r in cur.fetchall()}
                 else:
-                    cur.execute("""
-                        SELECT product_id AS id, MAX(description) AS label
-                        FROM bi_stock_entry_dim WHERE product_id = ANY(%s) GROUP BY product_id
-                    """, (top_ids,))
-                labels = {r["id"]: r["label"] for r in cur.fetchall()}
+                    labels = _product_labels(cur, top_ids)
 
         by_id: dict[str, list[dict]] = {i: [] for i in top_ids}
         for r in rows:
