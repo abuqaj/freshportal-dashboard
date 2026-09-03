@@ -269,14 +269,6 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     if (ids.length) setPrimaryId(prev => (prev && !ids.includes(prev)) ? "" : prev);
   }, [viewMode, suppliers, products]);
   useEffect(() => { setSalesLength(""); }, [primaryId]);
-  // Drop a length that the (date-scoped) list no longer offers — otherwise
-  // narrowing the dates leaves a stale filter selected and the chart comes
-  // back empty with no visible reason.
-  useEffect(() => {
-    const ls = salesLengths?.lengths;
-    if (!ls) return;
-    setSalesLength(prev => (prev && !ls.includes(Number(prev)) ? "" : prev));
-  }, [salesLengths]);
 
   // Date-scoped: offering a length that only sold outside the active range
   // would render an empty chart with nothing explaining why.
@@ -284,6 +276,17 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     viewMode === "product" && primaryId
       ? api("/bi-sync/product-lengths", { product_id: primaryId, start_date: startDate, end_date: endDate })
       : null, refreshTick);
+
+  // Drop a length that the (date-scoped) list no longer offers — otherwise
+  // narrowing the dates leaves a stale filter selected and the chart comes
+  // back empty with no visible reason. Must sit after the fetch above:
+  // `salesLengths` is a const, so referencing it earlier is a temporal
+  // dead zone error, not just a lint nit.
+  useEffect(() => {
+    const ls = salesLengths?.lengths;
+    if (!ls) return;
+    setSalesLength(prev => (prev && !ls.includes(Number(prev)) ? "" : prev));
+  }, [salesLengths]);
 
   // No selection yet -> a top-N overview rather than a blank panel.
   const salesUrl = primaryId
