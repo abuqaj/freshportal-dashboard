@@ -743,9 +743,18 @@ def bi_sync_charts(days: int = 30, _: dict = Depends(require_permission("admin:m
 
 
 @app.get("/bi-sync/products")
-def bi_sync_products(limit: int = 300, _: dict = Depends(require_permission("admin:manage"))):
-    """Product picker (independent of length) for the "by product" sales chart."""
-    return {"products": get_bi_products_only_picker(limit)}
+def bi_sync_products(
+    limit: int = 300,
+    supplier_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Product picker for the "by product" sales chart. Pass supplier_id +
+    start_date/end_date to narrow it to only products that supplier sold in
+    that range (cascading filter after picking a supplier in the "by
+    supplier" chart) — omit them for the full unscoped product list."""
+    return {"products": get_bi_products_only_picker(limit, supplier_id, start_date, end_date)}
 
 
 @app.get("/bi-sync/product-lengths")
@@ -765,24 +774,27 @@ def bi_sync_suppliers(limit: int = 200, _: dict = Depends(require_permission("ad
 @app.get("/bi-sync/sales-by-supplier")
 def bi_sync_sales_by_supplier(
     supplier_id: str,
-    days: int = 90,
+    start_date: str,
+    end_date: str,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Multi-series sale price over time for one supplier — one line per
-    product (top 7 by volume)."""
-    return get_bi_sales_by_supplier(supplier_id, days)
+    product (top 7 by volume), over the given [start_date, end_date] range."""
+    return get_bi_sales_by_supplier(supplier_id, start_date, end_date)
 
 
 @app.get("/bi-sync/sales-by-product")
 def bi_sync_sales_by_product(
     product_id: str,
+    start_date: str,
+    end_date: str,
     length: int | None = None,
-    days: int = 90,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Multi-series sale price over time for one product (optionally scoped
-    to one length) — one line per supplier (top 7 by volume)."""
-    return get_bi_sales_by_product(product_id, length, days)
+    to one length) — one line per supplier (top 7 by volume), over the
+    given [start_date, end_date] range."""
+    return get_bi_sales_by_product(product_id, start_date, end_date, length)
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:

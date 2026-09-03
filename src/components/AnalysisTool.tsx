@@ -70,6 +70,7 @@ interface SupplierPickerItem {
 interface SeriesPoint {
   day: string;
   value: number;
+  quantity: number;
 }
 
 interface Series {
@@ -125,7 +126,9 @@ function BarChart<T>({ points, valueOf, labelOf, xLabelOf, barClassName }: {
   );
 }
 
-const LINE_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6"];
+// 7 hues spread around the wheel so no two adjacent legend entries are easily
+// confused (avoids e.g. two greens/teals next to each other).
+const LINE_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#7c3aed", "#db2777", "#0891b2"];
 
 // Dependency-free multi-series line chart — x=day (shared across all series,
 // evenly spaced by position not by actual date gaps), y=value, up to 7
@@ -181,9 +184,13 @@ function MultiLineChart({ series, height = 280 }: { series: Series[]; height?: n
             <g key={s.key}>
               <path d={d} fill="none" stroke={color} strokeWidth={2} />
               {s.points.map((p, i) => (
-                <circle key={i} cx={xFor(p.day)} cy={yFor(p.value)} r={3} fill={color}>
-                  <title>{`${s.label} — ${p.day}: ${fmtPrice(p.value)}`}</title>
-                </circle>
+                <g key={i}>
+                  <circle cx={xFor(p.day)} cy={yFor(p.value)} r={3} fill={color} />
+                  {/* Larger invisible circle = bigger hover/tap target than the visible dot */}
+                  <circle cx={xFor(p.day)} cy={yFor(p.value)} r={9} fill="transparent">
+                    <title>{`${s.label} — ${p.day}\n${fmtPrice(p.value)} · ${p.quantity.toLocaleString()} pudełek sprzedanych`}</title>
+                  </circle>
+                </g>
               ))}
             </g>
           );
@@ -253,6 +260,15 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   }, []);
 
   // Sales-by-supplier / sales-by-product (redesigned 2026-09-02).
+  // Shared date range for both charts — defaults to the last 90 days, but
+  // fully overridable (requested by the user 2026-09-02).
+  const [salesStartDate, setSalesStartDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 90);
+    return d.toISOString().slice(0, 10);
+  });
+  const [salesEndDate, setSalesEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+
   const [suppliers, setSuppliers] = useState<SupplierPickerItem[]>([]);
   const [selectedSupplierId, setSelectedSupplierId] = useState("");
   const [bySupplier, setBySupplier] = useState<SalesSeriesResult | null>(null);
@@ -269,31 +285,54 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   // picker keeps showing stale data (e.g. raw supplier IDs instead of names
   // once bi_suppliers has actually been populated by a newer sync) until
   // the page is manually reloaded (found 2026-09-02).
-  const loadPickers = useCallback(async () => {
+  const loadSuppliers = useCallback(async () => {
     try {
-      const [sRes, pRes] = await Promise.all([
-        fetch(`${RAILWAY}/bi-sync/suppliers?limit=200`),
-        fetch(`${RAILWAY}/bi-sync/products?limit=300`),
-      ]);
-      setSuppliers(sRes.ok ? (await sRes.json()).suppliers ?? [] : []);
-      setProducts(pRes.ok ? (await pRes.json()).products ?? [] : []);
+      const res = await fetch(`${RAILWAY}/bi-sync/suppliers?limit=200`);
+      setSuppliers(res.ok ? (await res.json()).suppliers ?? [] : []);
     } catch { /* ignore */ }
   }, []);
 
-  useEffect(() => { loadPickers(); }, [loadPickers]);
+  // Cascading filter: once a supplier is selected in the "by supplier"
+  // chart, the "by product" picker narrows to only what that supplier sold
+  // in the current date range — requested by the user 2026-09-02. No
+  // supplier selected -> full unscoped product list.
+  const loadProducts = useCallback(async () => {
+    try {
+      const url = new URL(`${RAILWAY}/bi-sync/products`);
+      url.searchParams.set("limit", "300");
+      if (selectedSupplierId) {
+        url.searchParams.set("supplier_id", selectedSupplierId);
+        url.searchParams.set("start_date", salesStartDate);
+        url.searchParams.set("end_date", salesEndDate);
+      }
+      const res = await fetch(url.toString());
+      const list = res.ok ? (await res.json()).products ?? [] : [];
+      setProducts(list);
+      // Selected product no longer valid under the new scope -> clear it.
+      setSelectedProductId(prev => (prev && !list.some((p: ProductOnlyPickerItem) => p.product_id === prev)) ? "" : prev);
+    } catch { /* ignore */ }
+  }, [selectedSupplierId, salesStartDate, salesEndDate]);
+
+  const loadPickers = useCallback(async () => {
+    await Promise.all([loadSuppliers(), loadProducts()]);
+  }, [loadSuppliers, loadProducts]);
+
+  useEffect(() => { loadSuppliers(); }, [loadSuppliers]);
+  useEffect(() => { loadProducts(); }, [loadProducts]);
 
   useEffect(() => {
     if (!selectedSupplierId) { setBySupplier(null); return; }
     setBySupplierLoading(true);
     const url = new URL(`${RAILWAY}/bi-sync/sales-by-supplier`);
     url.searchParams.set("supplier_id", selectedSupplierId);
-    url.searchParams.set("days", "90");
+    url.searchParams.set("start_date", salesStartDate);
+    url.searchParams.set("end_date", salesEndDate);
     fetch(url.toString())
       .then(r => r.ok ? r.json() : null)
       .then(setBySupplier)
       .catch(() => setBySupplier(null))
       .finally(() => setBySupplierLoading(false));
-  }, [selectedSupplierId]);
+  }, [selectedSupplierId, salesStartDate, salesEndDate]);
 
   // Fetch the lengths a selected product is offered in, to populate the
   // optional length-refinement dropdown; resets the length choice whenever
@@ -315,13 +354,14 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     const url = new URL(`${RAILWAY}/bi-sync/sales-by-product`);
     url.searchParams.set("product_id", selectedProductId);
     if (selectedLength) url.searchParams.set("length", selectedLength);
-    url.searchParams.set("days", "90");
+    url.searchParams.set("start_date", salesStartDate);
+    url.searchParams.set("end_date", salesEndDate);
     fetch(url.toString())
       .then(r => r.ok ? r.json() : null)
       .then(setByProduct)
       .catch(() => setByProduct(null))
       .finally(() => setByProductLoading(false));
-  }, [selectedProductId, selectedLength]);
+  }, [selectedProductId, selectedLength, salesStartDate, salesEndDate]);
 
   useEffect(() => { loadBiHistory(); loadCharts(); }, [loadBiHistory, loadCharts]);
 
@@ -498,11 +538,35 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
           (bi_order_lines.store_price, customer 12/OZEDS only). Two angles:
           by supplier (lines = products that supplier sold) and by product
           (lines = suppliers who sold it, optionally scoped to one length —
-          otherwise averaged across every length sold). Up to 7 lines each. */}
+          otherwise averaged across every length sold). Up to 7 lines each.
+          Shared date range below applies to both. */}
+      <div className="rounded-2xl border border-border p-4 flex items-end gap-3 flex-wrap">
+        <div>
+          <label className="block text-[11px] text-ink-3 mb-1">Sprzedaż od</label>
+          <input
+            type="date"
+            value={salesStartDate}
+            onChange={e => setSalesStartDate(e.target.value)}
+            className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors"
+          />
+        </div>
+        <div>
+          <label className="block text-[11px] text-ink-3 mb-1">do</label>
+          <input
+            type="date"
+            value={salesEndDate}
+            min={salesStartDate}
+            onChange={e => setSalesEndDate(e.target.value)}
+            className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors"
+          />
+        </div>
+        <p className="text-xs text-ink-3">Zakres dla obu wykresów sprzedaży poniżej. Domyślnie ostatnie 90 dni.</p>
+      </div>
+
       <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
         <div>
           <p className="text-sm font-semibold text-ink">Sprzedaż wg dostawcy</p>
-          <p className="text-xs text-ink-3 mt-0.5">Cena sprzedaży w czasie, jedna linia na produkt (top 7), OZEDS, ost. 90 dni.</p>
+          <p className="text-xs text-ink-3 mt-0.5">Cena sprzedaży w czasie, jedna linia na produkt (top 7), OZEDS. Najedź na punkt, żeby zobaczyć ilość sprzedanych pudełek.</p>
         </div>
         <select
           value={selectedSupplierId}
@@ -524,8 +588,9 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
         <div>
           <p className="text-sm font-semibold text-ink">Sprzedaż wg produktu</p>
           <p className="text-xs text-ink-3 mt-0.5">
-            Cena sprzedaży w czasie, jedna linia na dostawcę (top 7), OZEDS, ost. 90 dni.
+            Cena sprzedaży w czasie, jedna linia na dostawcę (top 7), OZEDS.
             Bez wyboru długości — średnia ze wszystkich długości tego produktu.
+            {selectedSupplierId && " Lista produktów zawężona do wybranego wyżej dostawcy."}
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">

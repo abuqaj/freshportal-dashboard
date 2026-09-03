@@ -1963,13 +1963,51 @@ def upsert_bi_suppliers(rows: list[dict]) -> int:
     return len(rows)
 
 
-def get_bi_products_only_picker(limit: int = 300) -> list[dict]:
-    """Distinct products (independent of length) seen in bi_stock_entry_dim,
-    most data-rich first — powers the "by product" picker."""
+def get_bi_products_only_picker(
+    limit: int = 300,
+    supplier_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
+    """Product picker for the "by product" chart.
+
+    Unscoped (no supplier_id): every product seen in bi_stock_entry_dim,
+    most data-rich first — independent of any particular sale.
+
+    Scoped to supplier_id (+ start_date/end_date, both required together):
+    only products that supplier actually sold in that date range — the
+    cascading filter requested by the user 2026-09-02, so picking a
+    supplier in the "by supplier" chart narrows the "by product" picker to
+    what's actually relevant instead of showing every product in the DB.
+    """
     try:
         ensure_bi_tables()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                if supplier_id and start_date and end_date:
+                    cur.execute("""
+                        SELECT product_id, COUNT(*) AS row_count
+                        FROM bi_order_lines
+                        WHERE supplier_id = %s AND product_id IS NOT NULL
+                          AND creation_date_time::date BETWEEN %s AND %s
+                        GROUP BY product_id
+                        ORDER BY row_count DESC
+                        LIMIT %s
+                    """, (supplier_id, start_date, end_date, limit))
+                    rows = cur.fetchall()
+                    product_ids = [r["product_id"] for r in rows]
+                    if not product_ids:
+                        return []
+                    cur.execute("""
+                        SELECT product_id, MAX(description) AS description
+                        FROM bi_stock_entry_dim WHERE product_id = ANY(%s) GROUP BY product_id
+                    """, (product_ids,))
+                    labels = {r["product_id"]: r["description"] for r in cur.fetchall()}
+                    return [
+                        {"product_id": r["product_id"], "description": labels.get(r["product_id"]), "row_count": r["row_count"]}
+                        for r in rows
+                    ]
+
                 cur.execute("""
                     SELECT product_id, MAX(description) AS description, COUNT(*) AS row_count
                     FROM bi_stock_entry_dim
@@ -2025,9 +2063,10 @@ def get_bi_suppliers_for_picker(limit: int = 200) -> list[dict]:
         return []
 
 
-def get_bi_sales_by_supplier(supplier_id: str, days: int = 90, max_series: int = 7) -> dict:
+def get_bi_sales_by_supplier(supplier_id: str, start_date: str, end_date: str, max_series: int = 7) -> dict:
     """Multi-series sale-price-over-time for one supplier — one line per
-    product (top `max_series` by row count), x=day, y=avg store_price."""
+    product (top `max_series` by row count), x=day, y=avg store_price.
+    Each point also carries total_quantity sold that day, for the tooltip."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
@@ -2035,23 +2074,24 @@ def get_bi_sales_by_supplier(supplier_id: str, days: int = 90, max_series: int =
                 cur.execute("""
                     SELECT product_id, COUNT(*) AS cnt
                     FROM bi_order_lines
-                    WHERE supplier_id = %s AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
+                    WHERE supplier_id = %s AND creation_date_time::date BETWEEN %s AND %s
                     GROUP BY product_id
                     ORDER BY cnt DESC
                     LIMIT %s
-                """, (supplier_id, days, max_series))
+                """, (supplier_id, start_date, end_date, max_series))
                 top_products = [r["product_id"] for r in cur.fetchall()]
                 if not top_products:
                     return {"series": []}
 
                 cur.execute("""
-                    SELECT product_id, creation_date_time::date::text AS day, AVG(store_price) AS avg_price
+                    SELECT product_id, creation_date_time::date::text AS day,
+                           AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE supplier_id = %s AND product_id = ANY(%s)
-                      AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
+                      AND creation_date_time::date BETWEEN %s AND %s
                     GROUP BY product_id, creation_date_time::date
                     ORDER BY product_id, day
-                """, (supplier_id, top_products, days))
+                """, (supplier_id, top_products, start_date, end_date))
                 rows = cur.fetchall()
 
                 cur.execute("""
@@ -2064,7 +2104,11 @@ def get_bi_sales_by_supplier(supplier_id: str, days: int = 90, max_series: int =
 
         by_product: dict[str, list[dict]] = {pid: [] for pid in top_products}
         for r in rows:
-            by_product[r["product_id"]].append({"day": r["day"], "value": float(r["avg_price"])})
+            by_product[r["product_id"]].append({
+                "day": r["day"],
+                "value": float(r["avg_price"]),
+                "quantity": float(r["total_quantity"] or 0),
+            })
 
         return {
             "series": [
@@ -2077,10 +2121,13 @@ def get_bi_sales_by_supplier(supplier_id: str, days: int = 90, max_series: int =
         return {"series": []}
 
 
-def get_bi_sales_by_product(product_id: str, length: int | None = None, days: int = 90, max_series: int = 7) -> dict:
+def get_bi_sales_by_product(
+    product_id: str, start_date: str, end_date: str, length: int | None = None, max_series: int = 7,
+) -> dict:
     """Multi-series sale-price-over-time for one product (optionally scoped
     to one length — otherwise averaged across every length sold) — one line
-    per supplier (top `max_series` by row count), x=day, y=avg store_price."""
+    per supplier (top `max_series` by row count), x=day, y=avg store_price.
+    Each point also carries total_quantity sold that day, for the tooltip."""
     try:
         ensure_bi_tables()
         length_clause = "AND length = %s" if length is not None else ""
@@ -2089,12 +2136,12 @@ def get_bi_sales_by_product(product_id: str, length: int | None = None, days: in
                 params_top: list = [product_id]
                 if length is not None:
                     params_top.append(length)
-                params_top += [days, max_series]
+                params_top += [start_date, end_date, max_series]
                 cur.execute(f"""
                     SELECT supplier_id, COUNT(*) AS cnt
                     FROM bi_order_lines
                     WHERE product_id = %s {length_clause} AND supplier_id IS NOT NULL
-                      AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
+                      AND creation_date_time::date BETWEEN %s AND %s
                     GROUP BY supplier_id
                     ORDER BY cnt DESC
                     LIMIT %s
@@ -2106,12 +2153,13 @@ def get_bi_sales_by_product(product_id: str, length: int | None = None, days: in
                 params_rows: list = [product_id]
                 if length is not None:
                     params_rows.append(length)
-                params_rows += [top_suppliers, days]
+                params_rows += [top_suppliers, start_date, end_date]
                 cur.execute(f"""
-                    SELECT supplier_id, creation_date_time::date::text AS day, AVG(store_price) AS avg_price
+                    SELECT supplier_id, creation_date_time::date::text AS day,
+                           AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE product_id = %s {length_clause} AND supplier_id = ANY(%s)
-                      AND creation_date_time >= CURRENT_DATE - %s * INTERVAL '1 day'
+                      AND creation_date_time::date BETWEEN %s AND %s
                     GROUP BY supplier_id, creation_date_time::date
                     ORDER BY supplier_id, day
                 """, params_rows)
@@ -2122,7 +2170,11 @@ def get_bi_sales_by_product(product_id: str, length: int | None = None, days: in
 
         by_supplier: dict[str, list[dict]] = {sid: [] for sid in top_suppliers}
         for r in rows:
-            by_supplier[r["supplier_id"]].append({"day": r["day"], "value": float(r["avg_price"])})
+            by_supplier[r["supplier_id"]].append({
+                "day": r["day"],
+                "value": float(r["avg_price"]),
+                "quantity": float(r["total_quantity"] or 0),
+            })
 
         return {
             "series": [
