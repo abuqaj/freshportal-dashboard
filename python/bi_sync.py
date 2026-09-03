@@ -34,6 +34,15 @@ a single pull anchored at the *oldest* requested date, split into
 day-buckets purely in local processing, covers the exact same ground in one
 network round-trip instead of hundreds.
 
+A range backfill longer than ~6 months is itself split into <=6-month
+windows, each still pulled with a single API call (see run_bi_sync_range /
+_bi_sync_chunks) — a call spanning more than roughly half a year started
+timing out downloading/parsing the export (found 2026-09-03). Anchoring
+each window's "since" cursor at the window's own start (not the absolute
+backfill start) is still correct: a line's mutation_date_time is always
+>= its creation_date_time, so every line created inside a window is
+guaranteed to have been mutated at-or-after that window's start too.
+
 order_lines is also enriched with manufacturer_id/length/supplier_id via
 created_from_stock_entry_id, looked up against *every* stock_entry row in
 the export (not just the offer/limited-offer ones kept in
@@ -48,9 +57,10 @@ bi_suppliers, purely as an id->name lookup for chart legends.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 import threading
-from datetime import date
+from datetime import date, timedelta
 
 from bi_sync_client import get_export_url, download_export_zip, read_table
 from config import Config
@@ -240,6 +250,31 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
         return {"ok": False, "stock_entries": 0, "order_lines": 0, "error": error}
 
 
+def _add_months(d: date, months: int) -> date:
+    """Calendar-month addition, clamping the day to the target month's
+    length (e.g. Jan 31 + 1 month -> Feb 28/29, not an error)."""
+    total = d.month - 1 + months
+    year = d.year + total // 12
+    month = total % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _bi_sync_chunks(start_date: str, end_date: str, months: int = 6) -> list[tuple[str, str]]:
+    """Split [start_date, end_date] into consecutive <=`months`-month
+    windows. A <=6-month range (the common case) comes back as a single
+    chunk, identical to the old un-chunked behavior."""
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    chunks: list[tuple[str, str]] = []
+    cur = start
+    while cur <= end:
+        chunk_end = min(_add_months(cur, months) - timedelta(days=1), end)
+        chunks.append((cur.isoformat(), chunk_end.isoformat()))
+        cur = chunk_end + timedelta(days=1)
+    return chunks
+
+
 def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
     """Pull one BI Sync export and upsert stock_entry / order_lines into the
     mirror tables. Returns {"ok": bool, "stock_entries": int, "order_lines": int, "error": str}.
@@ -258,10 +293,17 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
 
 
 def run_bi_sync_range(cfg: Config, start_date: str, end_date: str, on_status=None) -> dict:
-    """Backfill [start_date, end_date] (inclusive) in a single API call,
-    anchored at start_date — see module docstring for why this replaces a
-    day-by-day loop (each day's own call would redundantly re-download
-    almost the same "everything since that day" export).
+    """Backfill [start_date, end_date] (inclusive), split into <=6-month
+    windows run sequentially, each still a single API call anchored at that
+    window's own start — see module docstring for why per-window anchoring
+    is still correct, and why chunking exists at all (a call spanning more
+    than roughly half a year was timing out). A <=6-month range — the
+    common case — is exactly one call, same as before chunking existed.
+
+    _sync_running stays true for the whole multi-window run, but each
+    window still gets its own bi_sync_log row/sync_id (via
+    _run_bi_sync_for_range) — "Last run log" in the UI shows only the most
+    recent window's messages, same as the old day-by-day loop did.
     """
     global _sync_running
 
@@ -271,12 +313,26 @@ def run_bi_sync_range(cfg: Config, start_date: str, end_date: str, on_status=Non
     try:
         if date.fromisoformat(end_date) < date.fromisoformat(start_date):
             return {"ok": False, "error": "end_date is before start_date", "stock_entries": 0, "order_lines": 0}
+        chunks = _bi_sync_chunks(start_date, end_date)
     except ValueError as exc:
         return {"ok": False, "error": f"Invalid date: {exc}", "stock_entries": 0, "order_lines": 0}
 
     with _sync_lock:
         _sync_running = True
     try:
-        return _run_bi_sync_for_range(cfg, start_date, start_date, end_date, on_status)
+        total_stock_entries = 0
+        total_order_lines = 0
+        for i, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+            if len(chunks) > 1 and on_status:
+                on_status(f"Backfill part {i}/{len(chunks)}: {chunk_start}..{chunk_end}")
+            result = _run_bi_sync_for_range(cfg, chunk_start, chunk_start, chunk_end, on_status)
+            total_stock_entries += result.get("stock_entries", 0)
+            total_order_lines += result.get("order_lines", 0)
+            if not result.get("ok"):
+                error = result.get("error", "unknown error")
+                if len(chunks) > 1:
+                    error = f"Backfill stopped at part {i}/{len(chunks)} ({chunk_start}..{chunk_end}): {error}"
+                return {"ok": False, "stock_entries": total_stock_entries, "order_lines": total_order_lines, "error": error}
+        return {"ok": True, "stock_entries": total_stock_entries, "order_lines": total_order_lines, "error": ""}
     finally:
         _sync_running = False

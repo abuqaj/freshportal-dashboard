@@ -49,13 +49,18 @@ def _get_token(cfg: Config, force_refresh: bool = False) -> str:
 
 def get_export_url(cfg: Config, mutation_datetime: str) -> str:
     """GET /v2/export?mutation_datetime=YYYY-MM-DD — returns a presigned S3
-    URL (valid ~10 minutes) to a ZIP of every table mutated since that date."""
+    URL (valid ~10 minutes) to a ZIP of every table mutated since that date.
+
+    A wide "since" window means FreshPortal has to assemble a larger export
+    before it can respond, so this can legitimately take longer than a
+    routine call — 60s rather than 30s (bumped alongside the range-backfill
+    chunking fix, 2026-09-03)."""
     url = f"{cfg.bi_sync_api_base_url}/v2/export"
     headers = {"Authorization": f"Bearer {_get_token(cfg)}"}
-    resp = httpx.get(url, headers=headers, params={"mutation_datetime": mutation_datetime}, timeout=30)
+    resp = httpx.get(url, headers=headers, params={"mutation_datetime": mutation_datetime}, timeout=60)
     if resp.status_code == 401:
         headers["Authorization"] = f"Bearer {_get_token(cfg, force_refresh=True)}"
-        resp = httpx.get(url, headers=headers, params={"mutation_datetime": mutation_datetime}, timeout=30)
+        resp = httpx.get(url, headers=headers, params={"mutation_datetime": mutation_datetime}, timeout=60)
     resp.raise_for_status()
     export_url = resp.json().get("export_url")
     if not export_url:
@@ -64,8 +69,11 @@ def get_export_url(cfg: Config, mutation_datetime: str) -> str:
 
 
 def download_export_zip(export_url: str) -> bytes:
-    """The export_url is a presigned S3 URL — no auth headers needed, just GET it."""
-    resp = httpx.get(export_url, timeout=120)
+    """The export_url is a presigned S3 URL — no auth headers needed, just
+    GET it. Bumped from 120s to 300s alongside the range-backfill chunking
+    fix (2026-09-03): a wide "since" window can still produce a sizable
+    zip even capped at a 6-month chunk."""
+    resp = httpx.get(export_url, timeout=300)
     resp.raise_for_status()
     return resp.content
 
