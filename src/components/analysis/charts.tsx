@@ -144,8 +144,17 @@ export function MultiLineChart({
   const axisLabel = xLabel ?? makeDayLabeller(allDays);
   const tooltipLabel = tipLabel ?? (xLabel ?? fullDay);
   const allValues = nonEmpty.flatMap(s => s.points.map(p => p.value));
-  const maxV = Math.max(...allValues);
-  const minV = Math.min(0, ...allValues);
+  const dataMax = Math.max(...allValues);
+  const dataMin = Math.min(...allValues);
+  // Fit the data rather than pinning the axis to zero. A line encodes
+  // position, not magnitude-from-baseline (unlike a bar, where a non-zero
+  // baseline lies), and forcing 0 into a price axis of $0.40–$0.55 squashed
+  // every series into a flat band near the top where no movement was
+  // readable. Zero is still included when the data itself sits near it, so
+  // volume-style series keep a natural floor (2026-09-03).
+  const pad = (dataMax - dataMin) * 0.08 || Math.abs(dataMax) * 0.1 || 1;
+  const maxV = dataMax + pad;
+  const minV = dataMin - pad <= 0 || dataMin < (dataMax - dataMin) * 0.5 ? Math.min(0, dataMin) : dataMin - pad;
   const range = maxV - minV || 1;
 
   const width = 1000;

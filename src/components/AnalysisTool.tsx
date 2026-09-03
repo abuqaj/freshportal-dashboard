@@ -269,9 +269,21 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     if (ids.length) setPrimaryId(prev => (prev && !ids.includes(prev)) ? "" : prev);
   }, [viewMode, suppliers, products]);
   useEffect(() => { setSalesLength(""); }, [primaryId]);
+  // Drop a length that the (date-scoped) list no longer offers — otherwise
+  // narrowing the dates leaves a stale filter selected and the chart comes
+  // back empty with no visible reason.
+  useEffect(() => {
+    const ls = salesLengths?.lengths;
+    if (!ls) return;
+    setSalesLength(prev => (prev && !ls.includes(Number(prev)) ? "" : prev));
+  }, [salesLengths]);
 
+  // Date-scoped: offering a length that only sold outside the active range
+  // would render an empty chart with nothing explaining why.
   const { data: salesLengths } = useFetch<{ lengths: number[] }>(
-    viewMode === "product" && primaryId ? api("/bi-sync/product-lengths", { product_id: primaryId }) : null);
+    viewMode === "product" && primaryId
+      ? api("/bi-sync/product-lengths", { product_id: primaryId, start_date: startDate, end_date: endDate })
+      : null, refreshTick);
 
   // No selection yet -> a top-N overview rather than a blank panel.
   const salesUrl = primaryId
@@ -317,7 +329,15 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
   const suppliersActive = tab === "suppliers";
   const { data: analysisLengths } = useFetch<{ lengths: number[] }>(
-    suppliersActive && analysisProductId ? api("/bi-sync/product-lengths", { product_id: analysisProductId }) : null);
+    suppliersActive && analysisProductId
+      ? api("/bi-sync/product-lengths", { product_id: analysisProductId, start_date: startDate, end_date: endDate })
+      : null, refreshTick);
+  // Same stale-filter guard as the sales tab's length select.
+  useEffect(() => {
+    const ls = analysisLengths?.lengths;
+    if (!ls) return;
+    setComparisonLength(prev => (prev && !ls.includes(Number(prev)) ? "" : prev));
+  }, [analysisLengths]);
   const { data: comparisonData, loading: comparisonLoading } = useFetch<{ points: SupplierPricePoint[] }>(
     suppliersActive && analysisProductId
       ? api("/bi-sync/supplier-price-comparison", { product_id: analysisProductId, start_date: startDate, end_date: endDate, length: comparisonLength })
@@ -562,11 +582,23 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                   categories={lengthCats}
                   series={[
                     { key: "sale", label: "Cena sprzedaży", values: lengthPoints.map(p => p.avg_price) },
-                    { key: "cost", label: "Cena zakupu towaru", values: lengthPoints.map(p => p.avg_supplier_price) },
+                    // Only offered when at least one length actually has a
+                    // purchase price. supplier_price can be entirely absent
+                    // from the export, and an all-null series would still
+                    // claim a legend entry and a color while drawing nothing.
+                    ...(lengthPoints.some(p => p.avg_supplier_price != null)
+                      ? [{ key: "cost", label: "Cena zakupu towaru", values: lengthPoints.map(p => p.avg_supplier_price) }]
+                      : []),
                   ]}
                   formatValue={fmtPrice}
                   height={280}
                 />
+                {!lengthPoints.some(p => p.avg_supplier_price != null) && !!lengthPoints.length && (
+                  <p className="text-xs text-ink-3">
+                    Brak ceny zakupu w danych — eksport nie zwrócił <code className="font-mono">supplier_price</code> dla
+                    żadnej linii tego produktu, więc pokazana jest tylko cena sprzedaży.
+                  </p>
+                )}
                 <p className="text-xs text-ink-3 pt-2 border-t border-border">
                   Świadomie <strong>nie</strong> ma tu wykresu marży. Różnica między tymi słupkami to narzut na samym
                   towarze, a nie marża — pełny koszt zawiera jeszcze prowizje i handling z tabeli
@@ -681,7 +713,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
           <Card
             title="Wahania cen (volatility) dostawcy"
-            hint="Współczynnik zmienności (odchylenie standardowe / średnia) ceny sprzedaży, w %. Liczony osobno dla każdej pary dostawca–produkt i dopiero potem uśredniany — inaczej mierzyłby asortyment (róże vs piwonie), a nie stabilność cen. Wyżej = mniej przewidywalny."
+            hint="Współczynnik zmienności (odchylenie standardowe / średnia) ceny sprzedaży, w %. Liczony osobno dla każdej pary dostawca–produkt i dopiero potem uśredniany — inaczej mierzyłby asortyment (róże vs piwonie), a nie stabilność cen. Wyżej = mniej przewidywalny. Wariancja wymaga co najmniej 3 linii na produkt, więc dostawcy z pojedynczymi transakcjami nie mogą się tu pojawić — ilu ich było, pisze pod wykresem."
           >
             <Loading when={volatilityLoading} />
             <HBarChart
@@ -702,7 +734,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
           <Card
             title="Odchylenia od średniej rynkowej"
-            hint="O ile % dostawca jest droższy/tańszy od średniej dla tego samego produktu i tej samej długości w tym samym okresie. Porównanie liczone per linia, więc różnice asortymentu się nie przenoszą na wynik."
+            hint="O ile % dostawca jest droższy/tańszy od średniej dla tego samego produktu i tej samej długości w tym samym okresie. Porównanie liczone per linia, więc różnice asortymentu się nie przenoszą na wynik. „Rynek" to tu wyłącznie nasi właśni dostawcy w tym zakresie dat — nie zewnętrzny benchmark — więc przy jednym dostawcy odchylenie z definicji wyjdzie 0%."
           >
             <Loading when={deviationLoading} />
             <DivergingBarChart

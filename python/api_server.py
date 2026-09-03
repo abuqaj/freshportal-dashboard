@@ -710,10 +710,11 @@ def bi_sync_run_range(
     end_date: str,
     _: dict = Depends(require_permission("admin:manage")),
 ):
-    """Backfill every day in [start_date, end_date] sequentially (non-blocking)
-    — one export pull per day, since order_lines is scoped to exactly one
-    creation day per run. Avoids clicking "Run BI sync" once per day when
-    catching up several weeks of history."""
+    """Backfill [start_date, end_date] (non-blocking). Split into <=6-month
+    windows, each ONE export pull anchored at that window's start, with
+    order_lines filtered locally by creation date. Not one pull per day —
+    mutation_datetime is a "since" cursor, so per-day pulls re-downloaded
+    almost the same export N times (see bi_sync.py's module docstring)."""
     if is_bi_sync_running():
         raise HTTPException(409, "BI sync already running")
     cfg = Config()
@@ -761,10 +762,18 @@ def bi_sync_products(
 
 
 @app.get("/bi-sync/product-lengths")
-def bi_sync_product_lengths(product_id: str, _: dict = Depends(require_permission("admin:manage"))):
+def bi_sync_product_lengths(
+    product_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
     """Lengths available for one product — the optional refinement dropdown
-    in the "by product" sales chart."""
-    return {"lengths": get_bi_lengths_for_product(product_id)}
+    in the "by product" sales chart. Pass start_date/end_date so the list
+    only offers lengths that actually sold in the active range — omitting
+    them offered every length ever sold, and picking one outside the
+    current range produced a silent empty chart."""
+    return {"lengths": get_bi_lengths_for_product(product_id, start_date, end_date)}
 
 
 @app.get("/bi-sync/suppliers")
@@ -846,8 +855,10 @@ def bi_sync_price_vs_length(
     supplier_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
-    """Cena vs długość łodygi — avg sale price, purchase price and margin
-    per length (bar-chart shaped, x = length)."""
+    """Cena vs długość łodygi — avg sale price and goods purchase price per
+    length (bar-chart shaped, x = length). NOT margin: real cost also
+    carries commission/handling from customer_stock_item_commission, which
+    isn't ingested — see get_bi_price_vs_length."""
     return get_bi_price_vs_length(product_id, start_date, end_date, supplier_id)
 
 
@@ -923,7 +934,8 @@ def bi_sync_event_impact(
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Wpływ świąt/wydarzeń — volume and price lift (%) during each event's
-    selling window vs that year's non-event baseline."""
+    selling window vs a LOCAL baseline (non-event days within +/-45 days of
+    the window), not that year's overall average."""
     return get_bi_event_impact(product_id)
 
 

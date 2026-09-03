@@ -2089,23 +2089,33 @@ def get_bi_products_only_picker(
         return []
 
 
-def get_bi_lengths_for_product(product_id: str) -> list[int]:
+def get_bi_lengths_for_product(product_id: str, start_date: str | None = None, end_date: str | None = None) -> list[int]:
     """Distinct lengths actually SOLD for one product — populates the length
     refinement dropdown.
 
     Reads bi_order_lines, not bi_stock_entry_dim: the dim holds only
     offer/limited-offer lots (type 4/5), which is the wrong population for a
     filter that narrows sold lines, and would offer lengths that have no
-    sales behind them (fixed 2026-09-03)."""
+    sales behind them (fixed 2026-09-03).
+
+    Scoped to [start_date, end_date] when given — otherwise this offered
+    every length ever sold regardless of the active date range, so picking
+    one that only sold outside the current range silently produced an
+    empty chart with no indication why (found 2026-09-03, same class of
+    bug as the picker row_counts needing date scoping on 2026-09-02)."""
     try:
         ensure_bi_tables()
+        date_clause = "AND creation_date_time::date BETWEEN %s AND %s" if start_date and end_date else ""
+        params: list = [product_id]
+        if start_date and end_date:
+            params += [start_date, end_date]
         with _conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT DISTINCT length FROM bi_order_lines
-                    WHERE product_id = %s AND length IS NOT NULL
+                    WHERE product_id = %s AND length IS NOT NULL {date_clause}
                     ORDER BY length
-                """, (product_id,))
+                """, params)
                 return [r[0] for r in cur.fetchall()]
     except Exception as exc:
         logger.warning("get_bi_lengths_for_product: %s", exc)
@@ -2150,7 +2160,8 @@ def get_bi_sales_by_supplier(supplier_id: str, start_date: str, end_date: str, m
                 cur.execute("""
                     SELECT product_id, COUNT(*) AS cnt
                     FROM bi_order_lines
-                    WHERE supplier_id = %s AND creation_date_time::date BETWEEN %s AND %s
+                    WHERE supplier_id = %s AND product_id IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
                     GROUP BY product_id
                     ORDER BY cnt DESC
                     LIMIT %s
@@ -2321,9 +2332,10 @@ def get_bi_sales_overview(start_date: str, end_date: str, group_by: str = "suppl
 # Analysis Tool — "Cena i rentowność" / "Dostawcy" / "Sezonowość i popyt"
 # (2026-09-03). All of these read realized SALE price (bi_order_lines.
 # store_price, customer 12/OZEDS only), not the offer/listing price —
-# established with the user 2026-09-02. supplier_price is the matching
-# purchase price on the same line, so margin is a real computed figure
-# rather than an estimate.
+# established with the user 2026-09-02. supplier_price is the GOODS
+# purchase price on the same line, not full cost: commission and handling
+# live in customer_stock_item_commission (rows with cost = 1), which isn't
+# ingested, so nothing here may be presented as margin (user 2026-09-03).
 #
 # Deliberately NOT all time series: length is an ordinal dimension, an
 # elasticity curve is a scatter, and a supplier ranking is a sorted bar.
@@ -2623,20 +2635,27 @@ def get_bi_supplier_volatility(
                 """, total_params)
                 total_suppliers = cur.fetchone()["n"] or 0
 
+        points = [
+            {
+                "supplier_id": r["supplier_id"],
+                "name": r["name"],
+                "cv_pct": round(float(r["cv_pct"]), 2) if r["cv_pct"] is not None else None,
+                "avg_price": round(float(r["avg_price"]), 4) if r["avg_price"] is not None else None,
+                "line_count": int(r["line_count"]),
+                "product_count": r["product_count"],
+            }
+            for r in rows[:limit]
+        ]
         return {
-            "points": [
-                {
-                    "supplier_id": r["supplier_id"],
-                    "name": r["name"],
-                    "cv_pct": round(float(r["cv_pct"]), 2) if r["cv_pct"] is not None else None,
-                    "avg_price": round(float(r["avg_price"]), 4) if r["avg_price"] is not None else None,
-                    "line_count": int(r["line_count"]),
-                    "product_count": r["product_count"],
-                }
-                for r in rows[:limit]
-            ],
+            "points": points,
             "total_suppliers": total_suppliers,
-            "excluded": max(0, total_suppliers - len(rows)),
+            # Against len(points), not len(rows): `rows` is every supplier
+            # that PASSED the min_lines/per-pair thresholds, before the
+            # display cap. Comparing against the pre-cap count understated
+            # what's actually hidden whenever more suppliers qualified than
+            # `limit` — "shown N of M, excluded K" wouldn't sum to M
+            # (found 2026-09-03).
+            "excluded": max(0, total_suppliers - len(points)),
         }
     except Exception as exc:
         logger.warning("get_bi_supplier_volatility: %s", exc)
@@ -2715,20 +2734,23 @@ def get_bi_supplier_market_deviation(
                 """, total_params)
                 total_suppliers = cur.fetchone()["n"] or 0
 
+        points = [
+            {
+                "supplier_id": r["supplier_id"],
+                "name": r["name"],
+                "deviation_pct": round(float(r["deviation_pct"]), 2),
+                "avg_price": round(float(r["avg_price"]), 4),
+                "market_price": round(float(r["market_price"]), 4),
+                "line_count": r["line_count"],
+            }
+            for r in rows[:limit]
+        ]
         return {
-            "points": [
-                {
-                    "supplier_id": r["supplier_id"],
-                    "name": r["name"],
-                    "deviation_pct": round(float(r["deviation_pct"]), 2),
-                    "avg_price": round(float(r["avg_price"]), 4),
-                    "market_price": round(float(r["market_price"]), 4),
-                    "line_count": r["line_count"],
-                }
-                for r in rows[:limit]
-            ],
+            "points": points,
             "total_suppliers": total_suppliers,
-            "excluded": max(0, total_suppliers - len(rows)),
+            # See the matching comment in get_bi_supplier_volatility — must
+            # compare against the post-limit count actually shown.
+            "excluded": max(0, total_suppliers - len(points)),
         }
     except Exception as exc:
         logger.warning("get_bi_supplier_market_deviation: %s", exc)
