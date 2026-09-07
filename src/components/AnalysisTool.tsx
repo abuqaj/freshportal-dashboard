@@ -419,6 +419,12 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
           if (!row) return null;
           return eventMetric === "quantity" ? row.volume_lift_pct : row.price_lift_pct;
         }),
+        // How much data each bar rests on — a striking lift computed from a
+        // handful of covered days deserves to be read with suspicion.
+        meta: events.map(e => {
+          const row = e.years.find(y => y.year === year);
+          return row ? t.eventCoverage(String(row.event_days), String(row.baseline_days)) : null;
+        }),
       })),
     };
   }, [eventData, eventMetric, t]);

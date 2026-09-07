@@ -2829,6 +2829,23 @@ _BI_EVENTS: list[tuple[str, tuple[int, int], tuple[int, int]]] = [
     ("christmas", (12, 1), (12, 20)),
 ]
 
+# Periods that are not charted as events but must never count as "ordinary"
+# days in a baseline. New Year is a major flower peak sitting 45 days before
+# the Valentine's window, so without this it inflated the Valentine's
+# reference and pushed a real peak into negative territory (2026-09-07).
+# This range wraps across the year boundary — see _in_md_range.
+_BI_BASELINE_EXCLUDE: list[tuple[tuple[int, int], tuple[int, int]]] = [
+    ((12, 21), (1, 6)),
+]
+
+
+def _in_md_range(d: date, start: tuple[int, int], end: tuple[int, int]) -> bool:
+    """Month/day membership that also handles ranges wrapping past 31 Dec.
+    A plain `start <= md <= end` silently matches nothing for a wrapping
+    range like 21 Dec – 6 Jan, because (12, 21) <= (1, 6) is false."""
+    md = (d.month, d.day)
+    return start <= md <= end if start <= end else (md >= start or md <= end)
+
 
 def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) -> dict:
     """Wpływ świąt/wydarzeń — volume and price during each event's selling
@@ -2877,11 +2894,14 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) 
             for r in rows
         }
 
-        def in_any_event(d: date) -> bool:
-            """Month/day test, so it holds for every year — keeps one event's
-            window out of a neighbouring event's baseline (Christmas + 45
-            days would otherwise swallow the next year's Valentine's)."""
-            return any(start <= (d.month, d.day) <= end for _, start, end in _BI_EVENTS)
+        def is_ordinary_day(d: date) -> bool:
+            """A day that may serve as a baseline reference: neither inside
+            another event's window (Christmas + 45 days would otherwise
+            swallow the next year's Valentine's) nor inside a known non-event
+            peak such as New Year. Month/day based, so it holds for any year."""
+            if any(_in_md_range(d, start, end) for _, start, end in _BI_EVENTS):
+                return False
+            return not any(_in_md_range(d, start, end) for start, end in _BI_BASELINE_EXCLUDE)
 
         def median(vals: list[float | None]) -> float | None:
             """The TYPICAL day, not the average one. A mean baseline is pulled
@@ -2910,7 +2930,7 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) 
                 base_days = [
                     d for d in by_day
                     if win_start - timedelta(days=baseline_days) <= d <= win_end + timedelta(days=baseline_days)
-                    and not in_any_event(d)
+                    and is_ordinary_day(d)
                 ]
                 # Too little coverage on either side to say anything honest.
                 if len(ev_days) < 5 or len(base_days) < 15:

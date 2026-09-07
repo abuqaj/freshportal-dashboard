@@ -616,6 +616,7 @@ const en = {
     eventsWindows:       "flowers for 14 February sell in the preceding two weeks, so the window is 25 January – 11 February, not 14 February itself.",
     eventsBaselineLabel: "Reference point:",
     eventsBaseline:      "ordinary days within 45 days of the window, excluding other holidays. We previously compared against the whole-year average — hence the absurd −63% on Valentine's: the annual average is inflated by months the backfill covers better, so a real peak came out as a drop. A year with incomplete data in a given window is skipped rather than shown as zero.",
+    eventCoverage: (ev: string, base: string) => `based on ${ev} covered day(s) in the window vs ${base} ordinary day(s)`,
     forecastTitle:       "Demand forecast",
     forecastBody:        "Deliberately not built yet. A sensible seasonal forecast needs at least two full yearly cycles and the backfill is currently incomplete — a chart on this data would look credible and be invented. We will come back to it once the history is complete; the natural first step is then seasonal-naive (the same week a year ago, adjusted for the year-on-year trend) as a baseline.",
 
@@ -1222,6 +1223,7 @@ const nl: typeof en = {
     eventsWindows:       "bloemen voor 14 februari worden in de twee weken ervoor verkocht, dus het venster is 25 januari – 11 februari en niet 14 februari zelf.",
     eventsBaselineLabel: "Referentiepunt:",
     eventsBaseline:      "gewone dagen binnen 45 dagen rond het venster, met uitsluiting van andere feestdagen. Eerder vergeleken we met het jaargemiddelde — vandaar de absurde −63% bij Valentijn: het jaargemiddelde wordt opgeblazen door maanden die de backfill beter dekt, waardoor een echte piek als daling uitkwam. Een jaar met onvolledige data in een venster wordt overgeslagen in plaats van als nul getoond.",
+    eventCoverage: (ev: string, base: string) => `op basis van ${ev} gedekte dag(en) in het venster vs ${base} gewone dag(en)`,
     forecastTitle:       "Vraagvoorspelling",
     forecastBody:        "Bewust nog niet gebouwd. Een zinnige seizoensvoorspelling heeft minstens twee volledige jaarcycli nodig en de backfill is nu incompleet — een grafiek op deze data zou geloofwaardig ogen en verzonnen zijn. We pakken dit op zodra de historie compleet is; de logische eerste stap is dan seasonal-naive (dezelfde week een jaar geleden, gecorrigeerd voor de jaar-op-jaartrend) als referentie.",
 
@@ -1827,6 +1829,7 @@ const pl: typeof en = {
     eventsWindows:       "kwiaty na 14 lutego sprzedają się w poprzedzających dwóch tygodniach, więc okno to 25 stycznia – 11 lutego, a nie sam 14 lutego.",
     eventsBaselineLabel: "Punkt odniesienia:",
     eventsBaseline:      "zwykłe dni w promieniu 45 dni od okna, z wykluczeniem innych świąt. Wcześniej porównywaliśmy do średniej z całego roku — stąd absurdalne −63% na Walentynki: średnia roczna jest zawyżana przez miesiące lepiej pokryte backfillem, więc realny szczyt wychodził na spadek. Rok z niepełnymi danymi w danym oknie jest pomijany, a nie pokazywany jako zero.",
+    eventCoverage: (ev: string, base: string) => `na podstawie ${ev} pokrytych dni w oknie vs ${base} zwykłych dni`,
     forecastTitle:       "Prognoza popytu",
     forecastBody:        "Celowo jeszcze nie zbudowana. Sensowna prognoza sezonowa potrzebuje co najmniej dwóch pełnych cykli rocznych, a backfill jest w tej chwili niekompletny — wykres na tych danych wyglądałby wiarygodnie i byłby zmyślony. Wrócimy do tego po dociągnięciu historii; wtedy naturalnym pierwszym krokiem jest seasonal-naive (ten sam tydzień rok temu skorygowany o trend r/r) jako punkt odniesienia.",
 
@@ -2432,6 +2435,7 @@ const es: typeof en = {
     eventsWindows:       "las flores para el 14 de febrero se venden en las dos semanas previas, así que la ventana es del 25 de enero al 11 de febrero, no el 14 de febrero en sí.",
     eventsBaselineLabel: "Punto de referencia:",
     eventsBaseline:      "días normales dentro de los 45 días alrededor de la ventana, excluyendo otros festivos. Antes comparábamos con la media de todo el año — de ahí el absurdo −63% en San Valentín: la media anual se infla por los meses que el backfill cubre mejor, así que un pico real salía como caída. Un año con datos incompletos en una ventana se omite en lugar de mostrarse como cero.",
+    eventCoverage: (ev: string, base: string) => `basado en ${ev} día(s) cubierto(s) en la ventana vs ${base} día(s) normal(es)`,
     forecastTitle:       "Previsión de demanda",
     forecastBody:        "Deliberadamente aún no construida. Una previsión estacional sensata necesita al menos dos ciclos anuales completos y el backfill está ahora incompleto — un gráfico con estos datos parecería creíble y sería inventado. Volveremos a ello cuando el histórico esté completo; el primer paso natural será entonces seasonal-naive (la misma semana del año pasado, ajustada por la tendencia interanual) como referencia.",
 

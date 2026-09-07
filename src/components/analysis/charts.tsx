@@ -365,13 +365,15 @@ export function GroupedBarChart({
   emptyText,
 }: {
   categories: string[];
-  series: { key: string; label: string; values: (number | null)[] }[];
+  /** `meta` is an optional per-bar note shown in the tooltip — used to state
+   *  how much data a figure rests on, so a striking number can be judged. */
+  series: { key: string; label: string; values: (number | null)[]; meta?: (string | null)[] }[];
   height?: number;
   formatValue?: (v: number | null | undefined) => string;
   showValueLabels?: boolean;
   emptyText?: string;
 }) {
-  const [hover, setHover] = useState<{ x: number; y: number; cat: string; label: string; value: number } | null>(null);
+  const [hover, setHover] = useState<{ x: number; y: number; cat: string; label: string; value: number; meta?: string | null } | null>(null);
   const all = series.flatMap(s => s.values).filter((v): v is number => v != null);
   if (!categories.length || !all.length) return <Empty text={emptyText} />;
 
@@ -388,7 +390,6 @@ export function GroupedBarChart({
 
   const groupW = plotW / categories.length;
   const innerW = groupW * 0.72;
-  const barW = innerW / series.length;
 
   const yTickCount = 6;
   const yTicks = Array.from({ length: yTickCount }, (_, i) => minV + (range * i) / (yTickCount - 1));
@@ -406,17 +407,24 @@ export function GroupedBarChart({
         {minV < 0 && <line x1={padL} x2={width - padR} y1={zeroY} y2={zeroY} stroke="currentColor" className="text-ink-3" strokeWidth={1.5} />}
         {categories.map((cat, ci) => {
           const groupCenter = padL + groupW * (ci + 0.5);
+          // Lay out only the series that actually have a value here, so a
+          // category covered by one year alone renders centred instead of
+          // offset to wherever that series happens to sit in the legend.
+          // Colour still follows the series index, so a year keeps its
+          // identity across groups (2026-09-07).
+          const present = series
+            .map((s, si) => ({ s, si, v: s.values[ci], meta: s.meta?.[ci] ?? null }))
+            .filter((e): e is { s: typeof series[number]; si: number; v: number; meta: string | null } => e.v != null);
+          const barW = innerW / Math.max(1, present.length);
           return (
             <g key={cat}>
-              {series.map((s, si) => {
-                const v = s.values[ci];
-                if (v == null) return null;
-                const x = groupCenter - innerW / 2 + si * barW;
-                const y = v >= 0 ? yFor(v) : zeroY;
-                const h = Math.max(1, Math.abs(yFor(v) - zeroY));
-                const color = LINE_COLORS[si % LINE_COLORS.length];
+              {present.map((e, idx) => {
+                const x = groupCenter - innerW / 2 + idx * barW;
+                const y = e.v >= 0 ? yFor(e.v) : zeroY;
+                const h = Math.max(1, Math.abs(yFor(e.v) - zeroY));
+                const color = LINE_COLORS[e.si % LINE_COLORS.length];
                 return (
-                  <g key={s.key}>
+                  <g key={e.s.key}>
                     <rect
                       x={x + 1}
                       y={y}
@@ -427,18 +435,18 @@ export function GroupedBarChart({
                       stroke="var(--color-surface, #fff)"
                       strokeWidth={1}
                       pointerEvents="all"
-                      onMouseEnter={() => setHover({ x: x + barW / 2, y, cat, label: s.label, value: v })}
+                      onMouseEnter={() => setHover({ x: x + barW / 2, y, cat, label: e.s.label, value: e.v, meta: e.meta })}
                       onMouseLeave={() => setHover(null)}
                     />
                     {labelsFit && (
                       <text
                         x={x + barW / 2}
-                        y={v >= 0 ? y - 4 : y + h + 11}
+                        y={e.v >= 0 ? y - 4 : y + h + 11}
                         fontSize={9}
                         textAnchor="middle"
                         className="fill-ink-3"
                       >
-                        {formatValue(v)}
+                        {formatValue(e.v)}
                       </text>
                     )}
                   </g>
@@ -453,6 +461,7 @@ export function GroupedBarChart({
         <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
           <div className="font-semibold">{hover.cat}</div>
           <div>{hover.label}: {formatValue(hover.value)}</div>
+          {hover.meta && <div className="opacity-75">{hover.meta}</div>}
         </Tip>
       )}
       {series.length > 1 && (
