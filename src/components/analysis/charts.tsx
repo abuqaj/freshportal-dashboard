@@ -16,49 +16,54 @@ export const COLOR_ABOVE = "#B03A2B";  // above market = expensive
 export const COLOR_BELOW = "#1A7D45";  // below market = cheap
 export const COLOR_NEUTRAL = "#8E8B81";
 
-const MONTHS_PL = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"];
-
-export function shortDay(iso: string): string {
+// Every user-visible word in this module arrives as a prop — the chart
+// primitives have no access to `lang`, so hardcoding copy here would make
+// the module untranslatable. `locale` is a BCP-47 tag used for date and
+// number formatting, so dates don't render in the browser's language while
+// the rest of the UI is in the user's (2026-09-07).
+export function shortDay(iso: string, locale?: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return d.toLocaleDateString(locale, { month: "short", day: "numeric" });
 }
 
 /** Full date including the year — always used in tooltips, where there is
  *  room and ambiguity is unacceptable. */
-export function fullDay(iso: string): string {
+export function fullDay(iso: string, locale?: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
 }
 
 /** Axis labeller chosen from the actual span of the data: past roughly a
- *  year, "3 wrz" is ambiguous across years and day-level precision is
- *  meaningless at that zoom, so switch to month + year (2026-09-03). */
-function makeDayLabeller(days: string[]): (iso: string) => string {
-  if (days.length < 2) return shortDay;
+ *  year, a bare day+month is ambiguous across years and day-level precision
+ *  is meaningless at that zoom, so switch to month + year (2026-09-03). */
+function makeDayLabeller(days: string[], locale?: string): (iso: string) => string {
+  const short = (iso: string) => shortDay(iso, locale);
+  if (days.length < 2) return short;
   const first = new Date(days[0]).getTime();
   const last = new Date(days[days.length - 1]).getTime();
-  if (isNaN(first) || isNaN(last)) return shortDay;
+  if (isNaN(first) || isNaN(last)) return short;
   const spanDays = (last - first) / 86_400_000;
-  if (spanDays <= 300) return shortDay;
+  if (spanDays <= 300) return short;
   return (iso: string) => {
     const d = new Date(iso);
-    return isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+    return isNaN(d.getTime()) ? iso : d.toLocaleDateString(locale, { month: "short", year: "numeric" });
   };
 }
 
-/** "1".."12" -> "sty".."gru" — x-axis labels for the seasonality chart. */
-export function monthLabel(m: string): string {
-  return MONTHS_PL[Number(m) - 1] ?? m;
+/** Build a "01".."12" -> localized month-abbreviation labeller from the
+ *  caller's translated month names. */
+export function makeMonthLabel(months: string[]): (m: string) => string {
+  return (m: string) => months[Number(m) - 1] ?? m;
 }
 
 export function fmtPrice(v: number | null | undefined): string {
   return v == null ? "—" : `$${v.toFixed(3)}`;
 }
 
-export function fmtNum(v: number | null | undefined): string {
-  return v == null ? "—" : Math.round(v).toLocaleString();
+export function fmtNum(v: number | null | undefined, locale?: string): string {
+  return v == null ? "—" : Math.round(v).toLocaleString(locale);
 }
 
 export function fmtPct(v: number | null | undefined): string {
@@ -77,8 +82,8 @@ export interface Series {
   points: SeriesPoint[];
 }
 
-function Empty({ text = "Brak danych w tym zakresie" }: { text?: string }) {
-  return <p className="text-xs text-ink-3 px-1 py-10 text-center">{text}</p>;
+function Empty({ text }: { text?: string }) {
+  return <p className="text-xs text-ink-3 px-1 py-10 text-center">{text ?? ""}</p>;
 }
 
 /** Absolutely-positioned tooltip; coordinates are % of the chart box so it
@@ -125,6 +130,9 @@ export function MultiLineChart({
   tipLabel,
   formatValue = fmtPrice,
   showQuantity = true,
+  locale,
+  emptyText,
+  soldLabel,
 }: {
   series: Series[];
   highlightKey?: string;
@@ -135,14 +143,18 @@ export function MultiLineChart({
   tipLabel?: (v: string) => string;
   formatValue?: (v: number | null | undefined) => string;
   showQuantity?: boolean;
+  locale?: string;
+  emptyText?: string;
+  /** Translated "{n} boxes sold" line in the tooltip. */
+  soldLabel?: (n: string) => string;
 }) {
   const [hover, setHover] = useState<{ x: number; y: number; series: Series; point: SeriesPoint } | null>(null);
   const nonEmpty = series.filter(s => s.points.length > 0);
-  if (!nonEmpty.length) return <Empty />;
+  if (!nonEmpty.length) return <Empty text={emptyText} />;
 
   const allDays = Array.from(new Set(nonEmpty.flatMap(s => s.points.map(p => p.day)))).sort();
-  const axisLabel = xLabel ?? makeDayLabeller(allDays);
-  const tooltipLabel = tipLabel ?? (xLabel ?? fullDay);
+  const axisLabel = xLabel ?? makeDayLabeller(allDays, locale);
+  const tooltipLabel = tipLabel ?? xLabel ?? ((d: string) => fullDay(d, locale));
   const allValues = nonEmpty.flatMap(s => s.points.map(p => p.value));
   const dataMax = Math.max(...allValues);
   const dataMin = Math.min(...allValues);
@@ -238,7 +250,7 @@ export function MultiLineChart({
         <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
           <div className="font-semibold">{hover.series.label}</div>
           <div>{tooltipLabel(hover.point.day)} · {formatValue(hover.point.value)}</div>
-          {showQuantity && <div>{fmtNum(hover.point.quantity)} pudełek sprzedanych</div>}
+          {showQuantity && soldLabel && <div>{soldLabel(fmtNum(hover.point.quantity, locale))}</div>}
         </Tip>
       )}
       <Legend
@@ -262,16 +274,23 @@ export interface ScatterPoint {
 export function ScatterChart({
   points,
   height = 320,
-  xAxisLabel = "Średnia cena",
-  yAxisLabel = "Wolumen",
+  xAxisLabel,
+  yAxisLabel,
+  locale,
+  emptyText,
+  boxesLabel,
 }: {
   points: ScatterPoint[];
   height?: number;
   xAxisLabel?: string;
   yAxisLabel?: string;
+  locale?: string;
+  emptyText?: string;
+  /** Translated "{n} boxes" fragment in the tooltip. */
+  boxesLabel?: (n: string) => string;
 }) {
   const [hover, setHover] = useState<{ x: number; y: number; p: ScatterPoint } | null>(null);
-  if (!points.length) return <Empty />;
+  if (!points.length) return <Empty text={emptyText} />;
 
   const width = 1000;
   const padL = 62, padR = 16, padT = 16, padB = 42;
@@ -298,7 +317,7 @@ export function ScatterChart({
         {yTicks.map((v, i) => (
           <g key={i}>
             <line x1={padL} x2={width - padR} y1={yFor(v)} y2={yFor(v)} className="stroke-border" strokeWidth={1} />
-            <text x={2} y={yFor(v) + 3} fontSize={10} className="fill-ink-3">{fmtNum(v)}</text>
+            <text x={2} y={yFor(v) + 3} fontSize={10} className="fill-ink-3">{fmtNum(v, locale)}</text>
           </g>
         ))}
         {xTicks.map((v, i) => (
@@ -325,8 +344,8 @@ export function ScatterChart({
       </svg>
       {hover && (
         <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
-          <div className="font-semibold">{shortDay(hover.p.period)}</div>
-          <div>{fmtPrice(hover.p.price)} · {fmtNum(hover.p.quantity)} pudełek</div>
+          <div className="font-semibold">{shortDay(hover.p.period, locale)}</div>
+          <div>{fmtPrice(hover.p.price)}{boxesLabel ? ` · ${boxesLabel(fmtNum(hover.p.quantity, locale))}` : ""}</div>
         </Tip>
       )}
     </div>
@@ -343,16 +362,18 @@ export function GroupedBarChart({
   height = 300,
   formatValue = fmtPrice,
   showValueLabels = true,
+  emptyText,
 }: {
   categories: string[];
   series: { key: string; label: string; values: (number | null)[] }[];
   height?: number;
   formatValue?: (v: number | null | undefined) => string;
   showValueLabels?: boolean;
+  emptyText?: string;
 }) {
   const [hover, setHover] = useState<{ x: number; y: number; cat: string; label: string; value: number } | null>(null);
   const all = series.flatMap(s => s.values).filter((v): v is number => v != null);
-  if (!categories.length || !all.length) return <Empty />;
+  if (!categories.length || !all.length) return <Empty text={emptyText} />;
 
   const width = 1000;
   const padL = 56, padR = 12, padT = 20, padB = 40;
@@ -451,7 +472,8 @@ export function HBarChart({
   color = COLOR_BELOW,
   emptyText,
   valueHeader,
-  volumeHeader = "Pudełka",
+  volumeHeader,
+  locale,
 }: {
   points: { label: string; value: number; sublabel?: string; volume?: number }[];
   format?: (v: number | null | undefined) => string;
@@ -459,6 +481,7 @@ export function HBarChart({
   emptyText?: string;
   valueHeader?: string;
   volumeHeader?: string;
+  locale?: string;
 }) {
   if (!points.length) return <Empty text={emptyText} />;
   const max = Math.max(...points.map(p => Math.abs(p.value))) || 1;
@@ -478,7 +501,7 @@ export function HBarChart({
           <span />
           <span />
           <span className="text-right">{valueHeader ?? ""}</span>
-          {hasVolume && <span className="text-right min-w-[5.5rem]">{volumeHeader}</span>}
+          {hasVolume && <span className="text-right min-w-[5.5rem]">{volumeHeader ?? ""}</span>}
         </div>
       )}
       {points.map((p, i) => (
@@ -496,7 +519,7 @@ export function HBarChart({
           </span>
           {hasVolume && (
             <span className="text-ink tabular-nums whitespace-nowrap text-right min-w-[5.5rem]">
-              {fmtNum(p.volume)}
+              {fmtNum(p.volume, locale)}
             </span>
           )}
         </div>
@@ -513,8 +536,8 @@ export function DivergingBarChart({
   points,
   format = fmtPct,
   emptyText,
-  aboveLabel = "powyżej rynku",
-  belowLabel = "poniżej rynku",
+  aboveLabel,
+  belowLabel,
 }: {
   points: { label: string; value: number; sublabel?: string }[];
   format?: (v: number | null | undefined) => string;

@@ -2818,11 +2818,15 @@ def get_bi_seasonality(product_id: str | None = None) -> dict:
 # ordered and shipped in the preceding two weeks, so a window centred on the
 # holiday would miss the peak entirely. Fixed month/day ranges; the moving
 # feasts (Mother's Day) use their usual NL/DE early-May position.
+#
+# The first element is a stable, language-neutral KEY, not a display name:
+# these end up as chart category labels, and the UI is translated into four
+# languages, so the frontend maps the key to its own copy (2026-09-07).
 _BI_EVENTS: list[tuple[str, tuple[int, int], tuple[int, int]]] = [
-    ("Walentynki", (1, 25), (2, 11)),
-    ("Dzień Kobiet", (2, 26), (3, 6)),
-    ("Dzień Matki (NL/DE)", (4, 28), (5, 9)),
-    ("Boże Narodzenie", (12, 1), (12, 20)),
+    ("valentines", (1, 25), (2, 11)),
+    ("womens_day", (2, 26), (3, 6)),
+    ("mothers_day", (4, 28), (5, 9)),
+    ("christmas", (12, 1), (12, 20)),
 ]
 
 
@@ -2919,6 +2923,7 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) 
                     "baseline_days": len(base_days),
                 })
             if per_year:
+                # "event" is a translation key, not display copy — see _BI_EVENTS.
                 out.append({"event": name, "years": per_year})
 
         return {"events": out}

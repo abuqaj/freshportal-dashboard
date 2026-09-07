@@ -1,16 +1,20 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Lang } from "@/lib/i18n";
+import { useState, useEffect, useMemo, useCallback, useRef, type ReactNode } from "react";
+import { Lang, translations } from "@/lib/i18n";
 import {
   MultiLineChart, ScatterChart, GroupedBarChart, HBarChart, DivergingBarChart,
-  Series, ScatterPoint, fmtPrice, fmtNum, fmtPct, monthLabel,
+  Series, ScatterPoint, fmtPrice, fmtNum, fmtPct, makeMonthLabel,
   COLOR_ABOVE,
 } from "./analysis/charts";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
 const CTRL = "h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors";
+
+// BCP-47 tags for date/number formatting, so figures don't render in the
+// browser's language while the rest of the UI is in the user's (2026-09-07).
+const LOCALES: Record<Lang, string> = { en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" };
 
 interface BiStats {
   stock_entry_dim_count?: number;
@@ -81,6 +85,8 @@ interface ScopedResult<T> {
   excluded?: number;
 }
 
+type Copy = (typeof translations)["en"]["analysis"];
+
 type ViewMode = "supplier" | "product";
 type Tab = "sales" | "price" | "suppliers" | "seasonality";
 type Metric = "quantity" | "price";
@@ -125,7 +131,7 @@ function useFetch<T>(url: string | null, tick = 0): { data: T | null; loading: b
   return { data, loading };
 }
 
-function Card({ title, hint, children }: { title: string; hint?: React.ReactNode; children: React.ReactNode }) {
+function Card({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
   return (
     <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
       <div>
@@ -137,21 +143,25 @@ function Card({ title, hint, children }: { title: string; hint?: React.ReactNode
   );
 }
 
-function Loading({ when }: { when: boolean }) {
-  return when ? <p className="text-xs text-ink-3">Ładowanie…</p> : null;
+function Loading({ when, text }: { when: boolean; text: string }) {
+  return when ? <p className="text-xs text-ink-3">{text}</p> : null;
 }
 
 /** Plain-language reading of the price/volume correlation — the number alone
  *  invites over-reading a weak signal as a demand curve. */
-function elasticityVerdict(c: number | null): string {
-  if (c == null) return "Za mało punktów, żeby cokolwiek policzyć.";
-  if (c <= -0.5) return "Silna ujemna zależność — popyt wyraźnie reaguje na cenę.";
-  if (c <= -0.2) return "Umiarkowana ujemna zależność — cena ma widoczny, ale nie dominujący wpływ.";
-  if (c < 0.2) return "Brak wyraźnej zależności — wolumen w tym okresie nie idzie za ceną.";
-  return "Zależność dodatnia — droższe okresy to zarazem większy wolumen, co zwykle znaczy sezon (Walentynki itp.), a nie elastyczność.";
+function elasticityVerdict(c: number | null, t: Copy): string {
+  if (c == null) return t.verdictTooFew;
+  if (c <= -0.5) return t.verdictStrongNeg;
+  if (c <= -0.2) return t.verdictModNeg;
+  if (c < 0.2) return t.verdictNone;
+  return t.verdictPos;
 }
 
-export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
+export default function AnalysisTool({ lang }: { lang: Lang }) {
+  const t = translations[lang].analysis;
+  const locale = LOCALES[lang];
+  const monthLbl = useMemo(() => makeMonthLabel(t.months), [t]);
+
   const [tab, setTab] = useState<Tab>("sales");
 
   // ── Data pipeline ───────────────────────────────────────────────────────
@@ -188,7 +198,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   // Sync just finished -> refresh everything downstream once.
   const prevRunning = usePrevious(serverRunning);
   useEffect(() => {
-    if (prevRunning && !serverRunning) setRefreshTick(t => t + 1);
+    if (prevRunning && !serverRunning) setRefreshTick(n => n + 1);
   }, [prevRunning, serverRunning]);
 
   async function runBiSync() {
@@ -221,10 +231,9 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   // other tab's selection.
   const [analysisProductId, setAnalysisProductId] = useState("");
   // Keep the selection only while it's still in the (date-filtered) list,
-  // otherwise fall to the top seller. The old version cleared an invalid
-  // selection to "" and then never re-selected, because the effect doesn't
-  // re-run until `products` changes again — leaving the picker blank after
-  // narrowing the date range (fixed 2026-09-03).
+  // otherwise fall to the top seller. Clearing to "" without re-selecting
+  // left the picker blank after narrowing the date range, because the effect
+  // doesn't re-run until `products` changes again (fixed 2026-09-03).
   useEffect(() => {
     setAnalysisProductId(prev =>
       prev && products.some(p => p.product_id === prev) ? prev : (products[0]?.product_id ?? ""));
@@ -237,7 +246,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
   const productPicker = (
     <select value={analysisProductId} onChange={e => setAnalysisProductId(e.target.value)} className={`${CTRL} max-w-md`}>
-      <option value="">— wybierz produkt —</option>
+      <option value="">{t.selectProduct}</option>
       {products.map(p => (
         <option key={p.product_id} value={p.product_id}>{p.description || p.product_id} ({p.row_count})</option>
       ))}
@@ -247,17 +256,17 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   const dateRange = (
     <>
       <div>
-        <label className="block text-[11px] text-ink-3 mb-1">Od</label>
+        <label className="block text-[11px] text-ink-3 mb-1">{t.dateFrom}</label>
         <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className={CTRL} />
       </div>
       <div>
-        <label className="block text-[11px] text-ink-3 mb-1">do</label>
+        <label className="block text-[11px] text-ink-3 mb-1">{t.dateTo}</label>
         <input type="date" value={endDate} min={startDate} onChange={e => setEndDate(e.target.value)} className={CTRL} />
       </div>
     </>
   );
 
-  // ── Tab: Sprzedaż ───────────────────────────────────────────────────────
+  // ── Tab: Sales ──────────────────────────────────────────────────────────
   const [viewMode, setViewMode] = useState<ViewMode>("supplier");
   const [primaryId, setPrimaryId] = useState("");
   const [highlightKey, setHighlightKey] = useState("");
@@ -314,7 +323,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   const others = highlighted ? salesSeries.filter(s => s.key !== highlightKey).slice(0, 3) : salesSeries.slice(0, 5);
   const displaySeries = highlighted ? [...others, highlighted] : others;
 
-  // ── Tab: Cena i rentowność ──────────────────────────────────────────────
+  // ── Tab: Price & profitability ──────────────────────────────────────────
   const priceActive = tab === "price" && !!analysisProductId;
   const { data: trendData, loading: trendLoading } = useFetch<{ series: Series[] }>(
     priceActive ? api("/bi-sync/price-trend-by-length", { product_id: analysisProductId, start_date: startDate, end_date: endDate }) : null, refreshTick);
@@ -325,8 +334,9 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
   const lengthPoints = lengthData?.points ?? [];
   const lengthCats = lengthPoints.map(p => `${p.length}cm`);
+  const hasCostData = lengthPoints.some(p => p.avg_supplier_price != null);
 
-  // ── Tab: Dostawcy ───────────────────────────────────────────────────────
+  // ── Tab: Suppliers ──────────────────────────────────────────────────────
   const [comparisonLength, setComparisonLength] = useState("");
   useEffect(() => { setComparisonLength(""); }, [analysisProductId]);
 
@@ -355,19 +365,18 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
   const { data: deviationData, loading: deviationLoading } = useFetch<ScopedResult<DeviationPoint>>(
     suppliersActive ? api("/bi-sync/supplier-market-deviation", { start_date: startDate, end_date: endDate, product_id: supplierScopeId }) : null, refreshTick);
 
-  /** "Pokazano N z M — reszta ma za mało linii" — otherwise a ranking that
-   *  silently shrinks from 15 suppliers to 3 looks like a bug. */
-  function excludedNote(d: ScopedResult<unknown> | null): React.ReactNode {
+  /** "Showing N of M — the rest have too few lines" — otherwise a ranking
+   *  that silently shrinks from 15 suppliers to 3 looks like a bug. */
+  function excludedNote(d: ScopedResult<unknown> | null): ReactNode {
     if (!d?.excluded) return null;
     return (
       <p className="text-xs text-ink-3">
-        Pokazano {d.points.length} z {d.total_suppliers} dostawców w tym zakresie. Pominięto {d.excluded} —
-        mają za mało linii sprzedaży, żeby liczba była wiarygodna.
+        {t.excludedNote(String(d.points.length), String(d.total_suppliers ?? 0), String(d.excluded))}
       </p>
     );
   }
 
-  // ── Tab: Sezonowość ─────────────────────────────────────────────────────
+  // ── Tab: Seasonality ────────────────────────────────────────────────────
   const [seasonScopeAll, setSeasonScopeAll] = useState(true);
   const [seasonMetric, setSeasonMetric] = useState<Metric>("quantity");
   const seasonProductId = seasonScopeAll ? null : analysisProductId;
@@ -378,11 +387,9 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     seasonActive ? api("/bi-sync/event-impact", { product_id: seasonProductId }) : null, refreshTick);
 
   // One line per year, x = month, so the same months stack on top of each
-  // other and a repeating pattern is visible at a glance.
-  // Only months the backend actually returned. It no longer pads absent
-  // months to zero — a month with nothing synced is a gap in the line, not
-  // a month with no sales (we always sell something), which is what made
-  // the old chart read as periodic collapses to zero.
+  // other and a repeating pattern is visible at a glance. Only months the
+  // backend actually returned — it no longer pads absent months to zero,
+  // because a month with nothing synced is a gap, not a month with no sales.
   const seasonSeries: Series[] = useMemo(() => (seasonData?.years ?? []).map(y => ({
     key: String(y.year),
     label: String(y.year),
@@ -400,7 +407,10 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
     const events = eventData?.events ?? [];
     const years = Array.from(new Set(events.flatMap(e => e.years.map(y => y.year)))).sort();
     return {
-      categories: events.map(e => e.event),
+      // `e.event` is a language-neutral key from the API (db.py _BI_EVENTS),
+      // not display copy — fall back to the raw key if a new event lands
+      // before its translation does.
+      categories: events.map(e => t.eventNames[e.event] ?? e.event),
       series: years.map(year => ({
         key: String(year),
         label: String(year),
@@ -411,50 +421,41 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
         }),
       })),
     };
-  }, [eventData, eventMetric]);
+  }, [eventData, eventMetric, t]);
 
   const TABS: { id: Tab; label: string }[] = [
-    { id: "sales", label: "Sprzedaż" },
-    { id: "price", label: "Cena i rentowność" },
-    { id: "suppliers", label: "Dostawcy" },
-    { id: "seasonality", label: "Sezonowość i popyt" },
+    { id: "sales", label: t.tabSales },
+    { id: "price", label: t.tabPrice },
+    { id: "suppliers", label: t.tabSuppliers },
+    { id: "seasonality", label: t.tabSeasonality },
   ];
 
   // An empty product list is not the same as "you haven't picked one yet" —
   // before the 2026-09-03 sync fix every order_line was stored with a NULL
   // product_id, so the list stays empty until the range is re-synced.
   const needProduct = products.length ? (
-    <p className="text-xs text-ink-3 py-6 text-center">Wybierz produkt powyżej.</p>
+    <p className="text-xs text-ink-3 py-6 text-center">{t.pickProductAbove}</p>
   ) : (
-    <p className="text-xs text-ink-3 py-6 text-center max-w-xl mx-auto">
-      Brak produktów w tym zakresie dat. Jeśli lista jest pusta również dla szerszego zakresu,
-      uruchom ponownie sync — linie sprzedaży zapisane przed poprawką z 2026-09-03 nie mają
-      przypisanego produktu i trzeba je pobrać jeszcze raz.
-    </p>
+    <p className="text-xs text-ink-3 py-6 text-center max-w-xl mx-auto">{t.noProductsInRange}</p>
   );
 
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-5">
       <div>
-        <h2 className="text-lg font-bold text-ink">Analysis Tool</h2>
-        <p className="text-sm text-ink-3 mt-0.5">
-          Analiza sprzedaży OZEDS (FreshPortal BI Sync). Wszystkie ceny to zrealizowana cena sprzedaży, nie cena ofertowa.
-        </p>
+        <h2 className="text-lg font-bold text-ink">{t.title}</h2>
+        <p className="text-sm text-ink-3 mt-0.5">{t.subtitle}</p>
       </div>
 
       {/* Ingestion — also runs automatically once a day (api_server.py
           _daily_bi_sync). The button is for manual/backfill runs. */}
       <div className="rounded-2xl border-2 border-emerald/25 bg-emerald-light p-4 flex flex-col gap-3">
         <div>
-          <p className="text-sm font-semibold text-emerald-dark">Data pipeline</p>
-          <p className="text-xs text-ink-3 mt-0.5">
-            Działa automatycznie raz dziennie. Poniżej ręczny sync/backfill — pobiera wszystko od wybranej daty do dziś
-            (API zwraca dane po dacie mutacji, nie utworzenia, więc i tak są lokalnie filtrowane po dacie utworzenia).
-          </p>
+          <p className="text-sm font-semibold text-emerald-dark">{t.pipelineTitle}</p>
+          <p className="text-xs text-ink-3 mt-0.5">{t.pipelineDesc}</p>
         </div>
         <div className="flex items-end gap-3 flex-wrap">
           <div>
-            <label className="block text-[11px] text-ink-3 mb-1">Sync od</label>
+            <label className="block text-[11px] text-ink-3 mb-1">{t.syncFrom}</label>
             <input type="date" value={mutationDate} onChange={e => setMutationDate(e.target.value)} className={CTRL} />
           </div>
           <button
@@ -462,14 +463,14 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             disabled={syncStarting || serverRunning}
             className="h-9 px-4 rounded-lg text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
           >
-            {syncStarting || serverRunning ? "Syncing…" : "Run BI sync"}
+            {syncStarting || serverRunning ? t.syncing : t.runSync}
           </button>
           {stats && (
             <span className="text-xs text-ink-3">
-              {stats.stock_entry_dim_count?.toLocaleString() ?? 0} stock_entries ·{" "}
-              {stats.snapshot_days ?? 0} snapshot day(s) ·{" "}
-              {stats.order_lines_count?.toLocaleString() ?? 0} order_lines (OZEDS) ·{" "}
-              {stats.invoice_customer_count?.toLocaleString() ?? 0} invoice→customer mappings
+              {fmtNum(stats.stock_entry_dim_count ?? 0, locale)} {t.statStockEntries} ·{" "}
+              {t.statSnapshotDays(String(stats.snapshot_days ?? 0))} ·{" "}
+              {fmtNum(stats.order_lines_count ?? 0, locale)} {t.statOrderLines} ·{" "}
+              {fmtNum(stats.invoice_customer_count ?? 0, locale)} {t.statInvoiceMaps}
             </span>
           )}
         </div>
@@ -479,7 +480,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
         {!!latestRun?.messages?.length && (
           <details className="text-xs">
             <summary className="cursor-pointer text-ink-3 hover:text-ink">
-              Last run log ({latestRun.mutation_from ?? "?"}, {latestRun.status})
+              {t.lastRunLog(latestRun.mutation_from ?? "?", latestRun.status)}
             </summary>
             <div className="mt-1 bg-muted rounded-lg p-2 max-h-56 overflow-y-auto font-mono whitespace-pre-wrap break-all text-ink-3">
               {latestRun.messages.map((m, i) => <div key={i}>{m}</div>)}
@@ -489,30 +490,28 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
       </div>
 
       {/* Wraps to further rows instead of scrolling horizontally — a scroll
-          container hides tabs off-screen with no affordance. Pill styling
-          rather than an underline strip, since a shared bottom border can't
-          follow tabs onto a second row. */}
+          container hides tabs off-screen with no affordance. */}
       <div className="flex flex-wrap gap-2">
-        {TABS.map(t => (
+        {TABS.map(tb => (
           <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
+            key={tb.id}
+            onClick={() => setTab(tb.id)}
             className={`px-4 h-9 rounded-lg text-sm font-medium whitespace-nowrap border transition-colors ${
-              tab === t.id
+              tab === tb.id
                 ? "bg-emerald text-white border-emerald"
                 : "border-border text-ink-3 hover:text-ink"
             }`}
           >
-            {t.label}
+            {tb.label}
           </button>
         ))}
       </div>
 
-      {/* ── Sprzedaż ─────────────────────────────────────────────────────── */}
+      {/* ── Sales ────────────────────────────────────────────────────────── */}
       {tab === "sales" && (
         <Card
-          title="Sprzedaż w czasie"
-          hint={`Cena sprzedaży w wybranym zakresie dat. Domyślnie top 10 ${viewMode === "supplier" ? "dostawców" : "produktów"} ogółem — wybierz konkretny wpis, żeby zejść w szczegóły. Najedź na punkt, żeby zobaczyć ilość sprzedanych pudełek.`}
+          title={t.salesTitle}
+          hint={t.salesHint(viewMode === "supplier" ? t.salesKindSupplier : t.salesKindProduct)}
         >
           <div className="flex items-end gap-3 flex-wrap">
             {dateRange}
@@ -523,7 +522,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                   onClick={() => setViewMode(m)}
                   className={`h-9 px-3 text-sm font-medium transition-colors ${viewMode === m ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
                 >
-                  {m === "supplier" ? "Wg dostawcy" : "Wg produktu"}
+                  {m === "supplier" ? t.bySupplier : t.byProduct}
                 </button>
               ))}
             </div>
@@ -531,7 +530,7 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
           <div className="flex items-center gap-3 flex-wrap">
             <select value={primaryId} onChange={e => setPrimaryId(e.target.value)} className={`${CTRL} max-w-md`}>
-              <option value="">{viewMode === "supplier" ? "— wszyscy dostawcy (top 10) —" : "— wszystkie produkty (top 10) —"}</option>
+              <option value="">{viewMode === "supplier" ? t.allSuppliersTop : t.allProductsTop}</option>
               {viewMode === "supplier"
                 ? suppliers.map(s => <option key={s.supplier_id} value={s.supplier_id}>{s.name || s.supplier_id} ({s.row_count})</option>)
                 : products.map(p => <option key={p.product_id} value={p.product_id}>{p.description || p.product_id} ({p.row_count})</option>)}
@@ -539,26 +538,34 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
 
             {viewMode === "product" && primaryId && !!(salesLengths?.lengths ?? []).length && (
               <select value={salesLength} onChange={e => setSalesLength(e.target.value)} className={CTRL}>
-                <option value="">wszystkie długości (średnia)</option>
+                <option value="">{t.allLengths}</option>
                 {(salesLengths?.lengths ?? []).map(l => <option key={l} value={l}>{l}cm</option>)}
               </select>
             )}
 
             {!!salesSeries.length && (
               <select value={highlightKey} onChange={e => setHighlightKey(e.target.value)} className={`${CTRL} max-w-md`}>
-                <option value="">— podświetl linię —</option>
+                <option value="">{t.highlightLine}</option>
                 {salesSeries.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
               </select>
             )}
           </div>
 
-          <Loading when={salesLoading} />
-          {!salesLoading && !salesSeries.length && <p className="text-xs text-ink-3">Brak sprzedaży w wybranym zakresie.</p>}
-          {!!displaySeries.length && <MultiLineChart series={displaySeries} highlightKey={highlightKey} />}
+          <Loading when={salesLoading} text={t.loading} />
+          {!salesLoading && !salesSeries.length && <p className="text-xs text-ink-3">{t.noSalesInRange}</p>}
+          {!!displaySeries.length && (
+            <MultiLineChart
+              series={displaySeries}
+              highlightKey={highlightKey}
+              locale={locale}
+              emptyText={t.noDataRange}
+              soldLabel={t.soldBoxes}
+            />
+          )}
         </Card>
       )}
 
-      {/* ── Cena i rentowność ────────────────────────────────────────────── */}
+      {/* ── Price & profitability ────────────────────────────────────────── */}
       {tab === "price" && (
         <>
           <div className="rounded-2xl border border-border p-4 flex items-end gap-3 flex-wrap">
@@ -566,74 +573,64 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             {productPicker}
           </div>
 
-          <Card
-            title="Trend ceny w czasie"
-            hint={`Jedna linia na długość łodygi — ${productLabel || "produkt"}. Uzupełnia wykres „Sprzedaż” (tam linie to dostawcy); większość rozrzutu ceny w obrębie jednego produktu bierze się właśnie z długości.`}
-          >
-            <Loading when={trendLoading} />
-            {!analysisProductId ? needProduct : <MultiLineChart series={trendData?.series ?? []} />}
+          <Card title={t.trendTitle} hint={t.trendHint(productLabel || t.selectProduct)}>
+            <Loading when={trendLoading} text={t.loading} />
+            {!analysisProductId ? needProduct : (
+              <MultiLineChart
+                series={trendData?.series ?? []}
+                locale={locale}
+                emptyText={t.noDataRange}
+                soldLabel={t.soldBoxes}
+              />
+            )}
           </Card>
 
-          <Card
-            title="Cena vs długość łodygi"
-            hint="Średnia cena sprzedaży i cena zakupu towaru na każdej długości — obie w tej samej jednostce, więc stoją na jednej osi."
-          >
-            <Loading when={lengthLoading} />
+          <Card title={t.lengthTitle} hint={t.lengthHint}>
+            <Loading when={lengthLoading} text={t.loading} />
             {!analysisProductId ? needProduct : (
               <>
                 <GroupedBarChart
                   categories={lengthCats}
                   series={[
-                    { key: "sale", label: "Cena sprzedaży", values: lengthPoints.map(p => p.avg_price) },
+                    { key: "sale", label: t.seriesSalePrice, values: lengthPoints.map(p => p.avg_price) },
                     // Only offered when at least one length actually has a
                     // purchase price. supplier_price can be entirely absent
                     // from the export, and an all-null series would still
                     // claim a legend entry and a color while drawing nothing.
-                    ...(lengthPoints.some(p => p.avg_supplier_price != null)
-                      ? [{ key: "cost", label: "Cena zakupu towaru", values: lengthPoints.map(p => p.avg_supplier_price) }]
+                    ...(hasCostData
+                      ? [{ key: "cost", label: t.seriesCostPrice, values: lengthPoints.map(p => p.avg_supplier_price) }]
                       : []),
                   ]}
                   formatValue={fmtPrice}
                   height={280}
+                  emptyText={t.noDataRange}
                 />
-                {!lengthPoints.some(p => p.avg_supplier_price != null) && !!lengthPoints.length && (
-                  <p className="text-xs text-ink-3">
-                    Brak ceny zakupu w danych — eksport nie zwrócił <code className="font-mono">supplier_price</code> dla
-                    żadnej linii tego produktu, więc pokazana jest tylko cena sprzedaży.
-                  </p>
+                {!hasCostData && !!lengthPoints.length && (
+                  <p className="text-xs text-ink-3">{t.noCostData}</p>
                 )}
                 <p className="text-xs text-ink-3 pt-2 border-t border-border">
-                  Świadomie <strong>nie</strong> ma tu wykresu marży. Różnica między tymi słupkami to narzut na samym
-                  towarze, a nie marża — pełny koszt zawiera jeszcze prowizje i handling z tabeli
+                  {t.marginNoteA} <strong>{t.marginNoteNo}</strong> {t.marginNoteB}
                   <code className="mx-1 font-mono">customer_stock_item_commission</code>
-                  (wiersze z <code className="font-mono">cost = 1</code>), której na razie nie pobieramy.
-                  Nazwanie tego marżą zawyżałoby wynik.
+                  {t.marginNoteC} <code className="font-mono">cost = 1</code>
+                  {t.marginNoteD}
                 </p>
               </>
             )}
           </Card>
 
           <Card
-            title="Elastyczność cenowa (wolumen vs cena)"
+            title={t.elasticityTitle}
             hint={
               <>
-                <strong>Co to pokazuje:</strong> każdy punkt to jeden tydzień. W poziomie — średnia cena
-                w tym tygodniu. W pionie — ile pudełek wtedy zeszło. Nie ma tu osi czasu: pytanie brzmi
-                „czy przy wyższej cenie sprzedajemy mniej”, a nie „co się działo w marcu”.
+                <strong>{t.whatItShows}</strong> {t.elasticityWhat}
                 <br />
-                <strong>Jak czytać:</strong> chmura opadająca w prawo (drożej → mniej sztuk) znaczy, że
-                klient reaguje na cenę i podwyżka kosztuje wolumen. Chmura płaska znaczy, że w badanym
-                przedziale cena nie rusza popytu — masz przestrzeń cenową. Chmura rosnąca prawie nigdy nie
-                znaczy „drożej = lepiej”, tylko że sezon rządzi jednym i drugim (Walentynki: i ceny, i
-                wolumen w górę naraz).
+                <strong>{t.howToRead}</strong> {t.elasticityHow}
                 <br />
-                <strong>Do czego użyć:</strong> pierwsza sytuacja to argument, żeby nie podnosić ceny na
-                tym produkcie; druga — że można spróbować.
-                Tygodnie, nie dni, bo dzienne punkty pokazują głównie rytm spływania zamówień.
+                <strong>{t.whatToUse}</strong> {t.elasticityUse}
               </>
             }
           >
-            <Loading when={elasticityLoading} />
+            <Loading when={elasticityLoading} text={t.loading} />
             {!analysisProductId ? needProduct : (
               <>
                 <div className="flex items-baseline gap-3 flex-wrap">
@@ -641,18 +638,24 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                     {elasticityData?.correlation != null ? elasticityData.correlation.toFixed(2) : "—"}
                   </span>
                   <span className="text-xs text-ink-3">
-                    korelacja cena↔wolumen (−1 = im drożej tym mniej, 0 = brak związku, +1 = razem rosną)
-                    · {elasticityVerdict(elasticityData?.correlation ?? null)}
+                    {t.correlationLabel} · {elasticityVerdict(elasticityData?.correlation ?? null, t)}
                   </span>
                 </div>
-                <ScatterChart points={elasticityData?.points ?? []} xAxisLabel="Średnia cena sprzedaży w tygodniu" yAxisLabel="Pudełka" />
+                <ScatterChart
+                  points={elasticityData?.points ?? []}
+                  xAxisLabel={t.avgWeekPrice}
+                  yAxisLabel={t.boxes}
+                  locale={locale}
+                  emptyText={t.noDataRange}
+                  boxesLabel={t.soldBoxes}
+                />
               </>
             )}
           </Card>
         </>
       )}
 
-      {/* ── Dostawcy ─────────────────────────────────────────────────────── */}
+      {/* ── Suppliers ────────────────────────────────────────────────────── */}
       {tab === "suppliers" && (
         <>
           <div className="rounded-2xl border border-border p-4 flex items-end gap-3 flex-wrap">
@@ -660,19 +663,16 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
             {productPicker}
           </div>
 
-          <Card
-            title="Porównanie cen dostawców"
-            hint={`Średnia cena sprzedaży na dostawcę — ${productLabel || "produkt"}, sortowane od najtańszego. Słupki liczone od zera; przy zbliżonych cenach patrz na liczby, nie na długość słupka.`}
-          >
+          <Card title={t.comparisonTitle} hint={t.comparisonHint(productLabel || t.selectProduct)}>
             <div className="flex items-center gap-3 flex-wrap">
               {!!(analysisLengths?.lengths ?? []).length && (
                 <select value={comparisonLength} onChange={e => setComparisonLength(e.target.value)} className={CTRL}>
-                  <option value="">wszystkie długości (średnia)</option>
+                  <option value="">{t.allLengths}</option>
                   {(analysisLengths?.lengths ?? []).map(l => <option key={l} value={l}>{l}cm</option>)}
                 </select>
               )}
             </div>
-            <Loading when={comparisonLoading} />
+            <Loading when={comparisonLoading} text={t.loading} />
             {!analysisProductId ? needProduct : (
               <HBarChart
                 points={(comparisonData?.points ?? []).map(p => ({
@@ -682,20 +682,19 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                   volume: p.quantity,
                 }))}
                 format={fmtPrice}
-                valueHeader="Śr. cena (min–max)"
-                volumeHeader="Pudełka"
+                valueHeader={t.avgPriceMinMax}
+                volumeHeader={t.boxes}
+                locale={locale}
+                emptyText={t.noDataRange}
               />
             )}
           </Card>
 
           <div className="rounded-2xl border border-border p-4 flex flex-col gap-2">
             <p className="text-xs text-ink-3 max-w-3xl">
-              <strong>Zakres dwóch wykresów poniżej.</strong>{" "}
-              <em>Wybrany produkt</em> — liczy tylko linie tego jednego produktu, czyli „jak ci dostawcy
-              zachowują się konkretnie przy {productLabel || "tym produkcie"}”. <em>Wszystkie produkty</em> —
-              liczy cały asortyment każdego dostawcy, czyli „jak ten dostawca zachowuje się w ogóle”,
-              również na towarach, których nie ma w wykresie porównania wyżej. Porównanie zawsze liczone
-              wewnątrz tej samej pary produkt+długość, więc szerszy zakres nie miesza róż z piwoniami.
+              <strong>{t.scopeHeading}</strong>{" "}
+              <em>{t.scopeSelected}</em> {t.scopeSelectedDesc(productLabel || t.selectProduct)}
+              <em>{t.scopeAll}</em> {t.scopeAllDesc}
             </p>
             <div className="flex rounded-lg border border-border overflow-hidden w-fit">
               <button
@@ -703,66 +702,60 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                 disabled={!analysisProductId}
                 className={`h-9 px-3 text-sm font-medium transition-colors disabled:opacity-40 ${!supplierScopeAll ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
               >
-                Wybrany produkt
+                {t.scopeSelected}
               </button>
               <button
                 onClick={() => setSupplierScopeAll(true)}
                 className={`h-9 px-3 text-sm font-medium transition-colors ${supplierScopeAll ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
               >
-                Wszystkie produkty
+                {t.scopeAll}
               </button>
             </div>
           </div>
 
-          <Card
-            title="Wahania cen (volatility) dostawcy"
-            hint="Współczynnik zmienności (odchylenie standardowe / średnia) ceny sprzedaży, w %. Liczony osobno dla każdej pary dostawca–produkt i dopiero potem uśredniany — inaczej mierzyłby asortyment (róże vs piwonie), a nie stabilność cen. Wyżej = mniej przewidywalny. Wariancja wymaga co najmniej 3 linii na produkt, więc dostawcy z pojedynczymi transakcjami nie mogą się tu pojawić — ilu ich było, pisze pod wykresem."
-          >
-            <Loading when={volatilityLoading} />
+          <Card title={t.volatilityTitle} hint={t.volatilityHint}>
+            <Loading when={volatilityLoading} text={t.loading} />
             <HBarChart
               points={(volatilityData?.points ?? []).map(p => ({
                 label: p.name,
                 value: p.cv_pct ?? 0,
-                sublabel: `${fmtPrice(p.avg_price)} śr. · ${p.product_count} prod.`,
+                sublabel: `${fmtPrice(p.avg_price)} · ${p.product_count}`,
                 volume: p.line_count,
               }))}
               format={v => (v == null ? "—" : `${v.toFixed(1)}%`)}
               color={COLOR_ABOVE}
-              valueHeader="Zmienność"
-              volumeHeader="Linie"
-              emptyText="Za mało linii, żeby policzyć zmienność w tym zakresie."
+              valueHeader={t.volatilityCol}
+              volumeHeader={t.linesCol}
+              locale={locale}
+              emptyText={t.volatilityEmpty}
             />
             {excludedNote(volatilityData)}
           </Card>
 
-          <Card
-            title="Odchylenia od średniej rynkowej"
-            hint="O ile % dostawca jest droższy/tańszy od średniej dla tego samego produktu i tej samej długości w tym samym okresie. Porównanie liczone per linia, więc różnice asortymentu się nie przenoszą na wynik. „Rynek” to tu wyłącznie nasi właśni dostawcy w tym zakresie dat — nie zewnętrzny benchmark — więc przy jednym dostawcy odchylenie z definicji wyjdzie 0%."
-          >
-            <Loading when={deviationLoading} />
+          <Card title={t.deviationTitle} hint={t.deviationHint}>
+            <Loading when={deviationLoading} text={t.loading} />
             <DivergingBarChart
               points={(deviationData?.points ?? []).map(p => ({
                 label: p.name,
                 value: p.deviation_pct,
-                sublabel: `${fmtPrice(p.avg_price)} vs ${fmtPrice(p.market_price)} rynek · ${fmtNum(p.line_count)} linii`,
+                sublabel: `${fmtPrice(p.avg_price)} vs ${fmtPrice(p.market_price)} ${t.marketWord} · ${fmtNum(p.line_count, locale)} ${t.linesWord}`,
               }))}
-              emptyText="Za mało linii, żeby porównać z rynkiem w tym zakresie."
+              aboveLabel={t.aboveMarket}
+              belowLabel={t.belowMarket}
+              emptyText={t.deviationEmpty}
             />
             {excludedNote(deviationData)}
           </Card>
         </>
       )}
 
-      {/* ── Sezonowość i popyt ───────────────────────────────────────────── */}
+      {/* ── Seasonality & demand ─────────────────────────────────────────── */}
       {tab === "seasonality" && (
         <>
           <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
             <p className="text-xs text-ink-3 max-w-3xl">
-              Te dwa wykresy celowo ignorują zakres dat powyżej — sezonowość wymaga pełnych lat, nie
-              90-dniowego okna. Obejmują <strong>całą zsynchronizowaną historię</strong>, więc jeśli
-              masz dane od stycznia 2022, zobaczysz tu 2022 jako osobną linię bez żadnych ustawień.
-              Miesiąc, dla którego nic nie zsynchronizowano, zostawia <strong>przerwę w linii</strong> —
-              nie jest rysowany jako zero.
+              {t.seasonNoteA} <strong>{t.seasonNoteWhole}</strong>{t.seasonNoteB}{" "}
+              <strong>{t.seasonNoteGap}</strong> {t.seasonNoteC}
             </p>
             <div className="flex items-center gap-3 flex-wrap">
               <div className="flex rounded-lg border border-border overflow-hidden">
@@ -770,24 +763,21 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                   onClick={() => setSeasonScopeAll(true)}
                   className={`h-9 px-3 text-sm font-medium transition-colors ${seasonScopeAll ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
                 >
-                  Wszystkie produkty
+                  {t.scopeAll}
                 </button>
                 <button
                   onClick={() => setSeasonScopeAll(false)}
                   disabled={!analysisProductId}
                   className={`h-9 px-3 text-sm font-medium transition-colors disabled:opacity-40 ${!seasonScopeAll ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
                 >
-                  Wybrany produkt
+                  {t.scopeSelected}
                 </button>
               </div>
               {!seasonScopeAll && productPicker}
             </div>
           </div>
 
-          <Card
-            title="Sezonowość cen i popytu"
-            hint="Jedna linia na rok, miesiące na osi X — lata nakładają się na siebie, więc powtarzalny wzorzec widać od razu."
-          >
+          <Card title={t.seasonalityTitle} hint={t.seasonalityHint}>
             <div className="flex rounded-lg border border-border overflow-hidden w-fit">
               {(["quantity", "price"] as Metric[]).map(m => (
                 <button
@@ -795,37 +785,32 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                   onClick={() => setSeasonMetric(m)}
                   className={`h-9 px-3 text-sm font-medium transition-colors ${seasonMetric === m ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
                 >
-                  {m === "quantity" ? "Wolumen" : "Cena"}
+                  {m === "quantity" ? t.metricVolume : t.metricPrice}
                 </button>
               ))}
             </div>
-            <Loading when={seasonLoading} />
+            <Loading when={seasonLoading} text={t.loading} />
             <MultiLineChart
               series={seasonSeries}
-              xLabel={monthLabel}
-              tipLabel={monthLabel}
-              formatValue={seasonMetric === "quantity" ? fmtNum : fmtPrice}
+              xLabel={monthLbl}
+              tipLabel={monthLbl}
+              formatValue={seasonMetric === "quantity" ? (v => fmtNum(v, locale)) : fmtPrice}
               showQuantity={seasonMetric === "price"}
+              locale={locale}
+              emptyText={t.noDataRange}
+              soldLabel={t.soldBoxes}
             />
           </Card>
 
           <Card
-            title="Wpływ świąt i wydarzeń"
+            title={t.eventsTitle}
             hint={
               <>
-                <strong>Co to pokazuje:</strong> o ile % lepszy (lub gorszy) był przeciętny dzień w oknie
-                sprzedażowym święta niż przeciętny zwykły dzień <em>w tych samych tygodniach</em>. Słupek
-                +80% na Walentynkach znaczy: w oknie walentynkowym schodziło dziennie o 80% więcej pudełek
-                niż w zwykłe dni tuż obok.
+                <strong>{t.whatItShows}</strong> {t.eventsWhat}
                 <br />
-                <strong>Okna, nie same daty:</strong> kwiaty na 14 lutego sprzedają się w poprzedzających
-                dwóch tygodniach, więc okno to 25 stycznia – 11 lutego, a nie sam 14 lutego.
+                <strong>{t.eventsWindowsLabel}</strong> {t.eventsWindows}
                 <br />
-                <strong>Punkt odniesienia:</strong> zwykłe dni w promieniu 45 dni od okna, z wykluczeniem
-                innych świąt. Wcześniej porównywaliśmy do średniej z całego roku — stąd absurdalne −63% na
-                Walentynki: średnia roczna jest zawyżana przez miesiące lepiej pokryte backfillem, więc
-                realny szczyt wychodził na spadek. Rok z niepełnymi danymi w danym oknie jest pomijany,
-                a nie pokazywany jako zero.
+                <strong>{t.eventsBaselineLabel}</strong> {t.eventsBaseline}
               </>
             }
           >
@@ -836,27 +821,23 @@ export default function AnalysisTool({ lang: _lang }: { lang: Lang }) {
                   onClick={() => setEventMetric(m)}
                   className={`h-9 px-3 text-sm font-medium transition-colors ${eventMetric === m ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
                 >
-                  {m === "quantity" ? "Wolumen" : "Cena"}
+                  {m === "quantity" ? t.metricVolume : t.metricPrice}
                 </button>
               ))}
             </div>
-            <Loading when={eventLoading} />
+            <Loading when={eventLoading} text={t.loading} />
             <GroupedBarChart
               categories={eventChart.categories}
               series={eventChart.series}
               formatValue={fmtPct}
               height={300}
+              emptyText={t.noDataRange}
             />
           </Card>
 
           <div className="rounded-2xl border border-border border-dashed p-4">
-            <p className="text-sm font-semibold text-ink">Prognoza popytu</p>
-            <p className="text-xs text-ink-3 mt-1">
-              Celowo jeszcze nie zbudowana. Sensowna prognoza sezonowa potrzebuje co najmniej dwóch pełnych cykli
-              rocznych, a backfill jest w tej chwili niekompletny — wykres na tych danych wyglądałby wiarygodnie
-              i byłby zmyślony. Wrócimy do tego po dociągnięciu historii; wtedy naturalnym pierwszym krokiem jest
-              seasonal-naive (ten sam tydzień rok temu skorygowany o trend r/r) jako punkt odniesienia.
-            </p>
+            <p className="text-sm font-semibold text-ink">{t.forecastTitle}</p>
+            <p className="text-xs text-ink-3 mt-1">{t.forecastBody}</p>
           </div>
         </>
       )}
