@@ -2172,7 +2172,7 @@ def get_bi_sales_by_supplier(supplier_id: str, start_date: str, end_date: str, m
 
                 cur.execute("""
                     SELECT product_id, creation_date_time::date::text AS day,
-                           AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE supplier_id = %s AND product_id = ANY(%s)
                       AND creation_date_time::date BETWEEN %s AND %s
@@ -2237,7 +2237,7 @@ def get_bi_sales_by_product(
                 params_rows += [top_suppliers, start_date, end_date]
                 cur.execute(f"""
                     SELECT supplier_id, creation_date_time::date::text AS day,
-                           AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE product_id = %s {length_clause} AND supplier_id = ANY(%s)
                       AND creation_date_time::date BETWEEN %s AND %s
@@ -2295,7 +2295,7 @@ def get_bi_sales_overview(start_date: str, end_date: str, group_by: str = "suppl
 
                 cur.execute(f"""
                     SELECT {id_col} AS id, creation_date_time::date::text AS day,
-                           AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE {id_col} = ANY(%s) AND creation_date_time::date BETWEEN %s AND %s
                     GROUP BY {id_col}, creation_date_time::date
@@ -2341,6 +2341,21 @@ def get_bi_sales_overview(start_date: str, end_date: str, group_by: str = "suppl
 # elasticity curve is a scatter, and a supplier ranking is a sorted bar.
 # Each function returns the shape its chart form needs, so the frontend
 # does no reshaping.
+#
+# Every displayed price is VOLUME-WEIGHTED:
+#     COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0),
+#              AVG(store_price))
+# A plain AVG(store_price) averages order LINES, so a line for 1 box counts
+# as much as a line for 500. On a day of 4 lines where 105 of 108 boxes went
+# at ~0.51 and two small lines went at ~0.89, the unweighted mean plots
+# $0.700 against a realised $0.519 — a 35% overstatement of the price we
+# actually got (found 2026-09-07). The COALESCE keeps the old behaviour as a
+# fallback for rows with no usable quantity, so a missing quantity blanks
+# nothing out. Do not "simplify" these back to AVG.
+#
+# The one intentional exception is get_bi_supplier_volatility: it measures
+# the dispersion of price POINTS, so weighting by volume would answer a
+# different question than "how stable is this supplier's pricing".
 # ---------------------------------------------------------------------------
 
 def _pearson(xs: list[float], ys: list[float]) -> float | None:
@@ -2383,7 +2398,7 @@ def get_bi_price_trend_by_length(product_id: str, start_date: str, end_date: str
 
                 cur.execute("""
                     SELECT length, creation_date_time::date::text AS day,
-                           AVG(store_price) AS avg_price, SUM(quantity) AS total_quantity
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE product_id = %s AND length = ANY(%s) AND store_price IS NOT NULL
                       AND creation_date_time::date BETWEEN %s AND %s
@@ -2434,7 +2449,7 @@ def get_bi_price_vs_length(product_id: str, start_date: str, end_date: str, supp
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
                     SELECT length,
-                           AVG(store_price) AS avg_price,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price,
                            AVG(supplier_price) AS avg_supplier_price,
                            SUM(quantity) AS total_quantity,
                            COUNT(*) AS line_count
@@ -2480,7 +2495,7 @@ def get_bi_price_elasticity(product_id: str, start_date: str, end_date: str, buc
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
                     SELECT date_trunc('{trunc}', creation_date_time)::date::text AS period,
-                           AVG(store_price) AS avg_price,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price,
                            SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE product_id = %s AND store_price IS NOT NULL AND store_price > 0
@@ -2528,7 +2543,7 @@ def get_bi_supplier_price_comparison(
                 cur.execute(f"""
                     SELECT ol.supplier_id,
                            COALESCE(s.name, ol.supplier_id) AS name,
-                           AVG(ol.store_price) AS avg_price,
+                           COALESCE(SUM(ol.store_price * ol.quantity) / NULLIF(SUM(ol.quantity), 0), AVG(ol.store_price)) AS avg_price,
                            MIN(ol.store_price) AS min_price,
                            MAX(ol.store_price) AS max_price,
                            SUM(ol.quantity) AS total_quantity,
@@ -2698,10 +2713,10 @@ def get_bi_supplier_market_deviation(
                           {product_clause}
                     ),
                     market AS (
-                        SELECT product_id, length, AVG(store_price) AS market_price
+                        SELECT product_id, length, COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS market_price
                         FROM lines
                         GROUP BY product_id, length
-                        HAVING AVG(store_price) > 0
+                        HAVING SUM(quantity) > 0 AND AVG(store_price) > 0
                     ),
                     joined AS (
                         SELECT l.supplier_id, l.store_price, m.market_price
@@ -2772,7 +2787,7 @@ def get_bi_seasonality(product_id: str | None = None) -> dict:
                     SELECT EXTRACT(YEAR FROM creation_date_time)::int AS year,
                            EXTRACT(MONTH FROM creation_date_time)::int AS month,
                            SUM(quantity) AS total_quantity,
-                           AVG(store_price) AS avg_price
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price
                     FROM bi_order_lines
                     WHERE creation_date_time IS NOT NULL {product_clause}
                     GROUP BY 1, 2
@@ -2875,7 +2890,7 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) 
                 cur.execute(f"""
                     SELECT creation_date_time::date AS day,
                            SUM(quantity) AS total_quantity,
-                           AVG(store_price) AS avg_price
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price
                     FROM bi_order_lines
                     WHERE creation_date_time IS NOT NULL {product_clause}
                     GROUP BY 1

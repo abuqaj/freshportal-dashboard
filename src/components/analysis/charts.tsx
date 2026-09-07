@@ -16,6 +16,10 @@ export const COLOR_ABOVE = "#B03A2B";  // above market = expensive
 export const COLOR_BELOW = "#1A7D45";  // below market = cheap
 export const COLOR_NEUTRAL = "#8E8B81";
 
+// Reserved for the line in focus: black is the highest-contrast step in the
+// palette and reads clearly against the blurred context lines.
+export const HIGHLIGHT_COLOR = "#000000";
+
 // Every user-visible word in this module arrives as a prop — the chart
 // primitives have no access to `lang`, so hardcoding copy here would make
 // the module untranslatable. `locale` is a BCP-47 tag used for date and
@@ -152,6 +156,18 @@ export function MultiLineChart({
   const nonEmpty = series.filter(s => s.points.length > 0);
   if (!nonEmpty.length) return <Empty text={emptyText} />;
 
+  // The focused line is drawn in the palette's strongest colour rather than
+  // whatever its position yields. Position 4 is #C4DED0, the palest step —
+  // handing the line that most needs to stand out the one least able to
+  // (reported 2026-09-07). Context lines keep their own index colour, and
+  // the strong colour is skipped for them so nothing collides with it.
+  const colorFor = (si: number, key: string): string => {
+    if (!highlightKey) return LINE_COLORS[si % LINE_COLORS.length];
+    if (key === highlightKey) return HIGHLIGHT_COLOR;
+    const pool = LINE_COLORS.filter(c => c !== HIGHLIGHT_COLOR);
+    return pool[si % pool.length];
+  };
+
   const allDays = Array.from(new Set(nonEmpty.flatMap(s => s.points.map(p => p.day)))).sort();
   const axisLabel = xLabel ?? makeDayLabeller(allDays, locale);
   const tooltipLabel = tipLabel ?? xLabel ?? ((d: string) => fullDay(d, locale));
@@ -204,33 +220,41 @@ export function MultiLineChart({
             {axisLabel(allDays[i])}
           </text>
         ))}
-        {nonEmpty.map((s, si) => {
+        {/* Painted dimmed-first so the highlighted line always sits on top,
+            while its COLOUR still comes from its own index — otherwise the
+            line in focus would be drawn under its context lines. */}
+        {nonEmpty
+          .map((s, si) => ({ s, si }))
+          .sort((a, b) => Number(highlightKey === a.s.key) - Number(highlightKey === b.s.key))
+          .map(({ s, si }) => {
           const isHighlighted = highlightKey === s.key;
           const isDimmed = !!highlightKey && !isHighlighted;
-          const color = LINE_COLORS[si % LINE_COLORS.length];
+          const color = colorFor(si, s.key);
           const d = s.points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(p.day)} ${yFor(p.value)}`).join(" ");
           return (
             <g
               key={s.key}
-              opacity={isDimmed ? 0.5 : 1}
-              // Dimmed lines are genuinely blurred, not just faded: with a
-              // highlight active they are context, and a sharp thin line
-              // still competes for attention at equal focus (2026-09-03).
-              style={
-                isHighlighted
-                  ? { filter: `drop-shadow(0 0 7px ${color})` }
-                  : isDimmed
-                    ? { filter: "blur(1.8px)" }
-                    : undefined
-              }
+              opacity={isDimmed ? 0.45 : 1}
+              // Only the context lines get a filter. The highlighted line is
+              // left perfectly crisp: a drop-shadow glow on it read as blur —
+              // the whole chart looked out of focus, the focused line worst of
+              // all, because the halo is widest on the thickest stroke
+              // (reported 2026-09-07). Emphasis now comes from a solid colour,
+              // a heavier stroke and a casing, not from a filter.
+              style={isDimmed ? { filter: "blur(1.6px)" } : undefined}
             >
-              <path d={d} fill="none" stroke={color} strokeWidth={isHighlighted ? 4 : 2} />
+              {isHighlighted && (
+                // Surface-coloured casing: separates the focused line from the
+                // blurred ones behind it without softening its own edge.
+                <path d={d} fill="none" stroke="var(--color-surface, #fff)" strokeWidth={8} strokeLinecap="round" />
+              )}
+              <path d={d} fill="none" stroke={color} strokeWidth={isHighlighted ? 3.5 : 2} strokeLinecap="round" />
               {/* Points (and their hit targets) only on the line in focus —
                   hovering a blurred context line would report a value the
                   reader can't even see clearly. */}
               {!isDimmed && s.points.map((p, i) => (
                 <g key={i}>
-                  <circle cx={xFor(p.day)} cy={yFor(p.value)} r={isHighlighted ? 5 : 3} fill={color} />
+                  <circle cx={xFor(p.day)} cy={yFor(p.value)} r={isHighlighted ? 4.5 : 3} fill={color} />
                   <circle
                     cx={xFor(p.day)}
                     cy={yFor(p.value)}
@@ -254,7 +278,7 @@ export function MultiLineChart({
         </Tip>
       )}
       <Legend
-        items={nonEmpty.map((s, si) => ({ key: s.key, label: s.label, color: LINE_COLORS[si % LINE_COLORS.length] }))}
+        items={nonEmpty.map((s, si) => ({ key: s.key, label: s.label, color: colorFor(si, s.key) }))}
         highlightKey={highlightKey}
       />
     </div>
