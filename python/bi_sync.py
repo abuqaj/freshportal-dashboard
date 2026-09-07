@@ -72,7 +72,7 @@ from __future__ import annotations
 import calendar
 import logging
 import threading
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from bi_sync_client import get_export_url, download_export_zip, read_table
 from config import Config
@@ -94,6 +94,57 @@ REFERENCE_CUSTOMER_ID = "12"
 _sync_lock = threading.Lock()
 _sync_running = False
 _sync_message = ""
+
+
+# The export does NOT use one date format. mutation_date_time comes back as
+# ISO ("2026-01-07 10:57:03.649") while creation_date_time comes back as
+# day-first ("26/11/2025 06:44"), in the same row of the same file.
+#
+# That broke ingestion twice over (found 2026-09-07 from a raw export the
+# user pulled by hand):
+#   * the range filter compared `creation_date_time[:10]` as a STRING against
+#     ISO bounds, so "26/11/2025" <= "2026-09-07" is false — every day-first
+#     row was silently discarded as "outside range", regardless of the range.
+#   * anything that did get through was handed to a TIMESTAMPTZ column as raw
+#     text, so Postgres read it under its own DateStyle: "02/04/2026" became
+#     4 February instead of 2 April, and "26/11/2025" is not a valid date at
+#     all under the MDY default.
+# Everything is therefore parsed here and normalised to ISO before it reaches
+# either the filter or the database.
+_EXPORT_DATETIME_FORMATS = (
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%d",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
+    "%d/%m/%Y",
+    "%d-%m-%Y %H:%M:%S",
+    "%d-%m-%Y %H:%M",
+    "%d-%m-%Y",
+)
+
+
+def parse_export_datetime(value: str | None) -> datetime | None:
+    """Parse either of the export's date formats. Returns None when the value
+    is empty or in a shape we don't recognise — callers must treat that as
+    "unknown", never as a silently-dropped row."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    for fmt in _EXPORT_DATETIME_FORMATS:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _normalise_datetime_field(row: dict, field: str) -> None:
+    """Rewrite one field to ISO in place, so the database never has to guess."""
+    parsed = parse_export_datetime(row.get(field))
+    if parsed is not None:
+        row[field] = parsed.isoformat(sep=" ")
 
 
 def is_bi_sync_running() -> bool:
@@ -151,6 +202,10 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
 
         _s("Reading stock_entry table…")
         all_stock_entries = read_table(zip_bytes, "stock_entry")
+        # Stored into a TIMESTAMPTZ (bi_stock_entry_daily.source_mutation_time),
+        # so it needs the same day-first normalisation as order_lines.
+        for entry in all_stock_entries:
+            _normalise_datetime_field(entry, "mutation_date_time")
         # Full, unfiltered lookup by id — used below to enrich order_lines with
         # manufacturer_id/length/supplier_id regardless of stock_entry_type_id,
         # since a sold line's created_from_stock_entry_id points to a
@@ -217,6 +272,7 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
         reference_lines = []
         skipped_wrong_day = 0
         unresolved_stock_entry = 0
+        unparseable_date = 0
         for line in all_order_lines:
             customer_id = (
                 customer_by_invoice.get(line.get("invoice_id"))
@@ -226,10 +282,20 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
             )
             if customer_id != REFERENCE_CUSTOMER_ID:
                 continue
-            created = (line.get("creation_date_time") or "")[:10]
+            # Parsed, not sliced: creation_date_time is day-first in this
+            # export, so a string prefix compare against ISO bounds threw
+            # every such row away (see _EXPORT_DATETIME_FORMATS).
+            created_dt = parse_export_datetime(line.get("creation_date_time"))
+            if created_dt is None:
+                unparseable_date += 1
+                continue
+            created = created_dt.date().isoformat()
             if not (filter_start <= created <= filter_end):
                 skipped_wrong_day += 1
                 continue
+            # Hand the database an unambiguous ISO value rather than letting
+            # it guess day-vs-month under its own DateStyle.
+            line["creation_date_time"] = created_dt.isoformat(sep=" ")
             line["customer_id"] = customer_id
             source_entry = stock_entry_by_id.get(line.get("created_from_stock_entry_id"))
             if source_entry:
@@ -248,6 +314,7 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
             reference_lines.append(line)
         _s(f"Read {len(all_order_lines)} order_lines, {len(reference_lines)} for customer {REFERENCE_CUSTOMER_ID} "
            f"(OZEDS) created in [{filter_start}, {filter_end}] ({skipped_wrong_day} skipped — outside range, "
+           f"{unparseable_date} skipped — unreadable creation date, "
            f"{unresolved_stock_entry} missing farm/length — source stock_entry not in this export) — upserting…")
         upsert_bi_order_lines(reference_lines)
 
