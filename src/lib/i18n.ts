@@ -611,7 +611,7 @@ const en = {
     seasonalityHint:  "One line per year, months on the X axis — the years overlay each other, so a repeating pattern is visible at once.",
 
     eventsTitle:         "Impact of holidays and events",
-    eventsWhat:          "how many % better (or worse) the average day in a holiday's selling window was than an ordinary day in the same weeks. A +80% bar on Valentine's means 80% more boxes went out per day during the Valentine's window than on ordinary days right next to it.",
+    eventsWhat:          "how much better a day in the holiday's selling window was than a typical ordinary day in the same weeks. A +80% bar on Valentine's means a day in the Valentine's window shifted 80% more boxes than a normal day right next to it. The reference is the median ordinary day — the typical one, not the average, which a single outlying day would drag upwards.",
     eventsWindowsLabel:  "Windows, not the dates themselves:",
     eventsWindows:       "flowers for 14 February sell in the preceding two weeks, so the window is 25 January – 11 February, not 14 February itself.",
     eventsBaselineLabel: "Reference point:",
@@ -1217,7 +1217,7 @@ const nl: typeof en = {
     seasonalityHint:  "Eén lijn per jaar, maanden op de X-as — de jaren liggen over elkaar, dus een terugkerend patroon is meteen zichtbaar.",
 
     eventsTitle:         "Effect van feestdagen en events",
-    eventsWhat:          "hoeveel % beter (of slechter) de gemiddelde dag in het verkoopvenster van een feestdag was dan een gewone dag in dezelfde weken. Een balk van +80% bij Valentijn betekent dat er in het Valentijnsvenster per dag 80% meer dozen uitgingen dan op gewone dagen er vlak naast.",
+    eventsWhat:          "hoeveel beter een dag in het verkoopvenster van de feestdag was dan een typische gewone dag in dezelfde weken. Een balk van +80% bij Valentijn betekent dat er op een dag in het Valentijnsvenster 80% meer dozen uitgingen dan op een normale dag er vlak naast. De referentie is de mediane gewone dag — de typische, niet het gemiddelde, dat door één uitschieter omhoog wordt getrokken.",
     eventsWindowsLabel:  "Vensters, niet de data zelf:",
     eventsWindows:       "bloemen voor 14 februari worden in de twee weken ervoor verkocht, dus het venster is 25 januari – 11 februari en niet 14 februari zelf.",
     eventsBaselineLabel: "Referentiepunt:",
@@ -1822,7 +1822,7 @@ const pl: typeof en = {
     seasonalityHint:  "Jedna linia na rok, miesiące na osi X — lata nakładają się na siebie, więc powtarzalny wzorzec widać od razu.",
 
     eventsTitle:         "Wpływ świąt i wydarzeń",
-    eventsWhat:          "o ile % lepszy (lub gorszy) był przeciętny dzień w oknie sprzedażowym święta niż przeciętny zwykły dzień w tych samych tygodniach. Słupek +80% na Walentynkach znaczy: w oknie walentynkowym schodziło dziennie o 80% więcej pudełek niż w zwykłe dni tuż obok.",
+    eventsWhat:          "o ile lepszy był dzień w oknie sprzedażowym święta od typowego zwykłego dnia w tych samych tygodniach. Słupek +80% na Walentynkach znaczy, że w oknie walentynkowym schodziło dziennie o 80% więcej pudełek niż w normalny dzień tuż obok. Punktem odniesienia jest mediana zwykłego dnia — czyli dzień typowy, a nie średnia, którą zawyża pojedynczy wyskok.",
     eventsWindowsLabel:  "Okna, nie same daty:",
     eventsWindows:       "kwiaty na 14 lutego sprzedają się w poprzedzających dwóch tygodniach, więc okno to 25 stycznia – 11 lutego, a nie sam 14 lutego.",
     eventsBaselineLabel: "Punkt odniesienia:",
@@ -2427,7 +2427,7 @@ const es: typeof en = {
     seasonalityHint:  "Una línea por año, meses en el eje X — los años se superponen, así que un patrón repetido se ve de inmediato.",
 
     eventsTitle:         "Impacto de festivos y eventos",
-    eventsWhat:          "cuántos % mejor (o peor) fue el día medio en la ventana de venta de un festivo frente a un día normal de esas mismas semanas. Una barra de +80% en San Valentín significa que en la ventana de San Valentín salieron un 80% más de cajas al día que en los días normales de al lado.",
+    eventsWhat:          "cuánto mejor fue un día de la ventana de venta del festivo que un día normal típico de esas mismas semanas. Una barra de +80% en San Valentín significa que un día de la ventana de San Valentín movió un 80% más de cajas que un día normal de al lado. La referencia es la mediana del día normal — el típico, no la media, que un solo día atípico eleva.",
     eventsWindowsLabel:  "Ventanas, no las fechas en sí:",
     eventsWindows:       "las flores para el 14 de febrero se venden en las dos semanas previas, así que la ventana es del 25 de enero al 11 de febrero, no el 14 de febrero en sí.",
     eventsBaselineLabel: "Punto de referencia:",

@@ -34,14 +34,26 @@ a single pull anchored at the *oldest* requested date, split into
 day-buckets purely in local processing, covers the exact same ground in one
 network round-trip instead of hundreds.
 
-A range backfill longer than ~6 months is itself split into <=6-month
-windows, each still pulled with a single API call (see run_bi_sync_range /
-_bi_sync_chunks) — a call spanning more than roughly half a year started
-timing out downloading/parsing the export (found 2026-09-03). Anchoring
-each window's "since" cursor at the window's own start (not the absolute
-backfill start) is still correct: a line's mutation_date_time is always
->= its creation_date_time, so every line created inside a window is
-guaranteed to have been mutated at-or-after that window's start too.
+Because mutation_datetime is a "since" cursor, an export anchored at date D
+already contains every line created between D and now. A backfill therefore
+needs exactly ONE successful pull, anchored as far back as the API can
+manage — narrowing the *local* filter window does not make the download any
+smaller.
+
+That is what the 2026-09-03 chunking got wrong (fixed 2026-09-07): it split
+[start, end] into 6-month windows and anchored each at its own start, so
+chunk 1 of a 2022 backfill still requested "everything since 2022-01-01" —
+the whole database, exactly as big as before chunking — and the loop
+aborted the entire run on the first failure. A timeout on the oldest slice
+therefore wiped out every later slice too, leaving the scattered months the
+user reported.
+
+run_bi_sync_range now walks the anchors oldest-first and, on success,
+filters that one export across the WHOLE remaining range rather than just
+its own window — so the first anchor that survives fills everything from
+there to end_date and the loop stops. A failing anchor is not fatal: it
+just means that slice of history is unreachable, and the next (later,
+smaller) anchor is tried. The result reports how far back it actually got.
 
 order_lines is also enriched with manufacturer_id/length/supplier_id via
 created_from_stock_entry_id, looked up against *every* stock_entry row in
@@ -293,17 +305,20 @@ def run_bi_sync(cfg: Config, mutation_datetime: str, on_status=None) -> dict:
 
 
 def run_bi_sync_range(cfg: Config, start_date: str, end_date: str, on_status=None) -> dict:
-    """Backfill [start_date, end_date] (inclusive), split into <=6-month
-    windows run sequentially, each still a single API call anchored at that
-    window's own start — see module docstring for why per-window anchoring
-    is still correct, and why chunking exists at all (a call spanning more
-    than roughly half a year was timing out). A <=6-month range — the
-    common case — is exactly one call, same as before chunking existed.
+    """Backfill [start_date, end_date] (inclusive) with ONE successful export
+    pull, anchored as far back as the API can actually serve.
 
-    _sync_running stays true for the whole multi-window run, but each
-    window still gets its own bi_sync_log row/sync_id (via
-    _run_bi_sync_for_range) — "Last run log" in the UI shows only the most
-    recent window's messages, same as the old day-by-day loop did.
+    Anchors are tried oldest-first. Each attempt filters the export across
+    the whole remaining range [anchor, end_date] — not just a 6-month slice —
+    because a "since anchor" export already contains everything created after
+    that anchor. So the first anchor that succeeds fills the entire range and
+    the loop stops; there is nothing left for later anchors to add.
+
+    A failed anchor is not fatal. It means that slice of history is too large
+    for the API to deliver, so the next (later, therefore smaller) anchor is
+    tried and that much history is recovered. `oldest_covered` in the result
+    says how far back the run actually reached, which is the number worth
+    checking when a chart shows gaps.
     """
     global _sync_running
 
@@ -313,26 +328,43 @@ def run_bi_sync_range(cfg: Config, start_date: str, end_date: str, on_status=Non
     try:
         if date.fromisoformat(end_date) < date.fromisoformat(start_date):
             return {"ok": False, "error": "end_date is before start_date", "stock_entries": 0, "order_lines": 0}
-        chunks = _bi_sync_chunks(start_date, end_date)
+        anchors = [c[0] for c in _bi_sync_chunks(start_date, end_date)]
     except ValueError as exc:
         return {"ok": False, "error": f"Invalid date: {exc}", "stock_entries": 0, "order_lines": 0}
 
     with _sync_lock:
         _sync_running = True
     try:
-        total_stock_entries = 0
-        total_order_lines = 0
-        for i, (chunk_start, chunk_end) in enumerate(chunks, start=1):
-            if len(chunks) > 1 and on_status:
-                on_status(f"Backfill part {i}/{len(chunks)}: {chunk_start}..{chunk_end}")
-            result = _run_bi_sync_for_range(cfg, chunk_start, chunk_start, chunk_end, on_status)
-            total_stock_entries += result.get("stock_entries", 0)
-            total_order_lines += result.get("order_lines", 0)
-            if not result.get("ok"):
-                error = result.get("error", "unknown error")
-                if len(chunks) > 1:
-                    error = f"Backfill stopped at part {i}/{len(chunks)} ({chunk_start}..{chunk_end}): {error}"
-                return {"ok": False, "stock_entries": total_stock_entries, "order_lines": total_order_lines, "error": error}
-        return {"ok": True, "stock_entries": total_stock_entries, "order_lines": total_order_lines, "error": ""}
+        failures: list[str] = []
+        for i, anchor in enumerate(anchors, start=1):
+            if len(anchors) > 1 and on_status:
+                on_status(f"Backfill attempt {i}/{len(anchors)} — pulling everything since {anchor} "
+                          f"and filtering to {anchor}..{end_date}")
+            result = _run_bi_sync_for_range(cfg, anchor, anchor, end_date, on_status)
+            if result.get("ok"):
+                if failures and on_status:
+                    on_status(f"Recovered history back to {anchor}; {len(failures)} older anchor(s) "
+                              f"were too large for the API to deliver")
+                return {
+                    "ok": True,
+                    "stock_entries": result.get("stock_entries", 0),
+                    "order_lines": result.get("order_lines", 0),
+                    "oldest_covered": anchor,
+                    "skipped_anchors": failures,
+                    "error": "",
+                }
+            failures.append(f"{anchor}: {result.get('error', 'unknown error')}")
+            if on_status:
+                on_status(f"Anchor {anchor} failed ({result.get('error', 'unknown error')}) — "
+                          f"retrying from a later date, which recovers less history")
+
+        return {
+            "ok": False,
+            "stock_entries": 0,
+            "order_lines": 0,
+            "oldest_covered": None,
+            "skipped_anchors": failures,
+            "error": "Every anchor failed: " + " | ".join(failures),
+        }
     finally:
         _sync_running = False

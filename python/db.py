@@ -2883,9 +2883,17 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) 
             days would otherwise swallow the next year's Valentine's)."""
             return any(start <= (d.month, d.day) <= end for _, start, end in _BI_EVENTS)
 
-        def avg(vals: list[float | None]) -> float | None:
-            clean = [v for v in vals if v is not None]
-            return sum(clean) / len(clean) if clean else None
+        def median(vals: list[float | None]) -> float | None:
+            """The TYPICAL day, not the average one. A mean baseline is pulled
+            up by any single outlying day, which made a genuinely strong
+            holiday read as a smaller gain — or even a loss. The question this
+            chart answers is "how much better than a normal day", so both
+            sides use the median (user, 2026-09-07)."""
+            clean = sorted(v for v in vals if v is not None)
+            if not clean:
+                return None
+            mid = len(clean) // 2
+            return clean[mid] if len(clean) % 2 else (clean[mid - 1] + clean[mid]) / 2
 
         observed_years = sorted({d.year for d in by_day})
         out = []
@@ -2908,17 +2916,17 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) 
                 if len(ev_days) < 5 or len(base_days) < 15:
                     continue
 
-                ev_qty = avg([by_day[d][0] for d in ev_days])
-                base_qty = avg([by_day[d][0] for d in base_days])
-                ev_price = avg([by_day[d][1] for d in ev_days])
-                base_price = avg([by_day[d][1] for d in base_days])
+                ev_qty = median([by_day[d][0] for d in ev_days])
+                base_qty = median([by_day[d][0] for d in base_days])
+                ev_price = median([by_day[d][1] for d in ev_days])
+                base_price = median([by_day[d][1] for d in base_days])
 
                 per_year.append({
                     "year": year,
                     "volume_lift_pct": round((ev_qty - base_qty) / base_qty * 100, 1) if base_qty else None,
                     "price_lift_pct": round((ev_price - base_price) / base_price * 100, 1) if base_price and ev_price else None,
-                    "event_avg_quantity": round(ev_qty, 1) if ev_qty is not None else None,
-                    "baseline_avg_quantity": round(base_qty, 1) if base_qty is not None else None,
+                    "event_typical_quantity": round(ev_qty, 1) if ev_qty is not None else None,
+                    "baseline_typical_quantity": round(base_qty, 1) if base_qty is not None else None,
                     "event_days": len(ev_days),
                     "baseline_days": len(base_days),
                 })

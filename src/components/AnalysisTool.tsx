@@ -71,8 +71,8 @@ interface EventImpact {
     year: number;
     volume_lift_pct: number | null;
     price_lift_pct: number | null;
-    event_avg_quantity: number | null;
-    baseline_avg_quantity: number | null;
+    event_typical_quantity: number | null;
+    baseline_typical_quantity: number | null;
     event_days: number;
     baseline_days: number;
   }[];
