@@ -49,6 +49,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
                get_bi_customers_for_picker,
                get_bi_sales_by_supplier, get_bi_sales_by_product, get_bi_sales_overview,
+               get_bi_top_products_for_supplier,
                get_bi_price_trend_by_length, get_bi_price_vs_length, get_bi_price_elasticity,
                get_bi_supplier_price_comparison, get_bi_supplier_volatility,
                get_bi_supplier_market_deviation, get_bi_seasonality, get_bi_event_impact,
@@ -815,9 +816,30 @@ def bi_sync_sales_by_supplier(
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Multi-series sale price over time for one supplier — one line per
-    product (top 10 by volume, so the frontend can highlight one + show top
-    3 others), over the given [start_date, end_date] range."""
+    product (top 10 by ORDER LINE COUNT, so the frontend can highlight one +
+    show top 3 others), over the given [start_date, end_date] range. Line
+    count picks which series are worth drawing; it is NOT a volume ranking —
+    see /bi-sync/supplier-top-products for that."""
     return get_bi_sales_by_supplier(supplier_id, start_date, end_date, customer_id=customer_id)
+
+
+@app.get("/bi-sync/supplier-top-products")
+def bi_sync_supplier_top_products(
+    supplier_id: str,
+    start_date: str,
+    end_date: str,
+    metric: str = "quantity",
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Which products one supplier actually moved most — sorted ranking by
+    realised volume (metric=quantity) or revenue (metric=value). Both
+    figures come back on every row so the chart can show the other one
+    next to the ranked bar."""
+    if metric not in ("quantity", "value"):
+        raise HTTPException(400, "metric must be 'quantity' or 'value'")
+    return get_bi_top_products_for_supplier(
+        supplier_id, start_date, end_date, metric, customer_id=customer_id)
 
 
 @app.get("/bi-sync/sales-by-product")

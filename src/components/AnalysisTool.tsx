@@ -37,6 +37,11 @@ interface ProductPickerItem { product_id: string; description: string | null; ro
 interface SupplierPickerItem { supplier_id: string; name: string | null; row_count: number }
 interface CustomerPickerItem { customer_id: string; name: string | null; row_count: number }
 
+interface TopProductPoint {
+  product_id: string; label: string;
+  quantity: number; value: number; line_count: number;
+}
+
 interface LengthPoint {
   length: number;
   avg_price: number;
@@ -100,6 +105,10 @@ const ALL_CUSTOMERS = "__all__";
 const REFERENCE_CUSTOMER = "12";
 type Tab = "sales" | "price" | "suppliers" | "seasonality";
 type Metric = "quantity" | "price";
+/** Ranking basis for the supplier's top-products chart. Volume and revenue
+ *  regularly disagree — a cheap high-turnover product tops one and not the
+ *  other — so this is a toggle, not a chosen default. */
+type RankMetric = "quantity" | "value";
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -356,6 +365,17 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
     : api("/bi-sync/sales-overview", { group_by: viewMode, start_date: startDate, end_date: endDate, customer_id: customerId });
   const { data: salesData, loading: salesLoading } = useFetch<{ series: Series[] }>(
     tab === "sales" ? salesUrl : null, refreshTick);
+
+  // "What did this supplier actually move most" — the price chart above
+  // ranks its series by order-line count, which answers a different question.
+  const [rankMetric, setRankMetric] = useState<RankMetric>("quantity");
+  const { data: topProductsData, loading: topProductsLoading } = useFetch<{ points: TopProductPoint[] }>(
+    tab === "sales" && viewMode === "supplier" && primaryId
+      ? api("/bi-sync/supplier-top-products", {
+          supplier_id: primaryId, start_date: startDate, end_date: endDate,
+          metric: rankMetric, customer_id: customerId,
+        })
+      : null, refreshTick);
 
   const salesSeries = salesData?.series ?? [];
   useEffect(() => {
@@ -619,6 +639,40 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
               soldLabel={t.soldBoxes}
             />
           )}
+        </Card>
+      )}
+
+      {/* ── Top products for the selected supplier ───────────────────────── */}
+      {tab === "sales" && viewMode === "supplier" && !!primaryId && (
+        <Card title={t.topProductsTitle} hint={t.topProductsHint}>
+          <div className="flex rounded-lg border border-border overflow-hidden self-start">
+            {(["quantity", "value"] as RankMetric[]).map(m => (
+              <button
+                key={m}
+                onClick={() => setRankMetric(m)}
+                className={`h-9 px-3 text-sm font-medium transition-colors ${rankMetric === m ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
+              >
+                {m === "quantity" ? t.rankByQuantity : t.rankByValue}
+              </button>
+            ))}
+          </div>
+          <Loading when={topProductsLoading} text={t.loading} />
+          <HBarChart
+            points={(topProductsData?.points ?? []).map(p => ({
+              label: p.label,
+              // The unranked figure sits in the sublabel: volume and revenue
+              // order differently often enough that showing only one invites
+              // reading it as both.
+              value: rankMetric === "quantity" ? p.quantity : p.value,
+              sublabel: rankMetric === "quantity" ? fmtPrice(p.value) : `${fmtNum(p.quantity, locale)} ${t.boxes}`,
+              volume: p.line_count,
+            }))}
+            format={v => (rankMetric === "quantity" ? fmtNum(v ?? 0, locale) : fmtPrice(v))}
+            valueHeader={rankMetric === "quantity" ? t.boxes : t.rankByValue}
+            volumeHeader={t.linesCol}
+            locale={locale}
+            emptyText={t.noSalesInRange}
+          />
         </Card>
       )}
 

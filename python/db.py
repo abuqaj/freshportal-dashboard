@@ -2289,6 +2289,66 @@ def get_bi_sales_by_supplier(
         return {"series": []}
 
 
+def get_bi_top_products_for_supplier(
+    supplier_id: str, start_date: str, end_date: str, metric: str = "quantity",
+    limit: int = 15, customer_id: str | None = None,
+) -> dict:
+    """What one supplier actually moved most, as a sorted ranking.
+
+    Every other "top N" in this module ranks by COUNT(*) — order LINES — to
+    pick which series to draw. That answers "what did we transact most
+    often", not "what did we sell most of": a product shipped in 50 small
+    lines outranks one shipped in 3 large ones. This ranks by realised
+    volume or revenue instead (added 2026-09-09, after the supplier chart
+    turned out to have no way to answer the volume question).
+
+    Both figures are returned on every row regardless of `metric`, so the
+    chart can show the unranked one alongside the bar — the two orderings
+    often disagree, and seeing only one invites reading it as both.
+    """
+    try:
+        ensure_bi_tables()
+        # Whitelisted, never interpolated from raw input.
+        order_col = "total_value" if metric == "value" else "total_quantity"
+        customer_clause, customer_params = _customer_scope(customer_id)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT product_id,
+                           COALESCE(SUM(quantity), 0) AS total_quantity,
+                           COALESCE(SUM(store_price * quantity), 0) AS total_value,
+                           COUNT(*) AS line_count
+                    FROM bi_order_lines
+                    WHERE supplier_id = %s AND product_id IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY product_id
+                    ORDER BY {order_col} DESC
+                    LIMIT %s
+                """, [supplier_id, start_date, end_date] + customer_params + [limit])
+                rows = cur.fetchall()
+                if not rows:
+                    return {"points": [], "metric": metric}
+                labels = _product_labels(cur, [r["product_id"] for r in rows])
+
+        return {
+            "points": [
+                {
+                    "product_id": r["product_id"],
+                    "label": labels.get(r["product_id"]) or r["product_id"],
+                    "quantity": float(r["total_quantity"] or 0),
+                    "value": float(r["total_value"] or 0),
+                    "line_count": r["line_count"],
+                }
+                for r in rows
+            ],
+            "metric": metric,
+        }
+    except Exception as exc:
+        logger.warning("get_bi_top_products_for_supplier: %s", exc)
+        return {"points": [], "metric": metric}
+
+
 def get_bi_sales_by_product(
     product_id: str, start_date: str, end_date: str, length: int | None = None, max_series: int = 10,
     customer_id: str | None = None,
