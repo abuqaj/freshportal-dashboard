@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { Lang, translations } from "@/lib/i18n";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
@@ -72,41 +72,44 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
   const [error, setError] = useState("");
   const [limit, setLimit] = useState("1");
 
+  function logCall(entry: CallEntry) {
+    setCalls(c => [entry, ...c].slice(0, 50));
+  }
+
   /** Every call goes through here so the log can never drift from what was
-   *  actually sent — including failures, which are the ones worth seeing. */
-  const call = useCallback(async <T,>(
+   *  actually sent — including failures, which are the ones worth seeing.
+   *
+   *  The parsed body is kept as `unknown` alongside the typed one: reading
+   *  FastAPI's error `detail` off a value typed as the caller's success
+   *  shape would be a cast between two types that do not overlap. */
+  async function call<T>(
     method: "GET" | "POST", path: string, body?: unknown, summarise?: (d: T) => string,
-  ): Promise<T | null> => {
+  ): Promise<T | null> {
     const started = performance.now();
-    let status: number | string = "—";
+    const ms = () => Math.round(performance.now() - started);
+    const at = new Date().toLocaleTimeString();
     try {
       const res = await fetch(`${RAILWAY}${path}`, {
         method,
         ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
       });
-      status = res.status;
       const text = await res.text();
-      let data: T | null = null;
-      try { data = text ? JSON.parse(text) as T : null; } catch { /* non-JSON error page */ }
+      let parsed: unknown = null;
+      try { parsed = text ? JSON.parse(text) : null; } catch { /* HTML error page */ }
+      const data = parsed as T | null;
       const summary = res.ok
         ? (data && summarise ? summarise(data) : "OK")
-        : ((data as { detail?: string } | null)?.detail ?? text.slice(0, 200) || res.statusText);
-      setCalls(c => [{
-        at: new Date().toLocaleTimeString(), method, path, status,
-        ms: Math.round(performance.now() - started), summary,
-      }, ...c].slice(0, 50));
-      if (!res.ok) { setError(`${path} → ${status}: ${summary}`); return null; }
+        : ((parsed as { detail?: string } | null)?.detail ?? (text.slice(0, 200) || res.statusText));
+      logCall({ at, method, path, status: res.status, ms: ms(), summary });
+      if (!res.ok) { setError(`${path} → ${res.status}: ${summary}`); return null; }
       return data;
     } catch (e) {
       const summary = e instanceof Error ? e.message : String(e);
-      setCalls(c => [{
-        at: new Date().toLocaleTimeString(), method, path, status: "network",
-        ms: Math.round(performance.now() - started), summary,
-      }, ...c].slice(0, 50));
+      logCall({ at, method, path, status: "network", ms: ms(), summary });
       setError(`${path} → ${summary}`);
       return null;
     }
-  }, []);
+  }
 
   async function loadCustomers(includeOpen: boolean) {
     setBusy(includeOpen ? t.busyPullingCustomers : t.busyLoading);
