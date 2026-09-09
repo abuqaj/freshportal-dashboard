@@ -6,6 +6,7 @@ synchronous access from Railway background threads.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import os
@@ -2996,13 +2997,43 @@ def get_bi_seasonality(product_id: str | None = None, customer_id: str | None = 
                 """, params)
                 rows = cur.fetchall()
 
+                # Ingestion coverage, deliberately UNFILTERED: whether a
+                # calendar month was fully observed is a property of what the
+                # sync pulled, not of the product/customer slice being
+                # charted. Scoping this to the same filters would drop a month
+                # merely because this one product happened not to sell in its
+                # first days.
+                cur.execute("""
+                    SELECT MIN(creation_date_time)::date AS lo,
+                           MAX(creation_date_time)::date AS hi
+                    FROM bi_order_lines WHERE creation_date_time IS NOT NULL
+                """)
+                coverage = cur.fetchone() or {}
+                cov_lo, cov_hi = coverage.get("lo"), coverage.get("hi")
+
+        def fully_observed(y: int, m: int) -> bool:
+            """A month only belongs on a seasonality chart if the whole month
+            was actually observed. A partial month is a monthly TOTAL over
+            part of a month, so it plots as a real, plausible-looking slump
+            next to complete months — the in-progress month always appears to
+            collapse. That is worse than the absent-month case this chart
+            already guards against, because a gap reads as missing while a
+            short bar reads as fact (2026-09-09)."""
+            if cov_lo is None or cov_hi is None:
+                return True
+            last = calendar.monthrange(y, m)[1]
+            return cov_lo <= date(y, m, 1) and date(y, m, last) <= cov_hi
+
         years = sorted({r["year"] for r in rows})
         by_year: dict[int, dict[int, dict]] = {y: {} for y in years}
         for r in rows:
+            if not fully_observed(r["year"], r["month"]):
+                continue
             by_year[r["year"]][r["month"]] = {
                 "quantity": float(r["total_quantity"] or 0),
                 "price": float(r["avg_price"]) if r["avg_price"] is not None else None,
             }
+        years = [y for y in years if by_year[y]]
 
         # Only months that actually have rows. Filling absent months with
         # quantity 0 (as this did until 2026-09-03) was wrong and visibly
@@ -3079,8 +3110,10 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45, 
 
     Days with no rows at all are absent from the input and are NOT counted
     as zero-volume days — a day nothing was synced for is unknown, not idle.
-    Windows without enough covered days on either side are dropped rather
-    than reported at low confidence.
+    A window is dropped rather than reported at low confidence unless it has
+    >=5 covered days of its own AND >=15 ordinary baseline days with at
+    least 5 on EACH side of it — a one-sided baseline turns a seasonal trend
+    into apparent event lift.
     """
     try:
         ensure_bi_tables()
@@ -3149,8 +3182,18 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45, 
                     if win_start - timedelta(days=baseline_days) <= d <= win_end + timedelta(days=baseline_days)
                     and is_ordinary_day(d)
                 ]
-                # Too little coverage on either side to say anything honest.
-                if len(ev_days) < 5 or len(base_days) < 15:
+                # Both sides must be represented, not just the total. A
+                # one-sided baseline compares the window against only what
+                # came before (or only what came after) it, so any seasonal
+                # trend running through the window is read as event lift.
+                # Christmas is structurally exposed: its trailing baseline
+                # (7-24 Jan) falls in the FOLLOWING year, so the last covered
+                # year would always be judged against autumn alone. The total
+                # count alone passed that case (2026-09-09).
+                lead = [d for d in base_days if d < win_start]
+                trail = [d for d in base_days if d > win_end]
+                if (len(ev_days) < 5 or len(base_days) < 15
+                        or len(lead) < 5 or len(trail) < 5):
                     continue
 
                 ev_qty = median([by_day[d][0] for d in ev_days])

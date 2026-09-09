@@ -627,7 +627,7 @@ const en = {
     eventsBaseline:      "ordinary days within 45 days of the window, excluding other holidays. We previously compared against the whole-year average — hence the absurd −63% on Valentine's: the annual average is inflated by months the backfill covers better, so a real peak came out as a drop. A year with incomplete data in a given window is skipped rather than shown as zero.",
     eventCoverage: (ev: string, base: string) => `based on ${ev} covered day(s) in the window vs ${base} ordinary day(s)`,
     forecastTitle:       "Demand forecast",
-    forecastBody:        "Deliberately not built yet. A sensible seasonal forecast needs at least two full yearly cycles and the backfill is currently incomplete — a chart on this data would look credible and be invented. We will come back to it once the history is complete; the natural first step is then seasonal-naive (the same week a year ago, adjusted for the year-on-year trend) as a baseline.",
+    forecastBody:        "Deliberately not built yet — but the original blocker is gone: order lines now reach back to 2023. What is left is method, not data. The natural first step is seasonal-naive (the same week a year ago, adjusted for the year-on-year trend). Before that, check the seasonality chart above for a year missing whole months — a forecast trained across those gaps would look credible and be wrong.",
 
     months: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
     // Keyed by the language-neutral event key the API returns (db.py _BI_EVENTS).
@@ -1243,7 +1243,7 @@ const nl: typeof en = {
     eventsBaseline:      "gewone dagen binnen 45 dagen rond het venster, met uitsluiting van andere feestdagen. Eerder vergeleken we met het jaargemiddelde — vandaar de absurde −63% bij Valentijn: het jaargemiddelde wordt opgeblazen door maanden die de backfill beter dekt, waardoor een echte piek als daling uitkwam. Een jaar met onvolledige data in een venster wordt overgeslagen in plaats van als nul getoond.",
     eventCoverage: (ev: string, base: string) => `op basis van ${ev} gedekte dag(en) in het venster vs ${base} gewone dag(en)`,
     forecastTitle:       "Vraagvoorspelling",
-    forecastBody:        "Bewust nog niet gebouwd. Een zinnige seizoensvoorspelling heeft minstens twee volledige jaarcycli nodig en de backfill is nu incompleet — een grafiek op deze data zou geloofwaardig ogen en verzonnen zijn. We pakken dit op zodra de historie compleet is; de logische eerste stap is dan seasonal-naive (dezelfde week een jaar geleden, gecorrigeerd voor de jaar-op-jaartrend) als referentie.",
+    forecastBody:        "Bewust nog niet gebouwd — maar de oorspronkelijke blokkade is weg: orderregels reiken nu terug tot 2023. Wat rest is de methode, niet de data. De logische eerste stap is seasonal-naive (dezelfde week een jaar geleden, gecorrigeerd voor de jaar-op-jaartrend). Controleer eerst in de seizoensgrafiek hierboven of een jaar hele maanden mist — een voorspelling die over zulke gaten leert, oogt geloofwaardig en is fout.",
 
     months: ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"],
     eventNames: { valentines: "Valentijnsdag", womens_day: "Vrouwendag", mothers_day: "Moederdag (NL/DE)", christmas: "Kerst" } as Record<string, string>,
@@ -1858,7 +1858,7 @@ const pl: typeof en = {
     eventsBaseline:      "zwykłe dni w promieniu 45 dni od okna, z wykluczeniem innych świąt. Wcześniej porównywaliśmy do średniej z całego roku — stąd absurdalne −63% na Walentynki: średnia roczna jest zawyżana przez miesiące lepiej pokryte backfillem, więc realny szczyt wychodził na spadek. Rok z niepełnymi danymi w danym oknie jest pomijany, a nie pokazywany jako zero.",
     eventCoverage: (ev: string, base: string) => `na podstawie ${ev} pokrytych dni w oknie vs ${base} zwykłych dni`,
     forecastTitle:       "Prognoza popytu",
-    forecastBody:        "Celowo jeszcze nie zbudowana. Sensowna prognoza sezonowa potrzebuje co najmniej dwóch pełnych cykli rocznych, a backfill jest w tej chwili niekompletny — wykres na tych danych wyglądałby wiarygodnie i byłby zmyślony. Wrócimy do tego po dociągnięciu historii; wtedy naturalnym pierwszym krokiem jest seasonal-naive (ten sam tydzień rok temu skorygowany o trend r/r) jako punkt odniesienia.",
+    forecastBody:        "Celowo jeszcze nie zbudowana — ale pierwotna przeszkoda zniknęła: linie sprzedaży sięgają już 2023 roku. Zostaje wybór metody, nie brak danych. Naturalnym pierwszym krokiem jest seasonal-naive (ten sam tydzień rok temu skorygowany o trend r/r). Wcześniej sprawdź na wykresie sezonowości powyżej, czy któryś rok nie ma całych brakujących miesięcy — prognoza uczona na takich lukach wyglądałaby wiarygodnie i byłaby błędna.",
 
     months: ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"],
     eventNames: { valentines: "Walentynki", womens_day: "Dzień Kobiet", mothers_day: "Dzień Matki (NL/DE)", christmas: "Boże Narodzenie" } as Record<string, string>,
@@ -2473,7 +2473,7 @@ const es: typeof en = {
     eventsBaseline:      "días normales dentro de los 45 días alrededor de la ventana, excluyendo otros festivos. Antes comparábamos con la media de todo el año — de ahí el absurdo −63% en San Valentín: la media anual se infla por los meses que el backfill cubre mejor, así que un pico real salía como caída. Un año con datos incompletos en una ventana se omite en lugar de mostrarse como cero.",
     eventCoverage: (ev: string, base: string) => `basado en ${ev} día(s) cubierto(s) en la ventana vs ${base} día(s) normal(es)`,
     forecastTitle:       "Previsión de demanda",
-    forecastBody:        "Deliberadamente aún no construida. Una previsión estacional sensata necesita al menos dos ciclos anuales completos y el backfill está ahora incompleto — un gráfico con estos datos parecería creíble y sería inventado. Volveremos a ello cuando el histórico esté completo; el primer paso natural será entonces seasonal-naive (la misma semana del año pasado, ajustada por la tendencia interanual) como referencia.",
+    forecastBody:        "Deliberadamente aún no construida — pero el bloqueo original ha desaparecido: las líneas de pedido llegan ahora hasta 2023. Lo que queda es el método, no los datos. El primer paso natural es seasonal-naive (la misma semana del año pasado, ajustada por la tendencia interanual). Antes, comprueba en el gráfico de estacionalidad de arriba si algún año carece de meses enteros — una previsión entrenada sobre esos huecos parecería creíble y sería errónea.",
 
     months: ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"],
     eventNames: { valentines: "San Valentín", womens_day: "Día de la Mujer", mothers_day: "Día de la Madre (NL/DE)", christmas: "Navidad" } as Record<string, string>,
