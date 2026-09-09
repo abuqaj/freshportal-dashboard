@@ -275,52 +275,59 @@ def _read_air_waybill_weight(page, cfg: Config, invoice_id: str) -> float | None
     return _cell_number(field.get_attribute("value") or "")
 
 
-def _write_line_weights(page, weight_text: str) -> tuple[int, list[str]]:
-    """Click each box_weight cell, type the value, verify it stuck.
+def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -> tuple[int, list[str]]:
+    """Type down the box_weight column the way the grid expects, then verify.
 
-    Returns (written, problems). The cells are re-queried by id on every
-    iteration because committing one edit can re-render the table, which
-    would leave previously captured element handles pointing at detached
-    nodes."""
+    The column behaves like a spreadsheet: ArrowDown commits the cell being
+    edited and opens the one below it (user, 2026-09-09). Editing each cell
+    on its own — click, fill, Enter — only ever landed the FIRST value,
+    because committing re-renders the table and the next click no longer
+    hits an editable cell.
+
+    Verification is a separate pass over a freshly loaded page rather than
+    an immediate read of each cell. While a cell is being edited its value
+    lives in an input inside the td, not in the td's text, so reading the
+    text back mid-edit reported None even for the cell that had just been
+    written successfully. Reloading also means what is checked is what the
+    server actually stored, not what the browser is showing.
+    """
     ids = [
         el.get_attribute("id")
         for el in page.query_selector_all("#invoice_table td.box_weight")
     ]
     ids = [i for i in ids if i]
-    written, problems = 0, []
+    if not ids:
+        return 0, ["no box_weight cells found in #invoice_table"]
 
+    first = page.query_selector(f"#{ids[0]}")
+    if first is None:
+        return 0, [f"{ids[0]}: cell vanished before editing"]
+    first.click()
+    page.wait_for_timeout(300)
+
+    for _ in ids:
+        # Select whatever the cell already holds so typing replaces it
+        # rather than appending to the old weight.
+        page.keyboard.press("Control+A")
+        page.keyboard.type(weight_text)
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(200)
+
+    # The last ArrowDown has no row below it to move to, so the final cell
+    # may still be open; blur to force the commit before reloading.
+    page.keyboard.press("Tab")
+    page.wait_for_timeout(500)
+
+    page.goto(details_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
+    want = _cell_number(weight_text)
+    written, problems = 0, []
     for cell_id in ids:
         cell = page.query_selector(f"#{cell_id}")
-        if cell is None:
-            problems.append(f"{cell_id}: disappeared before edit")
-            continue
-        cell.click()
-        # The cell turns into (or reveals) an input; which of the two is not
-        # documented anywhere, so both are handled.
-        editor = page.query_selector(f"#{cell_id} input, #{cell_id} textarea")
-        if editor is not None:
-            editor.fill(weight_text)
-            editor.press("Enter")
-        elif cell.get_attribute("contenteditable") in ("", "true"):
-            page.keyboard.press("Control+A")
-            page.keyboard.type(weight_text)
-            page.keyboard.press("Enter")
-        else:
-            problems.append(f"{cell_id}: clicked but no editable field appeared")
-            continue
-
-        # Read back rather than trust the click — this writes to a live
-        # invoice, and a silently rejected edit is indistinguishable from a
-        # successful one without checking.
-        page.wait_for_timeout(250)
-        after = page.query_selector(f"#{cell_id}")
-        got = _cell_number(after.inner_text() if after else "")
-        want = _cell_number(weight_text)
-        if got is None or want is None or abs(got - want) > 0.005:
-            problems.append(f"{cell_id}: expected {weight_text}, cell reads {got!r}")
-        else:
+        got = _cell_number(cell.inner_text() if cell else "")
+        if got is not None and want is not None and abs(got - want) <= 0.005:
             written += 1
-
+        else:
+            problems.append(f"{cell_id}: expected {weight_text}, reloaded cell reads {got!r}")
     return written, problems
 
 
@@ -422,7 +429,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                     per_box = round(weight / boxes, WEIGHT_DECIMALS)
                     sample = page.query_selector("#invoice_table td.box_weight")
                     weight_text = _format_weight(per_box, sample.inner_text() if sample else "")
-                    written, problems = _write_line_weights(page, weight_text)
+                    written, problems = _write_line_weights(page, cfg, details_url, weight_text)
 
                     result |= {
                         "total_weight": weight, "box_count": boxes, "weight_per_box": per_box,
