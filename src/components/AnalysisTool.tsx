@@ -35,6 +35,7 @@ interface BiSyncRun {
 
 interface ProductPickerItem { product_id: string; description: string | null; row_count: number }
 interface SupplierPickerItem { supplier_id: string; name: string | null; row_count: number }
+interface CustomerPickerItem { customer_id: string; name: string | null; row_count: number }
 
 interface LengthPoint {
   length: number;
@@ -87,7 +88,16 @@ interface ScopedResult<T> {
 
 type Copy = (typeof translations)["en"]["analysis"];
 
-type ViewMode = "supplier" | "product";
+type ViewMode = "supplier" | "product" | "customer";
+
+/** Customer scope meaning "don't filter". Matches BI_ALL_CUSTOMERS in db.py.
+ *  Sale price is customer-specific, so this deliberately isn't the default —
+ *  see REFERENCE_CUSTOMER. */
+const ALL_CUSTOMERS = "__all__";
+/** OZEDS — what bi_order_lines held exclusively until ingest widened on
+ *  2026-09-09. Kept as the opening scope so every chart still means what it
+ *  meant before other customers started landing in the table. */
+const REFERENCE_CUSTOMER = "12";
 type Tab = "sales" | "price" | "suppliers" | "seasonality";
 type Metric = "quantity" | "price";
 
@@ -218,11 +228,18 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
     return d.toISOString().slice(0, 10);
   });
   const [endDate, setEndDate] = useState(() => todayIso());
+  const [customerId, setCustomerId] = useState(REFERENCE_CUSTOMER);
+
+  // Unscoped by customer on purpose — the selector must be able to offer
+  // customers other than the one currently selected.
+  const { data: customersData } = useFetch<{ customers: CustomerPickerItem[] }>(
+    api("/bi-sync/customers", { start_date: startDate, end_date: endDate }), refreshTick);
+  const customers = customersData?.customers ?? [];
 
   const { data: suppliersData } = useFetch<{ suppliers: SupplierPickerItem[] }>(
-    api("/bi-sync/suppliers", { limit: 200, start_date: startDate, end_date: endDate }), refreshTick);
+    api("/bi-sync/suppliers", { limit: 200, start_date: startDate, end_date: endDate, customer_id: customerId }), refreshTick);
   const { data: productsData } = useFetch<{ products: ProductPickerItem[] }>(
-    api("/bi-sync/products", { limit: 300, start_date: startDate, end_date: endDate }), refreshTick);
+    api("/bi-sync/products", { limit: 300, start_date: startDate, end_date: endDate, customer_id: customerId }), refreshTick);
   const suppliers = suppliersData?.suppliers ?? [];
   const products = productsData?.products ?? [];
 
@@ -253,6 +270,25 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
     </select>
   );
 
+  const customerPicker = (
+    <div>
+      <label className="block text-[11px] text-ink-3 mb-1">{t.customerScope}</label>
+      <select value={customerId} onChange={e => setCustomerId(e.target.value)} className={`${CTRL} max-w-xs`}>
+        <option value={ALL_CUSTOMERS}>{t.allCustomers}</option>
+        {/* The list is date-scoped, so a customer with no sales in the current
+            range drops out of it. Without this the select would render blank
+            while still filtering by that customer — looking broken rather than
+            explaining itself. */}
+        {customerId !== ALL_CUSTOMERS && !customers.some(c => c.customer_id === customerId) && (
+          <option value={customerId}>{customerId} (0)</option>
+        )}
+        {customers.map(c => (
+          <option key={c.customer_id} value={c.customer_id}>{c.name || c.customer_id} ({c.row_count})</option>
+        ))}
+      </select>
+    </div>
+  );
+
   const dateRange = (
     <>
       <div>
@@ -263,8 +299,17 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
         <label className="block text-[11px] text-ink-3 mb-1">{t.dateTo}</label>
         <input type="date" value={endDate} min={startDate} onChange={e => setEndDate(e.target.value)} className={CTRL} />
       </div>
+      {customerPicker}
     </>
   );
+
+  // Price series from more than one customer are not comparable — each
+  // customer has its own webshop price list, so an "all customers" average
+  // is a blend of price regimes rather than a price. Volume-shaped charts
+  // are fine; this warns on the ones that aren't.
+  const mixedCustomerWarning = customerId === ALL_CUSTOMERS
+    ? <p className="text-xs text-amber-600">{t.mixedCustomerWarning}</p>
+    : null;
 
   // ── Tab: Sales ──────────────────────────────────────────────────────────
   const [viewMode, setViewMode] = useState<ViewMode>("supplier");
@@ -274,6 +319,7 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
 
   useEffect(() => { setPrimaryId(""); setHighlightKey(""); }, [viewMode]);
   useEffect(() => {
+    if (viewMode === "customer") return;
     const ids = viewMode === "supplier" ? suppliers.map(s => s.supplier_id) : products.map(p => p.product_id);
     if (ids.length) setPrimaryId(prev => (prev && !ids.includes(prev)) ? "" : prev);
   }, [viewMode, suppliers, products]);
@@ -283,7 +329,7 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
   // would render an empty chart with nothing explaining why.
   const { data: salesLengths } = useFetch<{ lengths: number[] }>(
     viewMode === "product" && primaryId
-      ? api("/bi-sync/product-lengths", { product_id: primaryId, start_date: startDate, end_date: endDate })
+      ? api("/bi-sync/product-lengths", { product_id: primaryId, start_date: startDate, end_date: endDate, customer_id: customerId })
       : null, refreshTick);
 
   // Drop a length that the (date-scoped) list no longer offers — otherwise
@@ -297,14 +343,17 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
     setSalesLength(prev => (prev && !ls.includes(Number(prev)) ? "" : prev));
   }, [salesLengths]);
 
-  // No selection yet -> a top-N overview rather than a blank panel.
-  const salesUrl = primaryId
+  // No selection yet -> a top-N overview rather than a blank panel. "customer"
+  // mode is overview-only: there is no per-customer drill-down endpoint, and
+  // the customer scope selector above already is the per-customer view.
+  const salesUrl = primaryId && viewMode !== "customer"
     ? api(`/bi-sync/${viewMode === "supplier" ? "sales-by-supplier" : "sales-by-product"}`, {
         [viewMode === "supplier" ? "supplier_id" : "product_id"]: primaryId,
         start_date: startDate, end_date: endDate,
         length: viewMode === "product" ? salesLength : null,
+        customer_id: customerId,
       })
-    : api("/bi-sync/sales-overview", { group_by: viewMode, start_date: startDate, end_date: endDate });
+    : api("/bi-sync/sales-overview", { group_by: viewMode, start_date: startDate, end_date: endDate, customer_id: customerId });
   const { data: salesData, loading: salesLoading } = useFetch<{ series: Series[] }>(
     tab === "sales" ? salesUrl : null, refreshTick);
 
@@ -326,11 +375,11 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
   // ── Tab: Price & profitability ──────────────────────────────────────────
   const priceActive = tab === "price" && !!analysisProductId;
   const { data: trendData, loading: trendLoading } = useFetch<{ series: Series[] }>(
-    priceActive ? api("/bi-sync/price-trend-by-length", { product_id: analysisProductId, start_date: startDate, end_date: endDate }) : null, refreshTick);
+    priceActive ? api("/bi-sync/price-trend-by-length", { product_id: analysisProductId, start_date: startDate, end_date: endDate, customer_id: customerId }) : null, refreshTick);
   const { data: lengthData, loading: lengthLoading } = useFetch<{ points: LengthPoint[] }>(
-    priceActive ? api("/bi-sync/price-vs-length", { product_id: analysisProductId, start_date: startDate, end_date: endDate }) : null, refreshTick);
+    priceActive ? api("/bi-sync/price-vs-length", { product_id: analysisProductId, start_date: startDate, end_date: endDate, customer_id: customerId }) : null, refreshTick);
   const { data: elasticityData, loading: elasticityLoading } = useFetch<{ points: ScatterPoint[]; correlation: number | null }>(
-    priceActive ? api("/bi-sync/price-elasticity", { product_id: analysisProductId, start_date: startDate, end_date: endDate }) : null, refreshTick);
+    priceActive ? api("/bi-sync/price-elasticity", { product_id: analysisProductId, start_date: startDate, end_date: endDate, customer_id: customerId }) : null, refreshTick);
 
   const lengthPoints = lengthData?.points ?? [];
   const lengthCats = lengthPoints.map(p => `${p.length}cm`);
@@ -343,7 +392,7 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
   const suppliersActive = tab === "suppliers";
   const { data: analysisLengths } = useFetch<{ lengths: number[] }>(
     suppliersActive && analysisProductId
-      ? api("/bi-sync/product-lengths", { product_id: analysisProductId, start_date: startDate, end_date: endDate })
+      ? api("/bi-sync/product-lengths", { product_id: analysisProductId, start_date: startDate, end_date: endDate, customer_id: customerId })
       : null, refreshTick);
   // Same stale-filter guard as the sales tab's length select.
   useEffect(() => {
@@ -353,7 +402,7 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
   }, [analysisLengths]);
   const { data: comparisonData, loading: comparisonLoading } = useFetch<{ points: SupplierPricePoint[] }>(
     suppliersActive && analysisProductId
-      ? api("/bi-sync/supplier-price-comparison", { product_id: analysisProductId, start_date: startDate, end_date: endDate, length: comparisonLength })
+      ? api("/bi-sync/supplier-price-comparison", { product_id: analysisProductId, start_date: startDate, end_date: endDate, length: comparisonLength, customer_id: customerId })
       : null, refreshTick);
 
   // Volatility and market deviation work with or without a product filter —
@@ -361,9 +410,9 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
   const [supplierScopeAll, setSupplierScopeAll] = useState(false);
   const supplierScopeId = supplierScopeAll ? null : analysisProductId;
   const { data: volatilityData, loading: volatilityLoading } = useFetch<ScopedResult<VolatilityPoint>>(
-    suppliersActive ? api("/bi-sync/supplier-volatility", { start_date: startDate, end_date: endDate, product_id: supplierScopeId }) : null, refreshTick);
+    suppliersActive ? api("/bi-sync/supplier-volatility", { start_date: startDate, end_date: endDate, product_id: supplierScopeId, customer_id: customerId }) : null, refreshTick);
   const { data: deviationData, loading: deviationLoading } = useFetch<ScopedResult<DeviationPoint>>(
-    suppliersActive ? api("/bi-sync/supplier-market-deviation", { start_date: startDate, end_date: endDate, product_id: supplierScopeId }) : null, refreshTick);
+    suppliersActive ? api("/bi-sync/supplier-market-deviation", { start_date: startDate, end_date: endDate, product_id: supplierScopeId, customer_id: customerId }) : null, refreshTick);
 
   /** "Showing N of M — the rest have too few lines" — otherwise a ranking
    *  that silently shrinks from 15 suppliers to 3 looks like a bug. */
@@ -382,9 +431,9 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
   const seasonProductId = seasonScopeAll ? null : analysisProductId;
   const seasonActive = tab === "seasonality";
   const { data: seasonData, loading: seasonLoading } = useFetch<{ years: SeasonalityYear[] }>(
-    seasonActive ? api("/bi-sync/seasonality", { product_id: seasonProductId }) : null, refreshTick);
+    seasonActive ? api("/bi-sync/seasonality", { product_id: seasonProductId, customer_id: customerId }) : null, refreshTick);
   const { data: eventData, loading: eventLoading } = useFetch<{ events: EventImpact[] }>(
-    seasonActive ? api("/bi-sync/event-impact", { product_id: seasonProductId }) : null, refreshTick);
+    seasonActive ? api("/bi-sync/event-impact", { product_id: seasonProductId, customer_id: customerId }) : null, refreshTick);
 
   // One line per year, x = month, so the same months stack on top of each
   // other and a repeating pattern is visible at a glance. Only months the
@@ -517,30 +566,32 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
       {tab === "sales" && (
         <Card
           title={t.salesTitle}
-          hint={t.salesHint(viewMode === "supplier" ? t.salesKindSupplier : t.salesKindProduct)}
+          hint={t.salesHint(viewMode === "supplier" ? t.salesKindSupplier : viewMode === "product" ? t.salesKindProduct : t.salesKindCustomer)}
         >
           <div className="flex items-end gap-3 flex-wrap">
             {dateRange}
             <div className="flex rounded-lg border border-border overflow-hidden">
-              {(["supplier", "product"] as ViewMode[]).map(m => (
+              {(["supplier", "product", "customer"] as ViewMode[]).map(m => (
                 <button
                   key={m}
                   onClick={() => setViewMode(m)}
                   className={`h-9 px-3 text-sm font-medium transition-colors ${viewMode === m ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
                 >
-                  {m === "supplier" ? t.bySupplier : t.byProduct}
+                  {m === "supplier" ? t.bySupplier : m === "product" ? t.byProduct : t.byCustomer}
                 </button>
               ))}
             </div>
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
-            <select value={primaryId} onChange={e => setPrimaryId(e.target.value)} className={`${CTRL} max-w-md`}>
-              <option value="">{viewMode === "supplier" ? t.allSuppliersTop : t.allProductsTop}</option>
-              {viewMode === "supplier"
-                ? suppliers.map(s => <option key={s.supplier_id} value={s.supplier_id}>{s.name || s.supplier_id} ({s.row_count})</option>)
-                : products.map(p => <option key={p.product_id} value={p.product_id}>{p.description || p.product_id} ({p.row_count})</option>)}
-            </select>
+            {viewMode !== "customer" && (
+              <select value={primaryId} onChange={e => setPrimaryId(e.target.value)} className={`${CTRL} max-w-md`}>
+                <option value="">{viewMode === "supplier" ? t.allSuppliersTop : t.allProductsTop}</option>
+                {viewMode === "supplier"
+                  ? suppliers.map(s => <option key={s.supplier_id} value={s.supplier_id}>{s.name || s.supplier_id} ({s.row_count})</option>)
+                  : products.map(p => <option key={p.product_id} value={p.product_id}>{p.description || p.product_id} ({p.row_count})</option>)}
+              </select>
+            )}
 
             {viewMode === "product" && primaryId && !!(salesLengths?.lengths ?? []).length && (
               <select value={salesLength} onChange={e => setSalesLength(e.target.value)} className={CTRL}>
@@ -574,9 +625,12 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
       {/* ── Price & profitability ────────────────────────────────────────── */}
       {tab === "price" && (
         <>
-          <div className="rounded-2xl border border-border p-4 flex items-end gap-3 flex-wrap">
-            {dateRange}
-            {productPicker}
+          <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
+            <div className="flex items-end gap-3 flex-wrap">
+              {dateRange}
+              {productPicker}
+            </div>
+            {mixedCustomerWarning}
           </div>
 
           <Card title={t.trendTitle} hint={t.trendHint(productLabel || t.selectProduct)}>
@@ -664,9 +718,12 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
       {/* ── Suppliers ────────────────────────────────────────────────────── */}
       {tab === "suppliers" && (
         <>
-          <div className="rounded-2xl border border-border p-4 flex items-end gap-3 flex-wrap">
-            {dateRange}
-            {productPicker}
+          <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
+            <div className="flex items-end gap-3 flex-wrap">
+              {dateRange}
+              {productPicker}
+            </div>
+            {mixedCustomerWarning}
           </div>
 
           <Card title={t.comparisonTitle} hint={t.comparisonHint(productLabel || t.selectProduct)}>
@@ -763,7 +820,8 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
               {t.seasonNoteA} <strong>{t.seasonNoteWhole}</strong>{t.seasonNoteB}{" "}
               <strong>{t.seasonNoteGap}</strong> {t.seasonNoteC}
             </p>
-            <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-end gap-3 flex-wrap">
+              {customerPicker}
               <div className="flex rounded-lg border border-border overflow-hidden">
                 <button
                   onClick={() => setSeasonScopeAll(true)}

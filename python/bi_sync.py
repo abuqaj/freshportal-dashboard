@@ -7,13 +7,25 @@ Usage:
     run_bi_sync_range(cfg, "2026-08-01", "2026-08-20")          # backfill a range
     # both blocking — call from a background thread
 
-order_lines is filtered to a single reference customer (OZ-Hami Direct
-Sales / OZEDS, customer_id=12) at ingest time: webshop sale price is
-customer-specific, so mixing customers would make price/sell-through
-comparisons meaningless. The invoice table (in the same export) is read
-to resolve invoice_id -> customer_id for that filter, and also persisted
-into the standing bi_invoice_customer map (db.py) so older invoices not
-included in a given pull can still be resolved.
+order_lines keeps every customer EXCEPT the ones in EXCLUDED_CUSTOMER_IDS,
+and stores the resolved customer_id per row. Until 2026-09-09 ingest kept
+only customer 12 (OZEDS), which made the whole year look far emptier than
+it was; the customer is now a *query-time* dimension instead of an ingest
+filter.
+
+That widening does not make sale prices comparable across customers —
+webshop sale price is customer-specific, so mixing customers in one price
+series is still meaningless. It only moves the decision downstream: every
+analytics query in db.py takes a customer_id and the Analysis Tool scopes
+to customer 12 by default, so price/sell-through comparisons stay
+single-customer unless the user deliberately widens them.
+
+Rows whose customer cannot be resolved at all are still dropped — an
+order_line with no reachable invoice can't be attributed to anyone, and
+letting it through would add an unlabelled bucket to every breakdown. The
+invoice table (in the same export) resolves invoice_id -> customer_id, and
+is also persisted into the standing bi_invoice_customer map (db.py) so
+older invoices not included in a given pull can still be resolved.
 
 order_lines is additionally filtered to rows whose creation_date_time falls
 in [filter_start, filter_end] (inclusive) — /v2/export returns everything
@@ -74,7 +86,10 @@ import logging
 import threading
 from datetime import date, datetime, timedelta
 
-from bi_sync_client import get_export_url, download_export_zip, read_table
+from bi_sync_client import (
+    get_export_url, download_export_zip, read_table,
+    find_table_files, list_export_files,
+)
 from config import Config
 from db import (
     upsert_bi_stock_entry_dim, upsert_bi_stock_entry_daily, upsert_bi_order_lines,
@@ -87,9 +102,15 @@ from db import (
 logger = logging.getLogger(__name__)
 
 # OZ-Hami Direct Sales — same customer_id as the "OZ-Hami - Direct Sales"
-# entry in the dfg_customers table (db.py). The only customer this
-# analytics tool cares about (see module docstring).
+# entry in the dfg_customers table (db.py). No longer an ingest filter (see
+# module docstring); still the default scope the Analysis Tool opens on, so
+# widening ingest didn't silently change what every existing chart means.
 REFERENCE_CUSTOMER_ID = "12"
+
+# "OZ-Hami - Growers Offer" (dfg_customers). Not real sales — grower offer
+# paperwork that would inflate every volume/revenue series it landed in, so
+# it is dropped at ingest rather than filtered in each query.
+EXCLUDED_CUSTOMER_IDS = {"160"}
 
 _sync_lock = threading.Lock()
 _sync_running = False
@@ -183,6 +204,18 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
         zip_bytes = download_export_zip(export_url)
         _s(f"Downloaded export ({len(zip_bytes):,} bytes)")
 
+        # Name every file the export actually contains, and which of them each
+        # table resolves to. A table split across numbered parts used to be
+        # read only in part, which is invisible unless the log says how many
+        # files backed it (2026-09-07).
+        contents = list_export_files(zip_bytes)
+        _s(f"Export contains {len(contents)} file(s): "
+           + ", ".join(f"{n} ({s:,}B)" for n, s in sorted(contents, key=lambda x: -x[1])[:25])
+           + (" …" if len(contents) > 25 else ""))
+        for table in ("order_line", "stock_entry", "invoice", "supplier"):
+            matched = find_table_files(zip_bytes, table)
+            _s(f"  table '{table}' -> {len(matched)} file(s): {matched or 'NONE FOUND'}")
+
         _s("Reading invoice table…")
         invoices = read_table(zip_bytes, "invoice")
         customer_by_invoice = {inv["id"]: inv.get("customer_id") for inv in invoices if inv.get("id")}
@@ -273,6 +306,9 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
         skipped_wrong_day = 0
         unresolved_stock_entry = 0
         unparseable_date = 0
+        unresolved_customer = 0
+        excluded_customer = 0
+        customer_counts: dict[str, int] = {}
         for line in all_order_lines:
             customer_id = (
                 customer_by_invoice.get(line.get("invoice_id"))
@@ -280,7 +316,12 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
                 or fallback_customer_by_invoice.get(line.get("invoice_id"))
                 or fallback_customer_by_invoice.get(line.get("main_invoice_id"))
             )
-            if customer_id != REFERENCE_CUSTOMER_ID:
+            customer_id = str(customer_id).strip() if customer_id else ""
+            if not customer_id:
+                unresolved_customer += 1
+                continue
+            if customer_id in EXCLUDED_CUSTOMER_IDS:
+                excluded_customer += 1
                 continue
             # Parsed, not sliced: creation_date_time is day-first in this
             # export, so a string prefix compare against ISO bounds threw
@@ -311,11 +352,18 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
                 line["product_id"] = line.get("product_id") or source_entry.get("product_id")
             else:
                 unresolved_stock_entry += 1
+            customer_counts[customer_id] = customer_counts.get(customer_id, 0) + 1
             reference_lines.append(line)
-        _s(f"Read {len(all_order_lines)} order_lines, {len(reference_lines)} for customer {REFERENCE_CUSTOMER_ID} "
-           f"(OZEDS) created in [{filter_start}, {filter_end}] ({skipped_wrong_day} skipped — outside range, "
+        top_customers = sorted(customer_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        _s(f"Read {len(all_order_lines)} order_lines, kept {len(reference_lines)} across "
+           f"{len(customer_counts)} customers created in [{filter_start}, {filter_end}] "
+           f"({skipped_wrong_day} skipped — outside range, "
            f"{unparseable_date} skipped — unreadable creation date, "
+           f"{unresolved_customer} skipped — no resolvable customer, "
+           f"{excluded_customer} skipped — excluded customer {'/'.join(sorted(EXCLUDED_CUSTOMER_IDS))}, "
            f"{unresolved_stock_entry} missing farm/length — source stock_entry not in this export) — upserting…")
+        if top_customers:
+            _s("Top customers this batch: " + ", ".join(f"{cid}={n}" for cid, n in top_customers))
         upsert_bi_order_lines(reference_lines)
 
         log_bi_sync_finish(sync_id, len(stock_entries), len(reference_lines))

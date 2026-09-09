@@ -1522,6 +1522,10 @@ def ensure_bi_tables() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_supplier_idx ON bi_order_lines(supplier_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_created_idx  ON bi_order_lines(creation_date_time)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_stockent_idx ON bi_order_lines(created_from_stock_entry_id)")
+            # Every analytics query below now carries a customer scope
+            # (2026-09-09, when ingest stopped filtering to customer 12), so
+            # this pairs with the date index on the hot path.
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_customer_idx ON bi_order_lines(customer_id)")
 
             # id->name lookup for FreshPortal-registered suppliers — pure
             # denormalized cache, refreshed every sync (upsert), used only to
@@ -1978,11 +1982,70 @@ def get_bi_order_lines_daily_series(days: int = 30) -> list[dict]:
 # lines) time series, redesigned 2026-09-02 per user feedback: the first
 # pass (product-first, static per-supplier/per-length bars) wasn't the
 # angle they wanted. All series use *realized sale price*
-# (bi_order_lines.store_price), customer 12 (OZEDS) only — the only sales
-# data this tool collects. "Dostawca" = stock_entry.supplier_id (the
+# (bi_order_lines.store_price). "Dostawca" = stock_entry.supplier_id (the
 # FreshPortal-registered supplier), enriched onto bi_order_lines the same
 # way as manufacturer_id/length (via created_from_stock_entry_id).
+#
+# Customer scope (2026-09-09): bi_order_lines used to hold customer 12
+# (OZEDS) exclusively, so none of these queries mentioned a customer. Ingest
+# now keeps every customer except the grower-offer one, which makes customer
+# a real dimension — and a load-bearing one, because webshop sale price is
+# customer-specific and mixing customers in a single price series is
+# meaningless. Every function below therefore takes `customer_id`, and the
+# UI defaults it to REFERENCE_CUSTOMER_ID so existing charts kept the exact
+# meaning they had before the widening. Passing None deliberately opts into
+# the cross-customer view (fine for volume, misleading for price).
 # ---------------------------------------------------------------------------
+
+# Sentinel accepted from the API layer meaning "do not scope to a customer".
+BI_ALL_CUSTOMERS = "__all__"
+
+
+def _customer_scope(customer_id: str | None, alias: str = "") -> tuple[str, list]:
+    """SQL fragment + params scoping a bi_order_lines query to one customer.
+
+    Returns ("", []) for the all-customers view so callers can splice the
+    fragment into a WHERE chain unconditionally. Pass `alias` for queries
+    that join bi_order_lines under one (e.g. "ol")."""
+    if not customer_id or customer_id == BI_ALL_CUSTOMERS:
+        return "", []
+    prefix = f"{alias}." if alias else ""
+    return f"AND {prefix}customer_id = %s", [customer_id]
+
+
+def get_bi_customers_for_picker(start_date: str | None = None, end_date: str | None = None) -> list[dict]:
+    """Customers that actually have sold lines, most lines first — backs the
+    customer selector in the Analysis Tool.
+
+    Names come from dfg_customers (the same id->name map the delivery import
+    uses) via LEFT JOIN, so a customer that sold something but isn't in that
+    seed list still shows up, labelled by its raw id rather than vanishing
+    from the picker."""
+    try:
+        ensure_bi_tables()
+        ensure_dfg_customers_table()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                date_clause = ""
+                params: list = []
+                if start_date and end_date:
+                    date_clause = "AND ol.creation_date_time::date BETWEEN %s AND %s"
+                    params = [start_date, end_date]
+                cur.execute(f"""
+                    SELECT ol.customer_id,
+                           COALESCE(c.nm_customer, ol.customer_id) AS name,
+                           COUNT(*) AS row_count
+                    FROM bi_order_lines ol
+                    LEFT JOIN dfg_customers c ON c.customer_id = ol.customer_id
+                    WHERE ol.customer_id IS NOT NULL
+                      {date_clause}
+                    GROUP BY ol.customer_id, c.nm_customer
+                    ORDER BY row_count DESC
+                """, params)
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_bi_customers_for_picker: %s", exc)
+        return []
 
 def upsert_bi_suppliers(rows: list[dict]) -> int:
     """id->name lookup, refreshed every sync — chart legend labels only."""
@@ -2035,10 +2098,11 @@ def get_bi_products_only_picker(
     supplier_id: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    customer_id: str | None = None,
 ) -> list[dict]:
-    """Product picker for the "by product" chart — count = order_lines
-    (sold, customer 12/OZEDS) in [start_date, end_date], so it updates
-    with the date range picker (requested by the user 2026-09-02, mirrors
+    """Product picker for the "by product" chart — count = sold order_lines
+    in [start_date, end_date] for the scoped customer, so it updates with
+    the date range picker (requested by the user 2026-09-02, mirrors
     get_bi_suppliers_for_picker). Optionally scoped to one supplier
     (cascading — only products that supplier sold in the range).
 
@@ -2047,6 +2111,7 @@ def get_bi_products_only_picker(
     """
     try:
         ensure_bi_tables()
+        customer_clause, customer_params = _customer_scope(customer_id)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 if start_date and end_date:
@@ -2054,6 +2119,7 @@ def get_bi_products_only_picker(
                     params: list = [start_date, end_date]
                     if supplier_id:
                         params.append(supplier_id)
+                    params += customer_params
                     params.append(limit)
                     cur.execute(f"""
                         SELECT product_id, COUNT(*) AS row_count
@@ -2061,6 +2127,7 @@ def get_bi_products_only_picker(
                         WHERE product_id IS NOT NULL
                           AND creation_date_time::date BETWEEN %s AND %s
                           {supplier_clause}
+                          {customer_clause}
                         GROUP BY product_id
                         ORDER BY row_count DESC
                         LIMIT %s
@@ -2089,7 +2156,12 @@ def get_bi_products_only_picker(
         return []
 
 
-def get_bi_lengths_for_product(product_id: str, start_date: str | None = None, end_date: str | None = None) -> list[int]:
+def get_bi_lengths_for_product(
+    product_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    customer_id: str | None = None,
+) -> list[int]:
     """Distinct lengths actually SOLD for one product — populates the length
     refinement dropdown.
 
@@ -2106,14 +2178,16 @@ def get_bi_lengths_for_product(product_id: str, start_date: str | None = None, e
     try:
         ensure_bi_tables()
         date_clause = "AND creation_date_time::date BETWEEN %s AND %s" if start_date and end_date else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
         params: list = [product_id]
         if start_date and end_date:
             params += [start_date, end_date]
+        params += customer_params
         with _conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"""
                     SELECT DISTINCT length FROM bi_order_lines
-                    WHERE product_id = %s AND length IS NOT NULL {date_clause}
+                    WHERE product_id = %s AND length IS NOT NULL {date_clause} {customer_clause}
                     ORDER BY length
                 """, params)
                 return [r[0] for r in cur.fetchall()]
@@ -2122,7 +2196,12 @@ def get_bi_lengths_for_product(product_id: str, start_date: str | None = None, e
         return []
 
 
-def get_bi_suppliers_for_picker(limit: int = 200, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
+def get_bi_suppliers_for_picker(
+    limit: int = 200,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    customer_id: str | None = None,
+) -> list[dict]:
     """Suppliers that actually have sold lines (bi_order_lines), most
     data-rich first — powers the "by supplier" picker. Name from
     bi_suppliers, falls back to the raw id if unmatched. row_count is
@@ -2133,12 +2212,14 @@ def get_bi_suppliers_for_picker(limit: int = 200, start_date: str | None = None,
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 date_clause = "AND ol.creation_date_time::date BETWEEN %s AND %s" if start_date and end_date else ""
+                customer_clause, customer_params = _customer_scope(customer_id, "ol")
                 params: list = [start_date, end_date] if start_date and end_date else []
+                params += customer_params
                 cur.execute(f"""
                     SELECT ol.supplier_id, COALESCE(s.name, ol.supplier_id) AS name, COUNT(*) AS row_count
                     FROM bi_order_lines ol
                     LEFT JOIN bi_suppliers s ON s.supplier_id = ol.supplier_id
-                    WHERE ol.supplier_id IS NOT NULL {date_clause}
+                    WHERE ol.supplier_id IS NOT NULL {date_clause} {customer_clause}
                     GROUP BY ol.supplier_id, s.name
                     ORDER BY row_count DESC
                     LIMIT %s
@@ -2149,36 +2230,42 @@ def get_bi_suppliers_for_picker(limit: int = 200, start_date: str | None = None,
         return []
 
 
-def get_bi_sales_by_supplier(supplier_id: str, start_date: str, end_date: str, max_series: int = 10) -> dict:
+def get_bi_sales_by_supplier(
+    supplier_id: str, start_date: str, end_date: str, max_series: int = 10,
+    customer_id: str | None = None,
+) -> dict:
     """Multi-series sale-price-over-time for one supplier — one line per
     product (top `max_series` by row count), x=day, y=avg store_price.
     Each point also carries total_quantity sold that day, for the tooltip."""
     try:
         ensure_bi_tables()
+        customer_clause, customer_params = _customer_scope(customer_id)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT product_id, COUNT(*) AS cnt
                     FROM bi_order_lines
                     WHERE supplier_id = %s AND product_id IS NOT NULL
                       AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY product_id
                     ORDER BY cnt DESC
                     LIMIT %s
-                """, (supplier_id, start_date, end_date, max_series))
+                """, [supplier_id, start_date, end_date] + customer_params + [max_series])
                 top_products = [r["product_id"] for r in cur.fetchall()]
                 if not top_products:
                     return {"series": []}
 
-                cur.execute("""
+                cur.execute(f"""
                     SELECT product_id, creation_date_time::date::text AS day,
                            COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE supplier_id = %s AND product_id = ANY(%s)
                       AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY product_id, creation_date_time::date
                     ORDER BY product_id, day
-                """, (supplier_id, top_products, start_date, end_date))
+                """, [supplier_id, top_products, start_date, end_date] + customer_params)
                 rows = cur.fetchall()
 
                 labels = _product_labels(cur, top_products)
@@ -2204,6 +2291,7 @@ def get_bi_sales_by_supplier(supplier_id: str, start_date: str, end_date: str, m
 
 def get_bi_sales_by_product(
     product_id: str, start_date: str, end_date: str, length: int | None = None, max_series: int = 10,
+    customer_id: str | None = None,
 ) -> dict:
     """Multi-series sale-price-over-time for one product (optionally scoped
     to one length — otherwise averaged across every length sold) — one line
@@ -2212,17 +2300,19 @@ def get_bi_sales_by_product(
     try:
         ensure_bi_tables()
         length_clause = "AND length = %s" if length is not None else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 params_top: list = [product_id]
                 if length is not None:
                     params_top.append(length)
-                params_top += [start_date, end_date, max_series]
+                params_top += [start_date, end_date] + customer_params + [max_series]
                 cur.execute(f"""
                     SELECT supplier_id, COUNT(*) AS cnt
                     FROM bi_order_lines
                     WHERE product_id = %s {length_clause} AND supplier_id IS NOT NULL
                       AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY supplier_id
                     ORDER BY cnt DESC
                     LIMIT %s
@@ -2234,13 +2324,14 @@ def get_bi_sales_by_product(
                 params_rows: list = [product_id]
                 if length is not None:
                     params_rows.append(length)
-                params_rows += [top_suppliers, start_date, end_date]
+                params_rows += [top_suppliers, start_date, end_date] + customer_params
                 cur.execute(f"""
                     SELECT supplier_id, creation_date_time::date::text AS day,
                            COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE product_id = %s {length_clause} AND supplier_id = ANY(%s)
                       AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY supplier_id, creation_date_time::date
                     ORDER BY supplier_id, day
                 """, params_rows)
@@ -2268,27 +2359,38 @@ def get_bi_sales_by_product(
         return {"series": []}
 
 
-def get_bi_sales_overview(start_date: str, end_date: str, group_by: str = "supplier", max_series: int = 10) -> dict:
+def get_bi_sales_overview(
+    start_date: str, end_date: str, group_by: str = "supplier", max_series: int = 10,
+    customer_id: str | None = None,
+) -> dict:
     """Default "nothing selected yet" sales chart — one line per top
-    supplier or top product across the WHOLE order_lines set in the date
-    range (not scoped to one specific entity), same
+    supplier, product or customer across the WHOLE order_lines set in the
+    date range (not scoped to one specific entity), same
     {series:[{key,label,points:[{day,value,quantity}]}]} shape as
     get_bi_sales_by_supplier/get_bi_sales_by_product so it renders through
     the same chart component. Requested 2026-09-03 so the chart isn't blank
-    until the user picks something."""
+    until the user picks something.
+
+    group_by="customer" (2026-09-09) is the one mode meant to be used with
+    customer_id unset — it's the "who are we actually selling to this year"
+    view that ingesting every customer was for."""
     try:
         ensure_bi_tables()
-        id_col = "supplier_id" if group_by == "supplier" else "product_id"
+        id_col = {"supplier": "supplier_id", "product": "product_id", "customer": "customer_id"}.get(group_by, "supplier_id")
+        # Scoping to one customer while grouping BY customer would always
+        # collapse to a single series — the picker is the scope in that mode.
+        customer_clause, customer_params = ("", []) if group_by == "customer" else _customer_scope(customer_id)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
                     SELECT {id_col} AS id, COUNT(*) AS cnt
                     FROM bi_order_lines
                     WHERE {id_col} IS NOT NULL AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY {id_col}
                     ORDER BY cnt DESC
                     LIMIT %s
-                """, (start_date, end_date, max_series))
+                """, [start_date, end_date] + customer_params + [max_series])
                 top_ids = [r["id"] for r in cur.fetchall()]
                 if not top_ids:
                     return {"series": []}
@@ -2298,13 +2400,18 @@ def get_bi_sales_overview(start_date: str, end_date: str, group_by: str = "suppl
                            COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE {id_col} = ANY(%s) AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY {id_col}, creation_date_time::date
                     ORDER BY {id_col}, day
-                """, (top_ids, start_date, end_date))
+                """, [top_ids, start_date, end_date] + customer_params)
                 rows = cur.fetchall()
 
                 if group_by == "supplier":
                     cur.execute("SELECT supplier_id AS id, name AS label FROM bi_suppliers WHERE supplier_id = ANY(%s)", (top_ids,))
+                    labels = {r["id"]: r["label"] for r in cur.fetchall()}
+                elif group_by == "customer":
+                    ensure_dfg_customers_table()
+                    cur.execute("SELECT customer_id AS id, nm_customer AS label FROM dfg_customers WHERE customer_id = ANY(%s)", (top_ids,))
                     labels = {r["id"]: r["label"] for r in cur.fetchall()}
                 else:
                     labels = _product_labels(cur, top_ids)
@@ -2331,8 +2438,10 @@ def get_bi_sales_overview(start_date: str, end_date: str, group_by: str = "suppl
 # ---------------------------------------------------------------------------
 # Analysis Tool — "Cena i rentowność" / "Dostawcy" / "Sezonowość i popyt"
 # (2026-09-03). All of these read realized SALE price (bi_order_lines.
-# store_price, customer 12/OZEDS only), not the offer/listing price —
-# established with the user 2026-09-02. supplier_price is the GOODS
+# store_price), not the offer/listing price — established with the user
+# 2026-09-02. Each takes a customer_id scope: sale price is
+# customer-specific, so leaving it unset mixes price regimes and these
+# charts in particular should stay single-customer. supplier_price is the GOODS
 # purchase price on the same line, not full cost: commission and handling
 # live in customer_stock_item_commission (rows with cost = 1), which isn't
 # ingested, so nothing here may be presented as margin (user 2026-09-03).
@@ -2372,7 +2481,10 @@ def _pearson(xs: list[float], ys: list[float]) -> float | None:
     return round(num / den, 4) if den else None
 
 
-def get_bi_price_trend_by_length(product_id: str, start_date: str, end_date: str, max_series: int = 7) -> dict:
+def get_bi_price_trend_by_length(
+    product_id: str, start_date: str, end_date: str, max_series: int = 7,
+    customer_id: str | None = None,
+) -> dict:
     """Trend ceny w czasie — one line per LENGTH for a single product.
 
     The existing sales chart already covers product->suppliers; this is the
@@ -2381,30 +2493,33 @@ def get_bi_price_trend_by_length(product_id: str, start_date: str, end_date: str
     """
     try:
         ensure_bi_tables()
+        customer_clause, customer_params = _customer_scope(customer_id)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT length, COUNT(*) AS cnt
                     FROM bi_order_lines
                     WHERE product_id = %s AND length IS NOT NULL AND store_price IS NOT NULL
                       AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY length
                     ORDER BY cnt DESC
                     LIMIT %s
-                """, (product_id, start_date, end_date, max_series))
+                """, [product_id, start_date, end_date] + customer_params + [max_series])
                 lengths = [r["length"] for r in cur.fetchall()]
                 if not lengths:
                     return {"series": []}
 
-                cur.execute("""
+                cur.execute(f"""
                     SELECT length, creation_date_time::date::text AS day,
                            COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
                     FROM bi_order_lines
                     WHERE product_id = %s AND length = ANY(%s) AND store_price IS NOT NULL
                       AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY length, creation_date_time::date
                     ORDER BY length, day
-                """, (product_id, lengths, start_date, end_date))
+                """, [product_id, lengths, start_date, end_date] + customer_params)
                 rows = cur.fetchall()
 
         by_length: dict[int, list[dict]] = {ln: [] for ln in lengths}
@@ -2427,7 +2542,10 @@ def get_bi_price_trend_by_length(product_id: str, start_date: str, end_date: str
         return {"series": []}
 
 
-def get_bi_price_vs_length(product_id: str, start_date: str, end_date: str, supplier_id: str | None = None) -> dict:
+def get_bi_price_vs_length(
+    product_id: str, start_date: str, end_date: str, supplier_id: str | None = None,
+    customer_id: str | None = None,
+) -> dict:
     """Cena vs długość łodygi — avg sale price and purchase price per length
     for one product. Bar-chart shaped (x = length, ordinal), not a time series.
 
@@ -2442,9 +2560,11 @@ def get_bi_price_vs_length(product_id: str, start_date: str, end_date: str, supp
     try:
         ensure_bi_tables()
         supplier_clause = "AND supplier_id = %s" if supplier_id else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
         params: list = [product_id, start_date, end_date]
         if supplier_id:
             params.append(supplier_id)
+        params += customer_params
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
@@ -2457,6 +2577,7 @@ def get_bi_price_vs_length(product_id: str, start_date: str, end_date: str, supp
                     WHERE product_id = %s AND length IS NOT NULL AND store_price IS NOT NULL
                       AND creation_date_time::date BETWEEN %s AND %s
                       {supplier_clause}
+                      {customer_clause}
                     GROUP BY length
                     ORDER BY length
                 """, params)
@@ -2480,7 +2601,10 @@ def get_bi_price_vs_length(product_id: str, start_date: str, end_date: str, supp
         return {"points": []}
 
 
-def get_bi_price_elasticity(product_id: str, start_date: str, end_date: str, bucket: str = "week") -> dict:
+def get_bi_price_elasticity(
+    product_id: str, start_date: str, end_date: str, bucket: str = "week",
+    customer_id: str | None = None,
+) -> dict:
     """Elastyczność cenowa — one point per week (or day): avg price vs total
     volume sold. Scatter-shaped; a downward-sloping cloud means demand
     reacts to price. Returns a Pearson correlation as the headline figure.
@@ -2491,6 +2615,7 @@ def get_bi_price_elasticity(product_id: str, start_date: str, end_date: str, buc
     try:
         ensure_bi_tables()
         trunc = "day" if bucket == "day" else "week"
+        customer_clause, customer_params = _customer_scope(customer_id)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
@@ -2500,10 +2625,11 @@ def get_bi_price_elasticity(product_id: str, start_date: str, end_date: str, buc
                     FROM bi_order_lines
                     WHERE product_id = %s AND store_price IS NOT NULL AND store_price > 0
                       AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY 1
                     HAVING SUM(quantity) > 0
                     ORDER BY 1
-                """, (product_id, start_date, end_date))
+                """, [product_id, start_date, end_date] + customer_params)
                 rows = cur.fetchall()
 
         points = [
@@ -2526,6 +2652,7 @@ def get_bi_price_elasticity(product_id: str, start_date: str, end_date: str, buc
 
 def get_bi_supplier_price_comparison(
     product_id: str, start_date: str, end_date: str, length: int | None = None, limit: int = 15,
+    customer_id: str | None = None,
 ) -> dict:
     """Porównanie cen dostawców — sorted ranking of suppliers by avg sale
     price for one product (optionally one length). A sorted bar answers
@@ -2534,10 +2661,11 @@ def get_bi_supplier_price_comparison(
     try:
         ensure_bi_tables()
         length_clause = "AND length = %s" if length is not None else ""
+        customer_clause, customer_params = _customer_scope(customer_id, "ol")
         params: list = [product_id]
         if length is not None:
             params.append(length)
-        params += [start_date, end_date, limit]
+        params += [start_date, end_date] + customer_params + [limit]
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
@@ -2553,6 +2681,7 @@ def get_bi_supplier_price_comparison(
                     WHERE ol.product_id = %s {length_clause} AND ol.supplier_id IS NOT NULL
                       AND ol.store_price IS NOT NULL
                       AND ol.creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
                     GROUP BY ol.supplier_id, s.name
                     ORDER BY avg_price ASC
                     LIMIT %s
@@ -2580,6 +2709,7 @@ def get_bi_supplier_price_comparison(
 
 def get_bi_supplier_volatility(
     start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 4, limit: int = 15,
+    customer_id: str | None = None,
 ) -> dict:
     """Wahania cen (volatility) dostawcy — coefficient of variation
     (stddev/mean, %) of sale price.
@@ -2600,9 +2730,12 @@ def get_bi_supplier_volatility(
     try:
         ensure_bi_tables()
         product_clause = "AND product_id = %s" if product_id else ""
+        customer_clause, customer_params = _customer_scope(customer_id, "ol")
+        bare_customer_clause, _ = _customer_scope(customer_id)
         params: list = [start_date, end_date]
         if product_id:
             params.append(product_id)
+        params += customer_params
         params.append(min_lines)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -2617,6 +2750,7 @@ def get_bi_supplier_volatility(
                           AND ol.store_price > 0
                           AND ol.creation_date_time::date BETWEEN %s AND %s
                           {product_clause}
+                          {customer_clause}
                         GROUP BY ol.supplier_id, ol.product_id
                         HAVING COUNT(*) >= 3 AND AVG(ol.store_price) > 0
                     )
@@ -2640,13 +2774,14 @@ def get_bi_supplier_volatility(
                 # the difference is what the >=3-lines-per-product rule and
                 # min_lines dropped, so the UI can say so instead of leaving
                 # the reader to wonder where 12 of 15 suppliers went.
-                total_params: list = [start_date, end_date] + ([product_id] if product_id else [])
+                total_params: list = [start_date, end_date] + ([product_id] if product_id else []) + customer_params
                 cur.execute(f"""
                     SELECT COUNT(DISTINCT supplier_id) AS n
                     FROM bi_order_lines
                     WHERE supplier_id IS NOT NULL AND store_price IS NOT NULL
                       AND creation_date_time::date BETWEEN %s AND %s
                       {product_clause}
+                      {bare_customer_clause}
                 """, total_params)
                 total_suppliers = cur.fetchone()["n"] or 0
 
@@ -2679,6 +2814,7 @@ def get_bi_supplier_volatility(
 
 def get_bi_supplier_market_deviation(
     start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 3, limit: int = 15,
+    customer_id: str | None = None,
 ) -> dict:
     """Odchylenia od średniej rynkowej — how far above/below the market a
     supplier prices, in %.
@@ -2697,9 +2833,11 @@ def get_bi_supplier_market_deviation(
     try:
         ensure_bi_tables()
         product_clause = "AND product_id = %s" if product_id else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
         params: list = [start_date, end_date]
         if product_id:
             params.append(product_id)
+        params += customer_params
         params.append(min_lines)
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -2711,6 +2849,7 @@ def get_bi_supplier_market_deviation(
                           AND store_price > 0
                           AND creation_date_time::date BETWEEN %s AND %s
                           {product_clause}
+                          {customer_clause}
                     ),
                     market AS (
                         SELECT product_id, length, COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS market_price
@@ -2739,13 +2878,14 @@ def get_bi_supplier_market_deviation(
                 """, params)
                 rows = cur.fetchall()
 
-                total_params: list = [start_date, end_date] + ([product_id] if product_id else [])
+                total_params: list = [start_date, end_date] + ([product_id] if product_id else []) + customer_params
                 cur.execute(f"""
                     SELECT COUNT(DISTINCT supplier_id) AS n
                     FROM bi_order_lines
                     WHERE supplier_id IS NOT NULL AND store_price IS NOT NULL
                       AND creation_date_time::date BETWEEN %s AND %s
                       {product_clause}
+                      {customer_clause}
                 """, total_params)
                 total_suppliers = cur.fetchone()["n"] or 0
 
@@ -2772,7 +2912,7 @@ def get_bi_supplier_market_deviation(
         return {"points": [], "total_suppliers": 0, "excluded": 0}
 
 
-def get_bi_seasonality(product_id: str | None = None) -> dict:
+def get_bi_seasonality(product_id: str | None = None, customer_id: str | None = None) -> dict:
     """Sezonowość cen/popytu — volume and avg price per calendar month, one
     series per year, so the same months line up on top of each other and a
     repeating pattern becomes visible. Ignores the sales date-range picker
@@ -2780,7 +2920,8 @@ def get_bi_seasonality(product_id: str | None = None) -> dict:
     try:
         ensure_bi_tables()
         product_clause = "AND product_id = %s" if product_id else ""
-        params: list = [product_id] if product_id else []
+        customer_clause, customer_params = _customer_scope(customer_id)
+        params: list = ([product_id] if product_id else []) + customer_params
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
@@ -2789,7 +2930,7 @@ def get_bi_seasonality(product_id: str | None = None) -> dict:
                            SUM(quantity) AS total_quantity,
                            COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price
                     FROM bi_order_lines
-                    WHERE creation_date_time IS NOT NULL {product_clause}
+                    WHERE creation_date_time IS NOT NULL {product_clause} {customer_clause}
                     GROUP BY 1, 2
                     ORDER BY 1, 2
                 """, params)
@@ -2862,7 +3003,7 @@ def _in_md_range(d: date, start: tuple[int, int], end: tuple[int, int]) -> bool:
     return start <= md <= end if start <= end else (md >= start or md <= end)
 
 
-def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) -> dict:
+def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45, customer_id: str | None = None) -> dict:
     """Wpływ świąt/wydarzeń — volume and price during each event's selling
     window, as a % lift over a LOCAL baseline.
 
@@ -2884,7 +3025,8 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) 
     try:
         ensure_bi_tables()
         product_clause = "AND product_id = %s" if product_id else ""
-        params: list = [product_id] if product_id else []
+        customer_clause, customer_params = _customer_scope(customer_id)
+        params: list = ([product_id] if product_id else []) + customer_params
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
@@ -2892,7 +3034,7 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45) 
                            SUM(quantity) AS total_quantity,
                            COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price
                     FROM bi_order_lines
-                    WHERE creation_date_time IS NOT NULL {product_clause}
+                    WHERE creation_date_time IS NOT NULL {product_clause} {customer_clause}
                     GROUP BY 1
                     ORDER BY 1
                 """, params)

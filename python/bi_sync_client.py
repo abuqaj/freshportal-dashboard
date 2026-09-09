@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 import zipfile
 from typing import Any
 
@@ -158,39 +159,69 @@ def read_csv_rows(raw: bytes) -> list[dict[str, str]]:
     return [dict(row) for row in reader]
 
 
-def find_table_file(zip_bytes: bytes, table_name: str) -> str | None:
-    """Return the zip entry name matching table_name.
+# A numbered suffix marking one part of a split table: "order_line_1",
+# "order_line.2", "order_line-part3". Requires trailing digits, so a
+# genuinely different table like "order_line_status" can never match.
+_TABLE_PART_RE = re.compile(r"^(?P<base>.+?)[._-]?(?:part[._-]?)?(?P<num>\d+)$")
 
-    Prefers an exact match (filename stem, minus extension, equal to
-    table_name) over a substring match, and only falls back to substring
-    matching if no exact match exists. A pure substring match picked the
-    wrong file for "supplier" — the export also has a "batch_supplier"
-    (or similarly-named) table containing "supplier" as a substring, and
-    whichever of the two happened to sort first in the zip silently won,
-    even though a literal "supplier.csv" exists (found 2026-09-02, same
-    class of bug as the earlier "order_line" vs "order_lines" mismatch).
+
+def list_export_files(zip_bytes: bytes) -> list[tuple[str, int]]:
+    """Every entry in the export with its uncompressed size — logged each run
+    so a short table can be traced to the zip instead of guessed at."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        return [(i.filename, i.file_size) for i in zf.infolist()]
+
+
+def find_table_files(zip_bytes: bytes, table_name: str) -> list[str]:
+    """Every zip entry belonging to one logical table, parts in order.
+
+    A large export splits a table across numbered parts. Returning only the
+    first one silently truncated the table: an export carrying 651k
+    stock_entry rows yielded just 13.5k order_lines, because only the first
+    order_line part was ever read (found 2026-09-07).
+
+    Exact and part matches are preferred over a substring match, which is
+    kept only as a last resort — a pure substring match once picked
+    "batch_supplier" for "supplier" (2026-09-02).
     """
     target = table_name.lower()
+    exact: list[str] = []
+    parts: list[tuple[int, str]] = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         names = zf.namelist()
-        for name in names:
-            stem = name.rsplit("/", 1)[-1]
-            stem_no_ext = stem.rsplit(".", 1)[0].lower()
-            if stem_no_ext == target:
-                return name
-        for name in names:
-            stem = name.rsplit("/", 1)[-1].lower()
-            if target in stem:
-                return name
-    return None
+
+    for name in names:
+        base = name.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+        if base == target:
+            exact.append(name)
+            continue
+        m = _TABLE_PART_RE.match(base)
+        if m and m.group("base").rstrip("._-") == target:
+            parts.append((int(m.group("num")), name))
+
+    if exact or parts:
+        return exact + [n for _, n in sorted(parts)]
+
+    for name in names:
+        if target in name.rsplit("/", 1)[-1].lower():
+            return [name]
+    return []
+
+
+def find_table_file(zip_bytes: bytes, table_name: str) -> str | None:
+    """First entry for a table — kept for callers that only need a name."""
+    files = find_table_files(zip_bytes, table_name)
+    return files[0] if files else None
 
 
 def read_table(zip_bytes: bytes, table_name: str) -> list[dict[str, str]]:
-    """Read every row of one table from the export zip. Returns [] if the
-    table isn't present in this export (e.g. nothing mutated that day)."""
-    name = find_table_file(zip_bytes, table_name)
-    if not name:
+    """Read every row of one table, concatenating split parts. Returns [] if
+    the table isn't present in this export."""
+    names = find_table_files(zip_bytes, table_name)
+    if not names:
         return []
+    rows: list[dict[str, str]] = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        raw = zf.read(name)
-    return read_csv_rows(raw)
+        for name in names:
+            rows.extend(read_csv_rows(zf.read(name)))
+    return rows

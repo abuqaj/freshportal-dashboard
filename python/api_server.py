@@ -47,6 +47,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_sync_history, get_bi_stats,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
+               get_bi_customers_for_picker,
                get_bi_sales_by_supplier, get_bi_sales_by_product, get_bi_sales_overview,
                get_bi_price_trend_by_length, get_bi_price_vs_length, get_bi_price_elasticity,
                get_bi_supplier_price_comparison, get_bi_supplier_volatility,
@@ -752,13 +753,14 @@ def bi_sync_products(
     supplier_id: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Product picker for the "by product" sales chart. Pass supplier_id +
     start_date/end_date to narrow it to only products that supplier sold in
     that range (cascading filter after picking a supplier in the "by
     supplier" chart) — omit them for the full unscoped product list."""
-    return {"products": get_bi_products_only_picker(limit, supplier_id, start_date, end_date)}
+    return {"products": get_bi_products_only_picker(limit, supplier_id, start_date, end_date, customer_id)}
 
 
 @app.get("/bi-sync/product-lengths")
@@ -766,6 +768,7 @@ def bi_sync_product_lengths(
     product_id: str,
     start_date: str | None = None,
     end_date: str | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Lengths available for one product — the optional refinement dropdown
@@ -773,7 +776,20 @@ def bi_sync_product_lengths(
     only offers lengths that actually sold in the active range — omitting
     them offered every length ever sold, and picking one outside the
     current range produced a silent empty chart."""
-    return {"lengths": get_bi_lengths_for_product(product_id, start_date, end_date)}
+    return {"lengths": get_bi_lengths_for_product(product_id, start_date, end_date, customer_id)}
+
+
+@app.get("/bi-sync/customers")
+def bi_sync_customers(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Customers with actual sold lines, most lines first — backs the
+    customer scope selector. Names come from dfg_customers (the same map the
+    delivery import uses); a customer missing from it is labelled by raw id
+    rather than dropped."""
+    return {"customers": get_bi_customers_for_picker(start_date, end_date)}
 
 
 @app.get("/bi-sync/suppliers")
@@ -781,12 +797,13 @@ def bi_sync_suppliers(
     limit: int = 200,
     start_date: str | None = None,
     end_date: str | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Supplier picker (only suppliers with actual sold lines) for the
     "by supplier" sales chart. Pass start_date/end_date so the row_count next
     to each supplier reflects the currently-selected date range."""
-    return {"suppliers": get_bi_suppliers_for_picker(limit, start_date, end_date)}
+    return {"suppliers": get_bi_suppliers_for_picker(limit, start_date, end_date, customer_id)}
 
 
 @app.get("/bi-sync/sales-by-supplier")
@@ -794,12 +811,13 @@ def bi_sync_sales_by_supplier(
     supplier_id: str,
     start_date: str,
     end_date: str,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Multi-series sale price over time for one supplier — one line per
     product (top 10 by volume, so the frontend can highlight one + show top
     3 others), over the given [start_date, end_date] range."""
-    return get_bi_sales_by_supplier(supplier_id, start_date, end_date)
+    return get_bi_sales_by_supplier(supplier_id, start_date, end_date, customer_id=customer_id)
 
 
 @app.get("/bi-sync/sales-by-product")
@@ -808,13 +826,14 @@ def bi_sync_sales_by_product(
     start_date: str,
     end_date: str,
     length: int | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Multi-series sale price over time for one product (optionally scoped
     to one length) — one line per supplier (top 10 by volume, so the
     frontend can highlight one + show top 3 others), over the given
     [start_date, end_date] range."""
-    return get_bi_sales_by_product(product_id, start_date, end_date, length)
+    return get_bi_sales_by_product(product_id, start_date, end_date, length, customer_id=customer_id)
 
 
 @app.get("/bi-sync/sales-overview")
@@ -823,15 +842,16 @@ def bi_sync_sales_overview(
     end_date: str,
     group_by: str = "supplier",
     max_series: int = 10,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Default "nothing selected yet" sales chart — top suppliers or top
     products overall (not scoped to one entity), same shape as
     sales-by-supplier/sales-by-product so the frontend renders it through
     the same chart component while no primary picker selection is made."""
-    if group_by not in ("supplier", "product"):
-        raise HTTPException(400, "group_by must be 'supplier' or 'product'")
-    return get_bi_sales_overview(start_date, end_date, group_by, max_series)
+    if group_by not in ("supplier", "product", "customer"):
+        raise HTTPException(400, "group_by must be 'supplier', 'product' or 'customer'")
+    return get_bi_sales_overview(start_date, end_date, group_by, max_series, customer_id)
 
 
 # ── Analysis Tool: "Cena i rentowność" (2026-09-03) ────────────────────────
@@ -841,10 +861,11 @@ def bi_sync_price_trend_by_length(
     product_id: str,
     start_date: str,
     end_date: str,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Trend ceny w czasie — one line per length for a single product."""
-    return get_bi_price_trend_by_length(product_id, start_date, end_date)
+    return get_bi_price_trend_by_length(product_id, start_date, end_date, customer_id=customer_id)
 
 
 @app.get("/bi-sync/price-vs-length")
@@ -853,13 +874,14 @@ def bi_sync_price_vs_length(
     start_date: str,
     end_date: str,
     supplier_id: str | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Cena vs długość łodygi — avg sale price and goods purchase price per
     length (bar-chart shaped, x = length). NOT margin: real cost also
     carries commission/handling from customer_stock_item_commission, which
     isn't ingested — see get_bi_price_vs_length."""
-    return get_bi_price_vs_length(product_id, start_date, end_date, supplier_id)
+    return get_bi_price_vs_length(product_id, start_date, end_date, supplier_id, customer_id)
 
 
 @app.get("/bi-sync/price-elasticity")
@@ -868,13 +890,14 @@ def bi_sync_price_elasticity(
     start_date: str,
     end_date: str,
     bucket: str = "week",
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Elastyczność cenowa — one point per week/day (price vs volume), plus
     the Pearson correlation between them as a headline figure."""
     if bucket not in ("week", "day"):
         raise HTTPException(400, "bucket must be 'week' or 'day'")
-    return get_bi_price_elasticity(product_id, start_date, end_date, bucket)
+    return get_bi_price_elasticity(product_id, start_date, end_date, bucket, customer_id)
 
 
 # ── Analysis Tool: "Dostawcy" (2026-09-03) ─────────────────────────────────
@@ -885,10 +908,11 @@ def bi_sync_supplier_price_comparison(
     start_date: str,
     end_date: str,
     length: int | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Porównanie cen dostawców — sorted ranking for one product."""
-    return get_bi_supplier_price_comparison(product_id, start_date, end_date, length)
+    return get_bi_supplier_price_comparison(product_id, start_date, end_date, length, customer_id=customer_id)
 
 
 @app.get("/bi-sync/supplier-volatility")
@@ -896,12 +920,13 @@ def bi_sync_supplier_volatility(
     start_date: str,
     end_date: str,
     product_id: str | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Wahania cen dostawcy — coefficient of variation (%), computed per
     (supplier, product) then weighted per supplier so it measures price
     stability rather than product mix."""
-    return get_bi_supplier_volatility(start_date, end_date, product_id)
+    return get_bi_supplier_volatility(start_date, end_date, product_id, customer_id=customer_id)
 
 
 @app.get("/bi-sync/supplier-market-deviation")
@@ -909,11 +934,12 @@ def bi_sync_supplier_market_deviation(
     start_date: str,
     end_date: str,
     product_id: str | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Odchylenia od średniej rynkowej — % above/below the same
     (product, length) average over the same window."""
-    return get_bi_supplier_market_deviation(start_date, end_date, product_id)
+    return get_bi_supplier_market_deviation(start_date, end_date, product_id, customer_id=customer_id)
 
 
 # ── Analysis Tool: "Sezonowość i popyt" (2026-09-03) ───────────────────────
@@ -921,22 +947,24 @@ def bi_sync_supplier_market_deviation(
 @app.get("/bi-sync/seasonality")
 def bi_sync_seasonality(
     product_id: str | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Sezonowość — volume and avg price per calendar month, one series per
     year. Spans all available history, ignoring the sales date picker."""
-    return get_bi_seasonality(product_id)
+    return get_bi_seasonality(product_id, customer_id)
 
 
 @app.get("/bi-sync/event-impact")
 def bi_sync_event_impact(
     product_id: str | None = None,
+    customer_id: str | None = None,
     _: dict = Depends(require_permission("admin:manage")),
 ):
     """Wpływ świąt/wydarzeń — volume and price lift (%) during each event's
     selling window vs a LOCAL baseline (non-event days within +/-45 days of
     the window), not that year's overall average."""
-    return get_bi_event_impact(product_id)
+    return get_bi_event_impact(product_id, customer_id=customer_id)
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:
