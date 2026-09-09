@@ -631,7 +631,7 @@ const en = {
 
     months: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
     // Keyed by the language-neutral event key the API returns (db.py _BI_EVENTS).
-    eventNames: { valentines: "Valentine's Day", womens_day: "Women's Day", mothers_day: "Mother's Day (NL/DE)", christmas: "Christmas" } as Record<string, string>,
+    eventNames: { valentines: "Valentine's Day", womens_day: "Women's Day", mothers_day: "Mother's Day (NL/DE)" } as Record<string, string>,
   },
 };
 
@@ -1246,7 +1246,7 @@ const nl: typeof en = {
     forecastBody:        "Bewust nog niet gebouwd — maar de oorspronkelijke blokkade is weg: orderregels reiken nu terug tot 2023. Wat rest is de methode, niet de data. De logische eerste stap is seasonal-naive (dezelfde week een jaar geleden, gecorrigeerd voor de jaar-op-jaartrend). Controleer eerst in de seizoensgrafiek hierboven of een jaar hele maanden mist — een voorspelling die over zulke gaten leert, oogt geloofwaardig en is fout.",
 
     months: ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"],
-    eventNames: { valentines: "Valentijnsdag", womens_day: "Vrouwendag", mothers_day: "Moederdag (NL/DE)", christmas: "Kerst" } as Record<string, string>,
+    eventNames: { valentines: "Valentijnsdag", womens_day: "Vrouwendag", mothers_day: "Moederdag (NL/DE)" } as Record<string, string>,
   },
 };
 
@@ -1861,7 +1861,7 @@ const pl: typeof en = {
     forecastBody:        "Celowo jeszcze nie zbudowana — ale pierwotna przeszkoda zniknęła: linie sprzedaży sięgają już 2023 roku. Zostaje wybór metody, nie brak danych. Naturalnym pierwszym krokiem jest seasonal-naive (ten sam tydzień rok temu skorygowany o trend r/r). Wcześniej sprawdź na wykresie sezonowości powyżej, czy któryś rok nie ma całych brakujących miesięcy — prognoza uczona na takich lukach wyglądałaby wiarygodnie i byłaby błędna.",
 
     months: ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"],
-    eventNames: { valentines: "Walentynki", womens_day: "Dzień Kobiet", mothers_day: "Dzień Matki (NL/DE)", christmas: "Boże Narodzenie" } as Record<string, string>,
+    eventNames: { valentines: "Walentynki", womens_day: "Dzień Kobiet", mothers_day: "Dzień Matki (NL/DE)" } as Record<string, string>,
   },
 };
 
@@ -2476,7 +2476,7 @@ const es: typeof en = {
     forecastBody:        "Deliberadamente aún no construida — pero el bloqueo original ha desaparecido: las líneas de pedido llegan ahora hasta 2023. Lo que queda es el método, no los datos. El primer paso natural es seasonal-naive (la misma semana del año pasado, ajustada por la tendencia interanual). Antes, comprueba en el gráfico de estacionalidad de arriba si algún año carece de meses enteros — una previsión entrenada sobre esos huecos parecería creíble y sería errónea.",
 
     months: ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"],
-    eventNames: { valentines: "San Valentín", womens_day: "Día de la Mujer", mothers_day: "Día de la Madre (NL/DE)", christmas: "Navidad" } as Record<string, string>,
+    eventNames: { valentines: "San Valentín", womens_day: "Día de la Mujer", mothers_day: "Día de la Madre (NL/DE)" } as Record<string, string>,
   },
 };
 

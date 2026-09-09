@@ -3073,16 +3073,28 @@ _BI_EVENTS: list[tuple[str, tuple[int, int], tuple[int, int]]] = [
     ("valentines", (1, 25), (2, 11)),
     ("womens_day", (2, 26), (3, 6)),
     ("mothers_day", (4, 28), (5, 9)),
-    ("christmas", (12, 1), (12, 20)),
 ]
 
 # Periods that are not charted as events but must never count as "ordinary"
-# days in a baseline. New Year is a major flower peak sitting 45 days before
-# the Valentine's window, so without this it inflated the Valentine's
-# reference and pushed a real peak into negative territory (2026-09-07).
+# days in a baseline — the two are separate lists precisely so a period can
+# be disqualified as a reference without being presented as a result.
+#
+# Covers 1 Dec – 6 Jan. Two reasons, both about the VALENTINE'S baseline,
+# whose window reaches back to 11 Dec:
+#  - New Year is a major flower peak; leaving it in inflated the Valentine's
+#    reference enough to push a real peak into negative territory
+#    (2026-09-07).
+#  - December was charted as a "christmas" event until 2026-09-09, which
+#    kept it out of baselines as a side effect. It was dropped as an event
+#    because this business does not sell roses into Christmas, so the bar
+#    said nothing useful — but December still runs well above an ordinary
+#    day here (it measured +43% volume while it was still charted), so it
+#    has to stay disqualified as a reference. Removing it from _BI_EVENTS
+#    without adding it here would have silently re-created the 2026-09-07
+#    bug for Valentine's.
 # This range wraps across the year boundary — see _in_md_range.
 _BI_BASELINE_EXCLUDE: list[tuple[tuple[int, int], tuple[int, int]]] = [
-    ((12, 21), (1, 6)),
+    ((12, 1), (1, 6)),
 ]
 
 
