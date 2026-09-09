@@ -12,14 +12,16 @@ import HistoryTab from "@/components/HistoryTab";
 import AdminTab from "@/components/AdminTab";
 import DeliveryImporter from "@/components/DeliveryImporter";
 import AnalysisTool from "@/components/AnalysisTool";
+import KenyaBoxWeight from "@/components/KenyaBoxWeight";
 import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
 import { useSystem } from "@/contexts/SystemContext";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis";
+type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis" | "boxweight";
 
 const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
 const ECUADOR_ONLY_TABS:      Tab[] = ["delivery", "analysis"];
+const KENYA_ONLY_TABS:        Tab[] = ["boxweight"];
 
 const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "vbn",       gradient: "from-emerald to-[#0D5430]",   perm: "vbn:check" },
@@ -29,6 +31,7 @@ const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "admin",     gradient: "from-[#374151] to-[#111827]", perm: "admin:manage" },
   { id: "delivery",  gradient: "from-[#0F4C8A] to-[#0A2E54]", perm: "delivery:import" },
   { id: "analysis",  gradient: "from-[#7C3AED] to-[#4C1D95]", perm: "admin:manage" },
+  { id: "boxweight", gradient: "from-[#006600] to-[#004000]", perm: "admin:manage" },
 ];
 
 /* ─── 3-D tilt hook ─── */
@@ -155,6 +158,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     : tab === "admin" ? "Admin"
     : tab === "delivery" ? t.nav.deliveryImporter
     : tab === "analysis" ? t.nav.analysisTool
+    : tab === "boxweight" ? t.nav.kenyaBoxWeight
     : null;
 
   return (
@@ -535,15 +539,32 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
         </svg>
       ),
     },
+    {
+      id: "boxweight",
+      perm: "admin:manage",
+      label: t.nav.kenyaBoxWeight,
+      desc: t.hub.boxWeightDesc,
+      gradient: "bg-gradient-to-br from-[#006600] to-[#004000]",
+      stat: t.hub.boxWeightStat,
+      statColor: "text-white/60",
+      icon: (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M4 8h16l-2 12H6L4 8z" stroke="white" strokeWidth="1.8" strokeLinejoin="round"/>
+          <path d="M9 8V6a3 3 0 016 0v2" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+        </svg>
+      ),
+    },
   ];
 
   const isStamgegevens = system.id === "stamgegevens";
   const isEcuador = system.id === "ecuador";
+  const isKenya = system.id === "kenya";
 
   const tiles = allTiles.filter(tile =>
     (isAdmin || permissions.includes(tile.perm)) &&
     (isStamgegevens || !STAMGEGEVENS_ONLY_TABS.includes(tile.id)) &&
-    (isEcuador || !ECUADOR_ONLY_TABS.includes(tile.id))
+    (isEcuador || !ECUADOR_ONLY_TABS.includes(tile.id)) &&
+    (isKenya || !KENYA_ONLY_TABS.includes(tile.id))
   );
 
   const colsClass = tiles.length <= 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
@@ -672,6 +693,7 @@ export default function Dashboard() {
     .filter(nt => isAdmin || permissions.includes(nt.perm))
     .filter(nt => system.id === "stamgegevens" || !STAMGEGEVENS_ONLY_TABS.includes(nt.id))
     .filter(nt => system.id === "ecuador"      || !ECUADOR_ONLY_TABS.includes(nt.id))
+    .filter(nt => system.id === "kenya"        || !KENYA_ONLY_TABS.includes(nt.id))
     .map(nt => ({
       id:       nt.id,
       gradient: nt.gradient,
@@ -733,6 +755,7 @@ export default function Dashboard() {
             {tab === "admin"    && <AdminTab        currentUsername={username}/>}
             {tab === "delivery"  && <DeliveryImporter lang={lang}/>}
             {tab === "analysis"  && <AnalysisTool     lang={lang}/>}
+            {tab === "boxweight" && <KenyaBoxWeight   lang={lang}/>}
           </ModuleCard>
         )}
       </div>
