@@ -368,13 +368,16 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
 
         log_bi_sync_finish(sync_id, len(stock_entries), len(reference_lines))
         _s(f"Sync complete — {len(stock_entries)} stock_entries, {len(reference_lines)} order_lines")
-        return {"ok": True, "stock_entries": len(stock_entries), "order_lines": len(reference_lines), "error": ""}
+        # sync_id goes back to the caller so a range backfill can append its
+        # own coverage verdict to this run's log — see run_bi_sync_range.
+        return {"ok": True, "stock_entries": len(stock_entries), "order_lines": len(reference_lines),
+                "sync_id": sync_id, "error": ""}
 
     except Exception as exc:
         error = str(exc)
         logger.exception("BI sync failed")
         log_bi_sync_finish(sync_id, 0, 0, error)
-        return {"ok": False, "stock_entries": 0, "order_lines": 0, "error": error}
+        return {"ok": False, "stock_entries": 0, "order_lines": 0, "sync_id": sync_id, "error": error}
 
 
 def _add_months(d: date, months: int) -> date:
@@ -457,9 +460,21 @@ def run_bi_sync_range(cfg: Config, start_date: str, end_date: str, on_status=Non
                           f"and filtering to {anchor}..{end_date}")
             result = _run_bi_sync_for_range(cfg, anchor, anchor, end_date, on_status)
             if result.get("ok"):
-                if failures and on_status:
-                    on_status(f"Recovered history back to {anchor}; {len(failures)} older anchor(s) "
-                              f"were too large for the API to deliver")
+                # Persist the coverage verdict, don't just hand it to on_status:
+                # the HTTP entry point runs this in a bare thread with no
+                # callback and drops the return value, so a backfill that
+                # silently recovered far less history than asked for reported
+                # nothing at all and looked like a clean success (2026-09-09).
+                if failures:
+                    verdict = (f"PARTIAL COVERAGE — requested from {start_date}, actually covered from "
+                               f"{anchor}. {len(failures)} older anchor(s) were too large for the API: "
+                               + " | ".join(failures))
+                else:
+                    verdict = f"Full requested range covered, from {start_date} to {end_date}"
+                if result.get("sync_id"):
+                    append_bi_sync_message(result["sync_id"], verdict)
+                if on_status:
+                    on_status(verdict)
                 return {
                     "ok": True,
                     "stock_entries": result.get("stock_entries", 0),
