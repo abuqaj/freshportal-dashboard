@@ -21,7 +21,7 @@ from config import Config
 
 log = logging.getLogger(__name__)
 
-_token: str | None = None
+_tokens: dict[tuple[str, str], str] = {}
 
 
 class BiSyncError(Exception):
@@ -42,10 +42,17 @@ def _authenticate(cfg: Config) -> str:
 
 
 def _get_token(cfg: Config, force_refresh: bool = False) -> str:
-    global _token
-    if force_refresh or _token is None:
-        _token = _authenticate(cfg)
-    return _token
+    """Cached per (base URL, API key), not globally.
+
+    A single shared token was fine while there was exactly one BI Sync
+    server. A second tenant on a different key and host (Kenya, 2026-09-09)
+    would otherwise be handed whichever token was cached first — and the
+    failure mode is not necessarily a loud 401: the wrong tenant's token can
+    authenticate perfectly well and return the wrong system's export."""
+    key = (cfg.bi_sync_api_base_url, cfg.bi_sync_api_key)
+    if force_refresh or key not in _tokens:
+        _tokens[key] = _authenticate(cfg)
+    return _tokens[key]
 
 
 def get_export_url(cfg: Config, mutation_datetime: str) -> str:

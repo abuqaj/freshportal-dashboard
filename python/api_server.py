@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import Config, ALLOWED_FP_URLS
+from config import Config, ALLOWED_FP_URLS, get_kenya_cfg
 from i18n import msg as i18n_msg
 from scraper_fp import fetch_products, fix_vbn_batch, FPProduct, _debug_fetch, _debug_rendered
 from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
@@ -56,6 +56,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
+from kenya_box_weight import debug_pull as kenya_debug_pull
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
 from delivery_product_match import match_order_to_products
@@ -987,6 +988,26 @@ def bi_sync_event_impact(
     selling window vs a LOCAL baseline (non-event days within +/-45 days of
     the window), not that year's overall average."""
     return get_bi_event_impact(product_id, customer_id=customer_id)
+
+
+# ── Kenya: box-weight correction (2026-09-09) ──────────────────────────────
+
+@app.get("/kenya/box-weight/debug-pull")
+def kenya_box_weight_debug_pull(
+    lookback_days: int = 14,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """One Kenya BI Sync export pull, reported rather than ingested.
+
+    Blocking on purpose — this is a discovery call, not a job: it exists to
+    confirm the export's real file list and the columns of invoice /
+    customer_stock_item / stock_entry before any selection logic is written
+    against assumed names. Writes nothing, anywhere."""
+    try:
+        return {"ok": True, **kenya_debug_pull(get_kenya_cfg(), lookback_days)}
+    except Exception as exc:
+        log.exception("Kenya box-weight debug pull failed")
+        raise HTTPException(502, f"Kenya export pull failed: {exc}")
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:
