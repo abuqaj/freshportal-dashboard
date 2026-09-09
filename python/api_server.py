@@ -48,6 +48,8 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
                get_bi_customers_for_picker,
+               get_kenya_box_weight_customers, set_kenya_box_weight_customer,
+               get_kenya_box_weight_log,
                get_bi_sales_by_supplier, get_bi_sales_by_product, get_bi_sales_overview,
                get_bi_top_products_for_supplier,
                get_bi_price_trend_by_length, get_bi_price_vs_length, get_bi_price_elasticity,
@@ -56,7 +58,11 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
-from kenya_box_weight import debug_pull as kenya_debug_pull
+from kenya_box_weight import (
+    debug_pull as kenya_debug_pull,
+    open_invoice_customers as kenya_open_invoice_customers,
+    run_correction as kenya_run_correction,
+)
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
 from delivery_product_match import match_order_to_products
@@ -1008,6 +1014,73 @@ def kenya_box_weight_debug_pull(
     except Exception as exc:
         log.exception("Kenya box-weight debug pull failed")
         raise HTTPException(502, f"Kenya export pull failed: {exc}")
+
+
+@app.get("/kenya/box-weight/customers")
+def kenya_box_weight_customers(
+    include_open: bool = False,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Customers this module is enabled for. With include_open=true it also
+    pulls the export to report how many open invoices each customer id has
+    right now — that costs a full export download, so it is opt-in rather
+    than part of the normal page load."""
+    enabled = {r["customer_id"]: r for r in get_kenya_box_weight_customers()}
+    if not include_open:
+        return {"customers": list(enabled.values())}
+    rows = []
+    for entry in kenya_open_invoice_customers(get_kenya_cfg()):
+        saved = enabled.pop(entry["customer_id"], None)
+        rows.append({**entry, "enabled": bool(saved and saved["enabled"]),
+                     "label": saved["label"] if saved else None})
+    # Enabled customers with no open invoices in the window still belong in
+    # the list, or unticking them would be impossible.
+    rows += [{**r, "open_invoices": 0} for r in enabled.values()]
+    return {"customers": rows}
+
+
+class KenyaCustomerToggle(BaseModel):
+    customer_id: str
+    enabled: bool
+    label: str | None = None
+
+
+@app.post("/kenya/box-weight/customers")
+def kenya_box_weight_set_customer(
+    req: KenyaCustomerToggle,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    set_kenya_box_weight_customer(req.customer_id, req.enabled, req.label)
+    return {"ok": True}
+
+
+@app.get("/kenya/box-weight/log")
+def kenya_box_weight_log(
+    limit: int = 200,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """What the module did to each invoice, most recent first."""
+    return {"log": get_kenya_box_weight_log(limit=limit)}
+
+
+@app.post("/kenya/box-weight/run")
+def kenya_box_weight_run(
+    limit: int | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Correct every qualifying open invoice. WRITES to live invoices.
+
+    Blocking: the caller gets the per-invoice outcome back rather than
+    having to poll, since a run covers a handful of invoices rather than a
+    full export ingest. `limit` caps how many are touched in one go."""
+    enabled = [c["customer_id"] for c in get_kenya_box_weight_customers() if c["enabled"]]
+    if not enabled:
+        raise HTTPException(400, "No customers enabled for the Kenya box-weight module")
+    try:
+        return kenya_run_correction(get_kenya_cfg(), set(enabled), limit=limit)
+    except Exception as exc:
+        log.exception("Kenya box-weight run failed")
+        raise HTTPException(502, f"Kenya box-weight run failed: {exc}")
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:

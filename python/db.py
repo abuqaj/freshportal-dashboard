@@ -3664,3 +3664,124 @@ def get_vbn_auto_history(limit: int = 10, offset: int = 0) -> list[dict]:
     except Exception as exc:
         logger.error("get_vbn_auto_history: %s", exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Kenya box-weight correction (2026-09-09) — see kenya_box_weight.py.
+#
+# Two tables: which customers the module is allowed to touch, and what it did
+# to each invoice. Kenya is a separate FreshPortal tenant, so its customer ids
+# are NOT the same id space as dfg_customers (which is Ecuador's) — hence a
+# table of its own rather than another flag on that one.
+# ---------------------------------------------------------------------------
+
+def ensure_kenya_box_weight_tables() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS kenya_box_weight_customers (
+                    customer_id TEXT PRIMARY KEY,
+                    label       TEXT,
+                    enabled     BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            # invoice_id is the key: one row per invoice, overwritten on each
+            # re-run. total_weight AND box_count are both stored because
+            # either changing invalidates the weight-per-box already written —
+            # an unchanged air waybill with an added box still needs a redo.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS kenya_box_weight_log (
+                    invoice_id     TEXT PRIMARY KEY,
+                    total_weight   NUMERIC,
+                    box_count      NUMERIC,
+                    weight_per_box NUMERIC,
+                    lines_written  INTEGER DEFAULT 0,
+                    status         TEXT,
+                    detail         TEXT,
+                    checked_at     TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS kenya_box_weight_log_checked_idx "
+                        "ON kenya_box_weight_log(checked_at DESC)")
+        conn.commit()
+
+
+def get_kenya_box_weight_customers() -> list[dict]:
+    try:
+        ensure_kenya_box_weight_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT customer_id, label, enabled
+                    FROM kenya_box_weight_customers
+                    ORDER BY enabled DESC, customer_id
+                """)
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_kenya_box_weight_customers: %s", exc)
+        return []
+
+
+def set_kenya_box_weight_customer(customer_id: str, enabled: bool, label: str | None = None) -> None:
+    """Upsert — the admin UI offers customer ids discovered in the export, so
+    a row usually has to be created on first toggle rather than updated."""
+    ensure_kenya_box_weight_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO kenya_box_weight_customers (customer_id, label, enabled, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (customer_id) DO UPDATE SET
+                    enabled = EXCLUDED.enabled,
+                    label   = COALESCE(EXCLUDED.label, kenya_box_weight_customers.label),
+                    updated_at = NOW()
+            """, (str(customer_id), label, enabled))
+        conn.commit()
+
+
+def get_kenya_box_weight_log(invoice_ids: list[str] | None = None, limit: int = 200) -> list[dict]:
+    """Whole log, or just the given invoices when checking what to redo."""
+    try:
+        ensure_kenya_box_weight_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                if invoice_ids:
+                    cur.execute("""
+                        SELECT * FROM kenya_box_weight_log WHERE invoice_id = ANY(%s)
+                    """, ([str(i) for i in invoice_ids],))
+                else:
+                    cur.execute("""
+                        SELECT * FROM kenya_box_weight_log
+                        ORDER BY checked_at DESC LIMIT %s
+                    """, (limit,))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_kenya_box_weight_log: %s", exc)
+        return []
+
+
+def record_kenya_box_weight(entry: dict) -> None:
+    ensure_kenya_box_weight_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO kenya_box_weight_log
+                    (invoice_id, total_weight, box_count, weight_per_box,
+                     lines_written, status, detail, checked_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (invoice_id) DO UPDATE SET
+                    total_weight   = EXCLUDED.total_weight,
+                    box_count      = EXCLUDED.box_count,
+                    weight_per_box = EXCLUDED.weight_per_box,
+                    lines_written  = EXCLUDED.lines_written,
+                    status         = EXCLUDED.status,
+                    detail         = EXCLUDED.detail,
+                    checked_at     = NOW()
+            """, (
+                str(entry.get("invoice_id")), entry.get("total_weight"),
+                entry.get("box_count"), entry.get("weight_per_box"),
+                entry.get("lines_written", 0), entry.get("status"),
+                (entry.get("detail") or "")[:2000],
+            ))
+        conn.commit()

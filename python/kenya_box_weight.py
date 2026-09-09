@@ -15,15 +15,24 @@ Pipeline, in the order it runs:
   3. Playwright on the portal: read the air waybill total weight and the
      invoice's total box count, divide, write to each line's box_weight.
 
-Only step 1-2 exist so far. The column names of customer_stock_item are
-NOT yet verified against a real Kenya export — that table has never been
-ingested by this project — which is what debug_pull() is for. Building the
-selection logic on assumed column names is how this codebase previously
-lost an entire table silently (order_line vs order_lines, 2026-08-31).
+customer_stock_item columns were confirmed against a real Kenya export on
+2026-09-09: id, invoice_id, collective_invoice_id, main_invoice_id,
+stock_entry_id, description, customer_id, origin, quantity,
+quantity_per_pack, buy_price, buy_price_plus, price, fust_id, user_id,
+buyer_id, mutation_date_time, creation_date_time.
+
+`quantity` on those lines is a BOX count, not stems — a sample line reads
+quantity=2 with quantity_per_pack=532, i.e. two boxes of 532 stems. That
+gives a second, independent box count for an invoice (sum of `quantity`)
+which is cross-checked against the number scraped off the portal before
+anything is written: the two disagreeing means one of them is being read
+wrong, and writing a weight derived from a misread box count would put a
+plausible-looking wrong number on every line of a real invoice.
 """
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, timedelta
 
 from bi_sync_client import (
@@ -106,3 +115,337 @@ def debug_pull(cfg: Config, lookback_days: int = LOOKBACK_DAYS) -> dict:
             sorted(open_by_customer.items(), key=lambda kv: kv[1], reverse=True)
         ),
     }
+
+
+def _num(value) -> float | None:
+    """Export numerics arrive as strings and occasionally with a decimal
+    comma. Returns None rather than 0 for unparseable input — 0 is a
+    meaningful weight here ("nothing recorded yet") and must not be
+    manufactured out of a parse failure."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def select_candidates(cfg: Config, customer_ids: set[str], lookback_days: int = LOOKBACK_DAYS) -> dict:
+    """Open invoices for the given customers that are safe to correct.
+
+    An invoice qualifies when it is unprinted (open), belongs to one of the
+    configured customers, and its supplier is not in EXCLUDED_SUPPLIER_IDS.
+    An invoice carries exactly one supplier (user, 2026-09-09), so the
+    supplier of its lowest-id line settles the whole invoice — "first line"
+    is a representative sample, not an arbitrary pick. Lowest id rather than
+    file order because CSV row order is not a guaranteed property of the
+    export.
+    """
+    if not customer_ids:
+        return {"candidates": [], "skipped": [], "anchor": None,
+                "detail": "No customers enabled for this module"}
+
+    anchor = (date.today() - timedelta(days=lookback_days)).isoformat()
+    zip_bytes = download_export_zip(get_export_url(cfg, anchor))
+
+    invoices = read_table(zip_bytes, "invoice")
+    items = read_table(zip_bytes, "customer_stock_item")
+    entries = read_table(zip_bytes, "stock_entry")
+    supplier_by_entry = {
+        str(e.get("id", "")).strip(): str(e.get("supplier_id", "")).strip()
+        for e in entries if e.get("id")
+    }
+
+    lines_by_invoice: dict[str, list[dict]] = {}
+    for item in items:
+        inv = str(item.get("invoice_id", "")).strip()
+        if inv:
+            lines_by_invoice.setdefault(inv, []).append(item)
+
+    candidates, skipped = [], []
+    for inv in invoices:
+        invoice_id = str(inv.get("id", "")).strip()
+        if not invoice_id:
+            continue
+        if str(inv.get("printed", "")).strip() != "0":
+            continue
+        if str(inv.get("customer_id", "")).strip() not in customer_ids:
+            continue
+
+        lines = lines_by_invoice.get(invoice_id, [])
+        if not lines:
+            skipped.append({"invoice_id": invoice_id, "reason": "no customer_stock_item lines in this export"})
+            continue
+
+        def line_sort_key(line: dict) -> tuple[int, str]:
+            raw = str(line.get("id", "")).strip()
+            return (int(raw), raw) if raw.isdigit() else (10**18, raw)
+
+        first = min(lines, key=line_sort_key)
+        supplier_id = supplier_by_entry.get(str(first.get("stock_entry_id", "")).strip(), "")
+        if not supplier_id:
+            skipped.append({"invoice_id": invoice_id,
+                            "reason": f"stock_entry {first.get('stock_entry_id')} not in this export"})
+            continue
+        if supplier_id in EXCLUDED_SUPPLIER_IDS:
+            skipped.append({"invoice_id": invoice_id, "reason": f"excluded supplier {supplier_id}"})
+            continue
+
+        # Independent box count, cross-checked against the portal later.
+        box_counts = [_num(l.get("quantity")) for l in lines]
+        api_boxes = sum(b for b in box_counts if b is not None) or None
+
+        candidates.append({
+            "invoice_id": invoice_id,
+            "customer_id": str(inv.get("customer_id", "")).strip(),
+            "supplier_id": supplier_id,
+            "line_count": len(lines),
+            "api_box_count": api_boxes,
+            "invoice_number": str(inv.get("invoice_number", "")).strip(),
+        })
+
+    candidates.sort(key=lambda c: int(c["invoice_id"]) if c["invoice_id"].isdigit() else 0)
+    return {"anchor": anchor, "candidates": candidates, "skipped": skipped, "detail": ""}
+
+
+def open_invoice_customers(cfg: Config, lookback_days: int = LOOKBACK_DAYS) -> list[dict]:
+    """customer_id -> open invoice count, for the admin picker. Unfiltered by
+    the enabled list on purpose: the picker has to be able to offer customers
+    that are not selected yet."""
+    anchor = (date.today() - timedelta(days=lookback_days)).isoformat()
+    zip_bytes = download_export_zip(get_export_url(cfg, anchor))
+    counts: dict[str, int] = {}
+    for inv in read_table(zip_bytes, "invoice"):
+        if str(inv.get("printed", "")).strip() == "0":
+            cid = str(inv.get("customer_id", "")).strip()
+            if cid:
+                counts[cid] = counts.get(cid, 0) + 1
+    return [{"customer_id": c, "open_invoices": n}
+            for c, n in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)]
+
+
+# Decimals written into a box_weight cell. Two is what a kg figure carries on
+# these invoices; more would be false precision on a divided total.
+WEIGHT_DECIMALS = 2
+
+# Boxes counted from the API and boxes read off the page should agree
+# exactly. A tolerance exists only so a portal that renders "12.0" against an
+# API "12" isn't treated as a conflict.
+BOX_COUNT_TOLERANCE = 0.01
+
+
+def _format_weight(value: float, sample_text: str) -> str:
+    """Render the weight the way this page already renders numbers.
+
+    The decimal separator is taken from whatever is currently in the cell
+    rather than assumed: FreshPortal is a Dutch application and a comma-
+    locale field silently reading "1.5" as 15 would put a ten-fold error on
+    every line. If the existing text carries no separator, a dot is used."""
+    text = f"{value:.{WEIGHT_DECIMALS}f}"
+    if "," in sample_text and "." not in sample_text:
+        return text.replace(".", ",")
+    return text
+
+
+def _cell_number(text: str) -> float | None:
+    """Pull a number out of cell text like '12,5 kg' or '1.234,5'."""
+    cleaned = re.sub(r"[^\d.,-]", "", text or "")
+    if not cleaned:
+        return None
+    # A comma after the last dot means comma-decimal; strip the thousands mark.
+    if "," in cleaned and cleaned.rfind(",") > cleaned.rfind("."):
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    else:
+        cleaned = cleaned.replace(",", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _read_air_waybill_weight(page, cfg: Config, invoice_id: str) -> float | None:
+    url = f"{cfg.freshportal_url}/transport/invoice_transport/invoice/code/air_waybill/INV_ID/{invoice_id}/"
+    page.goto(url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
+    field = page.query_selector("#transport_type_air_waybill_total_weight")
+    if field is None:
+        return None
+    return _cell_number(field.get_attribute("value") or "")
+
+
+def _write_line_weights(page, weight_text: str) -> tuple[int, list[str]]:
+    """Click each box_weight cell, type the value, verify it stuck.
+
+    Returns (written, problems). The cells are re-queried by id on every
+    iteration because committing one edit can re-render the table, which
+    would leave previously captured element handles pointing at detached
+    nodes."""
+    ids = [
+        el.get_attribute("id")
+        for el in page.query_selector_all("#invoice_table td.box_weight")
+    ]
+    ids = [i for i in ids if i]
+    written, problems = 0, []
+
+    for cell_id in ids:
+        cell = page.query_selector(f"#{cell_id}")
+        if cell is None:
+            problems.append(f"{cell_id}: disappeared before edit")
+            continue
+        cell.click()
+        # The cell turns into (or reveals) an input; which of the two is not
+        # documented anywhere, so both are handled.
+        editor = page.query_selector(f"#{cell_id} input, #{cell_id} textarea")
+        if editor is not None:
+            editor.fill(weight_text)
+            editor.press("Enter")
+        elif cell.get_attribute("contenteditable") in ("", "true"):
+            page.keyboard.press("Control+A")
+            page.keyboard.type(weight_text)
+            page.keyboard.press("Enter")
+        else:
+            problems.append(f"{cell_id}: clicked but no editable field appeared")
+            continue
+
+        # Read back rather than trust the click — this writes to a live
+        # invoice, and a silently rejected edit is indistinguishable from a
+        # successful one without checking.
+        page.wait_for_timeout(250)
+        after = page.query_selector(f"#{cell_id}")
+        got = _cell_number(after.inner_text() if after else "")
+        want = _cell_number(weight_text)
+        if got is None or want is None or abs(got - want) > 0.005:
+            problems.append(f"{cell_id}: expected {weight_text}, cell reads {got!r}")
+        else:
+            written += 1
+
+    return written, problems
+
+
+def _needs_run(candidate: dict, prior: dict | None, weight: float, boxes: float) -> tuple[bool, str]:
+    """Redo when either input changed since the last successful run.
+
+    The user's rule was "redo if the air waybill weight changed". Box count
+    is compared too: an unchanged weight spread over a box more or less is
+    still a different weight per box, so weight alone would leave a stale
+    figure on the invoice (agreed with the user 2026-09-09)."""
+    if prior is None or prior.get("status") != "ok":
+        return True, "not yet completed"
+    prior_weight = _num(prior.get("total_weight"))
+    prior_boxes = _num(prior.get("box_count"))
+    if prior_weight is None or abs(prior_weight - weight) > 0.005:
+        return True, f"weight changed {prior_weight} -> {weight}"
+    if prior_boxes is None or abs(prior_boxes - boxes) > BOX_COUNT_TOLERANCE:
+        return True, f"box count changed {prior_boxes} -> {boxes}"
+    return False, "unchanged since last run"
+
+
+def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None,
+                   on_status=None) -> dict:
+    """Select, then correct. One browser session for the whole batch."""
+    from playwright.sync_api import sync_playwright
+    from scraper_fp import _launch_browser, _login
+    from db import get_kenya_box_weight_log, record_kenya_box_weight
+
+    def _s(msg: str) -> None:
+        logger.info("[kenya-box-weight] %s", msg)
+        if on_status:
+            on_status(msg)
+
+    _s("Pulling Kenya export and selecting open invoices…")
+    selection = select_candidates(cfg, customer_ids)
+    candidates = selection["candidates"]
+    if limit:
+        candidates = candidates[:limit]
+    _s(f"{len(candidates)} candidate invoice(s), {len(selection['skipped'])} skipped by the supplier rule")
+    if not candidates:
+        return {"ok": True, "processed": [], **selection}
+
+    prior_by_invoice = {
+        str(r["invoice_id"]): r
+        for r in get_kenya_box_weight_log([c["invoice_id"] for c in candidates])
+    }
+
+    processed = []
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        ctx = browser.new_context()
+        page = ctx.new_page()
+        try:
+            _s("Logging in to the Kenya portal…")
+            _login(page, cfg)
+
+            for i, cand in enumerate(candidates, start=1):
+                invoice_id = cand["invoice_id"]
+                result = {"invoice_id": invoice_id, "customer_id": cand["customer_id"]}
+                try:
+                    _s(f"[{i}/{len(candidates)}] invoice {invoice_id}…")
+                    weight = _read_air_waybill_weight(page, cfg, invoice_id)
+                    if weight is None or weight <= 0:
+                        result |= {"status": "skipped",
+                                   "detail": "no air waybill weight recorded"}
+                        processed.append(result)
+                        record_kenya_box_weight({**result, "total_weight": weight})
+                        continue
+
+                    details_url = f"{cfg.freshportal_url}/invoice/invoice/details/INV_ID/{invoice_id}/"
+                    page.goto(details_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
+                    footer = page.query_selector("#invoice_table_footer_total_quantities")
+                    boxes = _cell_number(footer.inner_text() if footer else "")
+                    if not boxes:
+                        result |= {"status": "failed", "total_weight": weight,
+                                   "detail": "could not read total box count from the invoice table"}
+                        processed.append(result)
+                        record_kenya_box_weight(result)
+                        continue
+
+                    # Two independent counts must agree before a weight
+                    # derived from one of them lands on a live invoice.
+                    api_boxes = _num(cand.get("api_box_count"))
+                    if api_boxes is not None and abs(api_boxes - boxes) > BOX_COUNT_TOLERANCE:
+                        result |= {"status": "failed", "total_weight": weight, "box_count": boxes,
+                                   "detail": f"box count mismatch: portal {boxes} vs API {api_boxes} "
+                                             f"— refusing to write a weight derived from either"}
+                        processed.append(result)
+                        record_kenya_box_weight(result)
+                        continue
+
+                    should_run, why = _needs_run(cand, prior_by_invoice.get(invoice_id), weight, boxes)
+                    if not should_run:
+                        result |= {"status": "skipped", "total_weight": weight,
+                                   "box_count": boxes, "detail": why}
+                        processed.append(result)
+                        continue
+
+                    per_box = round(weight / boxes, WEIGHT_DECIMALS)
+                    sample = page.query_selector("#invoice_table td.box_weight")
+                    weight_text = _format_weight(per_box, sample.inner_text() if sample else "")
+                    written, problems = _write_line_weights(page, weight_text)
+
+                    result |= {
+                        "total_weight": weight, "box_count": boxes, "weight_per_box": per_box,
+                        "lines_written": written,
+                        # Only a clean sweep counts as done: a partial write
+                        # marked "ok" would never be retried, and rewriting
+                        # the same average is idempotent so a retry is free.
+                        "status": "ok" if written and not problems else "failed",
+                        "detail": "; ".join(problems) if problems else f"{why}; wrote {weight_text}",
+                    }
+                    processed.append(result)
+                    record_kenya_box_weight(result)
+
+                except Exception as exc:
+                    logger.exception("Kenya box weight failed for invoice %s", invoice_id)
+                    result |= {"status": "failed", "detail": str(exc)}
+                    processed.append(result)
+                    record_kenya_box_weight(result)
+        finally:
+            ctx.close()
+            browser.close()
+
+    done = sum(1 for r in processed if r.get("status") == "ok")
+    _s(f"Finished — {done} corrected, {len(processed) - done} skipped or failed")
+    return {"ok": True, "processed": processed, "anchor": selection["anchor"],
+            "skipped": selection["skipped"], "detail": ""}
