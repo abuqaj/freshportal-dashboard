@@ -676,7 +676,7 @@ def sync_history_ecuador(limit: int = 10, offset: int = 0, _: dict = Depends(req
 def bi_sync_debug_pull(
     mutation_datetime: str,
     tables: str = "",
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """TEMP admin debug endpoint (2026-08-26) — pull a BI Sync export and
     summarize what's in it (columns, row counts, a few sample rows per file),
@@ -701,7 +701,7 @@ def bi_sync_debug_pull(
 @app.post("/bi-sync/run")
 def bi_sync_run(
     mutation_datetime: str,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Manually trigger a BI Sync ingestion run (non-blocking) — for backfills
     or ad-hoc re-runs on a specific date. Also runs automatically once a day
@@ -717,7 +717,7 @@ def bi_sync_run(
 def bi_sync_run_range(
     start_date: str,
     end_date: str,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Backfill [start_date, end_date] (non-blocking). Split into <=6-month
     windows, each ONE export pull anchored at that window's start, with
@@ -732,7 +732,7 @@ def bi_sync_run_range(
 
 
 @app.get("/bi-sync/history")
-def bi_sync_history(limit: int = 10, offset: int = 0, _: dict = Depends(require_permission("admin:manage"))):
+def bi_sync_history(limit: int = 10, offset: int = 0, _: dict = Depends(require_any_permission("admin:manage", "analysis:view"))):
     """Last N BI sync runs with their message logs, plus current row counts
     and whether a sync (single-day or a range backfill) is running right now."""
     rows = get_bi_sync_history(limit + 1, offset)
@@ -746,7 +746,7 @@ def bi_sync_history(limit: int = 10, offset: int = 0, _: dict = Depends(require_
 
 
 @app.get("/bi-sync/charts")
-def bi_sync_charts(days: int = 30, _: dict = Depends(require_permission("admin:manage"))):
+def bi_sync_charts(days: int = 30, _: dict = Depends(require_any_permission("admin:manage", "analysis:view"))):
     """First aggregate series for the Analysis Tool — live stock_entry count
     per snapshot_date, and order_lines (OZEDS) count/revenue per creation day."""
     return {
@@ -762,7 +762,7 @@ def bi_sync_products(
     start_date: str | None = None,
     end_date: str | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Product picker for the "by product" sales chart. Pass supplier_id +
     start_date/end_date to narrow it to only products that supplier sold in
@@ -777,7 +777,7 @@ def bi_sync_product_lengths(
     start_date: str | None = None,
     end_date: str | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Lengths available for one product — the optional refinement dropdown
     in the "by product" sales chart. Pass start_date/end_date so the list
@@ -791,7 +791,7 @@ def bi_sync_product_lengths(
 def bi_sync_customers(
     start_date: str | None = None,
     end_date: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Customers with actual sold lines, most lines first — backs the
     customer scope selector. Names come from dfg_customers (the same map the
@@ -806,7 +806,7 @@ def bi_sync_suppliers(
     start_date: str | None = None,
     end_date: str | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Supplier picker (only suppliers with actual sold lines) for the
     "by supplier" sales chart. Pass start_date/end_date so the row_count next
@@ -820,7 +820,7 @@ def bi_sync_sales_by_supplier(
     start_date: str,
     end_date: str,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Multi-series sale price over time for one supplier — one line per
     product (top 10 by ORDER LINE COUNT, so the frontend can highlight one +
@@ -837,7 +837,7 @@ def bi_sync_supplier_top_products(
     end_date: str,
     metric: str = "quantity",
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Which products one supplier actually moved most — sorted ranking by
     realised volume (metric=quantity) or revenue (metric=value). Both
@@ -856,7 +856,7 @@ def bi_sync_sales_by_product(
     end_date: str,
     length: int | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Multi-series sale price over time for one product (optionally scoped
     to one length) — one line per supplier (top 10 by volume, so the
@@ -872,7 +872,7 @@ def bi_sync_sales_overview(
     group_by: str = "supplier",
     max_series: int = 10,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Default "nothing selected yet" sales chart — top suppliers or top
     products overall (not scoped to one entity), same shape as
@@ -891,7 +891,7 @@ def bi_sync_price_trend_by_length(
     start_date: str,
     end_date: str,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Trend ceny w czasie — one line per length for a single product."""
     return get_bi_price_trend_by_length(product_id, start_date, end_date, customer_id=customer_id)
@@ -904,7 +904,7 @@ def bi_sync_price_vs_length(
     end_date: str,
     supplier_id: str | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Cena vs długość łodygi — avg sale price and goods purchase price per
     length (bar-chart shaped, x = length). NOT margin: real cost also
@@ -920,7 +920,7 @@ def bi_sync_price_elasticity(
     end_date: str,
     bucket: str = "week",
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Elastyczność cenowa — one point per week/day (price vs volume), plus
     the Pearson correlation between them as a headline figure."""
@@ -938,7 +938,7 @@ def bi_sync_supplier_price_comparison(
     end_date: str,
     length: int | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Porównanie cen dostawców — sorted ranking for one product."""
     return get_bi_supplier_price_comparison(product_id, start_date, end_date, length, customer_id=customer_id)
@@ -950,7 +950,7 @@ def bi_sync_supplier_volatility(
     end_date: str,
     product_id: str | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Wahania cen dostawcy — coefficient of variation (%), computed per
     (supplier, product) then weighted per supplier so it measures price
@@ -964,7 +964,7 @@ def bi_sync_supplier_market_deviation(
     end_date: str,
     product_id: str | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Odchylenia od średniej rynkowej — % above/below the same
     (product, length) average over the same window."""
@@ -977,7 +977,7 @@ def bi_sync_supplier_market_deviation(
 def bi_sync_seasonality(
     product_id: str | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Sezonowość — volume and avg price per calendar month, one series per
     year. Spans all available history, ignoring the sales date picker."""
@@ -988,7 +988,7 @@ def bi_sync_seasonality(
 def bi_sync_event_impact(
     product_id: str | None = None,
     customer_id: str | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Wpływ świąt/wydarzeń — volume and price lift (%) during each event's
     selling window vs a LOCAL baseline (non-event days within +/-45 days of

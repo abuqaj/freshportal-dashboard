@@ -48,6 +48,7 @@ const SYSTEM_DEFS: { id: string; label: string; dot: string; modules: { perm: st
     id: "ecuador", label: "Ecuador", dot: "bg-[#E8A200]",
     modules: [
       { perm: "delivery:import", label: "Delivery Import" },
+      { perm: "analysis:view",   label: "Analysis Tool" },
     ],
   },
   { id: "piazza",      label: "Piazza dei Fiori", dot: "bg-[#009246]", modules: [] },
@@ -68,6 +69,7 @@ const PERM_LABELS: Record<string, string> = {
   "photos:upload":   "Photo Uploader",
   "delivery:import": "Delivery Import",
   "boxweight:run":   "Box Weight",
+  "analysis:view":   "Analysis Tool",
   "admin:manage":    "Admin",
 }
 
