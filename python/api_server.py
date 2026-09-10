@@ -1001,7 +1001,7 @@ def bi_sync_event_impact(
 @app.get("/kenya/box-weight/debug-pull")
 def kenya_box_weight_debug_pull(
     lookback_days: int = 14,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "boxweight:run")),
 ):
     """One Kenya BI Sync export pull, reported rather than ingested.
 
@@ -1019,7 +1019,7 @@ def kenya_box_weight_debug_pull(
 @app.get("/kenya/box-weight/customers")
 def kenya_box_weight_customers(
     include_open: bool = False,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "boxweight:run")),
 ):
     """Customers this module is enabled for. With include_open=true it also
     pulls the export to report how many open invoices each customer id has
@@ -1048,7 +1048,7 @@ class KenyaCustomerToggle(BaseModel):
 @app.post("/kenya/box-weight/customers")
 def kenya_box_weight_set_customer(
     req: KenyaCustomerToggle,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "boxweight:run")),
 ):
     set_kenya_box_weight_customer(req.customer_id, req.enabled, req.label)
     return {"ok": True}
@@ -1058,7 +1058,7 @@ def kenya_box_weight_set_customer(
 def kenya_box_weight_log(
     limit: int = 25,
     offset: int = 0,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "boxweight:run")),
 ):
     """What the module did to each invoice, most recently touched first.
 
@@ -1071,7 +1071,7 @@ def kenya_box_weight_log(
 @app.post("/kenya/box-weight/run")
 def kenya_box_weight_run(
     limit: int | None = None,
-    _: dict = Depends(require_permission("admin:manage")),
+    _: dict = Depends(require_any_permission("admin:manage", "boxweight:run")),
 ):
     """Correct every qualifying open invoice. WRITES to live invoices.
 
