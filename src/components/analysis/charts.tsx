@@ -1,0 +1,622 @@
+"use client";
+
+import { useState } from "react";
+
+// Chart primitives for the Analysis Tool. Dependency-free SVG/HTML — no
+// charting library, deliberately (see AnalysisTool.tsx). Split out of that
+// file 2026-09-03 when the second batch of analyses landed and it stopped
+// being readable as one module.
+
+// User-specified palette (fixed order — 2026-09-03). Assigned by position,
+// never cycled per-render, so a series keeps its color as filters change.
+export const LINE_COLORS = ["#B03A2B", "#F7C4BC", "#1A7D45", "#C4DED0", "#E4E1D8", "#8E8B81", "#000000"];
+
+// Semantic pair for the diverging chart — from the same palette.
+export const COLOR_ABOVE = "#B03A2B";  // above market = expensive
+export const COLOR_BELOW = "#1A7D45";  // below market = cheap
+export const COLOR_NEUTRAL = "#8E8B81";
+
+// Reserved for the line in focus: black is the highest-contrast step in the
+// palette and reads clearly against the blurred context lines.
+export const HIGHLIGHT_COLOR = "#000000";
+
+// Every user-visible word in this module arrives as a prop — the chart
+// primitives have no access to `lang`, so hardcoding copy here would make
+// the module untranslatable. `locale` is a BCP-47 tag used for date and
+// number formatting, so dates don't render in the browser's language while
+// the rest of the UI is in the user's (2026-09-07).
+export function shortDay(iso: string, locale?: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(locale, { month: "short", day: "numeric" });
+}
+
+/** Full date including the year — always used in tooltips, where there is
+ *  room and ambiguity is unacceptable. */
+export function fullDay(iso: string, locale?: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** Axis labeller chosen from the actual span of the data: past roughly a
+ *  year, a bare day+month is ambiguous across years and day-level precision
+ *  is meaningless at that zoom, so switch to month + year (2026-09-03). */
+function makeDayLabeller(days: string[], locale?: string): (iso: string) => string {
+  const short = (iso: string) => shortDay(iso, locale);
+  if (days.length < 2) return short;
+  const first = new Date(days[0]).getTime();
+  const last = new Date(days[days.length - 1]).getTime();
+  if (isNaN(first) || isNaN(last)) return short;
+  const spanDays = (last - first) / 86_400_000;
+  if (spanDays <= 300) return short;
+  return (iso: string) => {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleDateString(locale, { month: "short", year: "numeric" });
+  };
+}
+
+/** Build a "01".."12" -> localized month-abbreviation labeller from the
+ *  caller's translated month names. */
+export function makeMonthLabel(months: string[]): (m: string) => string {
+  return (m: string) => months[Number(m) - 1] ?? m;
+}
+
+export function fmtPrice(v: number | null | undefined): string {
+  return v == null ? "—" : `$${v.toFixed(3)}`;
+}
+
+export function fmtNum(v: number | null | undefined, locale?: string): string {
+  return v == null ? "—" : Math.round(v).toLocaleString(locale);
+}
+
+export function fmtPct(v: number | null | undefined): string {
+  return v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`;
+}
+
+export interface SeriesPoint {
+  day: string;
+  value: number;
+  quantity: number;
+}
+
+export interface Series {
+  key: string;
+  label: string;
+  points: SeriesPoint[];
+}
+
+function Empty({ text }: { text?: string }) {
+  return <p className="text-xs text-ink-3 px-1 py-10 text-center">{text ?? ""}</p>;
+}
+
+/** Absolutely-positioned tooltip; coordinates are % of the chart box so it
+ *  tracks correctly as the responsive SVG scales. */
+function Tip({ leftPct, topPct, children }: { leftPct: number; topPct: number; children: React.ReactNode }) {
+  return (
+    <div
+      className="pointer-events-none absolute z-10 rounded-lg bg-ink text-white text-xs px-2.5 py-1.5 shadow-lg whitespace-nowrap"
+      style={{ left: `${leftPct}%`, top: `${topPct}%`, transform: "translate(-50%, -130%)" }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Legend({ items, highlightKey }: { items: { key: string; label: string; color: string }[]; highlightKey?: string }) {
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-2 px-2">
+      {items.map(it => (
+        <span
+          key={it.key}
+          className={`inline-flex items-center gap-1.5 text-xs ${highlightKey === it.key ? "text-ink font-semibold" : "text-ink-3"}`}
+        >
+          <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-border" style={{ background: it.color }} />
+          {it.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ── Multi-series line chart ────────────────────────────────────────────────
+// x = shared ordered category (day, or month for seasonality), evenly spaced
+// by position rather than by real date gaps. The tooltip is React-driven
+// rather than an SVG <title>: a transparent-filled hit circle receives no
+// pointer events under the default `pointer-events: visiblePainted`, which
+// is why the original <title> tooltip silently never fired (fixed 2026-09-03
+// via pointerEvents="all").
+export function MultiLineChart({
+  series,
+  highlightKey,
+  height = 320,
+  xLabel,
+  tipLabel,
+  formatValue = fmtPrice,
+  showQuantity = true,
+  locale,
+  emptyText,
+  soldLabel,
+}: {
+  series: Series[];
+  highlightKey?: string;
+  height?: number;
+  /** Axis labeller. Omit for date data — the span picks the format itself. */
+  xLabel?: (v: string) => string;
+  /** Tooltip labeller; defaults to a full date including the year. */
+  tipLabel?: (v: string) => string;
+  formatValue?: (v: number | null | undefined) => string;
+  showQuantity?: boolean;
+  locale?: string;
+  emptyText?: string;
+  /** Translated "{n} boxes sold" line in the tooltip. */
+  soldLabel?: (n: string) => string;
+}) {
+  const [hover, setHover] = useState<{ x: number; y: number; series: Series; point: SeriesPoint } | null>(null);
+  const nonEmpty = series.filter(s => s.points.length > 0);
+  if (!nonEmpty.length) return <Empty text={emptyText} />;
+
+  // The focused line is drawn in the palette's strongest colour rather than
+  // whatever its position yields. Position 4 is #C4DED0, the palest step —
+  // handing the line that most needs to stand out the one least able to
+  // (reported 2026-09-07). Context lines keep their own index colour, and
+  // the strong colour is skipped for them so nothing collides with it.
+  const colorFor = (si: number, key: string): string => {
+    if (!highlightKey) return LINE_COLORS[si % LINE_COLORS.length];
+    if (key === highlightKey) return HIGHLIGHT_COLOR;
+    const pool = LINE_COLORS.filter(c => c !== HIGHLIGHT_COLOR);
+    return pool[si % pool.length];
+  };
+
+  const allDays = Array.from(new Set(nonEmpty.flatMap(s => s.points.map(p => p.day)))).sort();
+  const axisLabel = xLabel ?? makeDayLabeller(allDays, locale);
+  const tooltipLabel = tipLabel ?? xLabel ?? ((d: string) => fullDay(d, locale));
+  const allValues = nonEmpty.flatMap(s => s.points.map(p => p.value));
+  const dataMax = Math.max(...allValues);
+  const dataMin = Math.min(...allValues);
+  // Fit the data rather than pinning the axis to zero. A line encodes
+  // position, not magnitude-from-baseline (unlike a bar, where a non-zero
+  // baseline lies), and forcing 0 into a price axis of $0.40–$0.55 squashed
+  // every series into a flat band near the top where no movement was
+  // readable. Zero is still included when the data itself sits near it, so
+  // volume-style series keep a natural floor (2026-09-03).
+  const pad = (dataMax - dataMin) * 0.08 || Math.abs(dataMax) * 0.1 || 1;
+  const maxV = dataMax + pad;
+  const minV = dataMin - pad <= 0 || dataMin < (dataMax - dataMin) * 0.5 ? Math.min(0, dataMin) : dataMin - pad;
+  const range = maxV - minV || 1;
+
+  const width = 1000;
+  const padL = 56, padR = 12, padT = 16, padB = 28;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  const xFor = (day: string) => {
+    const idx = allDays.indexOf(day);
+    return padL + (allDays.length <= 1 ? plotW / 2 : (idx / (allDays.length - 1)) * plotW);
+  };
+  const yFor = (v: number) => padT + plotH - ((v - minV) / range) * plotH;
+
+  const yTickCount = 6;
+  const yTicks = Array.from({ length: yTickCount }, (_, i) => minV + (range * i) / (yTickCount - 1));
+
+  // Up to 8 evenly-spaced labels — denser than first/mid/last, which was
+  // unreadable over a multi-year range.
+  const xTickCount = Math.min(8, allDays.length);
+  const xTickIdx = Array.from(new Set(
+    Array.from({ length: xTickCount }, (_, i) => Math.round((i / Math.max(1, xTickCount - 1)) * (allDays.length - 1)))
+  ));
+
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height }}>
+        {yTicks.map((v, i) => (
+          <g key={i}>
+            <line x1={padL} x2={width - padR} y1={yFor(v)} y2={yFor(v)} className="stroke-border" strokeWidth={1} />
+            <text x={2} y={yFor(v) + 3} fontSize={10} className="fill-ink-3">{formatValue(v)}</text>
+          </g>
+        ))}
+        {xTickIdx.map(i => (
+          <text key={i} x={xFor(allDays[i])} y={height - 6} fontSize={10} textAnchor="middle" className="fill-ink-3">
+            {axisLabel(allDays[i])}
+          </text>
+        ))}
+        {/* Painted dimmed-first so the highlighted line always sits on top,
+            while its COLOUR still comes from its own index — otherwise the
+            line in focus would be drawn under its context lines. */}
+        {nonEmpty
+          .map((s, si) => ({ s, si }))
+          .sort((a, b) => Number(highlightKey === a.s.key) - Number(highlightKey === b.s.key))
+          .map(({ s, si }) => {
+          const isHighlighted = highlightKey === s.key;
+          const isDimmed = !!highlightKey && !isHighlighted;
+          const color = colorFor(si, s.key);
+          const d = s.points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(p.day)} ${yFor(p.value)}`).join(" ");
+          return (
+            <g
+              key={s.key}
+              opacity={isDimmed ? 0.45 : 1}
+              // Only the context lines get a filter. The highlighted line is
+              // left perfectly crisp: a drop-shadow glow on it read as blur —
+              // the whole chart looked out of focus, the focused line worst of
+              // all, because the halo is widest on the thickest stroke
+              // (reported 2026-09-07). Emphasis now comes from a solid colour,
+              // a heavier stroke and a casing, not from a filter.
+              style={isDimmed ? { filter: "blur(1.6px)" } : undefined}
+            >
+              {isHighlighted && (
+                // Surface-coloured casing: separates the focused line from the
+                // blurred ones behind it without softening its own edge.
+                <path d={d} fill="none" stroke="var(--color-surface, #fff)" strokeWidth={8} strokeLinecap="round" />
+              )}
+              <path d={d} fill="none" stroke={color} strokeWidth={isHighlighted ? 3.5 : 2} strokeLinecap="round" />
+              {/* Points (and their hit targets) only on the line in focus —
+                  hovering a blurred context line would report a value the
+                  reader can't even see clearly. */}
+              {!isDimmed && s.points.map((p, i) => (
+                <g key={i}>
+                  <circle cx={xFor(p.day)} cy={yFor(p.value)} r={isHighlighted ? 4.5 : 3} fill={color} />
+                  <circle
+                    cx={xFor(p.day)}
+                    cy={yFor(p.value)}
+                    r={10}
+                    fill="transparent"
+                    pointerEvents="all"
+                    onMouseEnter={() => setHover({ x: xFor(p.day), y: yFor(p.value), series: s, point: p })}
+                    onMouseLeave={() => setHover(null)}
+                  />
+                </g>
+              ))}
+            </g>
+          );
+        })}
+      </svg>
+      {hover && (
+        <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
+          <div className="font-semibold">{hover.series.label}</div>
+          <div>{tooltipLabel(hover.point.day)} · {formatValue(hover.point.value)}</div>
+          {showQuantity && soldLabel && <div>{soldLabel(fmtNum(hover.point.quantity, locale))}</div>}
+        </Tip>
+      )}
+      <Legend
+        items={nonEmpty.map((s, si) => ({ key: s.key, label: s.label, color: colorFor(si, s.key) }))}
+        highlightKey={highlightKey}
+      />
+    </div>
+  );
+}
+
+// ── Scatter ───────────────────────────────────────────────────────────────
+// For the price-elasticity cloud: one dot per period, x = price, y = volume.
+// A time series can't show this relationship — the question is how the two
+// measures move against each other, not against the calendar.
+export interface ScatterPoint {
+  period: string;
+  price: number;
+  quantity: number;
+}
+
+export function ScatterChart({
+  points,
+  height = 320,
+  xAxisLabel,
+  yAxisLabel,
+  locale,
+  emptyText,
+  boxesLabel,
+}: {
+  points: ScatterPoint[];
+  height?: number;
+  xAxisLabel?: string;
+  yAxisLabel?: string;
+  locale?: string;
+  emptyText?: string;
+  /** Translated "{n} boxes" fragment in the tooltip. */
+  boxesLabel?: (n: string) => string;
+}) {
+  const [hover, setHover] = useState<{ x: number; y: number; p: ScatterPoint } | null>(null);
+  if (!points.length) return <Empty text={emptyText} />;
+
+  const width = 1000;
+  const padL = 62, padR = 16, padT = 16, padB = 42;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  const xs = points.map(p => p.price);
+  const ys = points.map(p => p.quantity);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const yMin = 0, yMax = Math.max(...ys);
+  const xRange = xMax - xMin || 1;
+  const yRange = yMax - yMin || 1;
+
+  const xFor = (v: number) => padL + ((v - xMin) / xRange) * plotW;
+  const yFor = (v: number) => padT + plotH - ((v - yMin) / yRange) * plotH;
+
+  const tickCount = 6;
+  const yTicks = Array.from({ length: tickCount }, (_, i) => yMin + (yRange * i) / (tickCount - 1));
+  const xTicks = Array.from({ length: tickCount }, (_, i) => xMin + (xRange * i) / (tickCount - 1));
+
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height }}>
+        {yTicks.map((v, i) => (
+          <g key={i}>
+            <line x1={padL} x2={width - padR} y1={yFor(v)} y2={yFor(v)} className="stroke-border" strokeWidth={1} />
+            <text x={2} y={yFor(v) + 3} fontSize={10} className="fill-ink-3">{fmtNum(v, locale)}</text>
+          </g>
+        ))}
+        {xTicks.map((v, i) => (
+          <text key={i} x={xFor(v)} y={height - 18} fontSize={10} textAnchor="middle" className="fill-ink-3">
+            {fmtPrice(v)}
+          </text>
+        ))}
+        <text x={padL + plotW / 2} y={height - 3} fontSize={10} textAnchor="middle" className="fill-ink-3">{xAxisLabel}</text>
+        <text x={10} y={padT - 4} fontSize={10} className="fill-ink-3">{yAxisLabel}</text>
+        {points.map((p, i) => (
+          <circle
+            key={i}
+            cx={xFor(p.price)}
+            cy={yFor(p.quantity)}
+            r={hover?.p === p ? 7 : 5}
+            fill={LINE_COLORS[0]}
+            fillOpacity={0.65}
+            stroke={LINE_COLORS[0]}
+            pointerEvents="all"
+            onMouseEnter={() => setHover({ x: xFor(p.price), y: yFor(p.quantity), p })}
+            onMouseLeave={() => setHover(null)}
+          />
+        ))}
+      </svg>
+      {hover && (
+        <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
+          <div className="font-semibold">{shortDay(hover.p.period, locale)}</div>
+          <div>{fmtPrice(hover.p.price)}{boxesLabel ? ` · ${boxesLabel(fmtNum(hover.p.quantity, locale))}` : ""}</div>
+        </Tip>
+      )}
+    </div>
+  );
+}
+
+// ── Grouped vertical bars ─────────────────────────────────────────────────
+// x = an ordinal category (stem length, holiday), one bar per series within
+// each group. Handles negative values with a real zero baseline, so the
+// event-impact lifts read correctly in both directions.
+export function GroupedBarChart({
+  categories,
+  series,
+  height = 300,
+  formatValue = fmtPrice,
+  showValueLabels = true,
+  emptyText,
+}: {
+  categories: string[];
+  /** `meta` is an optional per-bar note shown in the tooltip — used to state
+   *  how much data a figure rests on, so a striking number can be judged. */
+  series: { key: string; label: string; values: (number | null)[]; meta?: (string | null)[] }[];
+  height?: number;
+  formatValue?: (v: number | null | undefined) => string;
+  showValueLabels?: boolean;
+  emptyText?: string;
+}) {
+  const [hover, setHover] = useState<{ x: number; y: number; cat: string; label: string; value: number; meta?: string | null } | null>(null);
+  const all = series.flatMap(s => s.values).filter((v): v is number => v != null);
+  if (!categories.length || !all.length) return <Empty text={emptyText} />;
+
+  const width = 1000;
+  const padL = 56, padR = 12, padT = 20, padB = 40;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  const maxV = Math.max(0, ...all);
+  const minV = Math.min(0, ...all);
+  const range = maxV - minV || 1;
+  const yFor = (v: number) => padT + plotH - ((v - minV) / range) * plotH;
+  const zeroY = yFor(0);
+
+  const groupW = plotW / categories.length;
+  const innerW = groupW * 0.72;
+
+  const yTickCount = 6;
+  const yTicks = Array.from({ length: yTickCount }, (_, i) => minV + (range * i) / (yTickCount - 1));
+  const labelsFit = showValueLabels && categories.length * series.length <= 20;
+
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height }}>
+        {yTicks.map((v, i) => (
+          <g key={i}>
+            <line x1={padL} x2={width - padR} y1={yFor(v)} y2={yFor(v)} className="stroke-border" strokeWidth={1} />
+            <text x={2} y={yFor(v) + 3} fontSize={10} className="fill-ink-3">{formatValue(v)}</text>
+          </g>
+        ))}
+        {minV < 0 && <line x1={padL} x2={width - padR} y1={zeroY} y2={zeroY} stroke="currentColor" className="text-ink-3" strokeWidth={1.5} />}
+        {categories.map((cat, ci) => {
+          const groupCenter = padL + groupW * (ci + 0.5);
+          // Lay out only the series that actually have a value here, so a
+          // category covered by one year alone renders centred instead of
+          // offset to wherever that series happens to sit in the legend.
+          // Colour still follows the series index, so a year keeps its
+          // identity across groups (2026-09-07).
+          const present = series
+            .map((s, si) => ({ s, si, v: s.values[ci], meta: s.meta?.[ci] ?? null }))
+            .filter((e): e is { s: typeof series[number]; si: number; v: number; meta: string | null } => e.v != null);
+          const barW = innerW / Math.max(1, present.length);
+          return (
+            <g key={cat}>
+              {present.map((e, idx) => {
+                const x = groupCenter - innerW / 2 + idx * barW;
+                const y = e.v >= 0 ? yFor(e.v) : zeroY;
+                const h = Math.max(1, Math.abs(yFor(e.v) - zeroY));
+                const color = LINE_COLORS[e.si % LINE_COLORS.length];
+                return (
+                  <g key={e.s.key}>
+                    <rect
+                      x={x + 1}
+                      y={y}
+                      width={Math.max(1, barW - 2)}
+                      height={h}
+                      rx={3}
+                      fill={color}
+                      stroke="var(--color-surface, #fff)"
+                      strokeWidth={1}
+                      pointerEvents="all"
+                      onMouseEnter={() => setHover({ x: x + barW / 2, y, cat, label: e.s.label, value: e.v, meta: e.meta })}
+                      onMouseLeave={() => setHover(null)}
+                    />
+                    {labelsFit && (
+                      <text
+                        x={x + barW / 2}
+                        y={e.v >= 0 ? y - 4 : y + h + 11}
+                        fontSize={9}
+                        textAnchor="middle"
+                        className="fill-ink-3"
+                      >
+                        {formatValue(e.v)}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+              <text x={groupCenter} y={height - 22} fontSize={11} textAnchor="middle" className="fill-ink">{cat}</text>
+            </g>
+          );
+        })}
+      </svg>
+      {hover && (
+        <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
+          <div className="font-semibold">{hover.cat}</div>
+          <div>{hover.label}: {formatValue(hover.value)}</div>
+          {hover.meta && <div className="opacity-75">{hover.meta}</div>}
+        </Tip>
+      )}
+      {series.length > 1 && (
+        <Legend items={series.map((s, si) => ({ key: s.key, label: s.label, color: LINE_COLORS[si % LINE_COLORS.length] }))} />
+      )}
+    </div>
+  );
+}
+
+// ── Horizontal bars (ranking) ─────────────────────────────────────────────
+// HTML rather than SVG: long supplier names need real text truncation and
+// wrapping behaviour, which is painful in SVG and free here. Bars are always
+// 0-based — a truncated bar axis exaggerates small differences.
+export function HBarChart({
+  points,
+  format = fmtPrice,
+  color = COLOR_BELOW,
+  emptyText,
+  valueHeader,
+  volumeHeader,
+  locale,
+}: {
+  points: { label: string; value: number; sublabel?: string; volume?: number }[];
+  format?: (v: number | null | undefined) => string;
+  color?: string;
+  emptyText?: string;
+  valueHeader?: string;
+  volumeHeader?: string;
+  locale?: string;
+}) {
+  if (!points.length) return <Empty text={emptyText} />;
+  const max = Math.max(...points.map(p => Math.abs(p.value))) || 1;
+  // Volume gets its own aligned, scannable column rather than being tacked
+  // onto the value as fine print — on a price ranking, "how much did they
+  // actually sell" decides whether a cheap average is even meaningful
+  // (requested 2026-09-03).
+  const hasVolume = points.some(p => p.volume != null);
+  const cols = hasVolume
+    ? "grid-cols-[minmax(0,11rem)_1fr_auto_auto]"
+    : "grid-cols-[minmax(0,11rem)_1fr_auto]";
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {(valueHeader || hasVolume) && (
+        <div className={`grid ${cols} items-center gap-3 text-[10px] uppercase tracking-wide text-ink-3`}>
+          <span />
+          <span />
+          <span className="text-right">{valueHeader ?? ""}</span>
+          {hasVolume && <span className="text-right min-w-[5.5rem]">{volumeHeader ?? ""}</span>}
+        </div>
+      )}
+      {points.map((p, i) => (
+        <div key={i} className={`grid ${cols} items-center gap-3 text-xs`}>
+          <span className="truncate text-ink" title={p.label}>{p.label}</span>
+          <div className="h-5 bg-muted rounded-md overflow-hidden">
+            <div
+              className="h-full rounded-md transition-[width]"
+              style={{ width: `${Math.max(1, (Math.abs(p.value) / max) * 100)}%`, background: color }}
+            />
+          </div>
+          <span className="text-ink tabular-nums font-medium whitespace-nowrap text-right">
+            {format(p.value)}
+            {p.sublabel && <span className="block text-ink-3 font-normal text-[10px]">{p.sublabel}</span>}
+          </span>
+          {hasVolume && (
+            <span className="text-ink tabular-nums whitespace-nowrap text-right min-w-[5.5rem]">
+              {fmtNum(p.volume, locale)}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Diverging bars ────────────────────────────────────────────────────────
+// Bars grow left/right from a shared zero line, colored by sign. The sign is
+// the whole point of the market-deviation view ("dearer or cheaper than
+// everyone else"), so it carries a color as well as a direction.
+export function DivergingBarChart({
+  points,
+  format = fmtPct,
+  emptyText,
+  aboveLabel,
+  belowLabel,
+}: {
+  points: { label: string; value: number; sublabel?: string }[];
+  format?: (v: number | null | undefined) => string;
+  emptyText?: string;
+  aboveLabel?: string;
+  belowLabel?: string;
+}) {
+  if (!points.length) return <Empty text={emptyText} />;
+  const max = Math.max(...points.map(p => Math.abs(p.value))) || 1;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-4 text-xs text-ink-3 pl-[11.5rem]">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full" style={{ background: COLOR_BELOW }} />{belowLabel}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full" style={{ background: COLOR_ABOVE }} />{aboveLabel}
+        </span>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {points.map((p, i) => {
+          const pct = (Math.abs(p.value) / max) * 50; // half-width each side
+          const positive = p.value >= 0;
+          return (
+            <div key={i} className="grid grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-xs">
+              <span className="truncate text-ink" title={p.label}>{p.label}</span>
+              <div className="relative h-5 bg-muted rounded-md">
+                <div className="absolute inset-y-0 left-1/2 w-px bg-border" />
+                <div
+                  className="absolute inset-y-0 rounded-md"
+                  style={{
+                    background: positive ? COLOR_ABOVE : COLOR_BELOW,
+                    left: positive ? "50%" : `${50 - pct}%`,
+                    width: `${Math.max(0.5, pct)}%`,
+                  }}
+                />
+              </div>
+              <span className="text-ink tabular-nums font-medium whitespace-nowrap">
+                {format(p.value)}
+                {p.sublabel && <span className="text-ink-3 font-normal ml-1.5">{p.sublabel}</span>}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

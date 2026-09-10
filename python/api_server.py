@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import Config, ALLOWED_FP_URLS
+from config import Config, ALLOWED_FP_URLS, get_kenya_cfg
 from i18n import msg as i18n_msg
 from scraper_fp import fetch_products, fix_vbn_batch, FPProduct, _debug_fetch, _debug_rendered
 from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
@@ -46,9 +46,23 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
                get_bi_sync_history, get_bi_stats,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
+               get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
+               get_bi_customers_for_picker,
+               get_kenya_box_weight_customers, set_kenya_box_weight_customer,
+               get_kenya_box_weight_history,
+               get_bi_sales_by_supplier, get_bi_sales_by_product, get_bi_sales_overview,
+               get_bi_top_products_for_supplier,
+               get_bi_price_trend_by_length, get_bi_price_vs_length, get_bi_price_elasticity,
+               get_bi_supplier_price_comparison, get_bi_supplier_volatility,
+               get_bi_supplier_market_deviation, get_bi_seasonality, get_bi_event_impact,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
-from bi_sync import run_bi_sync, is_bi_sync_running
+from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
+from kenya_box_weight import (
+    debug_pull as kenya_debug_pull,
+    open_invoice_customers as kenya_open_invoice_customers,
+    run_correction as kenya_run_correction,
+)
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
 from delivery_product_match import match_order_to_products
@@ -699,12 +713,36 @@ def bi_sync_run(
     return {"ok": True, "message": "BI sync started in background"}
 
 
+@app.post("/bi-sync/run-range")
+def bi_sync_run_range(
+    start_date: str,
+    end_date: str,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Backfill [start_date, end_date] (non-blocking). Split into <=6-month
+    windows, each ONE export pull anchored at that window's start, with
+    order_lines filtered locally by creation date. Not one pull per day —
+    mutation_datetime is a "since" cursor, so per-day pulls re-downloaded
+    almost the same export N times (see bi_sync.py's module docstring)."""
+    if is_bi_sync_running():
+        raise HTTPException(409, "BI sync already running")
+    cfg = Config()
+    threading.Thread(target=run_bi_sync_range, args=(cfg, start_date, end_date), daemon=True).start()
+    return {"ok": True, "message": f"BI sync backfill started for {start_date}..{end_date}"}
+
+
 @app.get("/bi-sync/history")
 def bi_sync_history(limit: int = 10, offset: int = 0, _: dict = Depends(require_permission("admin:manage"))):
-    """Last N BI sync runs with their message logs, plus current row counts."""
+    """Last N BI sync runs with their message logs, plus current row counts
+    and whether a sync (single-day or a range backfill) is running right now."""
     rows = get_bi_sync_history(limit + 1, offset)
     has_more = len(rows) > limit
-    return {"history": rows[:limit], "hasMore": has_more, "stats": get_bi_stats()}
+    return {
+        "history": rows[:limit],
+        "hasMore": has_more,
+        "stats": get_bi_stats(),
+        "running": is_bi_sync_running(),
+    }
 
 
 @app.get("/bi-sync/charts")
@@ -715,6 +753,339 @@ def bi_sync_charts(days: int = 30, _: dict = Depends(require_permission("admin:m
         "stock_entries_daily": get_bi_stock_entries_daily_series(days),
         "order_lines_daily": get_bi_order_lines_daily_series(days),
     }
+
+
+@app.get("/bi-sync/products")
+def bi_sync_products(
+    limit: int = 300,
+    supplier_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Product picker for the "by product" sales chart. Pass supplier_id +
+    start_date/end_date to narrow it to only products that supplier sold in
+    that range (cascading filter after picking a supplier in the "by
+    supplier" chart) — omit them for the full unscoped product list."""
+    return {"products": get_bi_products_only_picker(limit, supplier_id, start_date, end_date, customer_id)}
+
+
+@app.get("/bi-sync/product-lengths")
+def bi_sync_product_lengths(
+    product_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Lengths available for one product — the optional refinement dropdown
+    in the "by product" sales chart. Pass start_date/end_date so the list
+    only offers lengths that actually sold in the active range — omitting
+    them offered every length ever sold, and picking one outside the
+    current range produced a silent empty chart."""
+    return {"lengths": get_bi_lengths_for_product(product_id, start_date, end_date, customer_id)}
+
+
+@app.get("/bi-sync/customers")
+def bi_sync_customers(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Customers with actual sold lines, most lines first — backs the
+    customer scope selector. Names come from dfg_customers (the same map the
+    delivery import uses); a customer missing from it is labelled by raw id
+    rather than dropped."""
+    return {"customers": get_bi_customers_for_picker(start_date, end_date)}
+
+
+@app.get("/bi-sync/suppliers")
+def bi_sync_suppliers(
+    limit: int = 200,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Supplier picker (only suppliers with actual sold lines) for the
+    "by supplier" sales chart. Pass start_date/end_date so the row_count next
+    to each supplier reflects the currently-selected date range."""
+    return {"suppliers": get_bi_suppliers_for_picker(limit, start_date, end_date, customer_id)}
+
+
+@app.get("/bi-sync/sales-by-supplier")
+def bi_sync_sales_by_supplier(
+    supplier_id: str,
+    start_date: str,
+    end_date: str,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Multi-series sale price over time for one supplier — one line per
+    product (top 10 by ORDER LINE COUNT, so the frontend can highlight one +
+    show top 3 others), over the given [start_date, end_date] range. Line
+    count picks which series are worth drawing; it is NOT a volume ranking —
+    see /bi-sync/supplier-top-products for that."""
+    return get_bi_sales_by_supplier(supplier_id, start_date, end_date, customer_id=customer_id)
+
+
+@app.get("/bi-sync/supplier-top-products")
+def bi_sync_supplier_top_products(
+    supplier_id: str,
+    start_date: str,
+    end_date: str,
+    metric: str = "quantity",
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Which products one supplier actually moved most — sorted ranking by
+    realised volume (metric=quantity) or revenue (metric=value). Both
+    figures come back on every row so the chart can show the other one
+    next to the ranked bar."""
+    if metric not in ("quantity", "value"):
+        raise HTTPException(400, "metric must be 'quantity' or 'value'")
+    return get_bi_top_products_for_supplier(
+        supplier_id, start_date, end_date, metric, customer_id=customer_id)
+
+
+@app.get("/bi-sync/sales-by-product")
+def bi_sync_sales_by_product(
+    product_id: str,
+    start_date: str,
+    end_date: str,
+    length: int | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Multi-series sale price over time for one product (optionally scoped
+    to one length) — one line per supplier (top 10 by volume, so the
+    frontend can highlight one + show top 3 others), over the given
+    [start_date, end_date] range."""
+    return get_bi_sales_by_product(product_id, start_date, end_date, length, customer_id=customer_id)
+
+
+@app.get("/bi-sync/sales-overview")
+def bi_sync_sales_overview(
+    start_date: str,
+    end_date: str,
+    group_by: str = "supplier",
+    max_series: int = 10,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Default "nothing selected yet" sales chart — top suppliers or top
+    products overall (not scoped to one entity), same shape as
+    sales-by-supplier/sales-by-product so the frontend renders it through
+    the same chart component while no primary picker selection is made."""
+    if group_by not in ("supplier", "product", "customer"):
+        raise HTTPException(400, "group_by must be 'supplier', 'product' or 'customer'")
+    return get_bi_sales_overview(start_date, end_date, group_by, max_series, customer_id)
+
+
+# ── Analysis Tool: "Cena i rentowność" (2026-09-03) ────────────────────────
+
+@app.get("/bi-sync/price-trend-by-length")
+def bi_sync_price_trend_by_length(
+    product_id: str,
+    start_date: str,
+    end_date: str,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Trend ceny w czasie — one line per length for a single product."""
+    return get_bi_price_trend_by_length(product_id, start_date, end_date, customer_id=customer_id)
+
+
+@app.get("/bi-sync/price-vs-length")
+def bi_sync_price_vs_length(
+    product_id: str,
+    start_date: str,
+    end_date: str,
+    supplier_id: str | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Cena vs długość łodygi — avg sale price and goods purchase price per
+    length (bar-chart shaped, x = length). NOT margin: real cost also
+    carries commission/handling from customer_stock_item_commission, which
+    isn't ingested — see get_bi_price_vs_length."""
+    return get_bi_price_vs_length(product_id, start_date, end_date, supplier_id, customer_id)
+
+
+@app.get("/bi-sync/price-elasticity")
+def bi_sync_price_elasticity(
+    product_id: str,
+    start_date: str,
+    end_date: str,
+    bucket: str = "week",
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Elastyczność cenowa — one point per week/day (price vs volume), plus
+    the Pearson correlation between them as a headline figure."""
+    if bucket not in ("week", "day"):
+        raise HTTPException(400, "bucket must be 'week' or 'day'")
+    return get_bi_price_elasticity(product_id, start_date, end_date, bucket, customer_id)
+
+
+# ── Analysis Tool: "Dostawcy" (2026-09-03) ─────────────────────────────────
+
+@app.get("/bi-sync/supplier-price-comparison")
+def bi_sync_supplier_price_comparison(
+    product_id: str,
+    start_date: str,
+    end_date: str,
+    length: int | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Porównanie cen dostawców — sorted ranking for one product."""
+    return get_bi_supplier_price_comparison(product_id, start_date, end_date, length, customer_id=customer_id)
+
+
+@app.get("/bi-sync/supplier-volatility")
+def bi_sync_supplier_volatility(
+    start_date: str,
+    end_date: str,
+    product_id: str | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Wahania cen dostawcy — coefficient of variation (%), computed per
+    (supplier, product) then weighted per supplier so it measures price
+    stability rather than product mix."""
+    return get_bi_supplier_volatility(start_date, end_date, product_id, customer_id=customer_id)
+
+
+@app.get("/bi-sync/supplier-market-deviation")
+def bi_sync_supplier_market_deviation(
+    start_date: str,
+    end_date: str,
+    product_id: str | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Odchylenia od średniej rynkowej — % above/below the same
+    (product, length) average over the same window."""
+    return get_bi_supplier_market_deviation(start_date, end_date, product_id, customer_id=customer_id)
+
+
+# ── Analysis Tool: "Sezonowość i popyt" (2026-09-03) ───────────────────────
+
+@app.get("/bi-sync/seasonality")
+def bi_sync_seasonality(
+    product_id: str | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Sezonowość — volume and avg price per calendar month, one series per
+    year. Spans all available history, ignoring the sales date picker."""
+    return get_bi_seasonality(product_id, customer_id)
+
+
+@app.get("/bi-sync/event-impact")
+def bi_sync_event_impact(
+    product_id: str | None = None,
+    customer_id: str | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Wpływ świąt/wydarzeń — volume and price lift (%) during each event's
+    selling window vs a LOCAL baseline (non-event days within +/-45 days of
+    the window), not that year's overall average."""
+    return get_bi_event_impact(product_id, customer_id=customer_id)
+
+
+# ── Kenya: box-weight correction (2026-09-09) ──────────────────────────────
+
+@app.get("/kenya/box-weight/debug-pull")
+def kenya_box_weight_debug_pull(
+    lookback_days: int = 14,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """One Kenya BI Sync export pull, reported rather than ingested.
+
+    Blocking on purpose — this is a discovery call, not a job: it exists to
+    confirm the export's real file list and the columns of invoice /
+    customer_stock_item / stock_entry before any selection logic is written
+    against assumed names. Writes nothing, anywhere."""
+    try:
+        return {"ok": True, **kenya_debug_pull(get_kenya_cfg(), lookback_days)}
+    except Exception as exc:
+        log.exception("Kenya box-weight debug pull failed")
+        raise HTTPException(502, f"Kenya export pull failed: {exc}")
+
+
+@app.get("/kenya/box-weight/customers")
+def kenya_box_weight_customers(
+    include_open: bool = False,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Customers this module is enabled for. With include_open=true it also
+    pulls the export to report how many open invoices each customer id has
+    right now — that costs a full export download, so it is opt-in rather
+    than part of the normal page load."""
+    enabled = {r["customer_id"]: r for r in get_kenya_box_weight_customers()}
+    if not include_open:
+        return {"customers": list(enabled.values())}
+    rows = []
+    for entry in kenya_open_invoice_customers(get_kenya_cfg()):
+        saved = enabled.pop(entry["customer_id"], None)
+        rows.append({**entry, "enabled": bool(saved and saved["enabled"]),
+                     "label": saved["label"] if saved else None})
+    # Enabled customers with no open invoices in the window still belong in
+    # the list, or unticking them would be impossible.
+    rows += [{**r, "open_invoices": 0} for r in enabled.values()]
+    return {"customers": rows}
+
+
+class KenyaCustomerToggle(BaseModel):
+    customer_id: str
+    enabled: bool
+    label: str | None = None
+
+
+@app.post("/kenya/box-weight/customers")
+def kenya_box_weight_set_customer(
+    req: KenyaCustomerToggle,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    set_kenya_box_weight_customer(req.customer_id, req.enabled, req.label)
+    return {"ok": True}
+
+
+@app.get("/kenya/box-weight/log")
+def kenya_box_weight_log(
+    limit: int = 25,
+    offset: int = 0,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """What the module did to each invoice, most recently touched first.
+
+    Paginated like the other history sources so the History module can page
+    through it the same way."""
+    rows, has_more = get_kenya_box_weight_history(limit=limit, offset=offset)
+    return {"log": rows, "hasMore": has_more}
+
+
+@app.post("/kenya/box-weight/run")
+def kenya_box_weight_run(
+    limit: int | None = None,
+    _: dict = Depends(require_permission("admin:manage")),
+):
+    """Correct every qualifying open invoice. WRITES to live invoices.
+
+    Blocking: the caller gets the per-invoice outcome back rather than
+    having to poll, since a run covers a handful of invoices rather than a
+    full export ingest. `limit` caps how many are touched in one go."""
+    enabled = [c["customer_id"] for c in get_kenya_box_weight_customers() if c["enabled"]]
+    if not enabled:
+        raise HTTPException(400, "No customers enabled for the Kenya box-weight module")
+    try:
+        return kenya_run_correction(get_kenya_cfg(), set(enabled), limit=limit)
+    except Exception as exc:
+        log.exception("Kenya box-weight run failed")
+        raise HTTPException(502, f"Kenya box-weight run failed: {exc}")
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:

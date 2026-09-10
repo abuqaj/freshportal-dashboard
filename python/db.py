@@ -6,12 +6,13 @@ synchronous access from Railway background threads.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import os
 import re
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Generator
 
 import psycopg2
@@ -1428,7 +1429,25 @@ def ensure_delivery_import_log() -> None:
 # code has an actual per-row currency to write (2026-08-31).
 # ---------------------------------------------------------------------------
 
+_bi_tables_ensured = False
+
+
 def ensure_bi_tables() -> None:
+    """Idempotent (IF NOT EXISTS everywhere) but not cheap — ~25 DDL
+    statements — and called from ~18 places across every bi_sync upsert/get
+    function (roughly 6 of them per single day of syncing). Each call used
+    to open its own fresh Postgres connection (db.py has no pooling — see
+    _conn()) just to run statements that are no-ops after the very first
+    time, which multiplied by every upsert call *and* every day of a range
+    backfill was the actual cause of a reported 10x sync slowdown
+    (2026-09-02) as this function grew larger over the session. Cached here
+    so the real DDL only runs once per process lifetime (i.e. once per
+    deploy — schema doesn't change again until the next one restarts the
+    process anyway) and every later call is a free no-op with zero DB
+    round-trips."""
+    global _bi_tables_ensured
+    if _bi_tables_ensured:
+        return
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -1482,6 +1501,9 @@ def ensure_bi_tables() -> None:
                     main_invoice_id          TEXT,
                     created_from_stock_entry_id TEXT,
                     product_id               TEXT,
+                    manufacturer_id          TEXT,
+                    length                   INTEGER,
+                    supplier_id              TEXT,
                     customer_id              TEXT,
                     quantity                 NUMERIC,
                     quantity_per_pack        NUMERIC,
@@ -1493,9 +1515,46 @@ def ensure_bi_tables() -> None:
                 )
             """)
             cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'EUR'")
+            cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS manufacturer_id TEXT")
+            cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS length INTEGER")
+            cur.execute("ALTER TABLE bi_order_lines ADD COLUMN IF NOT EXISTS supplier_id TEXT")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_product_idx  ON bi_order_lines(product_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_mfr_idx      ON bi_order_lines(manufacturer_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_supplier_idx ON bi_order_lines(supplier_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_created_idx  ON bi_order_lines(creation_date_time)")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_stockent_idx ON bi_order_lines(created_from_stock_entry_id)")
+            # Every analytics query below now carries a customer scope
+            # (2026-09-09, when ingest stopped filtering to customer 12), so
+            # this pairs with the date index on the hot path.
+            cur.execute("CREATE INDEX IF NOT EXISTS bi_order_lines_customer_idx ON bi_order_lines(customer_id)")
+
+            # id->name lookup for FreshPortal-registered suppliers — pure
+            # denormalized cache, refreshed every sync (upsert), used only to
+            # label chart legends (confirmed real columns 2026-09-02: id,
+            # type_id, group_id, number, code, gln_code, name, country_id —
+            # only id/name are captured here).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_suppliers (
+                    supplier_id TEXT PRIMARY KEY,
+                    name        TEXT,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            # product_id -> description, built from the FULL stock_entry table
+            # (every type), unlike bi_stock_entry_dim which only holds
+            # offer/limited-offer lots (type 4/5). A sold order_line points at
+            # a "standard" stock_entry, so its product is usually absent from
+            # the dim table and the picker would fall back to showing a raw
+            # numeric id — the same class of bug as the supplier names in
+            # 2026-09-02 (added 2026-09-03).
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_products (
+                    product_id  TEXT PRIMARY KEY,
+                    description TEXT,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
 
             # Accumulates invoice_id -> customer_id forever across every sync run
             # (never truncated) — the /v2/export endpoint is a delta feed scoped to
@@ -1529,6 +1588,7 @@ def ensure_bi_tables() -> None:
                 )
             """)
         conn.commit()
+    _bi_tables_ensured = True
 
 
 def _num(v: Any) -> float | None:
@@ -1649,6 +1709,35 @@ def upsert_bi_stock_entry_daily(rows: list[dict], snapshot_date: str) -> int:
     return len(rows)
 
 
+def upsert_bi_products(rows: list[dict]) -> int:
+    """product_id -> description, from the FULL stock_entry list (every
+    type). Keeps an existing description when a newer row has a blank one,
+    so a single odd export can't wipe a good label."""
+    if not rows:
+        return 0
+    ensure_bi_tables()
+    seen: dict[str, str] = {}
+    for r in rows:
+        pid, desc = r.get("product_id"), (r.get("description") or "").strip()
+        if pid and desc and pid not in seen:
+            seen[pid] = desc
+    if not seen:
+        return 0
+    items = list(seen.items())
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(items), _BATCH_SIZE):
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO bi_products (product_id, description, updated_at)
+                    VALUES %s
+                    ON CONFLICT (product_id) DO UPDATE SET
+                        description = COALESCE(NULLIF(EXCLUDED.description, ''), bi_products.description),
+                        updated_at  = NOW()
+                """, items[i:i + _BATCH_SIZE], template="(%s, %s, NOW())")
+                conn.commit()
+    return len(items)
+
+
 def upsert_bi_order_lines(rows: list[dict]) -> int:
     """Append-only (order_lines never really change once created) — upsert
     only to make re-running a sync safe, not because rows are expected to
@@ -1665,6 +1754,7 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
                     (
                         r.get("id"), r.get("invoice_id"), r.get("main_invoice_id"),
                         r.get("created_from_stock_entry_id"), r.get("product_id"),
+                        r.get("manufacturer_id"), _int(r.get("length")), r.get("supplier_id"),
                         r.get("customer_id"),
                         _num(r.get("quantity")), _num(r.get("quantity_per_pack")),
                         _num(r.get("supplier_price")), _num(r.get("store_price")),
@@ -1677,7 +1767,7 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
                 psycopg2.extras.execute_values(cur, """
                     INSERT INTO bi_order_lines (
                         id, invoice_id, main_invoice_id, created_from_stock_entry_id,
-                        product_id, customer_id, quantity, quantity_per_pack,
+                        product_id, manufacturer_id, length, supplier_id, customer_id, quantity, quantity_per_pack,
                         supplier_price, store_price, creation_date_time, synced_at
                     ) VALUES %s
                     ON CONFLICT (id) DO UPDATE SET
@@ -1685,6 +1775,9 @@ def upsert_bi_order_lines(rows: list[dict]) -> int:
                         main_invoice_id = EXCLUDED.main_invoice_id,
                         created_from_stock_entry_id = EXCLUDED.created_from_stock_entry_id,
                         product_id      = EXCLUDED.product_id,
+                        manufacturer_id = EXCLUDED.manufacturer_id,
+                        length          = EXCLUDED.length,
+                        supplier_id     = EXCLUDED.supplier_id,
                         customer_id     = EXCLUDED.customer_id,
                         quantity        = EXCLUDED.quantity,
                         quantity_per_pack = EXCLUDED.quantity_per_pack,
@@ -1883,6 +1976,1260 @@ def get_bi_order_lines_daily_series(days: int = 30) -> list[dict]:
     except Exception as exc:
         logger.warning("get_bi_order_lines_daily_series: %s", exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Sales-by-supplier / sales-by-product analytics — multi-series (up to 7
+# lines) time series, redesigned 2026-09-02 per user feedback: the first
+# pass (product-first, static per-supplier/per-length bars) wasn't the
+# angle they wanted. All series use *realized sale price*
+# (bi_order_lines.store_price). "Dostawca" = stock_entry.supplier_id (the
+# FreshPortal-registered supplier), enriched onto bi_order_lines the same
+# way as manufacturer_id/length (via created_from_stock_entry_id).
+#
+# Customer scope (2026-09-09): bi_order_lines used to hold customer 12
+# (OZEDS) exclusively, so none of these queries mentioned a customer. Ingest
+# now keeps every customer except the grower-offer one, which makes customer
+# a real dimension — and a load-bearing one, because webshop sale price is
+# customer-specific and mixing customers in a single price series is
+# meaningless. Every function below therefore takes `customer_id`, and the
+# UI defaults it to REFERENCE_CUSTOMER_ID so existing charts kept the exact
+# meaning they had before the widening. Passing None deliberately opts into
+# the cross-customer view (fine for volume, misleading for price).
+# ---------------------------------------------------------------------------
+
+# Sentinel accepted from the API layer meaning "do not scope to a customer".
+BI_ALL_CUSTOMERS = "__all__"
+
+
+def _customer_scope(customer_id: str | None, alias: str = "") -> tuple[str, list]:
+    """SQL fragment + params scoping a bi_order_lines query to one customer.
+
+    Returns ("", []) for the all-customers view so callers can splice the
+    fragment into a WHERE chain unconditionally. Pass `alias` for queries
+    that join bi_order_lines under one (e.g. "ol")."""
+    if not customer_id or customer_id == BI_ALL_CUSTOMERS:
+        return "", []
+    prefix = f"{alias}." if alias else ""
+    return f"AND {prefix}customer_id = %s", [customer_id]
+
+
+def get_bi_customers_for_picker(start_date: str | None = None, end_date: str | None = None) -> list[dict]:
+    """Customers that actually have sold lines, most lines first — backs the
+    customer selector in the Analysis Tool.
+
+    Names come from dfg_customers (the same id->name map the delivery import
+    uses) via LEFT JOIN, so a customer that sold something but isn't in that
+    seed list still shows up, labelled by its raw id rather than vanishing
+    from the picker."""
+    try:
+        ensure_bi_tables()
+        ensure_dfg_customers_table()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                date_clause = ""
+                params: list = []
+                if start_date and end_date:
+                    date_clause = "AND ol.creation_date_time::date BETWEEN %s AND %s"
+                    params = [start_date, end_date]
+                cur.execute(f"""
+                    SELECT ol.customer_id,
+                           COALESCE(c.nm_customer, ol.customer_id) AS name,
+                           COUNT(*) AS row_count
+                    FROM bi_order_lines ol
+                    LEFT JOIN dfg_customers c ON c.customer_id = ol.customer_id
+                    WHERE ol.customer_id IS NOT NULL
+                      {date_clause}
+                    GROUP BY ol.customer_id, c.nm_customer
+                    ORDER BY row_count DESC
+                """, params)
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_bi_customers_for_picker: %s", exc)
+        return []
+
+def upsert_bi_suppliers(rows: list[dict]) -> int:
+    """id->name lookup, refreshed every sync — chart legend labels only."""
+    if not rows:
+        return 0
+    ensure_bi_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(rows), _BATCH_SIZE):
+                batch = rows[i:i + _BATCH_SIZE]
+                values = [(r.get("id"), r.get("name")) for r in batch if r.get("id")]
+                if not values:
+                    continue
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO bi_suppliers (supplier_id, name, updated_at)
+                    VALUES %s
+                    ON CONFLICT (supplier_id) DO UPDATE SET
+                        name = COALESCE(NULLIF(EXCLUDED.name, ''), bi_suppliers.name),
+                        updated_at = NOW()
+                """, values, template="(%s, %s, NOW())")
+                conn.commit()
+    return len(rows)
+
+
+def _product_labels(cur, product_ids: list[str]) -> dict[str, str]:
+    """product_id -> human description. bi_products wins over
+    bi_stock_entry_dim: the dim table only holds offer/limited-offer lots
+    (type 4/5), and a sold order_line points at a "standard" stock_entry,
+    so the dim usually has no row for it and the UI would fall back to a
+    raw numeric id. Requires a RealDictCursor."""
+    if not product_ids:
+        return {}
+    labels: dict[str, str] = {}
+    cur.execute("""
+        SELECT product_id, MAX(description) AS description
+        FROM bi_stock_entry_dim WHERE product_id = ANY(%s) GROUP BY product_id
+    """, (product_ids,))
+    for r in cur.fetchall():
+        if r["description"]:
+            labels[r["product_id"]] = r["description"]
+    cur.execute("SELECT product_id, description FROM bi_products WHERE product_id = ANY(%s)", (product_ids,))
+    for r in cur.fetchall():
+        if r["description"]:
+            labels[r["product_id"]] = r["description"]
+    return labels
+
+
+def get_bi_products_only_picker(
+    limit: int = 300,
+    supplier_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    customer_id: str | None = None,
+) -> list[dict]:
+    """Product picker for the "by product" chart — count = sold order_lines
+    in [start_date, end_date] for the scoped customer, so it updates with
+    the date range picker (requested by the user 2026-09-02, mirrors
+    get_bi_suppliers_for_picker). Optionally scoped to one supplier
+    (cascading — only products that supplier sold in the range).
+
+    Falls back to an unscoped, all-time bi_stock_entry_dim count only if no
+    date range is given at all — defensive; the UI always passes one.
+    """
+    try:
+        ensure_bi_tables()
+        customer_clause, customer_params = _customer_scope(customer_id)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                if start_date and end_date:
+                    supplier_clause = "AND supplier_id = %s" if supplier_id else ""
+                    params: list = [start_date, end_date]
+                    if supplier_id:
+                        params.append(supplier_id)
+                    params += customer_params
+                    params.append(limit)
+                    cur.execute(f"""
+                        SELECT product_id, COUNT(*) AS row_count
+                        FROM bi_order_lines
+                        WHERE product_id IS NOT NULL
+                          AND creation_date_time::date BETWEEN %s AND %s
+                          {supplier_clause}
+                          {customer_clause}
+                        GROUP BY product_id
+                        ORDER BY row_count DESC
+                        LIMIT %s
+                    """, params)
+                    rows = cur.fetchall()
+                    product_ids = [r["product_id"] for r in rows]
+                    if not product_ids:
+                        return []
+                    labels = _product_labels(cur, product_ids)
+                    return [
+                        {"product_id": r["product_id"], "description": labels.get(r["product_id"]), "row_count": r["row_count"]}
+                        for r in rows
+                    ]
+
+                cur.execute("""
+                    SELECT product_id, MAX(description) AS description, COUNT(*) AS row_count
+                    FROM bi_stock_entry_dim
+                    WHERE product_id IS NOT NULL
+                    GROUP BY product_id
+                    ORDER BY row_count DESC
+                    LIMIT %s
+                """, (limit,))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_bi_products_only_picker: %s", exc)
+        return []
+
+
+def get_bi_lengths_for_product(
+    product_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    customer_id: str | None = None,
+) -> list[int]:
+    """Distinct lengths actually SOLD for one product — populates the length
+    refinement dropdown.
+
+    Reads bi_order_lines, not bi_stock_entry_dim: the dim holds only
+    offer/limited-offer lots (type 4/5), which is the wrong population for a
+    filter that narrows sold lines, and would offer lengths that have no
+    sales behind them (fixed 2026-09-03).
+
+    Scoped to [start_date, end_date] when given — otherwise this offered
+    every length ever sold regardless of the active date range, so picking
+    one that only sold outside the current range silently produced an
+    empty chart with no indication why (found 2026-09-03, same class of
+    bug as the picker row_counts needing date scoping on 2026-09-02)."""
+    try:
+        ensure_bi_tables()
+        date_clause = "AND creation_date_time::date BETWEEN %s AND %s" if start_date and end_date else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
+        params: list = [product_id]
+        if start_date and end_date:
+            params += [start_date, end_date]
+        params += customer_params
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT DISTINCT length FROM bi_order_lines
+                    WHERE product_id = %s AND length IS NOT NULL {date_clause} {customer_clause}
+                    ORDER BY length
+                """, params)
+                return [r[0] for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_bi_lengths_for_product: %s", exc)
+        return []
+
+
+def get_bi_suppliers_for_picker(
+    limit: int = 200,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    customer_id: str | None = None,
+) -> list[dict]:
+    """Suppliers that actually have sold lines (bi_order_lines), most
+    data-rich first — powers the "by supplier" picker. Name from
+    bi_suppliers, falls back to the raw id if unmatched. row_count is
+    scoped to [start_date, end_date] when given, so it updates with the
+    date range picker (requested by the user 2026-09-02)."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                date_clause = "AND ol.creation_date_time::date BETWEEN %s AND %s" if start_date and end_date else ""
+                customer_clause, customer_params = _customer_scope(customer_id, "ol")
+                params: list = [start_date, end_date] if start_date and end_date else []
+                params += customer_params
+                cur.execute(f"""
+                    SELECT ol.supplier_id, COALESCE(s.name, ol.supplier_id) AS name, COUNT(*) AS row_count
+                    FROM bi_order_lines ol
+                    LEFT JOIN bi_suppliers s ON s.supplier_id = ol.supplier_id
+                    WHERE ol.supplier_id IS NOT NULL {date_clause} {customer_clause}
+                    GROUP BY ol.supplier_id, s.name
+                    ORDER BY row_count DESC
+                    LIMIT %s
+                """, params + [limit])
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_bi_suppliers_for_picker: %s", exc)
+        return []
+
+
+def get_bi_sales_by_supplier(
+    supplier_id: str, start_date: str, end_date: str, max_series: int = 10,
+    customer_id: str | None = None,
+) -> dict:
+    """Multi-series sale-price-over-time for one supplier — one line per
+    product (top `max_series` by row count), x=day, y=avg store_price.
+    Each point also carries total_quantity sold that day, for the tooltip."""
+    try:
+        ensure_bi_tables()
+        customer_clause, customer_params = _customer_scope(customer_id)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT product_id, COUNT(*) AS cnt
+                    FROM bi_order_lines
+                    WHERE supplier_id = %s AND product_id IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY product_id
+                    ORDER BY cnt DESC
+                    LIMIT %s
+                """, [supplier_id, start_date, end_date] + customer_params + [max_series])
+                top_products = [r["product_id"] for r in cur.fetchall()]
+                if not top_products:
+                    return {"series": []}
+
+                cur.execute(f"""
+                    SELECT product_id, creation_date_time::date::text AS day,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
+                    FROM bi_order_lines
+                    WHERE supplier_id = %s AND product_id = ANY(%s)
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY product_id, creation_date_time::date
+                    ORDER BY product_id, day
+                """, [supplier_id, top_products, start_date, end_date] + customer_params)
+                rows = cur.fetchall()
+
+                labels = _product_labels(cur, top_products)
+
+        by_product: dict[str, list[dict]] = {pid: [] for pid in top_products}
+        for r in rows:
+            by_product[r["product_id"]].append({
+                "day": r["day"],
+                "value": float(r["avg_price"]),
+                "quantity": float(r["total_quantity"] or 0),
+            })
+
+        return {
+            "series": [
+                {"key": pid, "label": labels.get(pid) or pid, "points": by_product.get(pid, [])}
+                for pid in top_products
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_sales_by_supplier: %s", exc)
+        return {"series": []}
+
+
+def get_bi_top_products_for_supplier(
+    supplier_id: str, start_date: str, end_date: str, metric: str = "quantity",
+    limit: int = 15, customer_id: str | None = None,
+) -> dict:
+    """What one supplier actually moved most, as a sorted ranking.
+
+    Every other "top N" in this module ranks by COUNT(*) — order LINES — to
+    pick which series to draw. That answers "what did we transact most
+    often", not "what did we sell most of": a product shipped in 50 small
+    lines outranks one shipped in 3 large ones. This ranks by realised
+    volume or revenue instead (added 2026-09-09, after the supplier chart
+    turned out to have no way to answer the volume question).
+
+    Both figures are returned on every row regardless of `metric`, so the
+    chart can show the unranked one alongside the bar — the two orderings
+    often disagree, and seeing only one invites reading it as both.
+    """
+    try:
+        ensure_bi_tables()
+        # Whitelisted, never interpolated from raw input.
+        order_col = "total_value" if metric == "value" else "total_quantity"
+        customer_clause, customer_params = _customer_scope(customer_id)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT product_id,
+                           COALESCE(SUM(quantity), 0) AS total_quantity,
+                           COALESCE(SUM(store_price * quantity), 0) AS total_value,
+                           COUNT(*) AS line_count
+                    FROM bi_order_lines
+                    WHERE supplier_id = %s AND product_id IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY product_id
+                    ORDER BY {order_col} DESC
+                    LIMIT %s
+                """, [supplier_id, start_date, end_date] + customer_params + [limit])
+                rows = cur.fetchall()
+                if not rows:
+                    return {"points": [], "metric": metric}
+                labels = _product_labels(cur, [r["product_id"] for r in rows])
+
+        return {
+            "points": [
+                {
+                    "product_id": r["product_id"],
+                    "label": labels.get(r["product_id"]) or r["product_id"],
+                    "quantity": float(r["total_quantity"] or 0),
+                    "value": float(r["total_value"] or 0),
+                    "line_count": r["line_count"],
+                }
+                for r in rows
+            ],
+            "metric": metric,
+        }
+    except Exception as exc:
+        logger.warning("get_bi_top_products_for_supplier: %s", exc)
+        return {"points": [], "metric": metric}
+
+
+def get_bi_sales_by_product(
+    product_id: str, start_date: str, end_date: str, length: int | None = None, max_series: int = 10,
+    customer_id: str | None = None,
+) -> dict:
+    """Multi-series sale-price-over-time for one product (optionally scoped
+    to one length — otherwise averaged across every length sold) — one line
+    per supplier (top `max_series` by row count), x=day, y=avg store_price.
+    Each point also carries total_quantity sold that day, for the tooltip."""
+    try:
+        ensure_bi_tables()
+        length_clause = "AND length = %s" if length is not None else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                params_top: list = [product_id]
+                if length is not None:
+                    params_top.append(length)
+                params_top += [start_date, end_date] + customer_params + [max_series]
+                cur.execute(f"""
+                    SELECT supplier_id, COUNT(*) AS cnt
+                    FROM bi_order_lines
+                    WHERE product_id = %s {length_clause} AND supplier_id IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY supplier_id
+                    ORDER BY cnt DESC
+                    LIMIT %s
+                """, params_top)
+                top_suppliers = [r["supplier_id"] for r in cur.fetchall()]
+                if not top_suppliers:
+                    return {"series": []}
+
+                params_rows: list = [product_id]
+                if length is not None:
+                    params_rows.append(length)
+                params_rows += [top_suppliers, start_date, end_date] + customer_params
+                cur.execute(f"""
+                    SELECT supplier_id, creation_date_time::date::text AS day,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
+                    FROM bi_order_lines
+                    WHERE product_id = %s {length_clause} AND supplier_id = ANY(%s)
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY supplier_id, creation_date_time::date
+                    ORDER BY supplier_id, day
+                """, params_rows)
+                rows = cur.fetchall()
+
+                cur.execute("SELECT supplier_id, name FROM bi_suppliers WHERE supplier_id = ANY(%s)", (top_suppliers,))
+                labels = {r["supplier_id"]: r["name"] for r in cur.fetchall()}
+
+        by_supplier: dict[str, list[dict]] = {sid: [] for sid in top_suppliers}
+        for r in rows:
+            by_supplier[r["supplier_id"]].append({
+                "day": r["day"],
+                "value": float(r["avg_price"]),
+                "quantity": float(r["total_quantity"] or 0),
+            })
+
+        return {
+            "series": [
+                {"key": sid, "label": labels.get(sid) or sid, "points": by_supplier.get(sid, [])}
+                for sid in top_suppliers
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_sales_by_product: %s", exc)
+        return {"series": []}
+
+
+def get_bi_sales_overview(
+    start_date: str, end_date: str, group_by: str = "supplier", max_series: int = 10,
+    customer_id: str | None = None,
+) -> dict:
+    """Default "nothing selected yet" sales chart — one line per top
+    supplier, product or customer across the WHOLE order_lines set in the
+    date range (not scoped to one specific entity), same
+    {series:[{key,label,points:[{day,value,quantity}]}]} shape as
+    get_bi_sales_by_supplier/get_bi_sales_by_product so it renders through
+    the same chart component. Requested 2026-09-03 so the chart isn't blank
+    until the user picks something.
+
+    group_by="customer" (2026-09-09) is the one mode meant to be used with
+    customer_id unset — it's the "who are we actually selling to this year"
+    view that ingesting every customer was for."""
+    try:
+        ensure_bi_tables()
+        id_col = {"supplier": "supplier_id", "product": "product_id", "customer": "customer_id"}.get(group_by, "supplier_id")
+        # Scoping to one customer while grouping BY customer would always
+        # collapse to a single series — the picker is the scope in that mode.
+        customer_clause, customer_params = ("", []) if group_by == "customer" else _customer_scope(customer_id)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT {id_col} AS id, COUNT(*) AS cnt
+                    FROM bi_order_lines
+                    WHERE {id_col} IS NOT NULL AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY {id_col}
+                    ORDER BY cnt DESC
+                    LIMIT %s
+                """, [start_date, end_date] + customer_params + [max_series])
+                top_ids = [r["id"] for r in cur.fetchall()]
+                if not top_ids:
+                    return {"series": []}
+
+                cur.execute(f"""
+                    SELECT {id_col} AS id, creation_date_time::date::text AS day,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
+                    FROM bi_order_lines
+                    WHERE {id_col} = ANY(%s) AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY {id_col}, creation_date_time::date
+                    ORDER BY {id_col}, day
+                """, [top_ids, start_date, end_date] + customer_params)
+                rows = cur.fetchall()
+
+                if group_by == "supplier":
+                    cur.execute("SELECT supplier_id AS id, name AS label FROM bi_suppliers WHERE supplier_id = ANY(%s)", (top_ids,))
+                    labels = {r["id"]: r["label"] for r in cur.fetchall()}
+                elif group_by == "customer":
+                    ensure_dfg_customers_table()
+                    cur.execute("SELECT customer_id AS id, nm_customer AS label FROM dfg_customers WHERE customer_id = ANY(%s)", (top_ids,))
+                    labels = {r["id"]: r["label"] for r in cur.fetchall()}
+                else:
+                    labels = _product_labels(cur, top_ids)
+
+        by_id: dict[str, list[dict]] = {i: [] for i in top_ids}
+        for r in rows:
+            by_id[r["id"]].append({
+                "day": r["day"],
+                "value": float(r["avg_price"]),
+                "quantity": float(r["total_quantity"] or 0),
+            })
+
+        return {
+            "series": [
+                {"key": i, "label": labels.get(i) or i, "points": by_id.get(i, [])}
+                for i in top_ids
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_sales_overview: %s", exc)
+        return {"series": []}
+
+
+# ---------------------------------------------------------------------------
+# Analysis Tool — "Cena i rentowność" / "Dostawcy" / "Sezonowość i popyt"
+# (2026-09-03). All of these read realized SALE price (bi_order_lines.
+# store_price), not the offer/listing price — established with the user
+# 2026-09-02. Each takes a customer_id scope: sale price is
+# customer-specific, so leaving it unset mixes price regimes and these
+# charts in particular should stay single-customer. supplier_price is the GOODS
+# purchase price on the same line, not full cost: commission and handling
+# live in customer_stock_item_commission (rows with cost = 1), which isn't
+# ingested, so nothing here may be presented as margin (user 2026-09-03).
+#
+# Deliberately NOT all time series: length is an ordinal dimension, an
+# elasticity curve is a scatter, and a supplier ranking is a sorted bar.
+# Each function returns the shape its chart form needs, so the frontend
+# does no reshaping.
+#
+# Every displayed price is VOLUME-WEIGHTED:
+#     COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0),
+#              AVG(store_price))
+# A plain AVG(store_price) averages order LINES, so a line for 1 box counts
+# as much as a line for 500. On a day of 4 lines where 105 of 108 boxes went
+# at ~0.51 and two small lines went at ~0.89, the unweighted mean plots
+# $0.700 against a realised $0.519 — a 35% overstatement of the price we
+# actually got (found 2026-09-07). The COALESCE keeps the old behaviour as a
+# fallback for rows with no usable quantity, so a missing quantity blanks
+# nothing out. Do not "simplify" these back to AVG.
+#
+# The one intentional exception is get_bi_supplier_volatility: it measures
+# the dispersion of price POINTS, so weighting by volume would answer a
+# different question than "how stable is this supplier's pricing".
+# ---------------------------------------------------------------------------
+
+def _pearson(xs: list[float], ys: list[float]) -> float | None:
+    """Pearson correlation, or None when it isn't defined (fewer than 3
+    points, or one of the series is constant)."""
+    n = len(xs)
+    if n < 3:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    dx = [x - mx for x in xs]
+    dy = [y - my for y in ys]
+    num = sum(a * b for a, b in zip(dx, dy))
+    den = (sum(a * a for a in dx) ** 0.5) * (sum(b * b for b in dy) ** 0.5)
+    return round(num / den, 4) if den else None
+
+
+def get_bi_price_trend_by_length(
+    product_id: str, start_date: str, end_date: str, max_series: int = 7,
+    customer_id: str | None = None,
+) -> dict:
+    """Trend ceny w czasie — one line per LENGTH for a single product.
+
+    The existing sales chart already covers product->suppliers; this is the
+    missing third axis (product->lengths), which is where most of the price
+    spread on a single product actually lives.
+    """
+    try:
+        ensure_bi_tables()
+        customer_clause, customer_params = _customer_scope(customer_id)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT length, COUNT(*) AS cnt
+                    FROM bi_order_lines
+                    WHERE product_id = %s AND length IS NOT NULL AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY length
+                    ORDER BY cnt DESC
+                    LIMIT %s
+                """, [product_id, start_date, end_date] + customer_params + [max_series])
+                lengths = [r["length"] for r in cur.fetchall()]
+                if not lengths:
+                    return {"series": []}
+
+                cur.execute(f"""
+                    SELECT length, creation_date_time::date::text AS day,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
+                    FROM bi_order_lines
+                    WHERE product_id = %s AND length = ANY(%s) AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY length, creation_date_time::date
+                    ORDER BY length, day
+                """, [product_id, lengths, start_date, end_date] + customer_params)
+                rows = cur.fetchall()
+
+        by_length: dict[int, list[dict]] = {ln: [] for ln in lengths}
+        for r in rows:
+            by_length[r["length"]].append({
+                "day": r["day"],
+                "value": float(r["avg_price"]),
+                "quantity": float(r["total_quantity"] or 0),
+            })
+
+        # Sorted by length (not by volume) so the legend reads 40cm, 50cm, 60cm…
+        return {
+            "series": [
+                {"key": str(ln), "label": f"{ln}cm", "points": by_length.get(ln, [])}
+                for ln in sorted(lengths)
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_price_trend_by_length: %s", exc)
+        return {"series": []}
+
+
+def get_bi_price_vs_length(
+    product_id: str, start_date: str, end_date: str, supplier_id: str | None = None,
+    customer_id: str | None = None,
+) -> dict:
+    """Cena vs długość łodygi — avg sale price and purchase price per length
+    for one product. Bar-chart shaped (x = length, ordinal), not a time series.
+
+    NOT margin. `spread_pct` is (sale - purchase) / sale, i.e. the gross
+    spread over the goods price only. Real cost also carries commission and
+    handling, which live in the export's customer_stock_item_commission
+    table (rows where cost = 1 are the actual cost components, joined on
+    customer_stock_item_id) — that table isn't ingested yet, so anything
+    labelled "margin" here would overstate it. Confirmed by the user
+    2026-09-03; do not relabel this as margin until that join exists.
+    """
+    try:
+        ensure_bi_tables()
+        supplier_clause = "AND supplier_id = %s" if supplier_id else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
+        params: list = [product_id, start_date, end_date]
+        if supplier_id:
+            params.append(supplier_id)
+        params += customer_params
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT length,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price,
+                           AVG(supplier_price) AS avg_supplier_price,
+                           SUM(quantity) AS total_quantity,
+                           COUNT(*) AS line_count
+                    FROM bi_order_lines
+                    WHERE product_id = %s AND length IS NOT NULL AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {supplier_clause}
+                      {customer_clause}
+                    GROUP BY length
+                    ORDER BY length
+                """, params)
+                rows = cur.fetchall()
+
+        out = []
+        for r in rows:
+            price = float(r["avg_price"])
+            cost = float(r["avg_supplier_price"]) if r["avg_supplier_price"] is not None else None
+            out.append({
+                "length": r["length"],
+                "avg_price": round(price, 4),
+                "avg_supplier_price": round(cost, 4) if cost is not None else None,
+                "spread_pct": round((price - cost) / price * 100, 2) if cost is not None and price else None,
+                "quantity": float(r["total_quantity"] or 0),
+                "line_count": r["line_count"],
+            })
+        return {"points": out}
+    except Exception as exc:
+        logger.warning("get_bi_price_vs_length: %s", exc)
+        return {"points": []}
+
+
+def get_bi_price_elasticity(
+    product_id: str, start_date: str, end_date: str, bucket: str = "week",
+    customer_id: str | None = None,
+) -> dict:
+    """Elastyczność cenowa — one point per week (or day): avg price vs total
+    volume sold. Scatter-shaped; a downward-sloping cloud means demand
+    reacts to price. Returns a Pearson correlation as the headline figure.
+
+    Weekly buckets by default: daily points are dominated by order-arrival
+    noise rather than by price response.
+    """
+    try:
+        ensure_bi_tables()
+        trunc = "day" if bucket == "day" else "week"
+        customer_clause, customer_params = _customer_scope(customer_id)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT date_trunc('{trunc}', creation_date_time)::date::text AS period,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price,
+                           SUM(quantity) AS total_quantity
+                    FROM bi_order_lines
+                    WHERE product_id = %s AND store_price IS NOT NULL AND store_price > 0
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY 1
+                    HAVING SUM(quantity) > 0
+                    ORDER BY 1
+                """, [product_id, start_date, end_date] + customer_params)
+                rows = cur.fetchall()
+
+        points = [
+            {
+                "period": r["period"],
+                "price": round(float(r["avg_price"]), 4),
+                "quantity": float(r["total_quantity"] or 0),
+            }
+            for r in rows
+        ]
+        return {
+            "points": points,
+            "correlation": _pearson([p["price"] for p in points], [p["quantity"] for p in points]),
+            "bucket": trunc,
+        }
+    except Exception as exc:
+        logger.warning("get_bi_price_elasticity: %s", exc)
+        return {"points": [], "correlation": None, "bucket": bucket}
+
+
+def get_bi_supplier_price_comparison(
+    product_id: str, start_date: str, end_date: str, length: int | None = None, limit: int = 15,
+    customer_id: str | None = None,
+) -> dict:
+    """Porównanie cen dostawców — sorted ranking of suppliers by avg sale
+    price for one product (optionally one length). A sorted bar answers
+    "who is cheapest" far more directly than overlapping time series, which
+    the main sales chart already provides."""
+    try:
+        ensure_bi_tables()
+        length_clause = "AND length = %s" if length is not None else ""
+        customer_clause, customer_params = _customer_scope(customer_id, "ol")
+        params: list = [product_id]
+        if length is not None:
+            params.append(length)
+        params += [start_date, end_date] + customer_params + [limit]
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT ol.supplier_id,
+                           COALESCE(s.name, ol.supplier_id) AS name,
+                           COALESCE(SUM(ol.store_price * ol.quantity) / NULLIF(SUM(ol.quantity), 0), AVG(ol.store_price)) AS avg_price,
+                           MIN(ol.store_price) AS min_price,
+                           MAX(ol.store_price) AS max_price,
+                           SUM(ol.quantity) AS total_quantity,
+                           COUNT(*) AS line_count
+                    FROM bi_order_lines ol
+                    LEFT JOIN bi_suppliers s ON s.supplier_id = ol.supplier_id
+                    WHERE ol.product_id = %s {length_clause} AND ol.supplier_id IS NOT NULL
+                      AND ol.store_price IS NOT NULL
+                      AND ol.creation_date_time::date BETWEEN %s AND %s
+                      {customer_clause}
+                    GROUP BY ol.supplier_id, s.name
+                    ORDER BY avg_price ASC
+                    LIMIT %s
+                """, params)
+                rows = cur.fetchall()
+
+        return {
+            "points": [
+                {
+                    "supplier_id": r["supplier_id"],
+                    "name": r["name"],
+                    "avg_price": round(float(r["avg_price"]), 4),
+                    "min_price": round(float(r["min_price"]), 4),
+                    "max_price": round(float(r["max_price"]), 4),
+                    "quantity": float(r["total_quantity"] or 0),
+                    "line_count": r["line_count"],
+                }
+                for r in rows
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_supplier_price_comparison: %s", exc)
+        return {"points": []}
+
+
+def get_bi_supplier_volatility(
+    start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 4, limit: int = 15,
+    customer_id: str | None = None,
+) -> dict:
+    """Wahania cen (volatility) dostawcy — coefficient of variation
+    (stddev/mean, %) of sale price.
+
+    Computed per (supplier, product) pair and only then aggregated per
+    supplier, weighted by line count. A plain stddev over a supplier's
+    whole book would mostly measure their product mix (roses vs peonies
+    differ in price by more than any supplier varies over time), not their
+    price stability — which is the thing being asked about.
+
+    Returns `excluded` — suppliers that traded in the window but had too
+    few lines to measure variability against. min_lines was 10 until
+    2026-09-03, which silently dropped most of a price-comparison ranking
+    (15 suppliers compared, 3 shown here) with no explanation on screen.
+    Variance still needs >=3 observations per pair to mean anything, so
+    some exclusions are unavoidable — they are now reported, not hidden.
+    """
+    try:
+        ensure_bi_tables()
+        product_clause = "AND product_id = %s" if product_id else ""
+        customer_clause, customer_params = _customer_scope(customer_id, "ol")
+        bare_customer_clause, _ = _customer_scope(customer_id)
+        params: list = [start_date, end_date]
+        if product_id:
+            params.append(product_id)
+        params += customer_params
+        params.append(min_lines)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    WITH per_pair AS (
+                        SELECT ol.supplier_id, ol.product_id,
+                               AVG(ol.store_price) AS avg_price,
+                               STDDEV_SAMP(ol.store_price) AS sd,
+                               COUNT(*) AS n
+                        FROM bi_order_lines ol
+                        WHERE ol.supplier_id IS NOT NULL AND ol.store_price IS NOT NULL
+                          AND ol.store_price > 0
+                          AND ol.creation_date_time::date BETWEEN %s AND %s
+                          {product_clause}
+                          {customer_clause}
+                        GROUP BY ol.supplier_id, ol.product_id
+                        HAVING COUNT(*) >= 3 AND AVG(ol.store_price) > 0
+                    )
+                    SELECT p.supplier_id,
+                           COALESCE(s.name, p.supplier_id) AS name,
+                           SUM(p.n) AS line_count,
+                           SUM((p.sd / p.avg_price) * p.n) / NULLIF(SUM(p.n), 0) * 100 AS cv_pct,
+                           SUM(p.avg_price * p.n) / NULLIF(SUM(p.n), 0) AS avg_price,
+                           SUM(p.n) AS weighted_lines,
+                           COUNT(*) AS product_count
+                    FROM per_pair p
+                    LEFT JOIN bi_suppliers s ON s.supplier_id = p.supplier_id
+                    WHERE p.sd IS NOT NULL
+                    GROUP BY p.supplier_id, s.name
+                    HAVING SUM(p.n) >= %s
+                    ORDER BY cv_pct DESC
+                """, params)
+                rows = cur.fetchall()
+
+                # How many suppliers actually traded in this window at all —
+                # the difference is what the >=3-lines-per-product rule and
+                # min_lines dropped, so the UI can say so instead of leaving
+                # the reader to wonder where 12 of 15 suppliers went.
+                total_params: list = [start_date, end_date] + ([product_id] if product_id else []) + customer_params
+                cur.execute(f"""
+                    SELECT COUNT(DISTINCT supplier_id) AS n
+                    FROM bi_order_lines
+                    WHERE supplier_id IS NOT NULL AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {product_clause}
+                      {bare_customer_clause}
+                """, total_params)
+                total_suppliers = cur.fetchone()["n"] or 0
+
+        points = [
+            {
+                "supplier_id": r["supplier_id"],
+                "name": r["name"],
+                "cv_pct": round(float(r["cv_pct"]), 2) if r["cv_pct"] is not None else None,
+                "avg_price": round(float(r["avg_price"]), 4) if r["avg_price"] is not None else None,
+                "line_count": int(r["line_count"]),
+                "product_count": r["product_count"],
+            }
+            for r in rows[:limit]
+        ]
+        return {
+            "points": points,
+            "total_suppliers": total_suppliers,
+            # Against len(points), not len(rows): `rows` is every supplier
+            # that PASSED the min_lines/per-pair thresholds, before the
+            # display cap. Comparing against the pre-cap count understated
+            # what's actually hidden whenever more suppliers qualified than
+            # `limit` — "shown N of M, excluded K" wouldn't sum to M
+            # (found 2026-09-03).
+            "excluded": max(0, total_suppliers - len(points)),
+        }
+    except Exception as exc:
+        logger.warning("get_bi_supplier_volatility: %s", exc)
+        return {"points": [], "total_suppliers": 0, "excluded": 0}
+
+
+def get_bi_supplier_market_deviation(
+    start_date: str, end_date: str, product_id: str | None = None, min_lines: int = 3, limit: int = 15,
+    customer_id: str | None = None,
+) -> dict:
+    """Odchylenia od średniej rynkowej — how far above/below the market a
+    supplier prices, in %.
+
+    "Market" is the average for the same (product, length) over the same
+    window, computed per line and then averaged per supplier. Comparing a
+    supplier's overall average against a global average would again just
+    rank product mixes; this compares like with like.
+
+    min_lines was 10 until 2026-09-03, which dropped most of the suppliers
+    visible in the price comparison with nothing on screen to explain it.
+    A deviation is meaningful from a handful of lines (unlike variance,
+    which needs a spread), so the floor is low and `excluded` reports
+    whatever still falls below it.
+    """
+    try:
+        ensure_bi_tables()
+        product_clause = "AND product_id = %s" if product_id else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
+        params: list = [start_date, end_date]
+        if product_id:
+            params.append(product_id)
+        params += customer_params
+        params.append(min_lines)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    WITH lines AS (
+                        SELECT supplier_id, product_id, length, store_price, quantity
+                        FROM bi_order_lines
+                        WHERE supplier_id IS NOT NULL AND store_price IS NOT NULL
+                          AND store_price > 0
+                          AND creation_date_time::date BETWEEN %s AND %s
+                          {product_clause}
+                          {customer_clause}
+                    ),
+                    market AS (
+                        SELECT product_id, length, COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS market_price
+                        FROM lines
+                        GROUP BY product_id, length
+                        HAVING SUM(quantity) > 0 AND AVG(store_price) > 0
+                    ),
+                    joined AS (
+                        SELECT l.supplier_id, l.store_price, m.market_price
+                        FROM lines l
+                        JOIN market m
+                          ON m.product_id = l.product_id
+                         AND m.length IS NOT DISTINCT FROM l.length
+                    )
+                    SELECT j.supplier_id,
+                           COALESCE(s.name, j.supplier_id) AS name,
+                           COUNT(*) AS line_count,
+                           AVG((j.store_price - j.market_price) / j.market_price) * 100 AS deviation_pct,
+                           AVG(j.store_price) AS avg_price,
+                           AVG(j.market_price) AS market_price
+                    FROM joined j
+                    LEFT JOIN bi_suppliers s ON s.supplier_id = j.supplier_id
+                    GROUP BY j.supplier_id, s.name
+                    HAVING COUNT(*) >= %s
+                    ORDER BY deviation_pct DESC
+                """, params)
+                rows = cur.fetchall()
+
+                total_params: list = [start_date, end_date] + ([product_id] if product_id else []) + customer_params
+                cur.execute(f"""
+                    SELECT COUNT(DISTINCT supplier_id) AS n
+                    FROM bi_order_lines
+                    WHERE supplier_id IS NOT NULL AND store_price IS NOT NULL
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {product_clause}
+                      {customer_clause}
+                """, total_params)
+                total_suppliers = cur.fetchone()["n"] or 0
+
+        points = [
+            {
+                "supplier_id": r["supplier_id"],
+                "name": r["name"],
+                "deviation_pct": round(float(r["deviation_pct"]), 2),
+                "avg_price": round(float(r["avg_price"]), 4),
+                "market_price": round(float(r["market_price"]), 4),
+                "line_count": r["line_count"],
+            }
+            for r in rows[:limit]
+        ]
+        return {
+            "points": points,
+            "total_suppliers": total_suppliers,
+            # See the matching comment in get_bi_supplier_volatility — must
+            # compare against the post-limit count actually shown.
+            "excluded": max(0, total_suppliers - len(points)),
+        }
+    except Exception as exc:
+        logger.warning("get_bi_supplier_market_deviation: %s", exc)
+        return {"points": [], "total_suppliers": 0, "excluded": 0}
+
+
+def get_bi_seasonality(product_id: str | None = None, customer_id: str | None = None) -> dict:
+    """Sezonowość cen/popytu — volume and avg price per calendar month, one
+    series per year, so the same months line up on top of each other and a
+    repeating pattern becomes visible. Ignores the sales date-range picker
+    on purpose: seasonality needs whole years, not a 90-day window."""
+    try:
+        ensure_bi_tables()
+        product_clause = "AND product_id = %s" if product_id else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
+        params: list = ([product_id] if product_id else []) + customer_params
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT EXTRACT(YEAR FROM creation_date_time)::int AS year,
+                           EXTRACT(MONTH FROM creation_date_time)::int AS month,
+                           SUM(quantity) AS total_quantity,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price
+                    FROM bi_order_lines
+                    WHERE creation_date_time IS NOT NULL {product_clause} {customer_clause}
+                    GROUP BY 1, 2
+                    ORDER BY 1, 2
+                """, params)
+                rows = cur.fetchall()
+
+                # Ingestion coverage, deliberately UNFILTERED: whether a
+                # calendar month was fully observed is a property of what the
+                # sync pulled, not of the product/customer slice being
+                # charted. Scoping this to the same filters would drop a month
+                # merely because this one product happened not to sell in its
+                # first days.
+                cur.execute("""
+                    SELECT MIN(creation_date_time)::date AS lo,
+                           MAX(creation_date_time)::date AS hi
+                    FROM bi_order_lines WHERE creation_date_time IS NOT NULL
+                """)
+                coverage = cur.fetchone() or {}
+                cov_lo, cov_hi = coverage.get("lo"), coverage.get("hi")
+
+        def fully_observed(y: int, m: int) -> bool:
+            """A month only belongs on a seasonality chart if the whole month
+            was actually observed. A partial month is a monthly TOTAL over
+            part of a month, so it plots as a real, plausible-looking slump
+            next to complete months — the in-progress month always appears to
+            collapse. That is worse than the absent-month case this chart
+            already guards against, because a gap reads as missing while a
+            short bar reads as fact (2026-09-09)."""
+            if cov_lo is None or cov_hi is None:
+                return True
+            last = calendar.monthrange(y, m)[1]
+            return cov_lo <= date(y, m, 1) and date(y, m, last) <= cov_hi
+
+        years = sorted({r["year"] for r in rows})
+        by_year: dict[int, dict[int, dict]] = {y: {} for y in years}
+        for r in rows:
+            if not fully_observed(r["year"], r["month"]):
+                continue
+            by_year[r["year"]][r["month"]] = {
+                "quantity": float(r["total_quantity"] or 0),
+                "price": float(r["avg_price"]) if r["avg_price"] is not None else None,
+            }
+        years = [y for y in years if by_year[y]]
+
+        # Only months that actually have rows. Filling absent months with
+        # quantity 0 (as this did until 2026-09-03) was wrong and visibly
+        # misleading: a gap means "nothing synced for that month", not "we
+        # sold nothing" — and we always sell something. A missing month must
+        # leave a gap in the line, never a zero.
+        return {
+            "years": [
+                {
+                    "year": y,
+                    "months": [
+                        {
+                            "month": m,
+                            "quantity": by_year[y][m]["quantity"],
+                            "price": by_year[y][m]["price"],
+                        }
+                        for m in sorted(by_year[y])
+                    ],
+                }
+                for y in years
+            ]
+        }
+    except Exception as exc:
+        logger.warning("get_bi_seasonality: %s", exc)
+        return {"years": []}
+
+
+# Selling windows, not the holiday dates themselves — flowers for Feb 14 are
+# ordered and shipped in the preceding two weeks, so a window centred on the
+# holiday would miss the peak entirely. Fixed month/day ranges; the moving
+# feasts (Mother's Day) use their usual NL/DE early-May position.
+#
+# The first element is a stable, language-neutral KEY, not a display name:
+# these end up as chart category labels, and the UI is translated into four
+# languages, so the frontend maps the key to its own copy (2026-09-07).
+_BI_EVENTS: list[tuple[str, tuple[int, int], tuple[int, int]]] = [
+    ("valentines", (1, 25), (2, 11)),
+    ("womens_day", (2, 26), (3, 6)),
+    ("mothers_day", (4, 28), (5, 9)),
+]
+
+# Periods that are not charted as events but must never count as "ordinary"
+# days in a baseline — the two are separate lists precisely so a period can
+# be disqualified as a reference without being presented as a result.
+#
+# Covers 1 Dec – 6 Jan. Two reasons, both about the VALENTINE'S baseline,
+# whose window reaches back to 11 Dec:
+#  - New Year is a major flower peak; leaving it in inflated the Valentine's
+#    reference enough to push a real peak into negative territory
+#    (2026-09-07).
+#  - December was charted as a "christmas" event until 2026-09-09, which
+#    kept it out of baselines as a side effect. It was dropped as an event
+#    because this business does not sell roses into Christmas, so the bar
+#    said nothing useful — but December still runs well above an ordinary
+#    day here (it measured +43% volume while it was still charted), so it
+#    has to stay disqualified as a reference. Removing it from _BI_EVENTS
+#    without adding it here would have silently re-created the 2026-09-07
+#    bug for Valentine's.
+# This range wraps across the year boundary — see _in_md_range.
+_BI_BASELINE_EXCLUDE: list[tuple[tuple[int, int], tuple[int, int]]] = [
+    ((12, 1), (1, 6)),
+]
+
+
+def _in_md_range(d: date, start: tuple[int, int], end: tuple[int, int]) -> bool:
+    """Month/day membership that also handles ranges wrapping past 31 Dec.
+    A plain `start <= md <= end` silently matches nothing for a wrapping
+    range like 21 Dec – 6 Jan, because (12, 21) <= (1, 6) is false."""
+    md = (d.month, d.day)
+    return start <= md <= end if start <= end else (md >= start or md <= end)
+
+
+def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45, customer_id: str | None = None) -> dict:
+    """Wpływ świąt/wydarzeń — volume and price during each event's selling
+    window, as a % lift over a LOCAL baseline.
+
+    Baseline is the ordinary (non-event) days within `baseline_days` either
+    side of the window, not the whole calendar year. A whole-year baseline
+    (used until 2026-09-03) produced nonsense like "Valentine's -63%
+    volume": it averages every ordinary day of the year, so any month that
+    is simply better covered by the backfill, or any strong ordinary
+    season, drags the reference above the event window and turns a real
+    peak into an apparent collapse. Comparing a window against the weeks
+    immediately around it controls for both backfill coverage and the
+    general shape of the season.
+
+    Days with no rows at all are absent from the input and are NOT counted
+    as zero-volume days — a day nothing was synced for is unknown, not idle.
+    A window is dropped rather than reported at low confidence unless it has
+    >=5 covered days of its own AND >=15 ordinary baseline days with at
+    least 5 on EACH side of it — a one-sided baseline turns a seasonal trend
+    into apparent event lift.
+    """
+    try:
+        ensure_bi_tables()
+        product_clause = "AND product_id = %s" if product_id else ""
+        customer_clause, customer_params = _customer_scope(customer_id)
+        params: list = ([product_id] if product_id else []) + customer_params
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT creation_date_time::date AS day,
+                           SUM(quantity) AS total_quantity,
+                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price
+                    FROM bi_order_lines
+                    WHERE creation_date_time IS NOT NULL {product_clause} {customer_clause}
+                    GROUP BY 1
+                    ORDER BY 1
+                """, params)
+                rows = cur.fetchall()
+
+        if not rows:
+            return {"events": []}
+
+        by_day = {
+            r["day"]: (
+                float(r["total_quantity"] or 0),
+                float(r["avg_price"]) if r["avg_price"] is not None else None,
+            )
+            for r in rows
+        }
+
+        def is_ordinary_day(d: date) -> bool:
+            """A day that may serve as a baseline reference: neither inside
+            another event's window (Christmas + 45 days would otherwise
+            swallow the next year's Valentine's) nor inside a known non-event
+            peak such as New Year. Month/day based, so it holds for any year."""
+            if any(_in_md_range(d, start, end) for _, start, end in _BI_EVENTS):
+                return False
+            return not any(_in_md_range(d, start, end) for start, end in _BI_BASELINE_EXCLUDE)
+
+        def median(vals: list[float | None]) -> float | None:
+            """The TYPICAL day, not the average one. A mean baseline is pulled
+            up by any single outlying day, which made a genuinely strong
+            holiday read as a smaller gain — or even a loss. The question this
+            chart answers is "how much better than a normal day", so both
+            sides use the median (user, 2026-09-07)."""
+            clean = sorted(v for v in vals if v is not None)
+            if not clean:
+                return None
+            mid = len(clean) // 2
+            return clean[mid] if len(clean) % 2 else (clean[mid - 1] + clean[mid]) / 2
+
+        observed_years = sorted({d.year for d in by_day})
+        out = []
+        for name, start, end in _BI_EVENTS:
+            per_year = []
+            for year in observed_years:
+                try:
+                    win_start = date(year, start[0], start[1])
+                    win_end = date(year, end[0], end[1])
+                except ValueError:
+                    continue
+
+                ev_days = [d for d in by_day if win_start <= d <= win_end]
+                base_days = [
+                    d for d in by_day
+                    if win_start - timedelta(days=baseline_days) <= d <= win_end + timedelta(days=baseline_days)
+                    and is_ordinary_day(d)
+                ]
+                # Both sides must be represented, not just the total. A
+                # one-sided baseline compares the window against only what
+                # came before (or only what came after) it, so any seasonal
+                # trend running through the window is read as event lift.
+                # Christmas is structurally exposed: its trailing baseline
+                # (7-24 Jan) falls in the FOLLOWING year, so the last covered
+                # year would always be judged against autumn alone. The total
+                # count alone passed that case (2026-09-09).
+                lead = [d for d in base_days if d < win_start]
+                trail = [d for d in base_days if d > win_end]
+                if (len(ev_days) < 5 or len(base_days) < 15
+                        or len(lead) < 5 or len(trail) < 5):
+                    continue
+
+                ev_qty = median([by_day[d][0] for d in ev_days])
+                base_qty = median([by_day[d][0] for d in base_days])
+                ev_price = median([by_day[d][1] for d in ev_days])
+                base_price = median([by_day[d][1] for d in base_days])
+
+                per_year.append({
+                    "year": year,
+                    "volume_lift_pct": round((ev_qty - base_qty) / base_qty * 100, 1) if base_qty else None,
+                    "price_lift_pct": round((ev_price - base_price) / base_price * 100, 1) if base_price and ev_price else None,
+                    "event_typical_quantity": round(ev_qty, 1) if ev_qty is not None else None,
+                    "baseline_typical_quantity": round(base_qty, 1) if base_qty is not None else None,
+                    "event_days": len(ev_days),
+                    "baseline_days": len(base_days),
+                })
+            if per_year:
+                # "event" is a translation key, not display copy — see _BI_EVENTS.
+                out.append({"event": name, "years": per_year})
+
+        return {"events": out}
+    except Exception as exc:
+        logger.warning("get_bi_event_impact: %s", exc)
+        return {"events": []}
 
 
 # ---------------------------------------------------------------------------
@@ -2317,3 +3664,537 @@ def get_vbn_auto_history(limit: int = 10, offset: int = 0) -> list[dict]:
     except Exception as exc:
         logger.error("get_vbn_auto_history: %s", exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Kenya box-weight correction (2026-09-09) — see kenya_box_weight.py.
+#
+# Two tables: which customers the module is allowed to touch, and what it did
+# to each invoice. Kenya is a separate FreshPortal tenant, so its customer ids
+# are NOT the same id space as dfg_customers (which is Ecuador's) — hence a
+# table of its own rather than another flag on that one.
+# ---------------------------------------------------------------------------
+
+# Every customer on the Kenya system, id -> name (user, 2026-09-09). Seeded
+# once so the admin can tick the handful the box-weight module may touch;
+# `enabled` is what the module reads, not membership of this list.
+#
+# Deliberately NOT reusing _DFG_CUSTOMER_SEED: that list is Ecuador's, and
+# the two systems are separate FreshPortal tenants whose customer ids
+# collide without meaning the same company.
+_KENYA_CUSTOMER_SEED: list[tuple[str, str]] = [
+    ("1", "FreshPortal"),
+    ("2", "Rose Connect"),
+    ("4", "Lynch"),
+    ("5", "Lynch WA"),
+    ("6", "Lynch USD"),
+    ("7", "Shanghai Xiaosheng Int. Trade Co. Ltd"),
+    ("8", "OBRT Valis Flora"),
+    ("9", "Gold Bridge Realty Limited"),
+    ("10", "Wah Thai Luen (H.K) Trading Co."),
+    ("11", "Betta & Cereda SRL"),
+    ("12", "Greenpacks Corporation"),
+    ("13", "Shima Trading"),
+    ("14", "YMS Co. Ltd"),
+    ("15", "Tahani International Trading Company WLL"),
+    ("16", "Flora Mondo"),
+    ("17", "Hamifleurs BV"),
+    ("18", "Holex Flower BV"),
+    ("19", "OZ-Hami BV(Lunar)"),
+    ("20", "Rose Connect BV"),
+    ("21", "Flower Direct AS"),
+    ("22", "Africa Flowers"),
+    ("23", "IP Bondarev"),
+    ("24", "Pervaya Cvetochnaia"),
+    ("25", "Fito Color"),
+    ("26", "LLC Cvetochniy Ray"),
+    ("27", "OOO \"Imperial Rose\""),
+    ("28", "Koleo i K"),
+    ("29", "Fertile Hils Trading Est"),
+    ("30", "Saad Aljadani Est"),
+    ("31", "Elfi B Ltd"),
+    ("32", "Transportgemeinschaft AG (Fairtrade)"),
+    ("33", "Transportgemeinschaft Wangen (TGW 18)"),
+    ("34", "Transportgemeinschaft Wangen (Denner01)"),
+    ("35", "Transportgemeinschaft Wangen (Floripac)"),
+    ("36", "Transportgemeinschaft Wangen (Migros)"),
+    ("37", "Transportgemeinschaft Wangen (KR Roses)"),
+    ("38", "Transportgemeinschaft Wangen (Landi02)"),
+    ("39", "Transportgemeinschaft Wangen (MA)"),
+    ("40", "Transportgemeinschaft Wangen (Migros - Non FT)"),
+    ("41", "Exotic Flora"),
+    ("42", "Exotic Flora."),
+    ("43", "Exotic Flora//"),
+    ("44", "Exotic Flora.."),
+    ("45", "Al Murooj Flowers tr"),
+    ("46", "Oleander Flowers"),
+    ("47", "Flower World LTD"),
+    ("48", "Flower World Limited"),
+    ("49", "Sunflora Ltd."),
+    ("50", "TEST"),
+    ("51", "All to All Marketing Limited"),
+    ("52", "An Corporation"),
+    ("53", "Anadolu Tarim Ã‡iÃ§ekÃ§ilik Gida Tekstil Ins. Ltd. Sti."),
+    ("54", "Aromaflor"),
+    ("55", "Ayvali Sera TarÄ±msal ÃœrÃ¼nler Ins. San Ltd. Sti."),
+    ("56", "Brighten Floriculture Ltd."),
+    ("57", "24 Flora (Beijing) Online Co. Ltd."),
+    ("58", "Completsite Angola Lda"),
+    ("59", "Ikebana Pvt Ltd"),
+    ("60", "Kawasaki Flora Auction Market Co. Ltd."),
+    ("61", "KItantzis Plants SA"),
+    ("62", "Orange Florimpex SRL."),
+    ("63", "Qatar Canadian for Nurseries & Ornamental Plants"),
+    ("64", "Rosalink B.V."),
+    ("65", "S & S Building Contractor/T.A Sannies Florist"),
+    ("66", "Shanghai Huahan Industrial Co. Ltd."),
+    ("67", "Gold Bridge Realty Limited (CEC)"),
+    ("68", "Gold Bridge Realty Limited (IC)"),
+    ("69", "Gold Bridge Realty Limited (HT)"),
+    ("70", "Florapol"),
+    ("71", "Rona Flowers"),
+    ("72", "OZ-Hami BV (DS)"),
+    ("73", "Kawasaki Flora Auction Market Co. Ltd."),
+    ("74", "Betta & Cereda s.r.l"),
+    ("75", "Greenex B.V. (FT)"),
+    ("76", "Primarosa"),
+    ("77", "Eigen invoer"),
+    ("78", "AAA Growers Limited"),
+    ("79", "Africa Blooms Limited (USD)"),
+    ("80", "Aquila Development Co. Ltd"),
+    ("81", "Bliss Flora Ltd"),
+    ("82", "Fontana Limited"),
+    ("83", "Gatoka Limited"),
+    ("84", "Golden Tulip Farms Ltd."),
+    ("85", "Harvest (FT)"),
+    ("86", "Harvest Limited"),
+    ("87", "Imani Flowers Ltd"),
+    ("88", "Isinya Roses Ltd (EUR)"),
+    ("89", "Isinya Roses Ltd (USD)"),
+    ("90", "Karen Roses Ltd"),
+    ("91", "Kimman Roses LTD"),
+    ("92", "Kisima Farm Limited"),
+    ("93", "SunBuds Kenya Ltd"),
+    ("94", "Laurel Investment Ltd (FT)"),
+    ("95", "Laurel Investments Ltd"),
+    ("96", "Lauren International Flowers Ltd"),
+    ("97", "Magana Flowers (FT)"),
+    ("98", "Magana Flowers Kenya Limited"),
+    ("99", "Mahee Flowers Ltd"),
+    ("100", "Mahee Flowers (FT)"),
+    ("101", "MAU Flora Ltd"),
+    ("102", "Milele Flowers"),
+    ("103", "Milele Flowers EUR"),
+    ("104", "Mt. Kenya Alstroemeria LTD"),
+    ("105", "Nini Limited"),
+    ("106", "Nini Ltd (FT)"),
+    ("107", "Oserian Development Co. Ltd"),
+    ("108", "Flora Ola Ltd"),
+    ("109", "Olij"),
+    ("110", "Panda Flowers Limited"),
+    ("111", "Penta Flowers"),
+    ("112", "P.J. Dave Flowers Timau Limited"),
+    ("113", "Primarosa (FT)"),
+    ("114", "Rainforest Farmlands Kenya Limited (EUR)"),
+    ("115", "Rainforest Farmlands Kenya Limited (USD)"),
+    ("116", "Red Lands Roses LTD"),
+    ("117", "Roseto Ltd"),
+    ("118", "Shades Horticulture LTD (Flower Connection)"),
+    ("119", "Shalimar Flowers Ltd"),
+    ("120", "Shalimar (FT)"),
+    ("121", "Sian Roses (Agriflora Kenya Ltd)"),
+    ("122", "Sierra Flora Ltd."),
+    ("123", "Simbi Roses Limited"),
+    ("124", "Sojanmi Springfields Limited (EUR)"),
+    ("125", "Sojanmi Springfields Limited (USD)"),
+    ("126", "Subati Flowers Limited (EUR)"),
+    ("127", "Subati Flowers Limited (USD)"),
+    ("128", "Suera Farm (USD)"),
+    ("129", "Sunland Roses Limited (EUR)"),
+    ("130", "Sunland Roses Limited (USD)"),
+    ("131", "Tambuzi Limited"),
+    ("132", "Nelion Flora ltd. (EUR)"),
+    ("133", "Nelion Flora ltd. (USD)"),
+    ("134", "Tulaga Flowers (FT)"),
+    ("135", "Tulaga Flowers Ltd."),
+    ("136", "Flower Exchange FZE"),
+    ("137", "Upendo Flowers FZE"),
+    ("138", "UTEE Estate Limited"),
+    ("139", "Valentine Growers Limited"),
+    ("140", "Van den Berg Kenya Ltd"),
+    ("141", "Van Kleef Kenya Ltd."),
+    ("142", "Waridi Farm"),
+    ("143", "Wildfire Ltd"),
+    ("144", "Windsor Flowers"),
+    ("145", "Wermort Flowers"),
+    ("146", "Xpressions Flora LTD (EUR)"),
+    ("147", "Xpressions Flora LTD (USD)"),
+    ("148", "Zena Roses Ltd"),
+    ("149", "Transebel Ltd"),
+    ("150", "GROOVE LTD"),
+    ("151", "Maji Mzuri"),
+    ("152", "Molo Greens"),
+    ("153", "PANO"),
+    ("154", "PJ Dave Flora"),
+    ("155", "Winchester Farm Ltd"),
+    ("156", "Sian  Roses (Equator Flowers Kenya)"),
+    ("157", "Sian (Maasai Flowers Ltd)"),
+    ("158", "PJ Dave Flowers"),
+    ("159", "Exotic Farm"),
+    ("160", "Blooming Africa"),
+    ("161", "James Finlays Kenya Limited"),
+    ("162", "Flora Delight Ltd"),
+    ("163", "Live Wire"),
+    ("164", "Flamingo Horticulture Kenya Limited"),
+    ("165", "Florenza Ltd."),
+    ("166", "Bilashaka Flowers Ltd FT"),
+    ("167", "Fresh From Source (IT)"),
+    ("168", "Molo River Roses"),
+    ("169", "Hortilife Horticultural Co., Ltd."),
+    ("170", "OZ Import B.V."),
+    ("171", "Shanghai FF Guan"),
+    ("172", "Sian (Maasai Flowers Ltd) FT"),
+    ("173", "Samjoon Flower"),
+    ("174", "Deivox"),
+    ("175", "OOO Flavorit"),
+    ("176", "Guangzhou Reajoy Agriculture Science and Technology Co., Ltd"),
+    ("177", "Shanghai Pengzhen Trading Co. Ltd."),
+    ("178", "Flora Group Spolka Z"),
+    ("179", "Mazowsze"),
+    ("180", "Kunming Huatonghua Ltd."),
+    ("181", "Cathay Bloom International Trade Co. LTD."),
+    ("182", "Shanghai Oheng Import & Export Co. Ltd."),
+    ("183", "Guangzhou Reajoy Agriculture Science and Technology Co., Ltd"),
+    ("184", "Dana Alabeer Trading Est."),
+    ("185", "Cathay Bloom International Trade Co. LTD."),
+    ("186", "Guangzhou Cheng Jie Import & Export Trading Co. L â‚¬"),
+    ("187", "Gold Bridge Realty Limited (RWHK)"),
+    ("188", "Greenex B.V."),
+    ("189", "Transportgemeinschaft Wangen (Manor)"),
+    ("190", "Van Dijk Flora B.V. (FT)"),
+    ("191", "Shanghai Pengzhen Trading Co. Ltd."),
+    ("192", "TESTUS"),
+    ("193", "Shanghai Oheng Import & Export Co. Ltd. (â‚¬)"),
+    ("194", "Transport to Shanghai calculation"),
+    ("195", "test343"),
+    ("196", "Transport to Beijing calculation"),
+    ("197", "Transport to Guangzhou calculation"),
+    ("198", "Guangzhou Cheng Jie Import & Export Trading Co. L $"),
+    ("199", "Alstromerija"),
+    ("200", "Test client"),
+    ("201", "Transportgemeinschaft Wangen (TGW17)"),
+    ("202", "ZNS Group Limited"),
+    ("203", "OZ Import B.V."),
+    ("204", "GUANGZHOU XIN WANG TRADE CO.,LTD"),
+    ("205", "Darissa"),
+    ("206", "Bloom B.V. (FLO-ID 4267)"),
+    ("207", "Transportgemeinschaft Wangen (TGW04)"),
+    ("208", "Transportgemeinschaft Wangen (TGW05)"),
+    ("209", "Transportgemeinschaft Wangen (TGW29)"),
+    ("210", "Holex USA Inc."),
+    ("211", "Dalberg Logistics"),
+    ("212", "IP Ovchinnikov Vyacheslav"),
+    ("213", "OZ Blossom (Shanghai) Pty Ltd."),
+    ("214", "Colour Rush B.V."),
+    ("215", "Hamifleurs BV (DS)"),
+    ("216", "SICHUAN RTO INTERNATIONAL TRADING CO.,LTD.,"),
+    ("217", "Orange Flower Connect"),
+    ("218", "Superflora B.V."),
+    ("219", "Van Dijk Flora B.V."),
+    ("220", "Shima Trading Co.Ltd."),
+    ("221", "Holex Flower Trading (Shanghai) Co., Ltd."),
+    ("222", "Wuhan ZSLogistics International Co. Ltd"),
+    ("231", "Transportgemeinschaft Wangen (TGW29) (USD)"),
+    ("236", "Transportgemeinschaft Wangen (KR Roses) USD"),
+    ("237", "Transportgemeinschaft Wangen (TGW03)"),
+    ("238", "Transportgemeinschaft Wangen (Floripac USD)"),
+    ("239", "Transportgemeinschaft Wangen (TGW17) NON FT"),
+    ("240", "Floripac Büttler AG (USD)"),
+    ("241", "Transportgemeinschaft Wangen (Denner01) USD"),
+    ("242", "Transportgemeinschaft Wangen (KR Roses) USD Fair Trade"),
+    ("243", "Guangzhou Ming Chen Trade Development Co Ltd"),
+    ("244", "P.J Dave Rising Sun (CONS)"),
+    ("245", "Green Connect B.V."),
+    ("246", "Al Burooj Traders"),
+    ("247", "Fumen(shanghai) Supply Chain Co. Ltd."),
+    ("248", "Easy Buy Internation Trading Ltd"),
+    ("249", "Bloom B.V."),
+    ("250", "JZ Flowers International Ltd"),
+    ("251", "Transportgemeinschaft Wangen (TGW15)"),
+    ("252", "Transportgemeinschaft Wangen (Migros) Fairtrade (USD)"),
+    ("253", "Go Flowers B.V."),
+    ("254", "Greenpartners B.V."),
+    ("255", "Greenflor"),
+    ("256", "Transportgemeinschaft Wangen (Migros) Fairtrade (USD) (Kopieren)"),
+    ("257", "Passion Growers LLC (USD)"),
+    ("258", "Transportgemeinschaft 20 Aldi AC"),
+    ("259", "ALDI SUISSE AG"),
+    ("260", "OZ-Hami BV Naaldwijk"),
+    ("261", "Lexiflor Inc."),
+    ("262", "Lexiflor Inc."),
+    ("263", "Lexiflor Inc."),
+    ("264", "Transportgemeinschaft Wangen (TGW31) Non FT AC"),
+    ("265", "Flora Export (Pty) Ltd"),
+    ("266", "Florca Westland"),
+    ("267", "Van Dijk Flora B.V. Sea Freight"),
+    ("268", "Gardenia Tradeing"),
+    ("269", "Passion Growers LLC (EUR)"),
+    ("270", "Holex Flower BV (USD)"),
+    ("271", "MY PEONY"),
+    ("272", "Flower Global Trading LLC"),
+    ("273", "Parfum Flower Company"),
+    ("274", "AMP Limited SIA"),
+    ("275", "Mori Mori Pte. Ltd"),
+    ("276", "Horti Nova D.O.E.L"),
+    ("277", "The Floral Connection B.V."),
+    ("278", "IP Baburkina Regina Rishatovna"),
+    ("279", "Coloriginz B.V."),
+    ("280", "Tambuzi Limited PFC"),
+    ("281", "Buyutat Alwurud Trading"),
+    ("282", "SIA Karsavas Nami"),
+    ("283", "LLC Flower Master"),
+    ("284", "GiFT Co. Ltd"),
+    ("285", "USA Bouquet LLC"),
+    ("286", "Shanghai Youxin International Trade Co., Ltd"),
+    ("287", "Fresh From Source Miami"),
+    ("288", "The Floral Connection B.V. FT"),
+    ("289", "Wuhan Zhongshi Trade Co., Ltd"),
+    ("290", "Transportgemeinschaft Wangen (TGW99)"),
+    ("291", "Chengdu Yuchuan Landscape Engineering CO., LTD."),
+    ("292", "Cathay Bloom International Trade Co., Ltd (Mingflower)"),
+    ("293", "Shanghai Pengzhen Trading Co., Ltd (Mingflower)"),
+    ("294", "Wuhan Zhongshi International Co., Ltd (Mingflower)"),
+    ("295", "Fumen (Shanghai) Supply Chain Co., Ltd (Mingflower)"),
+    ("296", "Wuhan Zhongshi Trade Co., Ltd (Mingflower)"),
+    ("297", "Fumen (Shanghai) Supply Chain Co., Ltd (Reajoy)"),
+    ("298", "Fumen (Shanghai) Supply Chain Co., Ltd (Easy Buy)"),
+    ("299", "Guangdong Xiandaijinsui Seed Co., Ltd (Youxin)"),
+    ("300", "Transport to Amsterdam calculation"),
+    ("301", "Transport to Hong Kong"),
+    ("302", "Transport to Kuwait"),
+    ("303", "Transport to Saudi Arabia Calculation"),
+    ("304", "Prullenbak China Project"),
+    ("305", "Wafex"),
+    ("306", "Waterdrinker B.V."),
+    ("307", "Transportgemeinschaft Wangen (TGW13)"),
+    ("308", "Transport to TGW calculation"),
+    ("309", "Transport to TGW calculation (FT)"),
+    ("310", "UnifloSA (pty) LTD."),
+    ("311", "Hortilife Uniqlo"),
+    ("312", "FreshFromSource China Reajoy Co.Ltd"),
+    ("313", "e-Flora"),
+    ("314", "Van Dijk Flora B.V. (Biedronka)"),
+    ("315", "Fresh From Source NL"),
+    ("316", "Africa Blooms Limited (EUR)"),
+    ("317", "Africalla Kenya LTD"),
+    ("318", "Batian Flowers LTD"),
+    ("319", "Black Tulip Flowers Limited"),
+    ("320", "Bloom Valley Limited"),
+    ("321", "Bohemian Flowers"),
+    ("322", "Cenacle Kenya Ltd"),
+    ("323", "Credible Blooms Limited"),
+    ("324", "Enkasiti Flower Growers"),
+    ("325", "Everflora Ltd."),
+    ("326", "Fresh Exchange (PFC Uhuru)"),
+    ("327", "Freshgold Kenya Limited"),
+    ("328", "Hanna Roses Ltd."),
+    ("329", "Kenflora Limited"),
+    ("330", "Kensalt Limited"),
+    ("331", "Mount Kenya Sprouts Ltd."),
+    ("332", "Packed at Source (PASA)"),
+    ("333", "PANOCAL INTERNATIONAL LT"),
+    ("334", "Precise Flowers LTD."),
+    ("335", "Sian Roses"),
+    ("336", "Sunrosa"),
+    ("337", "Zeeflora Ltd"),
+    ("338", "Transportgemeinschaft Wangen (TGW 07)"),
+    ("339", "Credit Fair Trade Calculations"),
+    ("340", "OZ-Hami BV"),
+    ("341", "Platina Bloom Trading"),
+    ("342", "Transport to Qatar"),
+    ("343", "Transport to Lebanon"),
+    ("344", "Ivy Lane Floral Design"),
+    ("345", "Coloriginz B.V. Sea Freight"),
+    ("346", "Van Dijk Flora B.V. (Biedronka) SEA"),
+    ("347", "Africalla Kenya LTD (CONS)"),
+    ("348", "Rosebunk International ltd. (CONS)"),
+    ("349", "My Peony B.V. - Nathe Enterprises ltd. (CONS)"),
+    ("350", "Sand Pro Growers (CONS)"),
+    ("351", "Waterdrinker B.V. SEA"),
+    ("352", "Coloriginz B.V. Sea Freight FT"),
+    ("353", "Coloriginz B.V. FT"),
+    ("354", "The Floral Connection (Aldi)"),
+    ("355", "The Floral Connection (Kaufland)"),
+    ("356", "Bloompost B.V."),
+    ("357", "El Floral Enterprise"),
+    ("358", "Coloriginz B.V. (surcharge)"),
+    ("359", "Waste bin"),
+    ("360", "Coloriginz B.V. FT (surcharge)"),
+    ("361", "Waterdrinker B.V. (Stokrotka)"),
+    ("362", "Waterdrinker B.V. (Auchan)"),
+    ("363", "Coloriginz - Sandpro (CONS)"),
+    ("364", "Coloriginz - Ole Engai (CONS)"),
+    ("365", "OZ-Hami SEA"),
+    ("366", "TEST COL"),
+    ("367", "Coloriginz - Imani (CONS)"),
+    ("368", "Van Dijk Flora B.V. Sea Freight (Nini)"),
+    ("369", "Van Dijk Flora B.V. Sea Freight (Airflo)"),
+    ("371", "Van Dijk Flora B.V. (Biedronka NL)"),
+    ("372", "Van Dijk Flora B.V. (Biedronka Sea Nini)"),
+    ("373", "Van Dijk Flora B.V. (Biedronka Sea Airflo)"),
+]
+
+
+def ensure_kenya_box_weight_tables() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS kenya_box_weight_customers (
+                    customer_id TEXT PRIMARY KEY,
+                    label       TEXT,
+                    enabled     BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            # invoice_id is the key: one row per invoice, overwritten on each
+            # re-run. total_weight AND box_count are both stored because
+            # either changing invalidates the weight-per-box already written —
+            # an unchanged air waybill with an added box still needs a redo.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS kenya_box_weight_log (
+                    invoice_id     TEXT PRIMARY KEY,
+                    total_weight   NUMERIC,
+                    box_count      NUMERIC,
+                    weight_per_box NUMERIC,
+                    lines_written  INTEGER DEFAULT 0,
+                    status         TEXT,
+                    detail         TEXT,
+                    checked_at     TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS kenya_box_weight_log_checked_idx "
+                        "ON kenya_box_weight_log(checked_at DESC)")
+            # Backfill the customer list. Not gated on the table being empty:
+            # the module wrote rows of its own before this list existed, so an
+            # empty-only check would have left the table holding one customer
+            # forever.
+            #
+            # The conflict clause fills in a MISSING name and nothing else:
+            # COALESCE keeps whatever name is already stored, and `enabled` is
+            # never touched, since an admin's ticks are the one thing this
+            # must not overwrite. A row can predate the seed — every writer
+            # calls this function first, so in practice it won't, but a row
+            # left without a name would otherwise display as a bare id
+            # forever with no way to repair it.
+            cur.execute("SELECT COUNT(*) FROM kenya_box_weight_customers")
+            if cur.fetchone()[0] < len(_KENYA_CUSTOMER_SEED):
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO kenya_box_weight_customers (customer_id, label, enabled)
+                    VALUES %s
+                    ON CONFLICT (customer_id) DO UPDATE SET
+                        label = COALESCE(kenya_box_weight_customers.label, EXCLUDED.label)
+                """, [(cid, name, False) for cid, name in _KENYA_CUSTOMER_SEED])
+        conn.commit()
+
+
+def get_kenya_box_weight_customers() -> list[dict]:
+    try:
+        ensure_kenya_box_weight_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT customer_id, label, enabled
+                    FROM kenya_box_weight_customers
+                    ORDER BY enabled DESC, customer_id
+                """)
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_kenya_box_weight_customers: %s", exc)
+        return []
+
+
+def set_kenya_box_weight_customer(customer_id: str, enabled: bool, label: str | None = None) -> None:
+    """Upsert — the admin UI offers customer ids discovered in the export, so
+    a row usually has to be created on first toggle rather than updated."""
+    ensure_kenya_box_weight_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO kenya_box_weight_customers (customer_id, label, enabled, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (customer_id) DO UPDATE SET
+                    enabled = EXCLUDED.enabled,
+                    label   = COALESCE(EXCLUDED.label, kenya_box_weight_customers.label),
+                    updated_at = NOW()
+            """, (str(customer_id), label, enabled))
+        conn.commit()
+
+
+def get_kenya_box_weight_log(invoice_ids: list[str]) -> list[dict]:
+    """Prior results for specific invoices — what a run compares against to
+    decide whether an invoice needs redoing. Browsing the whole log is
+    get_kenya_box_weight_history()."""
+    if not invoice_ids:
+        return []
+    try:
+        ensure_kenya_box_weight_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT * FROM kenya_box_weight_log WHERE invoice_id = ANY(%s)
+                """, ([str(i) for i in invoice_ids],))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_kenya_box_weight_log: %s", exc)
+        return []
+
+
+def get_kenya_box_weight_history(limit: int = 25, offset: int = 0) -> tuple[list[dict], bool]:
+    """Paginated view of the same log, for the History module.
+
+    Returns (rows, has_more). One row per invoice rather than per run: the
+    log is keyed by invoice_id and overwritten on each re-run, so this is
+    "current state of every invoice we have touched", not an append-only
+    audit trail. `checked_at` is when that state was last established."""
+    try:
+        ensure_kenya_box_weight_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # One extra row is the has-more probe, same trick as the
+                # other history endpoints use.
+                cur.execute("""
+                    SELECT * FROM kenya_box_weight_log
+                    ORDER BY checked_at DESC NULLS LAST
+                    LIMIT %s OFFSET %s
+                """, (limit + 1, offset))
+                rows = [dict(r) for r in cur.fetchall()]
+        return rows[:limit], len(rows) > limit
+    except Exception as exc:
+        logger.warning("get_kenya_box_weight_history: %s", exc)
+        return [], False
+
+
+def record_kenya_box_weight(entry: dict) -> None:
+    ensure_kenya_box_weight_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO kenya_box_weight_log
+                    (invoice_id, total_weight, box_count, weight_per_box,
+                     lines_written, status, detail, checked_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (invoice_id) DO UPDATE SET
+                    total_weight   = EXCLUDED.total_weight,
+                    box_count      = EXCLUDED.box_count,
+                    weight_per_box = EXCLUDED.weight_per_box,
+                    lines_written  = EXCLUDED.lines_written,
+                    status         = EXCLUDED.status,
+                    detail         = EXCLUDED.detail,
+                    checked_at     = NOW()
+            """, (
+                str(entry.get("invoice_id")), entry.get("total_weight"),
+                entry.get("box_count"), entry.get("weight_per_box"),
+                entry.get("lines_written", 0), entry.get("status"),
+                (entry.get("detail") or "")[:2000],
+            ))
+        conn.commit()

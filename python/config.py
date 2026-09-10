@@ -63,6 +63,33 @@ class Config:
 
 config = Config()
 
+KENYA_FP_URL = os.getenv("KENYA_FP_URL", "https://850254.freshportal.nl")
+
+
+def get_kenya_cfg() -> Config:
+    """Config targeting the Kenya system (850254), for both its portal and
+    its BI Sync export.
+
+    Kenya is a separate FreshPortal tenant on its own API host with its own
+    key, so the BI Sync fields are overridden too — not just the portal URL.
+    Falls back to the main credentials where a Kenya-specific one isn't set,
+    mirroring get_ecuador_cfg(). Lives here rather than in api_server.py so
+    the Kenya module can import it without a circular import.
+    """
+    cfg = Config()
+    cfg.freshportal_url = KENYA_FP_URL
+    for env_name, attr in (
+        ("KENYA_FP_USERNAME", "freshportal_username"),
+        ("KENYA_FP_PASSWORD", "freshportal_password"),
+        ("KENYA_BI_SYNC_API_KEY", "bi_sync_api_key"),
+        ("KENYA_BI_SYNC_API_BASE_URL", "bi_sync_api_base_url"),
+    ):
+        value = os.getenv(env_name, "")
+        if value:
+            setattr(cfg, attr, value)
+    return cfg
+
+
 ALLOWED_FP_URLS: frozenset[str] = frozenset({
     "https://fp042100.freshportal.nl",
     "https://850295.freshportal.nl",

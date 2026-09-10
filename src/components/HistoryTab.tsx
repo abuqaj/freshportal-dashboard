@@ -41,6 +41,20 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold ${cls}`}>{status}</span>;
 }
 
+type HistSubTab = "ops" | "sync" | "auto" | "delivery" | "boxweight";
+
+/** NUMERIC columns come back from psycopg2 as strings to preserve precision,
+ *  so these accept both and fall back to a dash rather than printing NaN. */
+function fmtNum(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const n = Number(value);
+  return Number.isFinite(n) ? String(n) : String(value);
+}
+function fmtKg(value: string | number | null | undefined): string {
+  const n = fmtNum(value);
+  return n === "—" ? n : `${n} kg`;
+}
+
 function TypeBadge({ type, t }: { type: string; t: (typeof translations)[Lang] }) {
   const map: Record<string, { label: string; cls: string }> = {
     vbn_check:      { label: t.history.vbnCheck,      cls: "bg-ground text-ink-3 border border-border" },
@@ -56,7 +70,7 @@ export default function HistoryTab({ lang }: Props) {
   const t = translations[lang];
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
 
-  const [historySubTab, setHistorySubTab] = useState<"ops" | "sync" | "auto" | "delivery">("ops");
+  const [historySubTab, setHistorySubTab] = useState<HistSubTab>("ops");
 
   const [history, setHistory]               = useState<HistoryRow[] | null>(null);
   const [histLoading, setHistLoading]       = useState(false);
@@ -114,6 +128,24 @@ export default function HistoryTab({ lang }: Props) {
   const [histDeliveryOffset, setHistDeliveryOffset] = useState(0);
   const [histDeliveryHasMore, setHistDeliveryHasMore] = useState(false);
   const [expandedDeliveryId, setExpandedDeliveryId] = useState<number | null>(null);
+
+  /** One row per invoice, not per run: kenya_box_weight_log is keyed by
+   *  invoice_id and overwritten each time, so this shows the current state
+   *  of every invoice the module has touched and when it was established. */
+  interface BoxWeightRun {
+    invoice_id: string;
+    total_weight: string | number | null;
+    box_count: string | number | null;
+    weight_per_box: string | number | null;
+    lines_written: number | null;
+    status: string | null;
+    detail: string | null;
+    checked_at: string | null;
+  }
+  const [boxWeightHistory, setBoxWeightHistory]         = useState<BoxWeightRun[] | null>(null);
+  const [boxWeightHistLoading, setBoxWeightHistLoading] = useState(false);
+  const [histBoxWeightOffset, setHistBoxWeightOffset]   = useState(0);
+  const [histBoxWeightHasMore, setHistBoxWeightHasMore] = useState(false);
 
   const loadHistory = useCallback(async (append = false) => {
     setHistLoading(true);
@@ -202,26 +234,54 @@ export default function HistoryTab({ lang }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [histDeliveryOffset]);
 
-  function handleTabSwitch(tab: "ops" | "sync" | "auto" | "delivery") {
+  const loadBoxWeightHistory = useCallback(async (append = false) => {
+    if (!RAILWAY) return;
+    setBoxWeightHistLoading(true);
+    const offset = append ? histBoxWeightOffset : 0;
+    try {
+      const res = await fetch(`${RAILWAY}/kenya/box-weight/log?limit=${PAGE_SIZE}&offset=${offset}`);
+      const data = await res.json();
+      const rows: BoxWeightRun[] = data.log ?? [];
+      const hasMore: boolean = data.hasMore ?? false;
+      if (append) {
+        setBoxWeightHistory(prev => [...(prev ?? []), ...rows]);
+        setHistBoxWeightOffset(offset + rows.length);
+      } else {
+        setBoxWeightHistory(rows);
+        setHistBoxWeightOffset(rows.length);
+      }
+      setHistBoxWeightHasMore(hasMore);
+    } catch {}
+    setBoxWeightHistLoading(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [histBoxWeightOffset]);
+
+  function handleTabSwitch(tab: HistSubTab) {
     setHistorySubTab(tab);
-    if (tab === "ops"      && history === null)          loadHistory();
-    if (tab === "sync"     && syncHistory === null)       loadSyncHistory();
-    if (tab === "auto"     && autoVbnHistory === null)    loadAutoVbnHistory();
-    if (tab === "delivery" && deliveryHistory === null)   loadDeliveryHistory();
+    if (tab === "ops"       && history === null)          loadHistory();
+    if (tab === "sync"      && syncHistory === null)       loadSyncHistory();
+    if (tab === "auto"      && autoVbnHistory === null)    loadAutoVbnHistory();
+    if (tab === "delivery"  && deliveryHistory === null)   loadDeliveryHistory();
+    if (tab === "boxweight" && boxWeightHistory === null)  loadBoxWeightHistory();
   }
 
-  useEffect(() => { loadHistory(); loadSyncHistory(); loadAutoVbnHistory(); loadDeliveryHistory(); }, []);
+  useEffect(() => {
+    loadHistory(); loadSyncHistory(); loadAutoVbnHistory();
+    loadDeliveryHistory(); loadBoxWeightHistory();
+  }, []);
 
   function handleRefresh() {
-    if (historySubTab === "ops")          loadHistory();
-    else if (historySubTab === "sync")     loadSyncHistory();
-    else if (historySubTab === "delivery") loadDeliveryHistory();
-    else                                   loadAutoVbnHistory();
+    if (historySubTab === "ops")           loadHistory();
+    else if (historySubTab === "sync")      loadSyncHistory();
+    else if (historySubTab === "delivery")  loadDeliveryHistory();
+    else if (historySubTab === "boxweight") loadBoxWeightHistory();
+    else                                    loadAutoVbnHistory();
   }
 
   const isLoading = historySubTab === "ops" ? histLoading
-    : historySubTab === "sync"     ? syncHistLoading
-    : historySubTab === "delivery" ? deliveryHistLoading
+    : historySubTab === "sync"      ? syncHistLoading
+    : historySubTab === "delivery"  ? deliveryHistLoading
+    : historySubTab === "boxweight" ? boxWeightHistLoading
     : autoVbnHistLoading;
 
   return (
@@ -248,7 +308,7 @@ export default function HistoryTab({ lang }: Props) {
       {/* ── Sub-tabs ── */}
       <div className="px-4 sm:px-5 py-3 border-b border-border overflow-x-auto">
         <div className="flex gap-1 bg-ground border border-border rounded-xl p-1 w-fit min-w-max">
-          {(["ops", "sync", "auto", "delivery"] as const).map((tab) => (
+          {(["ops", "sync", "auto", "delivery", "boxweight"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => handleTabSwitch(tab)}
@@ -261,7 +321,8 @@ export default function HistoryTab({ lang }: Props) {
               {tab === "ops" ? t.history.subTabOps
                 : tab === "sync" ? t.history.subTabSync
                 : tab === "auto" ? t.history.subTabAutoVbn
-                : t.history.subTabDelivery}
+                : tab === "delivery" ? t.history.subTabDelivery
+                : t.history.subTabBoxWeight}
             </button>
           ))}
         </div>
@@ -773,6 +834,54 @@ export default function HistoryTab({ lang }: Props) {
                     className="flex items-center gap-2 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-4 py-2 bg-ground hover:bg-muted transition-colors disabled:opacity-40"
                   >
                     {deliveryHistLoading ? <><Spinner /><span>{t.history.loading}</span></> : t.history.loadMore}
+                  </button>
+                </div>
+              )}
+            </>
+          )
+        )}
+
+        {/* BOX WEIGHT (Kenya) */}
+        {historySubTab === "boxweight" && (
+          boxWeightHistLoading && boxWeightHistory === null ? (
+            <div className="flex items-center justify-center gap-2 py-12 text-ink-3 text-sm">
+              <Spinner /><span>{t.history.loading}</span>
+            </div>
+          ) : !boxWeightHistory || boxWeightHistory.length === 0 ? (
+            <div className="py-12 text-center text-sm text-ink-3">{t.history.empty}</div>
+          ) : (
+            <>
+              <div className="divide-y divide-border">
+                {boxWeightHistory.map((r) => (
+                  <div key={r.invoice_id} className="px-5 py-3 flex items-center gap-4 flex-wrap">
+                    <span className="font-mono text-sm text-ink w-24 shrink-0">#{r.invoice_id}</span>
+                    <StatusBadge status={r.status ?? "—"} />
+                    <span className="text-xs text-ink-3 tabular-nums">
+                      {fmtKg(r.total_weight)} / {fmtNum(r.box_count)} {t.history.bwBoxes}
+                      {" = "}
+                      <span className="text-ink font-semibold">{fmtKg(r.weight_per_box)}</span>
+                    </span>
+                    <span className="text-xs text-ink-3">
+                      {t.history.bwLinesWritten(String(r.lines_written ?? 0))}
+                    </span>
+                    <span className="text-xs text-ink-3 ml-auto whitespace-nowrap">
+                      {r.checked_at ? new Date(r.checked_at).toLocaleString(localeStr) : "—"}
+                    </span>
+                    {r.detail && (
+                      <p className="w-full text-xs text-ink-3 break-words">{r.detail}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {histBoxWeightHasMore && (
+                <div className="sticky bottom-0 border-t border-border bg-surface px-5 py-3 flex justify-center">
+                  <button
+                    onClick={() => loadBoxWeightHistory(true)}
+                    disabled={boxWeightHistLoading}
+                    className="flex items-center gap-2 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-4 py-2 bg-ground hover:bg-muted transition-colors disabled:opacity-40"
+                  >
+                    {boxWeightHistLoading ? <><Spinner /><span>{t.history.loading}</span></> : t.history.loadMore}
                   </button>
                 </div>
               )}

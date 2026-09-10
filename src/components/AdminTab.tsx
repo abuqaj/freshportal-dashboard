@@ -809,42 +809,98 @@ interface DfgCustomer {
   used_in_delivery_import: boolean
 }
 
+interface KenyaCustomer {
+  customer_id: string
+  label: string | null
+  enabled: boolean
+}
+
+/** Normalised row — the two systems store a different flag under a different
+ *  name, but the table only needs id, name and ticked. */
+interface CustomerRow { id: string; name: string; checked: boolean }
+
+type CustomerSystem = "ecuador" | "kenya"
+
+/** Kenya and Ecuador are separate FreshPortal tenants whose customer ids
+ *  collide without referring to the same company — 62 ids appear in both
+ *  lists under different names — so they are separate tables with separate
+ *  flags, not one list with two checkboxes. */
+const CUSTOMER_SYSTEMS: { id: CustomerSystem; label: string; flagLabel: string }[] = [
+  { id: "ecuador", label: "Ecuador", flagLabel: "Used in delivery import" },
+  { id: "kenya",   label: "Kenya",   flagLabel: "Used in box weight" },
+]
+
 function CustomersTable() {
-  const [customers, setCustomers] = useState<DfgCustomer[]>([])
+  const [system, setSystem] = useState<CustomerSystem>("ecuador")
+  const [rows, setRows] = useState<CustomerRow[]>([])
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [savingAll, setSavingAll] = useState(false)
+  const [query, setQuery] = useState("")
   const selectAllRef = useRef<HTMLInputElement>(null)
+
+  const active = CUSTOMER_SYSTEMS.find(s => s.id === system)!
 
   const load = useCallback(async () => {
     setLoading(true)
+    setRows([])
     try {
-      const r = await fetch(`${RAILWAY}/dfg-customers`).then(r => r.json())
-      setCustomers(r.customers ?? [])
+      if (system === "ecuador") {
+        const r = await fetch(`${RAILWAY}/dfg-customers`).then(r => r.json())
+        setRows((r.customers ?? []).map((c: DfgCustomer) => ({
+          id: c.customer_id, name: c.nm_customer, checked: c.used_in_delivery_import,
+        })))
+      } else {
+        const r = await fetch(`${RAILWAY}/kenya/box-weight/customers`).then(r => r.json())
+        setRows((r.customers ?? [])
+          .map((c: KenyaCustomer) => ({
+            id: c.customer_id, name: c.label || c.customer_id, checked: c.enabled,
+          }))
+          // customer_id is TEXT, so the server's ORDER BY puts "10" before
+          // "2". Sort numerically here instead of in SQL, which would have to
+          // cast a column that is not guaranteed to hold only digits.
+          .sort((a: CustomerRow, b: CustomerRow) => Number(a.id) - Number(b.id)))
+      }
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [system])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => { setQuery("") }, [system])
 
-  const allChecked = customers.length > 0 && customers.every(c => c.used_in_delivery_import)
-  const someChecked = customers.some(c => c.used_in_delivery_import)
+  // Select-all is Ecuador-only on purpose: that list is short and every entry
+  // is a plausible delivery-import target, whereas Kenya's is the tenant's
+  // whole customer book and ticking all of it would point the box-weight
+  // module at every invoice on the system.
+  const canSelectAll = system === "ecuador"
+  const allChecked = rows.length > 0 && rows.every(r => r.checked)
+  const someChecked = rows.some(r => r.checked)
 
   useEffect(() => {
     if (selectAllRef.current) selectAllRef.current.indeterminate = someChecked && !allChecked
   }, [someChecked, allChecked])
 
-  async function toggle(customer: DfgCustomer, checked: boolean) {
-    setSavingId(customer.customer_id)
-    setCustomers(prev => prev.map(c =>
-      c.customer_id === customer.customer_id ? { ...c, used_in_delivery_import: checked } : c
-    ))
+  const visible = query.trim()
+    ? rows.filter(r => `${r.name} ${r.id}`.toLowerCase().includes(query.trim().toLowerCase()))
+    : rows
+
+  async function toggle(row: CustomerRow, checked: boolean) {
+    setSavingId(row.id)
+    setRows(prev => prev.map(r => r.id === row.id ? { ...r, checked } : r))
     try {
-      await fetch(`${RAILWAY}/dfg-customers/set-flag`, {
+      const [url, body] = system === "ecuador"
+        ? [`${RAILWAY}/dfg-customers/set-flag`,
+           { customer_id: row.id, used_in_delivery_import: checked }]
+        // No label: names come from the seeded list, and row.name falls back
+        // to the raw id when one is missing — sending that would store "1"
+        // as the customer's name and make it permanent.
+        : [`${RAILWAY}/kenya/box-weight/customers`,
+           { customer_id: row.id, enabled: checked }]
+      await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer_id: customer.customer_id, used_in_delivery_import: checked }),
+        body: JSON.stringify(body),
       })
     } finally {
       setSavingId(null)
@@ -853,7 +909,7 @@ function CustomersTable() {
 
   async function toggleAll(checked: boolean) {
     setSavingAll(true)
-    setCustomers(prev => prev.map(c => ({ ...c, used_in_delivery_import: checked })))
+    setRows(prev => prev.map(r => ({ ...r, checked })))
     try {
       await fetch(`${RAILWAY}/dfg-customers/set-all-flags`, {
         method: "POST",
@@ -866,45 +922,74 @@ function CustomersTable() {
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <thead>
-          <tr className="border-b border-border bg-ground/60">
-            <Th>Customer</Th>
-            <Th>ID</Th>
-            <th className="px-4 py-2.5 text-center text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
-              <div className="flex flex-col items-center gap-1">
-                <span>Used in delivery import</span>
-                <label className="flex items-center gap-1.5 normal-case font-medium text-ink-3 cursor-pointer">
-                  <input ref={selectAllRef} type="checkbox" className="accent-emerald w-3.5 h-3.5 cursor-pointer"
-                    checked={allChecked}
-                    disabled={savingAll || loading || customers.length === 0}
-                    onChange={e => toggleAll(e.target.checked)} />
-                  <span>Select all</span>
-                </label>
-              </div>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {loading ? (
-            <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
-          ) : customers.length === 0 ? (
-            <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-ink-3">No customers</td></tr>
-          ) : customers.map(c => (
-            <tr key={c.customer_id} className="border-b border-border hover:bg-ground/40 transition-colors">
-              <td className="px-4 py-3 text-sm font-medium text-ink">{c.nm_customer}</td>
-              <td className="px-4 py-3 text-xs text-ink-3 tabular-nums">#{c.customer_id}</td>
-              <td className="px-4 py-3 text-center">
-                <input type="checkbox" className="accent-emerald w-4 h-4 cursor-pointer"
-                  checked={c.used_in_delivery_import}
-                  disabled={savingId === c.customer_id}
-                  onChange={e => toggle(c, e.target.checked)} />
-              </td>
-            </tr>
+    <div>
+      <div className="px-5 py-3 border-b border-border flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
+          {CUSTOMER_SYSTEMS.map(s => (
+            <button key={s.id} onClick={() => setSystem(s.id)}
+              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                system === s.id ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink"
+              }`}>
+              {s.label}
+            </button>
           ))}
-        </tbody>
-      </table>
+        </div>
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Search name or id…"
+          className="h-8 px-3 rounded-lg text-xs border border-border bg-surface outline-none focus:border-emerald/50 transition-colors w-56"
+        />
+        <span className="text-xs text-ink-3">
+          {someChecked ? `${rows.filter(r => r.checked).length} selected` : "none selected"}
+          {query.trim() && ` · showing ${visible.length} of ${rows.length}`}
+        </span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-border bg-ground/60">
+              <Th>Customer</Th>
+              <Th>ID</Th>
+              <th className="px-4 py-2.5 text-center text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
+                <div className="flex flex-col items-center gap-1">
+                  <span>{active.flagLabel}</span>
+                  {canSelectAll && (
+                    <label className="flex items-center gap-1.5 normal-case font-medium text-ink-3 cursor-pointer">
+                      <input ref={selectAllRef} type="checkbox" className="accent-emerald w-3.5 h-3.5 cursor-pointer"
+                        checked={allChecked}
+                        disabled={savingAll || loading || rows.length === 0}
+                        onChange={e => toggleAll(e.target.checked)} />
+                      <span>Select all</span>
+                    </label>
+                  )}
+                </div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
+            ) : visible.length === 0 ? (
+              <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-ink-3">
+                {rows.length === 0 ? "No customers" : "Nothing matches that search"}
+              </td></tr>
+            ) : visible.map(r => (
+              <tr key={r.id} className="border-b border-border hover:bg-ground/40 transition-colors">
+                <td className="px-4 py-3 text-sm font-medium text-ink">{r.name}</td>
+                <td className="px-4 py-3 text-xs text-ink-3 tabular-nums">#{r.id}</td>
+                <td className="px-4 py-3 text-center">
+                  <input type="checkbox" className="accent-emerald w-4 h-4 cursor-pointer"
+                    checked={r.checked}
+                    disabled={savingId === r.id}
+                    onChange={e => toggle(r, e.target.checked)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
