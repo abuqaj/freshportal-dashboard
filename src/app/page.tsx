@@ -31,7 +31,7 @@ const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "admin",     gradient: "from-[#374151] to-[#111827]", perm: "admin:manage" },
   { id: "delivery",  gradient: "from-[#0F4C8A] to-[#0A2E54]", perm: "delivery:import" },
   { id: "analysis",  gradient: "from-[#7C3AED] to-[#4C1D95]", perm: "admin:manage" },
-  { id: "boxweight", gradient: "from-[#006600] to-[#004000]", perm: "admin:manage" },
+  { id: "boxweight", gradient: "from-[#0891B2] to-[#155E75]", perm: "admin:manage" },
 ];
 
 /* ─── 3-D tilt hook ─── */
@@ -545,7 +545,7 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
       perm: "admin:manage",
       label: t.nav.kenyaBoxWeight,
       desc: t.hub.boxWeightDesc,
-      gradient: "bg-gradient-to-br from-[#006600] to-[#004000]",
+      gradient: "bg-gradient-to-br from-[#0891B2] to-[#155E75]",
       stat: t.hub.boxWeightStat,
       statColor: "text-white/60",
       icon: (
@@ -704,6 +704,7 @@ export default function Dashboard() {
               : nt.id === "photos"    ? t.nav.photoUploader
               : nt.id === "history"   ? t.nav.history
               : nt.id === "delivery"  ? t.nav.deliveryImporter
+              : nt.id === "boxweight" ? t.nav.kenyaBoxWeight
               : t.nav.analysisTool,
     }));
 

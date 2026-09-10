@@ -3675,6 +3675,376 @@ def get_vbn_auto_history(limit: int = 10, offset: int = 0) -> list[dict]:
 # table of its own rather than another flag on that one.
 # ---------------------------------------------------------------------------
 
+# Every customer on the Kenya system, id -> name (user, 2026-09-09). Seeded
+# once so the admin can tick the handful the box-weight module may touch;
+# `enabled` is what the module reads, not membership of this list.
+#
+# Deliberately NOT reusing _DFG_CUSTOMER_SEED: that list is Ecuador's, and
+# the two systems are separate FreshPortal tenants whose customer ids
+# collide without meaning the same company.
+_KENYA_CUSTOMER_SEED: list[tuple[str, str]] = [
+    ("1", "FreshPortal"),
+    ("2", "Rose Connect"),
+    ("4", "Lynch"),
+    ("5", "Lynch WA"),
+    ("6", "Lynch USD"),
+    ("7", "Shanghai Xiaosheng Int. Trade Co. Ltd"),
+    ("8", "OBRT Valis Flora"),
+    ("9", "Gold Bridge Realty Limited"),
+    ("10", "Wah Thai Luen (H.K) Trading Co."),
+    ("11", "Betta & Cereda SRL"),
+    ("12", "Greenpacks Corporation"),
+    ("13", "Shima Trading"),
+    ("14", "YMS Co. Ltd"),
+    ("15", "Tahani International Trading Company WLL"),
+    ("16", "Flora Mondo"),
+    ("17", "Hamifleurs BV"),
+    ("18", "Holex Flower BV"),
+    ("19", "OZ-Hami BV(Lunar)"),
+    ("20", "Rose Connect BV"),
+    ("21", "Flower Direct AS"),
+    ("22", "Africa Flowers"),
+    ("23", "IP Bondarev"),
+    ("24", "Pervaya Cvetochnaia"),
+    ("25", "Fito Color"),
+    ("26", "LLC Cvetochniy Ray"),
+    ("27", "OOO \"Imperial Rose\""),
+    ("28", "Koleo i K"),
+    ("29", "Fertile Hils Trading Est"),
+    ("30", "Saad Aljadani Est"),
+    ("31", "Elfi B Ltd"),
+    ("32", "Transportgemeinschaft AG (Fairtrade)"),
+    ("33", "Transportgemeinschaft Wangen (TGW 18)"),
+    ("34", "Transportgemeinschaft Wangen (Denner01)"),
+    ("35", "Transportgemeinschaft Wangen (Floripac)"),
+    ("36", "Transportgemeinschaft Wangen (Migros)"),
+    ("37", "Transportgemeinschaft Wangen (KR Roses)"),
+    ("38", "Transportgemeinschaft Wangen (Landi02)"),
+    ("39", "Transportgemeinschaft Wangen (MA)"),
+    ("40", "Transportgemeinschaft Wangen (Migros - Non FT)"),
+    ("41", "Exotic Flora"),
+    ("42", "Exotic Flora."),
+    ("43", "Exotic Flora//"),
+    ("44", "Exotic Flora.."),
+    ("45", "Al Murooj Flowers tr"),
+    ("46", "Oleander Flowers"),
+    ("47", "Flower World LTD"),
+    ("48", "Flower World Limited"),
+    ("49", "Sunflora Ltd."),
+    ("50", "TEST"),
+    ("51", "All to All Marketing Limited"),
+    ("52", "An Corporation"),
+    ("53", "Anadolu Tarim Ã‡iÃ§ekÃ§ilik Gida Tekstil Ins. Ltd. Sti."),
+    ("54", "Aromaflor"),
+    ("55", "Ayvali Sera TarÄ±msal ÃœrÃ¼nler Ins. San Ltd. Sti."),
+    ("56", "Brighten Floriculture Ltd."),
+    ("57", "24 Flora (Beijing) Online Co. Ltd."),
+    ("58", "Completsite Angola Lda"),
+    ("59", "Ikebana Pvt Ltd"),
+    ("60", "Kawasaki Flora Auction Market Co. Ltd."),
+    ("61", "KItantzis Plants SA"),
+    ("62", "Orange Florimpex SRL."),
+    ("63", "Qatar Canadian for Nurseries & Ornamental Plants"),
+    ("64", "Rosalink B.V."),
+    ("65", "S & S Building Contractor/T.A Sannies Florist"),
+    ("66", "Shanghai Huahan Industrial Co. Ltd."),
+    ("67", "Gold Bridge Realty Limited (CEC)"),
+    ("68", "Gold Bridge Realty Limited (IC)"),
+    ("69", "Gold Bridge Realty Limited (HT)"),
+    ("70", "Florapol"),
+    ("71", "Rona Flowers"),
+    ("72", "OZ-Hami BV (DS)"),
+    ("73", "Kawasaki Flora Auction Market Co. Ltd."),
+    ("74", "Betta & Cereda s.r.l"),
+    ("75", "Greenex B.V. (FT)"),
+    ("76", "Primarosa"),
+    ("77", "Eigen invoer"),
+    ("78", "AAA Growers Limited"),
+    ("79", "Africa Blooms Limited (USD)"),
+    ("80", "Aquila Development Co. Ltd"),
+    ("81", "Bliss Flora Ltd"),
+    ("82", "Fontana Limited"),
+    ("83", "Gatoka Limited"),
+    ("84", "Golden Tulip Farms Ltd."),
+    ("85", "Harvest (FT)"),
+    ("86", "Harvest Limited"),
+    ("87", "Imani Flowers Ltd"),
+    ("88", "Isinya Roses Ltd (EUR)"),
+    ("89", "Isinya Roses Ltd (USD)"),
+    ("90", "Karen Roses Ltd"),
+    ("91", "Kimman Roses LTD"),
+    ("92", "Kisima Farm Limited"),
+    ("93", "SunBuds Kenya Ltd"),
+    ("94", "Laurel Investment Ltd (FT)"),
+    ("95", "Laurel Investments Ltd"),
+    ("96", "Lauren International Flowers Ltd"),
+    ("97", "Magana Flowers (FT)"),
+    ("98", "Magana Flowers Kenya Limited"),
+    ("99", "Mahee Flowers Ltd"),
+    ("100", "Mahee Flowers (FT)"),
+    ("101", "MAU Flora Ltd"),
+    ("102", "Milele Flowers"),
+    ("103", "Milele Flowers EUR"),
+    ("104", "Mt. Kenya Alstroemeria LTD"),
+    ("105", "Nini Limited"),
+    ("106", "Nini Ltd (FT)"),
+    ("107", "Oserian Development Co. Ltd"),
+    ("108", "Flora Ola Ltd"),
+    ("109", "Olij"),
+    ("110", "Panda Flowers Limited"),
+    ("111", "Penta Flowers"),
+    ("112", "P.J. Dave Flowers Timau Limited"),
+    ("113", "Primarosa (FT)"),
+    ("114", "Rainforest Farmlands Kenya Limited (EUR)"),
+    ("115", "Rainforest Farmlands Kenya Limited (USD)"),
+    ("116", "Red Lands Roses LTD"),
+    ("117", "Roseto Ltd"),
+    ("118", "Shades Horticulture LTD (Flower Connection)"),
+    ("119", "Shalimar Flowers Ltd"),
+    ("120", "Shalimar (FT)"),
+    ("121", "Sian Roses (Agriflora Kenya Ltd)"),
+    ("122", "Sierra Flora Ltd."),
+    ("123", "Simbi Roses Limited"),
+    ("124", "Sojanmi Springfields Limited (EUR)"),
+    ("125", "Sojanmi Springfields Limited (USD)"),
+    ("126", "Subati Flowers Limited (EUR)"),
+    ("127", "Subati Flowers Limited (USD)"),
+    ("128", "Suera Farm (USD)"),
+    ("129", "Sunland Roses Limited (EUR)"),
+    ("130", "Sunland Roses Limited (USD)"),
+    ("131", "Tambuzi Limited"),
+    ("132", "Nelion Flora ltd. (EUR)"),
+    ("133", "Nelion Flora ltd. (USD)"),
+    ("134", "Tulaga Flowers (FT)"),
+    ("135", "Tulaga Flowers Ltd."),
+    ("136", "Flower Exchange FZE"),
+    ("137", "Upendo Flowers FZE"),
+    ("138", "UTEE Estate Limited"),
+    ("139", "Valentine Growers Limited"),
+    ("140", "Van den Berg Kenya Ltd"),
+    ("141", "Van Kleef Kenya Ltd."),
+    ("142", "Waridi Farm"),
+    ("143", "Wildfire Ltd"),
+    ("144", "Windsor Flowers"),
+    ("145", "Wermort Flowers"),
+    ("146", "Xpressions Flora LTD (EUR)"),
+    ("147", "Xpressions Flora LTD (USD)"),
+    ("148", "Zena Roses Ltd"),
+    ("149", "Transebel Ltd"),
+    ("150", "GROOVE LTD"),
+    ("151", "Maji Mzuri"),
+    ("152", "Molo Greens"),
+    ("153", "PANO"),
+    ("154", "PJ Dave Flora"),
+    ("155", "Winchester Farm Ltd"),
+    ("156", "Sian  Roses (Equator Flowers Kenya)"),
+    ("157", "Sian (Maasai Flowers Ltd)"),
+    ("158", "PJ Dave Flowers"),
+    ("159", "Exotic Farm"),
+    ("160", "Blooming Africa"),
+    ("161", "James Finlays Kenya Limited"),
+    ("162", "Flora Delight Ltd"),
+    ("163", "Live Wire"),
+    ("164", "Flamingo Horticulture Kenya Limited"),
+    ("165", "Florenza Ltd."),
+    ("166", "Bilashaka Flowers Ltd FT"),
+    ("167", "Fresh From Source (IT)"),
+    ("168", "Molo River Roses"),
+    ("169", "Hortilife Horticultural Co., Ltd."),
+    ("170", "OZ Import B.V."),
+    ("171", "Shanghai FF Guan"),
+    ("172", "Sian (Maasai Flowers Ltd) FT"),
+    ("173", "Samjoon Flower"),
+    ("174", "Deivox"),
+    ("175", "OOO Flavorit"),
+    ("176", "Guangzhou Reajoy Agriculture Science and Technology Co., Ltd"),
+    ("177", "Shanghai Pengzhen Trading Co. Ltd."),
+    ("178", "Flora Group Spolka Z"),
+    ("179", "Mazowsze"),
+    ("180", "Kunming Huatonghua Ltd."),
+    ("181", "Cathay Bloom International Trade Co. LTD."),
+    ("182", "Shanghai Oheng Import & Export Co. Ltd."),
+    ("183", "Guangzhou Reajoy Agriculture Science and Technology Co., Ltd"),
+    ("184", "Dana Alabeer Trading Est."),
+    ("185", "Cathay Bloom International Trade Co. LTD."),
+    ("186", "Guangzhou Cheng Jie Import & Export Trading Co. L â‚¬"),
+    ("187", "Gold Bridge Realty Limited (RWHK)"),
+    ("188", "Greenex B.V."),
+    ("189", "Transportgemeinschaft Wangen (Manor)"),
+    ("190", "Van Dijk Flora B.V. (FT)"),
+    ("191", "Shanghai Pengzhen Trading Co. Ltd."),
+    ("192", "TESTUS"),
+    ("193", "Shanghai Oheng Import & Export Co. Ltd. (â‚¬)"),
+    ("194", "Transport to Shanghai calculation"),
+    ("195", "test343"),
+    ("196", "Transport to Beijing calculation"),
+    ("197", "Transport to Guangzhou calculation"),
+    ("198", "Guangzhou Cheng Jie Import & Export Trading Co. L $"),
+    ("199", "Alstromerija"),
+    ("200", "Test client"),
+    ("201", "Transportgemeinschaft Wangen (TGW17)"),
+    ("202", "ZNS Group Limited"),
+    ("203", "OZ Import B.V."),
+    ("204", "GUANGZHOU XIN WANG TRADE CO.,LTD"),
+    ("205", "Darissa"),
+    ("206", "Bloom B.V. (FLO-ID 4267)"),
+    ("207", "Transportgemeinschaft Wangen (TGW04)"),
+    ("208", "Transportgemeinschaft Wangen (TGW05)"),
+    ("209", "Transportgemeinschaft Wangen (TGW29)"),
+    ("210", "Holex USA Inc."),
+    ("211", "Dalberg Logistics"),
+    ("212", "IP Ovchinnikov Vyacheslav"),
+    ("213", "OZ Blossom (Shanghai) Pty Ltd."),
+    ("214", "Colour Rush B.V."),
+    ("215", "Hamifleurs BV (DS)"),
+    ("216", "SICHUAN RTO INTERNATIONAL TRADING CO.,LTD.,"),
+    ("217", "Orange Flower Connect"),
+    ("218", "Superflora B.V."),
+    ("219", "Van Dijk Flora B.V."),
+    ("220", "Shima Trading Co.Ltd."),
+    ("221", "Holex Flower Trading (Shanghai) Co., Ltd."),
+    ("222", "Wuhan ZSLogistics International Co. Ltd"),
+    ("231", "Transportgemeinschaft Wangen (TGW29) (USD)"),
+    ("236", "Transportgemeinschaft Wangen (KR Roses) USD"),
+    ("237", "Transportgemeinschaft Wangen (TGW03)"),
+    ("238", "Transportgemeinschaft Wangen (Floripac USD)"),
+    ("239", "Transportgemeinschaft Wangen (TGW17) NON FT"),
+    ("240", "Floripac Büttler AG (USD)"),
+    ("241", "Transportgemeinschaft Wangen (Denner01) USD"),
+    ("242", "Transportgemeinschaft Wangen (KR Roses) USD Fair Trade"),
+    ("243", "Guangzhou Ming Chen Trade Development Co Ltd"),
+    ("244", "P.J Dave Rising Sun (CONS)"),
+    ("245", "Green Connect B.V."),
+    ("246", "Al Burooj Traders"),
+    ("247", "Fumen(shanghai) Supply Chain Co. Ltd."),
+    ("248", "Easy Buy Internation Trading Ltd"),
+    ("249", "Bloom B.V."),
+    ("250", "JZ Flowers International Ltd"),
+    ("251", "Transportgemeinschaft Wangen (TGW15)"),
+    ("252", "Transportgemeinschaft Wangen (Migros) Fairtrade (USD)"),
+    ("253", "Go Flowers B.V."),
+    ("254", "Greenpartners B.V."),
+    ("255", "Greenflor"),
+    ("256", "Transportgemeinschaft Wangen (Migros) Fairtrade (USD) (Kopieren)"),
+    ("257", "Passion Growers LLC (USD)"),
+    ("258", "Transportgemeinschaft 20 Aldi AC"),
+    ("259", "ALDI SUISSE AG"),
+    ("260", "OZ-Hami BV Naaldwijk"),
+    ("261", "Lexiflor Inc."),
+    ("262", "Lexiflor Inc."),
+    ("263", "Lexiflor Inc."),
+    ("264", "Transportgemeinschaft Wangen (TGW31) Non FT AC"),
+    ("265", "Flora Export (Pty) Ltd"),
+    ("266", "Florca Westland"),
+    ("267", "Van Dijk Flora B.V. Sea Freight"),
+    ("268", "Gardenia Tradeing"),
+    ("269", "Passion Growers LLC (EUR)"),
+    ("270", "Holex Flower BV (USD)"),
+    ("271", "MY PEONY"),
+    ("272", "Flower Global Trading LLC"),
+    ("273", "Parfum Flower Company"),
+    ("274", "AMP Limited SIA"),
+    ("275", "Mori Mori Pte. Ltd"),
+    ("276", "Horti Nova D.O.E.L"),
+    ("277", "The Floral Connection B.V."),
+    ("278", "IP Baburkina Regina Rishatovna"),
+    ("279", "Coloriginz B.V."),
+    ("280", "Tambuzi Limited PFC"),
+    ("281", "Buyutat Alwurud Trading"),
+    ("282", "SIA Karsavas Nami"),
+    ("283", "LLC Flower Master"),
+    ("284", "GiFT Co. Ltd"),
+    ("285", "USA Bouquet LLC"),
+    ("286", "Shanghai Youxin International Trade Co., Ltd"),
+    ("287", "Fresh From Source Miami"),
+    ("288", "The Floral Connection B.V. FT"),
+    ("289", "Wuhan Zhongshi Trade Co., Ltd"),
+    ("290", "Transportgemeinschaft Wangen (TGW99)"),
+    ("291", "Chengdu Yuchuan Landscape Engineering CO., LTD."),
+    ("292", "Cathay Bloom International Trade Co., Ltd (Mingflower)"),
+    ("293", "Shanghai Pengzhen Trading Co., Ltd (Mingflower)"),
+    ("294", "Wuhan Zhongshi International Co., Ltd (Mingflower)"),
+    ("295", "Fumen (Shanghai) Supply Chain Co., Ltd (Mingflower)"),
+    ("296", "Wuhan Zhongshi Trade Co., Ltd (Mingflower)"),
+    ("297", "Fumen (Shanghai) Supply Chain Co., Ltd (Reajoy)"),
+    ("298", "Fumen (Shanghai) Supply Chain Co., Ltd (Easy Buy)"),
+    ("299", "Guangdong Xiandaijinsui Seed Co., Ltd (Youxin)"),
+    ("300", "Transport to Amsterdam calculation"),
+    ("301", "Transport to Hong Kong"),
+    ("302", "Transport to Kuwait"),
+    ("303", "Transport to Saudi Arabia Calculation"),
+    ("304", "Prullenbak China Project"),
+    ("305", "Wafex"),
+    ("306", "Waterdrinker B.V."),
+    ("307", "Transportgemeinschaft Wangen (TGW13)"),
+    ("308", "Transport to TGW calculation"),
+    ("309", "Transport to TGW calculation (FT)"),
+    ("310", "UnifloSA (pty) LTD."),
+    ("311", "Hortilife Uniqlo"),
+    ("312", "FreshFromSource China Reajoy Co.Ltd"),
+    ("313", "e-Flora"),
+    ("314", "Van Dijk Flora B.V. (Biedronka)"),
+    ("315", "Fresh From Source NL"),
+    ("316", "Africa Blooms Limited (EUR)"),
+    ("317", "Africalla Kenya LTD"),
+    ("318", "Batian Flowers LTD"),
+    ("319", "Black Tulip Flowers Limited"),
+    ("320", "Bloom Valley Limited"),
+    ("321", "Bohemian Flowers"),
+    ("322", "Cenacle Kenya Ltd"),
+    ("323", "Credible Blooms Limited"),
+    ("324", "Enkasiti Flower Growers"),
+    ("325", "Everflora Ltd."),
+    ("326", "Fresh Exchange (PFC Uhuru)"),
+    ("327", "Freshgold Kenya Limited"),
+    ("328", "Hanna Roses Ltd."),
+    ("329", "Kenflora Limited"),
+    ("330", "Kensalt Limited"),
+    ("331", "Mount Kenya Sprouts Ltd."),
+    ("332", "Packed at Source (PASA)"),
+    ("333", "PANOCAL INTERNATIONAL LT"),
+    ("334", "Precise Flowers LTD."),
+    ("335", "Sian Roses"),
+    ("336", "Sunrosa"),
+    ("337", "Zeeflora Ltd"),
+    ("338", "Transportgemeinschaft Wangen (TGW 07)"),
+    ("339", "Credit Fair Trade Calculations"),
+    ("340", "OZ-Hami BV"),
+    ("341", "Platina Bloom Trading"),
+    ("342", "Transport to Qatar"),
+    ("343", "Transport to Lebanon"),
+    ("344", "Ivy Lane Floral Design"),
+    ("345", "Coloriginz B.V. Sea Freight"),
+    ("346", "Van Dijk Flora B.V. (Biedronka) SEA"),
+    ("347", "Africalla Kenya LTD (CONS)"),
+    ("348", "Rosebunk International ltd. (CONS)"),
+    ("349", "My Peony B.V. - Nathe Enterprises ltd. (CONS)"),
+    ("350", "Sand Pro Growers (CONS)"),
+    ("351", "Waterdrinker B.V. SEA"),
+    ("352", "Coloriginz B.V. Sea Freight FT"),
+    ("353", "Coloriginz B.V. FT"),
+    ("354", "The Floral Connection (Aldi)"),
+    ("355", "The Floral Connection (Kaufland)"),
+    ("356", "Bloompost B.V."),
+    ("357", "El Floral Enterprise"),
+    ("358", "Coloriginz B.V. (surcharge)"),
+    ("359", "Waste bin"),
+    ("360", "Coloriginz B.V. FT (surcharge)"),
+    ("361", "Waterdrinker B.V. (Stokrotka)"),
+    ("362", "Waterdrinker B.V. (Auchan)"),
+    ("363", "Coloriginz - Sandpro (CONS)"),
+    ("364", "Coloriginz - Ole Engai (CONS)"),
+    ("365", "OZ-Hami SEA"),
+    ("366", "TEST COL"),
+    ("367", "Coloriginz - Imani (CONS)"),
+    ("368", "Van Dijk Flora B.V. Sea Freight (Nini)"),
+    ("369", "Van Dijk Flora B.V. Sea Freight (Airflo)"),
+    ("371", "Van Dijk Flora B.V. (Biedronka NL)"),
+    ("372", "Van Dijk Flora B.V. (Biedronka Sea Nini)"),
+    ("373", "Van Dijk Flora B.V. (Biedronka Sea Airflo)"),
+]
+
+
 def ensure_kenya_box_weight_tables() -> None:
     with _conn() as conn:
         with conn.cursor() as cur:
@@ -3704,6 +4074,19 @@ def ensure_kenya_box_weight_tables() -> None:
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS kenya_box_weight_log_checked_idx "
                         "ON kenya_box_weight_log(checked_at DESC)")
+            # Backfill the customer list. Not gated on the table being empty:
+            # the module wrote rows of its own before this list existed, so an
+            # empty-only check would have left the table holding one customer
+            # forever. DO NOTHING means an admin's ticks and any name already
+            # stored survive, and once every seed row is present the count
+            # check stops this from running on each call.
+            cur.execute("SELECT COUNT(*) FROM kenya_box_weight_customers")
+            if cur.fetchone()[0] < len(_KENYA_CUSTOMER_SEED):
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO kenya_box_weight_customers (customer_id, label, enabled)
+                    VALUES %s
+                    ON CONFLICT (customer_id) DO NOTHING
+                """, [(cid, name, False) for cid, name in _KENYA_CUSTOMER_SEED])
         conn.commit()
 
 
@@ -3740,25 +4123,48 @@ def set_kenya_box_weight_customer(customer_id: str, enabled: bool, label: str | 
         conn.commit()
 
 
-def get_kenya_box_weight_log(invoice_ids: list[str] | None = None, limit: int = 200) -> list[dict]:
-    """Whole log, or just the given invoices when checking what to redo."""
+def get_kenya_box_weight_log(invoice_ids: list[str]) -> list[dict]:
+    """Prior results for specific invoices — what a run compares against to
+    decide whether an invoice needs redoing. Browsing the whole log is
+    get_kenya_box_weight_history()."""
+    if not invoice_ids:
+        return []
     try:
         ensure_kenya_box_weight_tables()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                if invoice_ids:
-                    cur.execute("""
-                        SELECT * FROM kenya_box_weight_log WHERE invoice_id = ANY(%s)
-                    """, ([str(i) for i in invoice_ids],))
-                else:
-                    cur.execute("""
-                        SELECT * FROM kenya_box_weight_log
-                        ORDER BY checked_at DESC LIMIT %s
-                    """, (limit,))
+                cur.execute("""
+                    SELECT * FROM kenya_box_weight_log WHERE invoice_id = ANY(%s)
+                """, ([str(i) for i in invoice_ids],))
                 return [dict(r) for r in cur.fetchall()]
     except Exception as exc:
         logger.warning("get_kenya_box_weight_log: %s", exc)
         return []
+
+
+def get_kenya_box_weight_history(limit: int = 25, offset: int = 0) -> tuple[list[dict], bool]:
+    """Paginated view of the same log, for the History module.
+
+    Returns (rows, has_more). One row per invoice rather than per run: the
+    log is keyed by invoice_id and overwritten on each re-run, so this is
+    "current state of every invoice we have touched", not an append-only
+    audit trail. `checked_at` is when that state was last established."""
+    try:
+        ensure_kenya_box_weight_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # One extra row is the has-more probe, same trick as the
+                # other history endpoints use.
+                cur.execute("""
+                    SELECT * FROM kenya_box_weight_log
+                    ORDER BY checked_at DESC NULLS LAST
+                    LIMIT %s OFFSET %s
+                """, (limit + 1, offset))
+                rows = [dict(r) for r in cur.fetchall()]
+        return rows[:limit], len(rows) > limit
+    except Exception as exc:
+        logger.warning("get_kenya_box_weight_history: %s", exc)
+        return [], False
 
 
 def record_kenya_box_weight(entry: dict) -> None:

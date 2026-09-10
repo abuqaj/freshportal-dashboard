@@ -49,7 +49,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
                get_bi_customers_for_picker,
                get_kenya_box_weight_customers, set_kenya_box_weight_customer,
-               get_kenya_box_weight_log,
+               get_kenya_box_weight_history,
                get_bi_sales_by_supplier, get_bi_sales_by_product, get_bi_sales_overview,
                get_bi_top_products_for_supplier,
                get_bi_price_trend_by_length, get_bi_price_vs_length, get_bi_price_elasticity,
@@ -1056,11 +1056,16 @@ def kenya_box_weight_set_customer(
 
 @app.get("/kenya/box-weight/log")
 def kenya_box_weight_log(
-    limit: int = 200,
+    limit: int = 25,
+    offset: int = 0,
     _: dict = Depends(require_permission("admin:manage")),
 ):
-    """What the module did to each invoice, most recent first."""
-    return {"log": get_kenya_box_weight_log(limit=limit)}
+    """What the module did to each invoice, most recently touched first.
+
+    Paginated like the other history sources so the History module can page
+    through it the same way."""
+    rows, has_more = get_kenya_box_weight_history(limit=limit, offset=offset)
+    return {"log": rows, "hasMore": has_more}
 
 
 @app.post("/kenya/box-weight/run")

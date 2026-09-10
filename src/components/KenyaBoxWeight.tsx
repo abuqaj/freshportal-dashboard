@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Lang, translations } from "@/lib/i18n";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
@@ -11,7 +11,6 @@ interface CustomerRow {
   customer_id: string;
   label: string | null;
   enabled: boolean;
-  open_invoices?: number;
 }
 
 interface ProcessedRow {
@@ -55,6 +54,51 @@ const STATUS_STYLE: Record<string, string> = {
   failed:  "bg-red-500/10 text-red-600",
 };
 
+/** Cartoon figure reaching for the button, as a nod to the desk-button meme
+ *  the design was asked for. Purely decorative: aria-hidden, and nothing here
+ *  is interactive — the button next to it is the only control.
+ *
+ *  The arm is its own group so it can swing from the shoulder. Rotating it
+ *  needs an explicit transform-box: without it the transform-origin below is
+ *  resolved against the SVG viewport rather than the group's own box, and
+ *  the arm swings from somewhere off in the corner. */
+function DeskFigure({ armDown }: { armDown: boolean }) {
+  return (
+    <svg viewBox="0 0 140 230" aria-hidden="true"
+         className="hidden sm:block w-28 lg:w-36 shrink-0 self-end -mr-2 lg:-mr-4 pointer-events-none">
+      {/* legs + suit */}
+      <path d="M44 228V150h46v78" fill="#232B3E" />
+      <path d="M40 152c0-34 8-56 27-62l14 2c19 6 27 28 27 62z" fill="#2B3450" />
+      {/* shirt + tie */}
+      <path d="M60 92h20l-4 26-6 8-6-8z" fill="#F4F6FA" />
+      <path d="M70 100l7 6-5 34-2 6-2-6-5-34z" fill="#C8102E" />
+      {/* neck + head */}
+      <rect x="61" y="76" width="18" height="18" rx="6" fill="#E8B08A" />
+      <ellipse cx="70" cy="52" rx="27" ry="31" fill="#F2BE96" />
+      {/* hair: the swoosh */}
+      <path d="M43 40c2-18 16-27 28-27s26 8 27 22c-6-6-14-8-22-6-10 3-19 9-25 17-3 4-6 1-8-6z" fill="#E9CE7A" />
+      {/* face */}
+      <ellipse cx="60" cy="52" rx="2.6" ry="3.2" fill="#2B2B2B" />
+      <ellipse cx="80" cy="52" rx="2.6" ry="3.2" fill="#2B2B2B" />
+      <path d="M62 68q8 5 16 0" stroke="#8A4A3C" strokeWidth="2.6" fill="none" strokeLinecap="round" />
+
+      {/* the pointing arm */}
+      <g
+        style={{
+          transformBox: "fill-box",
+          transformOrigin: "8% 20%",
+          transform: `rotate(${armDown ? 26 : -4}deg)`,
+          transition: "transform 260ms cubic-bezier(.34,1.4,.64,1)",
+        }}
+      >
+        <path d="M96 108c14 2 28 6 38 12" stroke="#2B3450" strokeWidth="17"
+              fill="none" strokeLinecap="round" />
+        <circle cx="136" cy="121" r="10" fill="#F2BE96" />
+      </g>
+    </svg>
+  );
+}
+
 function fmt(value: string | number | null | undefined, suffix = ""): string {
   if (value === null || value === undefined || value === "") return "—";
   const n = typeof value === "number" ? value : Number(value);
@@ -70,7 +114,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
   const [log, setLog] = useState<LogRow[] | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [limit, setLimit] = useState("1");
+  const [pressed, setPressed] = useState(false);
 
   function logCall(entry: CallEntry) {
     setCalls(c => [entry, ...c].slice(0, 50));
@@ -111,25 +155,19 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
     }
   }
 
-  async function loadCustomers(includeOpen: boolean) {
-    setBusy(includeOpen ? t.busyPullingCustomers : t.busyLoading);
+  async function loadCustomers() {
+    setBusy(t.busyLoading);
     setError("");
     const data = await call<{ customers: CustomerRow[] }>(
-      "GET", `/kenya/box-weight/customers?include_open=${includeOpen}`,
-      undefined, d => t.callGotCustomers(String(d.customers.length)));
-    if (data) setCustomers(data.customers);
+      "GET", "/kenya/box-weight/customers", undefined,
+      d => t.callGotCustomers(String(d.customers.filter(c => c.enabled).length)));
+    if (data) setCustomers(data.customers.filter(c => c.enabled));
     setBusy("");
   }
 
-  async function toggleCustomer(row: CustomerRow, enabled: boolean) {
-    setError("");
-    // Optimistic: the checkbox is the only thing that changes, and a failed
-    // POST surfaces in the call log and the error banner below.
-    setCustomers(cs => (cs ?? []).map(c =>
-      c.customer_id === row.customer_id ? { ...c, enabled } : c));
-    await call("POST", "/kenya/box-weight/customers",
-      { customer_id: row.customer_id, enabled }, () => t.callToggled(row.customer_id, String(enabled)));
-  }
+  // Which customers are in scope is an admin setting, not a per-run choice,
+  // so it is only read here — the list is edited in Admin > Customers > Kenya.
+  useEffect(() => { loadCustomers(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
   async function runDebugPull() {
     setBusy(t.busyDebug);
@@ -144,13 +182,14 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
   }
 
   async function runCorrection() {
-    const n = limit.trim();
     setBusy(t.busyRunning);
     setError("");
     setProcessed(null);
-    const qs = n && Number(n) > 0 ? `?limit=${Number(n)}` : "";
+    // No limit: the button says it corrects the available invoices, so it
+    // corrects all of them. The backend still skips anything already done
+    // with an unchanged weight and box count, so pressing it twice is cheap.
     const data = await call<{ processed: ProcessedRow[]; skipped: { invoice_id: string; reason: string }[] }>(
-      "POST", `/kenya/box-weight/run${qs}`, undefined,
+      "POST", "/kenya/box-weight/run", undefined,
       d => t.callRunSummary(
         String(d.processed.filter(p => p.status === "ok").length),
         String(d.processed.length)));
@@ -166,74 +205,67 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
     if (data) setLog(data.log);
   }
 
-  const enabledCount = (customers ?? []).filter(c => c.enabled).length;
+  const enabledCount = customers?.length ?? 0;
+  const customerNames = (customers ?? []).map(c => c.label || c.customer_id);
+  const running = busy === t.busyRunning;
+  // The hand stays down for the whole run, not just the press, so the figure
+  // reads as "holding it down while it works" rather than twitching once.
+  const armDown = pressed || running;
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="rounded-2xl border border-border p-4 flex flex-col gap-2">
-        <p className="text-sm font-semibold text-ink">{t.title}</p>
-        <p className="text-xs text-ink-3 max-w-3xl">{t.intro}</p>
-        <p className="text-xs text-amber-600 max-w-3xl">{t.writeWarning}</p>
-      </div>
-
-      {/* ── Customers ─────────────────────────────────────────────────── */}
-      <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div>
-            <p className="text-sm font-semibold text-ink">{t.customersTitle}</p>
-            <p className="text-xs text-ink-3">{t.customersHint}</p>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={() => loadCustomers(false)} disabled={!!busy}
-              className={`${CTRL} disabled:opacity-50`}>{t.btnLoadSaved}</button>
-            <button onClick={() => loadCustomers(true)} disabled={!!busy}
-              className={`${CTRL} disabled:opacity-50`}>{t.btnDiscover}</button>
-          </div>
-        </div>
-
-        {customers === null ? (
-          <p className="text-xs text-ink-3">{t.customersEmpty}</p>
-        ) : customers.length === 0 ? (
-          <p className="text-xs text-ink-3">{t.customersNone}</p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {customers.map(c => (
-              <label key={c.customer_id}
-                className="flex items-center gap-2 text-xs border border-border rounded-lg px-3 h-9 cursor-pointer">
-                <input type="checkbox" checked={c.enabled}
-                  onChange={e => toggleCustomer(c, e.target.checked)} />
-                <span className="text-ink">{c.label || c.customer_id}</span>
-                {c.open_invoices !== undefined && (
-                  <span className="text-ink-3">({t.openInvoices(String(c.open_invoices))})</span>
-                )}
-              </label>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ── Run ───────────────────────────────────────────────────────── */}
-      <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
-        <div className="flex items-end gap-3 flex-wrap">
-          <div>
-            <label className="block text-[11px] text-ink-3 mb-1">{t.limitLabel}</label>
-            <input value={limit} onChange={e => setLimit(e.target.value)}
-              inputMode="numeric" className={`${CTRL} w-28`} placeholder={t.limitAll} />
-          </div>
+      {/* ── The one control ───────────────────────────────────────────────
+          Everything else on this screen reports; this is the only thing that
+          acts. The customers whose invoices will be touched are printed on
+          the button itself rather than in a panel above it, so the scope of
+          the action cannot be read separately from the action. */}
+      <div className="rounded-2xl border border-border py-12 px-6 flex flex-col items-center gap-5">
+        <div className="flex items-end justify-center gap-0 w-full max-w-2xl">
+        <DeskFigure armDown={armDown} />
+        {/* Bezel — the housing the button sits in. Depth is drawn with
+            stacked box-shadows rather than a bottom border: a border cannot
+            animate its own collapse, and the travel has to look like the cap
+            descending into the housing, not the whole control shrinking.
+            Alpha is written as 8-digit hex because Tailwind arbitrary values
+            cannot carry the commas inside rgba(). */}
+        <div className="flex-1 min-w-0 max-w-lg rounded-[2.75rem] p-4
+                        bg-gradient-to-b from-[#3A3A40] to-[#131316]
+                        shadow-[0_24px_48px_-16px_#00000099] ring-1 ring-black/50">
           <button
             onClick={runCorrection}
+            onPointerDown={() => setPressed(true)}
+            onPointerUp={() => setPressed(false)}
+            onPointerLeave={() => setPressed(false)}
             disabled={!!busy || enabledCount === 0}
-            className="h-9 px-4 rounded-lg text-sm font-medium bg-emerald text-white disabled:opacity-50 transition-colors"
+            className={`w-full rounded-[2rem] px-8 py-10 flex flex-col items-center gap-3 select-none
+                        text-white bg-gradient-to-b from-[#E8483A] to-[#A31710]
+                        shadow-[inset_0_3px_0_0_#ffffff59,inset_0_-2px_0_0_#00000040,0_10px_0_0_#7A0F0A,0_18px_26px_-8px_#000000a6]
+                        transition-[transform,box-shadow] duration-75 ease-out
+                        hover:from-[#F2523F] hover:to-[#B31A12]
+                        active:translate-y-[9px]
+                        active:shadow-[inset_0_2px_0_0_#ffffff33,inset_0_-1px_0_0_#00000040,0_1px_0_0_#7A0F0A,0_4px_8px_-4px_#000000a6]
+                        focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/40
+                        disabled:active:translate-y-0
+                        disabled:active:shadow-[inset_0_3px_0_0_#ffffff59,inset_0_-2px_0_0_#00000040,0_10px_0_0_#7A0F0A,0_18px_26px_-8px_#000000a6]
+                        ${running
+                          ? "animate-pulse cursor-wait"
+                          : "disabled:opacity-40 disabled:cursor-not-allowed"}`}
           >
-            {busy === t.busyRunning ? t.btnRunning : t.btnRun}
+            <span className="text-2xl sm:text-3xl font-extrabold uppercase tracking-wide text-center drop-shadow-[0_2px_2px_#00000066]">
+              {running ? t.btnRunning : t.btnRun}
+            </span>
+            <span className="text-xs text-white/70 uppercase tracking-widest">{t.forCustomers}</span>
+            <span className="text-sm font-semibold text-center leading-snug">
+              {enabledCount === 0 ? t.customersNone : customerNames.join(" · ")}
+            </span>
           </button>
-          <button onClick={runDebugPull} disabled={!!busy}
-            className={`${CTRL} disabled:opacity-50`}>{t.btnDebug}</button>
-          <button onClick={loadLog} disabled={!!busy}
-            className={`${CTRL} disabled:opacity-50`}>{t.btnLoadLog}</button>
         </div>
-        {enabledCount === 0 && <p className="text-xs text-ink-3">{t.needCustomer}</p>}
-        {!!busy && <p className="text-xs text-ink-3">{busy}</p>}
+        </div>
+
+        {enabledCount === 0 && (
+          <p className="text-xs text-ink-3 text-center max-w-md">{t.customersManagedInAdmin}</p>
+        )}
+        {running && <p className="text-xs text-ink-3">{busy}</p>}
         {!!error && <p className="text-xs text-red-600 break-all">{error}</p>}
       </div>
 
@@ -279,6 +311,25 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
           )}
         </div>
       )}
+
+      {/* ── Everything below is diagnostics, folded away by default ───────
+          The operator needs one button and the result of pressing it; the
+          call log and stored history are for working out why a run did not
+          do what was expected. */}
+      <details className="rounded-2xl border border-border">
+        <summary className="px-4 py-3 text-sm font-semibold text-ink cursor-pointer select-none">
+          {t.technicalTitle}
+        </summary>
+        <div className="px-4 pb-4 flex flex-col gap-4">
+
+      <div className="flex gap-2 flex-wrap pt-1">
+        <button onClick={runDebugPull} disabled={!!busy}
+          className={`${CTRL} disabled:opacity-50`}>{t.btnDebug}</button>
+        <button onClick={loadLog} disabled={!!busy}
+          className={`${CTRL} disabled:opacity-50`}>{t.btnLoadLog}</button>
+        <button onClick={loadCustomers} disabled={!!busy}
+          className={`${CTRL} disabled:opacity-50`}>{t.btnLoadSaved}</button>
+      </div>
 
       {/* ── Call log ──────────────────────────────────────────────────── */}
       <div className="rounded-2xl border border-border p-4 flex flex-col gap-2">
@@ -355,6 +406,9 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
           )}
         </div>
       )}
+
+        </div>
+      </details>
     </div>
   );
 }
