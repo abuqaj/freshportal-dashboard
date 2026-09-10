@@ -4077,15 +4077,22 @@ def ensure_kenya_box_weight_tables() -> None:
             # Backfill the customer list. Not gated on the table being empty:
             # the module wrote rows of its own before this list existed, so an
             # empty-only check would have left the table holding one customer
-            # forever. DO NOTHING means an admin's ticks and any name already
-            # stored survive, and once every seed row is present the count
-            # check stops this from running on each call.
+            # forever.
+            #
+            # The conflict clause fills in a MISSING name and nothing else:
+            # COALESCE keeps whatever name is already stored, and `enabled` is
+            # never touched, since an admin's ticks are the one thing this
+            # must not overwrite. A row can predate the seed — every writer
+            # calls this function first, so in practice it won't, but a row
+            # left without a name would otherwise display as a bare id
+            # forever with no way to repair it.
             cur.execute("SELECT COUNT(*) FROM kenya_box_weight_customers")
             if cur.fetchone()[0] < len(_KENYA_CUSTOMER_SEED):
                 psycopg2.extras.execute_values(cur, """
                     INSERT INTO kenya_box_weight_customers (customer_id, label, enabled)
                     VALUES %s
-                    ON CONFLICT (customer_id) DO NOTHING
+                    ON CONFLICT (customer_id) DO UPDATE SET
+                        label = COALESCE(kenya_box_weight_customers.label, EXCLUDED.label)
                 """, [(cid, name, False) for cid, name in _KENYA_CUSTOMER_SEED])
         conn.commit()
 

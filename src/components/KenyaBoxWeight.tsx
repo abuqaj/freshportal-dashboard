@@ -64,36 +64,42 @@ const STATUS_STYLE: Record<string, string> = {
  *  the arm swings from somewhere off in the corner. */
 function DeskFigure({ armDown }: { armDown: boolean }) {
   return (
-    <svg viewBox="0 0 140 230" aria-hidden="true"
-         className="hidden sm:block w-28 lg:w-36 shrink-0 self-end -mr-2 lg:-mr-4 pointer-events-none">
-      {/* legs + suit */}
-      <path d="M44 228V150h46v78" fill="#232B3E" />
-      <path d="M40 152c0-34 8-56 27-62l14 2c19 6 27 28 27 62z" fill="#2B3450" />
-      {/* shirt + tie */}
-      <path d="M60 92h20l-4 26-6 8-6-8z" fill="#F4F6FA" />
-      <path d="M70 100l7 6-5 34-2 6-2-6-5-34z" fill="#C8102E" />
-      {/* neck + head */}
-      <rect x="61" y="76" width="18" height="18" rx="6" fill="#E8B08A" />
-      <ellipse cx="70" cy="52" rx="27" ry="31" fill="#F2BE96" />
-      {/* hair: the swoosh */}
-      <path d="M43 40c2-18 16-27 28-27s26 8 27 22c-6-6-14-8-22-6-10 3-19 9-25 17-3 4-6 1-8-6z" fill="#E9CE7A" />
-      {/* face */}
-      <ellipse cx="60" cy="52" rx="2.6" ry="3.2" fill="#2B2B2B" />
-      <ellipse cx="80" cy="52" rx="2.6" ry="3.2" fill="#2B2B2B" />
-      <path d="M62 68q8 5 16 0" stroke="#8A4A3C" strokeWidth="2.6" fill="none" strokeLinecap="round" />
+    <svg viewBox="0 0 190 250" aria-hidden="true"
+         className="hidden sm:block w-40 lg:w-52 shrink-0 self-end -mr-10 lg:-mr-14 relative z-10 pointer-events-none">
+      {/* torso + legs */}
+      <path d="M46 250V162h52v88" fill="#1E2740" />
+      <path d="M40 164c0-38 9-60 30-67l16 2c21 7 30 27 30 65z" fill="#28324F" />
+      {/* shirt + the long red tie */}
+      <path d="M62 96h22l-5 28-6 9-6-9z" fill="#F5F7FB" />
+      <path d="M73 104l8 7-6 40-2 8-2-8-6-40z" fill="#C8102E" />
+      {/* neck + head — ruddier than a neutral skin tone, per the reference */}
+      <rect x="63" y="80" width="20" height="20" rx="7" fill="#D98A63" />
+      <ellipse cx="73" cy="54" rx="28" ry="32" fill="#E89A72" />
+      {/* blonde swoosh */}
+      <path d="M45 42c2-19 17-29 30-29s27 9 28 23c-6-7-15-9-23-7-11 3-20 10-27 18-3 4-7 1-8-5z" fill="#EBCF7B" />
+      {/* stern face: brows angled in, mouth flat and slightly down */}
+      <path d="M58 44l12 4M88 44l-12 4" stroke="#7A5230" strokeWidth="3" strokeLinecap="round" />
+      <ellipse cx="63" cy="55" rx="2.7" ry="3.3" fill="#24242A" />
+      <ellipse cx="83" cy="55" rx="2.7" ry="3.3" fill="#24242A" />
+      <path d="M64 73q9 -3 18 0" stroke="#8E4636" strokeWidth="3" fill="none" strokeLinecap="round" />
 
-      {/* the pointing arm */}
+      {/* Reaching arm. Its own group so it can swing from the shoulder, and
+          drawn last so the sleeve sits over the torso rather than behind it.
+          transform-box: fill-box is required — without it transform-origin
+          resolves against the SVG viewport and the arm pivots off-screen. */}
       <g
         style={{
           transformBox: "fill-box",
-          transformOrigin: "8% 20%",
-          transform: `rotate(${armDown ? 26 : -4}deg)`,
+          transformOrigin: "6% 24%",
+          transform: `rotate(${armDown ? 24 : -5}deg)`,
           transition: "transform 260ms cubic-bezier(.34,1.4,.64,1)",
         }}
       >
-        <path d="M96 108c14 2 28 6 38 12" stroke="#2B3450" strokeWidth="17"
-              fill="none" strokeLinecap="round" />
-        <circle cx="136" cy="121" r="10" fill="#F2BE96" />
+        <path d="M100 122h62" stroke="#28324F" strokeWidth="22" fill="none" strokeLinecap="round" />
+        <path d="M158 122h6" stroke="#F5F7FB" strokeWidth="22" fill="none" strokeLinecap="round" />
+        <circle cx="174" cy="122" r="12" fill="#E89A72" />
+        {/* the index finger, out ahead of the fist */}
+        <path d="M180 122h8" stroke="#E89A72" strokeWidth="9" fill="none" strokeLinecap="round" />
       </g>
     </svg>
   );
@@ -220,7 +226,10 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
           the button itself rather than in a panel above it, so the scope of
           the action cannot be read separately from the action. */}
       <div className="rounded-2xl border border-border py-12 px-6 flex flex-col items-center gap-5">
-        <div className="flex items-end justify-center gap-0 w-full max-w-2xl">
+        {/* items-center, not items-end: the hand sits at roughly the middle
+            of the figure's height, so centring the two puts it level with the
+            button rather than reaching up at it from below. */}
+        <div className="flex items-center justify-center w-full max-w-3xl">
         <DeskFigure armDown={armDown} />
         {/* Bezel — the housing the button sits in. Depth is drawn with
             stacked box-shadows rather than a bottom border: a border cannot
@@ -228,7 +237,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
             descending into the housing, not the whole control shrinking.
             Alpha is written as 8-digit hex because Tailwind arbitrary values
             cannot carry the commas inside rgba(). */}
-        <div className="flex-1 min-w-0 max-w-lg rounded-[2.75rem] p-4
+        <div className="shrink-0 w-[22rem] h-[22rem] rounded-full p-5 flex items-center justify-center
                         bg-gradient-to-b from-[#3A3A40] to-[#131316]
                         shadow-[0_24px_48px_-16px_#00000099] ring-1 ring-black/50">
           <button
@@ -237,7 +246,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
             onPointerUp={() => setPressed(false)}
             onPointerLeave={() => setPressed(false)}
             disabled={!!busy || enabledCount === 0}
-            className={`w-full rounded-[2rem] px-8 py-10 flex flex-col items-center gap-3 select-none
+            className={`w-full h-full rounded-full px-8 flex flex-col items-center justify-center gap-2 select-none
                         text-white bg-gradient-to-b from-[#E8483A] to-[#A31710]
                         shadow-[inset_0_3px_0_0_#ffffff59,inset_0_-2px_0_0_#00000040,0_10px_0_0_#7A0F0A,0_18px_26px_-8px_#000000a6]
                         transition-[transform,box-shadow] duration-75 ease-out
@@ -251,11 +260,13 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
                           ? "animate-pulse cursor-wait"
                           : "disabled:opacity-40 disabled:cursor-not-allowed"}`}
           >
-            <span className="text-2xl sm:text-3xl font-extrabold uppercase tracking-wide text-center drop-shadow-[0_2px_2px_#00000066]">
+            <span className="text-xl lg:text-2xl font-extrabold uppercase tracking-wide text-center leading-tight drop-shadow-[0_2px_2px_#00000066]">
               {running ? t.btnRunning : t.btnRun}
             </span>
-            <span className="text-xs text-white/70 uppercase tracking-widest">{t.forCustomers}</span>
-            <span className="text-sm font-semibold text-center leading-snug">
+            <span className="text-[10px] text-white/70 uppercase tracking-widest">{t.forCustomers}</span>
+            {/* Names, not ids — a bare number on the button tells the
+                operator nothing about whose invoices are about to change. */}
+            <span className="text-xs font-semibold text-center leading-snug max-h-20 overflow-y-auto px-2">
               {enabledCount === 0 ? t.customersNone : customerNames.join(" · ")}
             </span>
           </button>

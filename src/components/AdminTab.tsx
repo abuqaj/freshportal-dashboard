@@ -892,8 +892,11 @@ function CustomersTable() {
       const [url, body] = system === "ecuador"
         ? [`${RAILWAY}/dfg-customers/set-flag`,
            { customer_id: row.id, used_in_delivery_import: checked }]
+        // No label: names come from the seeded list, and row.name falls back
+        // to the raw id when one is missing — sending that would store "1"
+        // as the customer's name and make it permanent.
         : [`${RAILWAY}/kenya/box-weight/customers`,
-           { customer_id: row.id, enabled: checked, label: row.name }]
+           { customer_id: row.id, enabled: checked }]
       await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
