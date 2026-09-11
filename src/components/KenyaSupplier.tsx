@@ -36,7 +36,10 @@ interface ExtractResult {
 interface CreateResult {
   supplier_id: string;
   supplier_url: string;
+  /** The code that actually went in — not always the one that was asked for. */
   supplier_code: string;
+  requested_code: string;
+  codes_tried: string[];
   company_name: string;
   filled_fields: string[];
   skipped_fields: string[];
@@ -287,6 +290,11 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
             {t.createdId}: <span className="font-mono text-ink">#{created.supplier_id}</span>
             {" · "}{t.mapCurrency}: {created.currency_detail}
           </p>
+          {created.supplier_code !== created.requested_code && (
+            <p className="text-xs text-amber-600">
+              {t.codeTaken(created.requested_code, created.supplier_code)}
+            </p>
+          )}
           {created.skipped_fields.length > 0 && (
             <p className="text-xs text-amber-600">
               {t.createdSkipped(created.skipped_fields.join(", "))}

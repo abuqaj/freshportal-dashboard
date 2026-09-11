@@ -239,6 +239,69 @@ _FORM_FIELDS = {
 _SUP_ID_RE = re.compile(r"/SUP_ID/(\d+)")
 
 
+# What the portal says when a supplier code is taken. Confirmed against the
+# live Kenya form 2026-09-11: "Deze leveranciers code bestaat al". Matched on
+# a lowercased substring so casing, the leading "x" of the dismiss control and
+# any surrounding markup do not matter. The English phrasing is included
+# because the portal's language follows the account, not the system.
+_DUPLICATE_CODE_MARKERS = ("code bestaat al", "code already exists")
+
+
+class DuplicateSupplierCode(Exception):
+    """The portal refused the save because the code is already in use.
+
+    Raised only when every candidate code was rejected - the normal case
+    is handled by retrying, not by surfacing this. `suggestions` then holds
+    what was actually tried, so the message can say so.
+    """
+
+    def __init__(self, code: str, suggestions: list[str]):
+        super().__init__(f"Supplier code {code} is already in use")
+        self.code = code
+        self.suggestions = suggestions
+
+
+def suggest_codes(company: str | None, taken: str | None = None, limit: int = 6) -> list[str]:
+    """Alternative 4-7 letter codes derived from the company name.
+
+    Deterministic and ordered from most to least recognisable. Words like
+    "Ltd" are dropped first: a code built out of the legal suffix tells a
+    human nothing about which supplier it is.
+    """
+    noise = {"ltd", "limited", "plc", "bv", "b", "v", "inc", "llc", "co",
+             "company", "the", "and", "farms", "farm", "group", "holdings"}
+    words = [w for w in re.findall(r"[A-Za-z]+", company or "")]
+    meaningful = [w for w in words if w.lower() not in noise] or words
+    if not meaningful:
+        return []
+
+    def clean(value: str) -> str:
+        return re.sub(r"[^A-Z]", "", value.upper())
+
+    joined = clean("".join(meaningful))
+    first = clean(meaningful[0])
+    initials = clean("".join(w[0] for w in meaningful))
+
+    candidates = [
+        joined[:6], joined[:5], joined[:7], joined[:4],
+        clean(meaningful[0][:3] + (meaningful[1][:3] if len(meaningful) > 1 else "")),
+        clean("".join(w[:2] for w in meaningful)),
+        first[:5], first[:4],
+        initials + first[1:4],
+        clean("".join(w[:4] for w in meaningful[:2])),
+    ]
+
+    seen, out = set(), []
+    blocked = {(taken or "").upper()}
+    for c in candidates:
+        if 4 <= len(c) <= 7 and c not in seen and c not in blocked:
+            seen.add(c)
+            out.append(c)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _fill(page, field_id: str, value: str | None) -> bool:
     if value is None or value == "":
         return False
@@ -258,6 +321,61 @@ def _form_field_names(page) -> list[str]:
             for el in page.query_selector_all("form input, form select")
         ) if n
     ]
+
+
+def _fill_add_form(page, details: dict, code: str) -> tuple[list[str], list[str]]:
+    """Fill every field on a freshly loaded add-supplier form.
+
+    Returns (filled, skipped) where skipped are fields the document simply
+    had no value for. Each field is read back after writing: the form has
+    been seen to clear itself when one field is rejected, so "we called
+    fill()" is not evidence the value is actually in the box. A value that
+    does not read back raises rather than being saved half-complete —
+    a supplier created with silently missing details looks like a success
+    and nobody goes back to check it.
+    """
+    filled: list[str] = []
+    skipped: list[str] = []
+    mismatched: list[str] = []
+
+    for field_id, key in _FORM_FIELDS.items():
+        value = details.get(key)
+        if _fill(page, field_id, value):
+            filled.append(field_id)
+        else:
+            skipped.append(field_id)
+
+    country = page.query_selector("#country_id")
+    if country is None:
+        raise RuntimeError("Country select not found on the add-supplier form")
+    country.select_option(KENYA_COUNTRY_ID)
+
+    code_el = page.query_selector("#code")
+    if code_el is None:
+        raise RuntimeError(
+            "Supplier code field #code not found. The form has: "
+            + ", ".join(_form_field_names(page))
+        )
+    code_el.fill(code)
+    filled.append("code")
+
+    # Read everything back before submitting.
+    for field_id in filled:
+        el = page.query_selector("#" + field_id)
+        got = el.input_value() if el else None
+        want = code if field_id == "code" else str(details.get(_FORM_FIELDS[field_id]) or "")
+        if (got or "") != want:
+            mismatched.append(field_id + ": wrote " + repr(want) + ", reads " + repr(got))
+
+    country_now = page.query_selector("#country_id")
+    if not country_now or country_now.input_value() != KENYA_COUNTRY_ID:
+        mismatched.append("country_id: did not hold " + KENYA_COUNTRY_ID)
+
+    if mismatched:
+        raise RuntimeError(
+            "The form did not keep what was typed into it - not saving. " + "; ".join(mismatched)
+        )
+    return filled, skipped
 
 
 def supplier_profile_url(cfg: Config, supplier_id: str) -> str:
@@ -283,9 +401,10 @@ def _set_currency(page, cfg: Config, supplier_id: str, currency_id: str) -> tupl
         return False, "already set to " + CURRENCY_OPTIONS.get(currency_id, currency_id)
 
     select.select_option(currency_id)
-    save = (page.query_selector("button.btn-save")
-            or page.query_selector("form button[type=submit]")
-            or page.query_selector("form input[type=submit]"))
+    # Same control name as the add form, but an <input> here rather than a
+    # <button> (user, 2026-09-11) - so match on the name, not the tag.
+    save = (page.query_selector('[name="submit_supplier"]')
+            or page.query_selector("form input[type=submit], form button[type=submit]"))
     if save is None:
         return False, "currency selected but no save button found - not submitted"
     save.click()
@@ -333,46 +452,53 @@ def create_supplier(cfg: Config, details: dict, on_status=None) -> dict:
             _login(page, cfg)
 
             _s("Opening the add-supplier form...")
-            page.goto(cfg.freshportal_url + "/supplier/supplier/add",
-                      wait_until="domcontentloaded", timeout=cfg.request_timeout)
+            # Candidate codes, in order. The operator's own code goes first;
+            # the rest are only reached if the portal says it is taken.
+            candidates = [code] + [c for c in suggest_codes(company, code) if c != code]
 
-            filled, skipped = [], []
-            for field_id, key in _FORM_FIELDS.items():
-                target = filled if _fill(page, field_id, details.get(key)) else skipped
-                target.append(field_id)
+            supplier_id = None
+            filled: list[str] = []
+            skipped: list[str] = []
+            tried: list[str] = []
+            used_code = code
 
-            country = page.query_selector("#country_id")
-            if country is None:
-                raise RuntimeError("Country select not found on the add-supplier form")
-            country.select_option(KENYA_COUNTRY_ID)
+            for candidate in candidates:
+                tried.append(candidate)
+                # Reload the form for every attempt instead of editing the
+                # code in place. A rejected save can come back with other
+                # fields blanked, so anything left on the page after a failure
+                # is not to be trusted — refill from `details` every time.
+                page.goto(cfg.freshportal_url + "/supplier/supplier/add",
+                          wait_until="domcontentloaded", timeout=cfg.request_timeout)
+                filled, skipped = _fill_add_form(page, details, candidate)
 
-            code_el = page.query_selector("#code")
-            if code_el is None:
-                raise RuntimeError(
-                    "Supplier code field #code not found. The form has: "
-                    + ", ".join(_form_field_names(page))
-                )
-            code_el.fill(code)
-            filled.append("code")
+                _s("Saving " + company + " (" + candidate + ")...")
+                save = page.query_selector('button[name="submit_supplier"]')
+                if save is None:
+                    raise RuntimeError("Save button not found on the add-supplier form")
+                save.click()
+                page.wait_for_load_state("domcontentloaded", timeout=cfg.request_timeout)
 
-            _s("Saving " + company + " (" + code + ")...")
-            save = page.query_selector('button[name="submit_supplier"]')
-            if save is None:
-                raise RuntimeError("Save button not found on the add-supplier form")
-            save.click()
-            page.wait_for_load_state("domcontentloaded", timeout=cfg.request_timeout)
+                # A successful save lands on the supplier's own page; staying
+                # put means the form rejected something.
+                match = _SUP_ID_RE.search(page.url)
+                if match:
+                    supplier_id = match.group(1)
+                    used_code = candidate
+                    break
 
-            # A successful save lands on the supplier's own page; staying put
-            # means the form rejected something.
-            match = _SUP_ID_RE.search(page.url)
-            if not match:
                 errors = [e.inner_text().strip()
                           for e in page.query_selector_all(".alert, .error, .invalid-feedback")]
                 said = "; ".join(e for e in errors if e) or "(nothing)"
+                if any(m in said.lower() for m in _DUPLICATE_CODE_MARKERS):
+                    _s("Code " + candidate + " is taken, trying the next one...")
+                    continue
                 raise RuntimeError(
                     "Save did not create a supplier - still on " + page.url + ". Page says: " + said
                 )
-            supplier_id = match.group(1)
+
+            if supplier_id is None:
+                raise DuplicateSupplierCode(code, tried)
             _s("Created supplier " + supplier_id)
 
             currency_changed = False
@@ -388,7 +514,11 @@ def create_supplier(cfg: Config, details: dict, on_status=None) -> dict:
             return {
                 "supplier_id": supplier_id,
                 "supplier_url": supplier_profile_url(cfg, supplier_id),
-                "supplier_code": code,
+                # The code that actually went in, which is not necessarily the
+                # one that was asked for.
+                "supplier_code": used_code,
+                "requested_code": code,
+                "codes_tried": tried,
                 "company_name": company,
                 "filled_fields": filled,
                 "skipped_fields": skipped,

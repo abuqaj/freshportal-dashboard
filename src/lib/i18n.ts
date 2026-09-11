@@ -677,6 +677,7 @@ const en = {
     callGotLog: (n: string) => `${n} log row(s)`,
   },
   kenyaSupplier: {
+    codeTaken: (wanted: string, used: string) => `${wanted} was already in use, so the supplier was created as ${used}.`,
     btnCreate: "Create supplier in FreshPortal",
     creating: "Creating…",
     createWarning: "This creates a real supplier and cannot be undone from here.",
@@ -1376,6 +1377,7 @@ const nl: typeof en = {
     callGotLog: (n: string) => `${n} logregel(s)`,
   },
   kenyaSupplier: {
+    codeTaken: (wanted: string, used: string) => `${wanted} was al in gebruik, dus de leverancier is aangemaakt als ${used}.`,
     btnCreate: "Leverancier aanmaken in FreshPortal",
     creating: "Bezig met aanmaken…",
     createWarning: "Dit maakt een echte leverancier aan en kan hier niet ongedaan worden gemaakt.",
@@ -2075,6 +2077,7 @@ const pl: typeof en = {
     callGotLog: (n: string) => `${n} wierszy logu`,
   },
   kenyaSupplier: {
+    codeTaken: (wanted: string, used: string) => `Kod ${wanted} był już zajęty, więc dostawca powstał jako ${used}.`,
     btnCreate: "Utwórz dostawcę w FreshPortal",
     creating: "Tworzę…",
     createWarning: "To tworzy prawdziwego dostawcę i nie da się tego stąd cofnąć.",
@@ -2774,6 +2777,7 @@ const es: typeof en = {
     callGotLog: (n: string) => `${n} fila(s) de registro`,
   },
   kenyaSupplier: {
+    codeTaken: (wanted: string, used: string) => `${wanted} ya estaba en uso, así que el proveedor se creó como ${used}.`,
     btnCreate: "Crear proveedor en FreshPortal",
     creating: "Creando…",
     createWarning: "Esto crea un proveedor real y no se puede deshacer desde aquí.",

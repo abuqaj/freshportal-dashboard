@@ -61,6 +61,7 @@ from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
 from kenya_supplier import (
     extract_from_pdf as kenya_supplier_extract_pdf,
     create_supplier as kenya_supplier_create_portal,
+    DuplicateSupplierCode as KenyaDuplicateSupplierCode,
 )
 from kenya_box_weight import (
     debug_pull as kenya_debug_pull,
@@ -1141,6 +1142,10 @@ def kenya_supplier_create(
     was on screen. Blocking: one supplier, a few seconds."""
     try:
         return {"ok": True, **kenya_supplier_create_portal(get_kenya_cfg(), req.model_dump())}
+    except KenyaDuplicateSupplierCode as exc:
+        # Every candidate was taken — rare, and the only case the operator
+        # has to resolve by hand.
+        raise HTTPException(409, f"Every code tried is already in use: {', '.join(exc.suggestions)}")
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
