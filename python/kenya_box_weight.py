@@ -283,6 +283,13 @@ def _read_air_waybill_weight(page, cfg: Config, invoice_id: str) -> float | None
 # where 11.0 was the line's own prior weight).
 SETTLE_MS = 500
 
+# How far the invoice's own total may sit from the air waybill before the
+# result is treated as wrong. Some drift is expected and harmless: the
+# per-box weight is rounded to two decimals before the portal multiplies it
+# back up by the box count. 5% is the user's call (2026-09-11) - wide enough
+# to swallow that rounding, tight enough to catch a line that never landed.
+TOTAL_WEIGHT_TOLERANCE = 0.05
+
 
 def _cell_holds(page, cell_id: str, want: float | None) -> bool:
     """Whether a committed cell already shows the value we meant to write."""
@@ -311,7 +318,8 @@ def _retype_cell(page, cell_id: str, weight_text: str) -> None:
     page.wait_for_timeout(SETTLE_MS)
 
 
-def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -> tuple[int, list[str]]:
+def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str,
+                        expected_total: float | None = None) -> tuple[int, list[str]]:
     """Type down the box_weight column the way the grid expects, then verify.
 
     The column behaves like a spreadsheet: ArrowDown commits the cell being
@@ -326,6 +334,10 @@ def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -
     text back mid-edit reported None even for the cell that had just been
     written successfully. Reloading also means what is checked is what the
     server actually stored, not what the browser is showing.
+
+    `expected_total` is the air waybill weight. Once the lines are in, the
+    invoice's own total is compared against it — the one check that covers
+    the whole invoice rather than only the cells we managed to enumerate.
     """
     ids = [
         el.get_attribute("id")
@@ -368,6 +380,19 @@ def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -
     page.wait_for_timeout(SETTLE_MS + 300)
 
     page.goto(details_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
+
+    # Repair, don't just report. A cell that is still wrong after the reload
+    # gets one more attempt here before it counts as a failure — leaving it
+    # means the whole invoice comes back on the next run for the sake of one
+    # line (user, 2026-09-11).
+    repaired = []
+    for cell_id in ids:
+        if not _cell_holds(page, cell_id, want):
+            _retype_cell(page, cell_id, weight_text)
+            repaired.append(cell_id)
+    if repaired:
+        page.goto(details_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
+
     written, problems = 0, []
     for cell_id in ids:
         cell = page.query_selector(f"#{cell_id}")
@@ -376,6 +401,25 @@ def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -
             written += 1
         else:
             problems.append(f"{cell_id}: expected {weight_text}, reloaded cell reads {got!r}")
+
+    # End-to-end check on the whole invoice: the table's own total weight
+    # against the air waybill it was derived from. Every per-cell check can
+    # pass and this still fail — a line the grid never showed us, a box count
+    # that moved, a row added between reading and writing — because this
+    # multiplies by quantities we never looked at.
+    total_el = page.query_selector("#invoice_table_footer_total_weight")
+    shown_total = _cell_number(total_el.inner_text() if total_el else "")
+    if shown_total is None:
+        problems.append("could not read the invoice's total weight to cross-check")
+    elif expected_total and expected_total > 0:
+        drift = abs(shown_total - expected_total) / expected_total
+        if drift > TOTAL_WEIGHT_TOLERANCE:
+            problems.append(
+                f"invoice total is {shown_total} kg against an air waybill of "
+                f"{expected_total} kg — {drift * 100:.1f}% out, over the "
+                f"{TOTAL_WEIGHT_TOLERANCE * 100:.0f}% allowance"
+            )
+
     return written, problems
 
 
@@ -499,7 +543,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                     per_box = round(weight / boxes, WEIGHT_DECIMALS)
                     sample = page.query_selector("#invoice_table td.box_weight")
                     weight_text = _format_weight(per_box, sample.inner_text() if sample else "")
-                    written, problems = _write_line_weights(page, cfg, details_url, weight_text)
+                    written, problems = _write_line_weights(page, cfg, details_url, weight_text, weight)
 
                     result |= {
                         "total_weight": weight, "box_count": boxes, "weight_per_box": per_box,
