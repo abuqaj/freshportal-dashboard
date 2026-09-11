@@ -275,6 +275,42 @@ def _read_air_waybill_weight(page, cfg: Config, invoice_id: str) -> float | None
     return _cell_number(field.get_attribute("value") or "")
 
 
+# How long to let the grid settle after focus moves. The column commits the
+# cell being edited and opens the one below on ArrowDown, and that round trip
+# is not instant - typing into a cell whose editor has not opened yet sends
+# the keystrokes nowhere and silently leaves the original weight in place
+# (seen in the wild 2026-09-11: "expected 33.33, reloaded cell reads 11.0",
+# where 11.0 was the line's own prior weight).
+SETTLE_MS = 500
+
+
+def _cell_holds(page, cell_id: str, want: float | None) -> bool:
+    """Whether a committed cell already shows the value we meant to write."""
+    if want is None:
+        return False
+    cell = page.query_selector("#" + cell_id)
+    got = _cell_number(cell.inner_text() if cell else "")
+    return got is not None and abs(got - want) <= 0.005
+
+
+def _retype_cell(page, cell_id: str, weight_text: str) -> None:
+    """Second attempt at one cell, on its own rather than as part of the run
+    down the column.
+
+    Clicking straight at the cell avoids depending on where focus drifted to,
+    and Escape-free: the value is committed with Enter so the grid does not
+    move on and take the next cell with it."""
+    cell = page.query_selector("#" + cell_id)
+    if cell is None:
+        return
+    cell.click()
+    page.wait_for_timeout(SETTLE_MS)
+    page.keyboard.press("Control+A")
+    page.keyboard.type(weight_text)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(SETTLE_MS)
+
+
 def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -> tuple[int, list[str]]:
     """Type down the box_weight column the way the grid expects, then verify.
 
@@ -303,23 +339,35 @@ def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -
     if first is None:
         return 0, [f"{ids[0]}: cell vanished before editing"]
     first.click()
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(SETTLE_MS)
 
-    for _ in ids:
+    want = _cell_number(weight_text)
+    for idx, cell_id in enumerate(ids):
         # Select whatever the cell already holds so typing replaces it
         # rather than appending to the old weight.
         page.keyboard.press("Control+A")
         page.keyboard.type(weight_text)
         page.keyboard.press("ArrowDown")
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(SETTLE_MS)
+
+        # Check the cell we just left. Once focus has moved on it is committed
+        # and its value is back in the cell's own text, so this read is safe -
+        # unlike reading a cell that is still open for editing.
+        #
+        # This catches the failure the settle time is there to prevent: if the
+        # grid had not finished opening the editor, the keystrokes went
+        # nowhere and the cell still holds its ORIGINAL weight. That looked
+        # like a corrupted write ("expected 33.33, reads 11.0") when it was
+        # really no write at all.
+        if not _cell_holds(page, cell_id, want):
+            _retype_cell(page, cell_id, weight_text)
 
     # The last ArrowDown has no row below it to move to, so the final cell
     # may still be open; blur to force the commit before reloading.
     page.keyboard.press("Tab")
-    page.wait_for_timeout(500)
+    page.wait_for_timeout(SETTLE_MS + 300)
 
     page.goto(details_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
-    want = _cell_number(weight_text)
     written, problems = 0, []
     for cell_id in ids:
         cell = page.query_selector(f"#{cell_id}")
