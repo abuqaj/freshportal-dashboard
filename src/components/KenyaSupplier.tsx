@@ -33,6 +33,17 @@ interface ExtractResult {
   usage: { input_tokens: number; output_tokens: number };
 }
 
+interface CreateResult {
+  supplier_id: string;
+  supplier_url: string;
+  supplier_code: string;
+  company_name: string;
+  filled_fields: string[];
+  skipped_fields: string[];
+  currency_changed: boolean;
+  currency_detail: string;
+}
+
 /** Order and labelling of the review form. Keyed so a field that came back
  *  empty can be highlighted against the `missing` list the server returns. */
 const FIELDS: { key: keyof Details; labelKey: string; wide?: boolean }[] = [
@@ -58,6 +69,8 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
   const [fileName, setFileName] = useState("");
   const [result, setResult] = useState<ExtractResult | null>(null);
   const [edited, setEdited] = useState<Partial<Record<keyof Details, string>>>({});
+  const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState<CreateResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function upload(file: File) {
@@ -69,6 +82,7 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
     setError("");
     setResult(null);
     setEdited({});
+    setCreated(null);
     setFileName(file.name);
     try {
       const body = new FormData();
@@ -100,6 +114,48 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
   const d = result?.details;
   const value = (k: keyof Details) =>
     edited[k] ?? ((d?.[k] as string | null) ?? "");
+
+  const code = value("supplier_code").trim();
+  const codeValid = /^[A-Z]{4,7}$/.test(code);
+  const canCreate = !!value("company_name").trim() && codeValid && !creating && !created;
+
+  async function create() {
+    if (!d) return;
+    setCreating(true);
+    setError("");
+    try {
+      const res = await fetch(`${RAILWAY}/kenya/supplier/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          company_name: value("company_name"),
+          supplier_code: code,
+          address: value("address"),
+          postal_code: value("postal_code"),
+          city: value("city"),
+          phone: value("phone"),
+          email: value("email"),
+          vat_number: value("vat_number"),
+          coc_number: value("coc_number"),
+          // The id resolved at extraction time; the operator edits the
+          // human-readable currency, not this.
+          currency_id: d.currency_id,
+        }),
+      });
+      const text = await res.text();
+      let parsed: unknown = null;
+      try { parsed = text ? JSON.parse(text) : null; } catch { /* HTML error page */ }
+      if (!res.ok) {
+        setError((parsed as { detail?: string } | null)?.detail ?? (text.slice(0, 400) || res.statusText));
+        return;
+      }
+      setCreated(parsed as CreateResult);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -201,6 +257,54 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
           <p className="text-[11px] text-ink-3">
             {t.tokens(String(result.usage.input_tokens), String(result.usage.output_tokens))}
           </p>
+
+          {!created && (
+            <div className="flex items-center gap-3 flex-wrap border-t border-border pt-4">
+              <button
+                onClick={create}
+                disabled={!canCreate}
+                className="h-10 px-5 rounded-lg text-sm font-semibold bg-emerald text-white
+                           disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {creating ? t.creating : t.btnCreate}
+              </button>
+              {!codeValid && (
+                <span className="text-xs text-amber-600">{t.codeInvalid}</span>
+              )}
+              <span className="text-xs text-ink-3">{t.createWarning}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Created ───────────────────────────────────────────────────── */}
+      {created && (
+        <div className="rounded-2xl border border-emerald/40 bg-emerald/5 p-4 flex flex-col gap-3">
+          <p className="text-sm font-semibold text-emerald">
+            {t.createdTitle(created.company_name, created.supplier_code)}
+          </p>
+          <p className="text-xs text-ink-3">
+            {t.createdId}: <span className="font-mono text-ink">#{created.supplier_id}</span>
+            {" · "}{t.mapCurrency}: {created.currency_detail}
+          </p>
+          {created.skipped_fields.length > 0 && (
+            <p className="text-xs text-amber-600">
+              {t.createdSkipped(created.skipped_fields.join(", "))}
+            </p>
+          )}
+          <a
+            href={created.supplier_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="h-10 px-5 rounded-lg text-sm font-semibold bg-emerald text-white
+                       inline-flex items-center gap-2 self-start transition-colors hover:opacity-90"
+          >
+            {t.openProfile}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path d="M14 4h6v6M20 4l-9 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+          </a>
         </div>
       )}
     </div>

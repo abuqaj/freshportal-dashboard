@@ -58,7 +58,10 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
-from kenya_supplier import extract_from_pdf as kenya_supplier_extract_pdf
+from kenya_supplier import (
+    extract_from_pdf as kenya_supplier_extract_pdf,
+    create_supplier as kenya_supplier_create_portal,
+)
 from kenya_box_weight import (
     debug_pull as kenya_debug_pull,
     open_invoice_customers as kenya_open_invoice_customers,
@@ -1109,6 +1112,40 @@ async def kenya_supplier_extract(
     except Exception as exc:
         log.exception("Kenya supplier extraction failed")
         raise HTTPException(502, f"Extraction failed: {exc}")
+
+
+class KenyaSupplierCreate(BaseModel):
+    company_name: str
+    supplier_code: str
+    address: str | None = None
+    postal_code: str | None = None
+    city: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    vat_number: str | None = None
+    coc_number: str | None = None
+    # Resolved from the document by /extract, but sent back by the client so
+    # the operator's correction wins over whatever the model read.
+    currency_id: str | None = None
+
+
+@app.post("/kenya/supplier/create")
+def kenya_supplier_create(
+    req: KenyaSupplierCreate,
+    _: dict = Depends(require_any_permission("admin:manage", "supplier:add")),
+):
+    """Create the supplier in FreshPortal from the reviewed values.
+
+    WRITES — this creates a real supplier. Takes the values the operator
+    confirmed rather than re-reading the PDF, so what gets created is what
+    was on screen. Blocking: one supplier, a few seconds."""
+    try:
+        return {"ok": True, **kenya_supplier_create_portal(get_kenya_cfg(), req.model_dump())}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.exception("Kenya supplier creation failed")
+        raise HTTPException(502, f"Supplier creation failed: {exc}")
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:

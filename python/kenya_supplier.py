@@ -5,12 +5,14 @@ The document always has the same layout; only the values change.
 
 Pipeline:
   1. Read the PDF with Claude and extract the fields the portal needs.
-  2. (later) Log in and fill /supplier/supplier/add, save, then set the
-     invoice currency on the supplier's international settings page.
+  2. A human checks and corrects those values on screen.
+  3. Log in, fill /supplier/supplier/add, save, read the new SUP_ID off the
+     URL, and set the invoice currency on the supplier's international
+     settings page when it differs from the portal's Euro default.
 
-Only step 1 exists so far — the point of stopping here is that the whole
-thing is worthless if the extraction is wrong, and that is cheap to check
-by eye before any of it is written into the portal.
+Step 2 is not optional and is why extraction and creation are two separate
+calls rather than one: creating a supplier is not reversible from here, so
+nothing reaches the portal that a person has not looked at.
 
 The PDF is sent to the model as a document block rather than being run
 through an OCR library first: these are scans, and Claude reads the page
@@ -218,3 +220,181 @@ def extract_from_pdf(cfg: Config, pdf_bytes: bytes, filename: str = "") -> dict:
             "output_tokens": response.usage.output_tokens,
         },
     }
+
+
+# The add-supplier form, field id -> key in the extracted details. Every id
+# here was confirmed against the live Kenya form; `code` is the supplier code
+# input (user, 2026-09-11).
+_FORM_FIELDS = {
+    "company_name": "company_name",
+    "address": "address",
+    "postal": "postal_code",
+    "city": "city",
+    "phone": "phone",
+    "email": "email",
+    "vat_number": "vat_number",
+    "coc_number": "coc_number",
+}
+
+_SUP_ID_RE = re.compile(r"/SUP_ID/(\d+)")
+
+
+def _fill(page, field_id: str, value: str | None) -> bool:
+    if value is None or value == "":
+        return False
+    el = page.query_selector("#" + field_id)
+    if el is None:
+        return False
+    el.fill(str(value))
+    return True
+
+
+def _form_field_names(page) -> list[str]:
+    """Every named input/select on the page - the diagnostic to print when an
+    expected field is not where we thought it was."""
+    return [
+        n for n in (
+            el.get_attribute("name")
+            for el in page.query_selector_all("form input, form select")
+        ) if n
+    ]
+
+
+def supplier_profile_url(cfg: Config, supplier_id: str) -> str:
+    return cfg.freshportal_url + "/supplier/supplier/index/SUP_ID/" + supplier_id + "/"
+
+
+def _set_currency(page, cfg: Config, supplier_id: str, currency_id: str) -> tuple[bool, str]:
+    """Set the invoice currency on the supplier's international settings.
+
+    Returns (changed, detail). Reads the select before touching it: when the
+    portal already holds the wanted currency there is nothing to submit, and
+    pressing save anyway is a pointless write to a page we only half know.
+    """
+    url = cfg.freshportal_url + "/supplier/international_setting/index/SUP_ID/" + supplier_id + "/"
+    page.goto(url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
+
+    select = page.query_selector("#currency_id")
+    if select is None:
+        return False, "currency select not found on the international settings page"
+
+    current = select.input_value()
+    if current == currency_id:
+        return False, "already set to " + CURRENCY_OPTIONS.get(currency_id, currency_id)
+
+    select.select_option(currency_id)
+    save = (page.query_selector("button.btn-save")
+            or page.query_selector("form button[type=submit]")
+            or page.query_selector("form input[type=submit]"))
+    if save is None:
+        return False, "currency selected but no save button found - not submitted"
+    save.click()
+    page.wait_for_load_state("domcontentloaded", timeout=cfg.request_timeout)
+
+    # Re-read rather than trust the click.
+    again = page.query_selector("#currency_id")
+    now = again.input_value() if again else None
+    if now != currency_id:
+        return False, "save did not stick - select reads " + repr(now) + ", wanted " + repr(currency_id)
+    return True, "set to " + CURRENCY_OPTIONS.get(currency_id, currency_id)
+
+
+def create_supplier(cfg: Config, details: dict, on_status=None) -> dict:
+    """Fill /supplier/supplier/add from the reviewed details and save.
+
+    WRITES to FreshPortal - this creates a real supplier. The caller is
+    responsible for having put the values in front of a human first. There is
+    no duplicate check: the portal owns that decision, and before the record
+    exists we have no key to check against.
+    """
+    # Validate before importing anything heavy: a bad code should come back as
+    # a 400 without having launched a browser or opened a session.
+    company = (details.get("company_name") or "").strip()
+    if not company:
+        raise ValueError("Company name is required")
+    code = _clean_code(details.get("supplier_code"), company)
+    if not code or not (4 <= len(code) <= 7):
+        raise ValueError("Supplier code must be 4-7 capital letters")
+
+    from playwright.sync_api import sync_playwright
+    from scraper_fp import _launch_browser, _login
+
+    def _s(msg: str) -> None:
+        logger.info("[kenya-supplier] %s", msg)
+        if on_status:
+            on_status(msg)
+
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        ctx = browser.new_context()
+        page = ctx.new_page()
+        try:
+            _s("Logging in to the Kenya portal...")
+            _login(page, cfg)
+
+            _s("Opening the add-supplier form...")
+            page.goto(cfg.freshportal_url + "/supplier/supplier/add",
+                      wait_until="domcontentloaded", timeout=cfg.request_timeout)
+
+            filled, skipped = [], []
+            for field_id, key in _FORM_FIELDS.items():
+                target = filled if _fill(page, field_id, details.get(key)) else skipped
+                target.append(field_id)
+
+            country = page.query_selector("#country_id")
+            if country is None:
+                raise RuntimeError("Country select not found on the add-supplier form")
+            country.select_option(KENYA_COUNTRY_ID)
+
+            code_el = page.query_selector("#code")
+            if code_el is None:
+                raise RuntimeError(
+                    "Supplier code field #code not found. The form has: "
+                    + ", ".join(_form_field_names(page))
+                )
+            code_el.fill(code)
+            filled.append("code")
+
+            _s("Saving " + company + " (" + code + ")...")
+            save = page.query_selector('button[name="submit_supplier"]')
+            if save is None:
+                raise RuntimeError("Save button not found on the add-supplier form")
+            save.click()
+            page.wait_for_load_state("domcontentloaded", timeout=cfg.request_timeout)
+
+            # A successful save lands on the supplier's own page; staying put
+            # means the form rejected something.
+            match = _SUP_ID_RE.search(page.url)
+            if not match:
+                errors = [e.inner_text().strip()
+                          for e in page.query_selector_all(".alert, .error, .invalid-feedback")]
+                said = "; ".join(e for e in errors if e) or "(nothing)"
+                raise RuntimeError(
+                    "Save did not create a supplier - still on " + page.url + ". Page says: " + said
+                )
+            supplier_id = match.group(1)
+            _s("Created supplier " + supplier_id)
+
+            currency_changed = False
+            currency_detail = "no currency resolved from the document"
+            currency_id = details.get("currency_id")
+            if currency_id and currency_id != DEFAULT_CURRENCY_ID:
+                _s("Setting the invoice currency...")
+                currency_changed, currency_detail = _set_currency(
+                    page, cfg, supplier_id, currency_id)
+            elif currency_id == DEFAULT_CURRENCY_ID:
+                currency_detail = "document currency matches the portal default, left alone"
+
+            return {
+                "supplier_id": supplier_id,
+                "supplier_url": supplier_profile_url(cfg, supplier_id),
+                "supplier_code": code,
+                "company_name": company,
+                "filled_fields": filled,
+                "skipped_fields": skipped,
+                "currency_changed": currency_changed,
+                "currency_detail": currency_detail,
+            }
+        finally:
+            ctx.close()
+            browser.close()
