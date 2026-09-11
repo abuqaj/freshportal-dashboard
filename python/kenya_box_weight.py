@@ -283,12 +283,34 @@ def _read_air_waybill_weight(page, cfg: Config, invoice_id: str) -> float | None
 # where 11.0 was the line's own prior weight).
 SETTLE_MS = 500
 
-# How far the invoice's own total may sit from the air waybill before the
-# result is treated as wrong. Some drift is expected and harmless: the
-# per-box weight is rounded to two decimals before the portal multiplies it
-# back up by the box count. 5% is the user's call (2026-09-11) - wide enough
-# to swallow that rounding, tight enough to catch a line that never landed.
-TOTAL_WEIGHT_TOLERANCE = 0.05
+# Ceiling on the total-weight tolerance. The real allowance is derived per
+# invoice (see _total_tolerance) - this only stops a very short invoice from
+# getting an absurdly wide one.
+MAX_TOTAL_TOLERANCE = 0.05
+
+
+def _total_tolerance(line_count: int, boxes: float | None,
+                     expected_total: float | None) -> float:
+    """How far the invoice total may sit from the air waybill.
+
+    Scales with the number of lines instead of being fixed: one wrong line
+    moves the total by roughly its own share, so a flat 5% quietly passes a
+    missing line on any invoice long enough - at 30 lines one line is 3% and
+    slips straight through (user, 2026-09-11).
+
+    Half a line's share, not a whole one: at exactly 1/N the boundary case
+    sits on the threshold rather than over it.
+
+    The floor exists because the per-box weight is stored to two decimals,
+    so the portal's own multiplication can drift by up to half a cent per box
+    however carefully we write. On an invoice with many boxes and a light
+    per-box weight that rounding can exceed a line's share, and then it wins -
+    a check that fails on arithmetic nobody can avoid is worse than one that
+    occasionally lets a line through, because it trains people to ignore it.
+    """
+    share = (0.5 / line_count) if line_count else MAX_TOTAL_TOLERANCE
+    rounding = (0.01 * boxes / expected_total) if (boxes and expected_total) else 0.0
+    return max(min(share, MAX_TOTAL_TOLERANCE), rounding)
 
 
 def _cell_holds(page, cell_id: str, want: float | None) -> bool:
@@ -319,7 +341,8 @@ def _retype_cell(page, cell_id: str, weight_text: str) -> None:
 
 
 def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str,
-                        expected_total: float | None = None) -> tuple[int, list[str]]:
+                        expected_total: float | None = None,
+                        expected_boxes: float | None = None) -> tuple[int, list[str]]:
     """Type down the box_weight column the way the grid expects, then verify.
 
     The column behaves like a spreadsheet: ArrowDown commits the cell being
@@ -413,11 +436,12 @@ def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str,
         problems.append("could not read the invoice's total weight to cross-check")
     elif expected_total and expected_total > 0:
         drift = abs(shown_total - expected_total) / expected_total
-        if drift > TOTAL_WEIGHT_TOLERANCE:
+        allowance = _total_tolerance(len(ids), expected_boxes, expected_total)
+        if drift > allowance:
             problems.append(
                 f"invoice total is {shown_total} kg against an air waybill of "
-                f"{expected_total} kg — {drift * 100:.1f}% out, over the "
-                f"{TOTAL_WEIGHT_TOLERANCE * 100:.0f}% allowance"
+                f"{expected_total} kg — {drift * 100:.2f}% out, over the "
+                f"{allowance * 100:.2f}% allowed for {len(ids)} line(s)"
             )
 
     return written, problems
@@ -543,7 +567,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                     per_box = round(weight / boxes, WEIGHT_DECIMALS)
                     sample = page.query_selector("#invoice_table td.box_weight")
                     weight_text = _format_weight(per_box, sample.inner_text() if sample else "")
-                    written, problems = _write_line_weights(page, cfg, details_url, weight_text, weight)
+                    written, problems = _write_line_weights(page, cfg, details_url, weight_text, weight, boxes)
 
                     result |= {
                         "total_weight": weight, "box_count": boxes, "weight_per_box": per_box,
