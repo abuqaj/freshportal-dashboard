@@ -13,15 +13,16 @@ import AdminTab from "@/components/AdminTab";
 import DeliveryImporter from "@/components/DeliveryImporter";
 import AnalysisTool from "@/components/AnalysisTool";
 import KenyaBoxWeight from "@/components/KenyaBoxWeight";
+import KenyaSupplier from "@/components/KenyaSupplier";
 import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
 import { useSystem } from "@/contexts/SystemContext";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis" | "boxweight";
+type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis" | "boxweight" | "supplier";
 
 const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
 const ECUADOR_ONLY_TABS:      Tab[] = ["delivery", "analysis"];
-const KENYA_ONLY_TABS:        Tab[] = ["boxweight"];
+const KENYA_ONLY_TABS:        Tab[] = ["boxweight", "supplier"];
 
 const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "vbn",       gradient: "from-emerald to-[#0D5430]",   perm: "vbn:check" },
@@ -32,6 +33,7 @@ const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "delivery",  gradient: "from-[#0F4C8A] to-[#0A2E54]", perm: "delivery:import" },
   { id: "analysis",  gradient: "from-[#7C3AED] to-[#4C1D95]", perm: "analysis:view" },
   { id: "boxweight", gradient: "from-[#0891B2] to-[#155E75]", perm: "boxweight:run" },
+  { id: "supplier",  gradient: "from-[#B45309] to-[#7C2D12]", perm: "supplier:add" },
 ];
 
 /* ─── 3-D tilt hook ─── */
@@ -159,6 +161,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     : tab === "delivery" ? t.nav.deliveryImporter
     : tab === "analysis" ? t.nav.analysisTool
     : tab === "boxweight" ? t.nav.kenyaBoxWeight
+    : tab === "supplier" ? t.nav.kenyaSupplier
     : null;
 
   return (
@@ -235,6 +238,7 @@ const MODULE_WIDTH: Record<Tab, string> = {
   delivery:  "max-w-7xl",
   analysis:  "max-w-4xl",
   boxweight: "max-w-6xl",
+  supplier:  "max-w-4xl",
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, onSelectTab, children }: {
@@ -555,6 +559,21 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
         </svg>
       ),
     },
+    {
+      id: "supplier",
+      perm: "supplier:add",
+      label: t.nav.kenyaSupplier,
+      desc: t.hub.supplierDesc,
+      gradient: "bg-gradient-to-br from-[#B45309] to-[#7C2D12]",
+      stat: t.hub.supplierStat,
+      statColor: "text-white/60",
+      icon: (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M6 3h9l3 3v15H6z" stroke="white" strokeWidth="1.8" strokeLinejoin="round"/>
+          <path d="M9 11h6M9 15h4" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+        </svg>
+      ),
+    },
   ];
 
   const isStamgegevens = system.id === "stamgegevens";
@@ -705,6 +724,7 @@ export default function Dashboard() {
               : nt.id === "history"   ? t.nav.history
               : nt.id === "delivery"  ? t.nav.deliveryImporter
               : nt.id === "boxweight" ? t.nav.kenyaBoxWeight
+              : nt.id === "supplier"  ? t.nav.kenyaSupplier
               : t.nav.analysisTool,
     }));
 
@@ -758,6 +778,7 @@ export default function Dashboard() {
             {tab === "delivery"  && <DeliveryImporter lang={lang}/>}
             {tab === "analysis"  && <AnalysisTool     lang={lang}/>}
             {tab === "boxweight" && <KenyaBoxWeight   lang={lang}/>}
+            {tab === "supplier"  && <KenyaSupplier    lang={lang}/>}
           </ModuleCard>
         )}
       </div>

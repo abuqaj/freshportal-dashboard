@@ -58,6 +58,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
+from kenya_supplier import extract_from_pdf as kenya_supplier_extract_pdf
 from kenya_box_weight import (
     debug_pull as kenya_debug_pull,
     open_invoice_customers as kenya_open_invoice_customers,
@@ -1086,6 +1087,28 @@ def kenya_box_weight_run(
     except Exception as exc:
         log.exception("Kenya box-weight run failed")
         raise HTTPException(502, f"Kenya box-weight run failed: {exc}")
+
+
+# ── Kenya: supplier onboarding from a scanned form (2026-09-11) ───────────
+
+@app.post("/kenya/supplier/extract")
+async def kenya_supplier_extract(
+    pdf: UploadFile = File(...),
+    _: dict = Depends(require_any_permission("admin:manage", "supplier:add")),
+):
+    """Read a scanned supplier form and return the fields, for review.
+
+    Writes nothing — not to the database and not to FreshPortal. The portal
+    side of this module is deliberately not wired up until the extraction
+    has been eyeballed on real documents."""
+    try:
+        content = await pdf.read()
+        return {"ok": True, **kenya_supplier_extract_pdf(get_kenya_cfg(), content, pdf.filename or "")}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.exception("Kenya supplier extraction failed")
+        raise HTTPException(502, f"Extraction failed: {exc}")
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:
