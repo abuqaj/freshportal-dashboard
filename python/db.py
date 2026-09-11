@@ -4072,6 +4072,10 @@ def ensure_kenya_box_weight_tables() -> None:
                     checked_at     TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            # Displayed instead of invoice_id, which stays the key. Added
+            # after the table existed, so it is an ALTER rather than a column
+            # in the CREATE above.
+            cur.execute("ALTER TABLE kenya_box_weight_log ADD COLUMN IF NOT EXISTS sequence TEXT")
             cur.execute("CREATE INDEX IF NOT EXISTS kenya_box_weight_log_checked_idx "
                         "ON kenya_box_weight_log(checked_at DESC)")
             # Backfill the customer list. Not gated on the table being empty:
@@ -4180,10 +4184,11 @@ def record_kenya_box_weight(entry: dict) -> None:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO kenya_box_weight_log
-                    (invoice_id, total_weight, box_count, weight_per_box,
+                    (invoice_id, sequence, total_weight, box_count, weight_per_box,
                      lines_written, status, detail, checked_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 ON CONFLICT (invoice_id) DO UPDATE SET
+                    sequence       = COALESCE(NULLIF(EXCLUDED.sequence, ''), kenya_box_weight_log.sequence),
                     total_weight   = EXCLUDED.total_weight,
                     box_count      = EXCLUDED.box_count,
                     weight_per_box = EXCLUDED.weight_per_box,
@@ -4192,7 +4197,7 @@ def record_kenya_box_weight(entry: dict) -> None:
                     detail         = EXCLUDED.detail,
                     checked_at     = NOW()
             """, (
-                str(entry.get("invoice_id")), entry.get("total_weight"),
+                str(entry.get("invoice_id")), (entry.get("sequence") or ""), entry.get("total_weight"),
                 entry.get("box_count"), entry.get("weight_per_box"),
                 entry.get("lines_written", 0), entry.get("status"),
                 (entry.get("detail") or "")[:2000],

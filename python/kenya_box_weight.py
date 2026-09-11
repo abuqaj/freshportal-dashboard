@@ -200,6 +200,9 @@ def select_candidates(cfg: Config, customer_ids: set[str], lookback_days: int = 
 
         candidates.append({
             "invoice_id": invoice_id,
+            # What a human calls this invoice. invoice_id stays the key for
+            # dedup and retries; sequence is what gets shown.
+            "sequence": str(inv.get("sequence", "")).strip(),
             "customer_id": str(inv.get("customer_id", "")).strip(),
             "supplier_id": supplier_id,
             "line_count": len(lines),
@@ -512,7 +515,8 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
         processed.append(result)
         lines_written_total += int(result.get("lines_written") or 0)
         _p(done=len(processed), total=len(candidates), lines=lines_written_total,
-           invoice_id=result.get("invoice_id"), status=result.get("status"))
+           invoice_id=result.get("invoice_id"), sequence=result.get("sequence"),
+           status=result.get("status"))
 
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
@@ -524,7 +528,8 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
 
             for i, cand in enumerate(candidates, start=1):
                 invoice_id = cand["invoice_id"]
-                result = {"invoice_id": invoice_id, "customer_id": cand["customer_id"]}
+                result = {"invoice_id": invoice_id, "customer_id": cand["customer_id"],
+                          "sequence": cand.get("sequence") or ""}
                 try:
                     _s(f"[{i}/{len(candidates)}] invoice {invoice_id}…")
                     weight = _read_air_waybill_weight(page, cfg, invoice_id)

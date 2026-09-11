@@ -134,6 +134,7 @@ export default function HistoryTab({ lang }: Props) {
    *  of every invoice the module has touched and when it was established. */
   interface BoxWeightRun {
     invoice_id: string;
+    sequence: string | null;
     total_weight: string | number | null;
     box_count: string | number | null;
     weight_per_box: string | number | null;
@@ -854,7 +855,7 @@ export default function HistoryTab({ lang }: Props) {
               <div className="divide-y divide-border">
                 {boxWeightHistory.map((r) => (
                   <div key={r.invoice_id} className="px-5 py-3 flex items-center gap-4 flex-wrap">
-                    <span className="font-mono text-sm text-ink w-24 shrink-0">#{r.invoice_id}</span>
+                    <span className="font-mono text-sm text-ink w-24 shrink-0">#{r.sequence || r.invoice_id}</span>
                     <StatusBadge status={r.status ?? "—"} />
                     <span className="text-xs text-ink-3 tabular-nums">
                       {fmtKg(r.total_weight)} / {fmtNum(r.box_count)} {t.history.bwBoxes}

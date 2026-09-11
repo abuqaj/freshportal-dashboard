@@ -187,17 +187,7 @@ html, body { height: 100%; margin: 0; }
    real progress is driven from React state, not from an animation. */
 
 /* A lit node settles in with a small overshoot rather than snapping on. */
-@keyframes node-pop {
-  0%   { transform: scale(0.2); opacity: 0; }
-  60%  { transform: scale(1.35); opacity: 1; }
-  100% { transform: scale(1); opacity: 1; }
-}
-.node-pop { animation: node-pop 0.32s cubic-bezier(0.34, 1.5, 0.64, 1) both; }
-
 /* Energy travelling along the already-lit part of the cable. */
-@keyframes cable-flow { to { stroke-dashoffset: -36; } }
-.cable-flow { animation: cable-flow 0.9s linear infinite; }
-
 /* The battery breathing while it charges, harder as it fills. */
 @keyframes battery-pulse {
   0%, 100% { filter: drop-shadow(0 0 2px currentColor); }
@@ -207,34 +197,8 @@ html, body { height: 100%; margin: 0; }
 
 /* The dud: up for a moment, stall, then back down - it never reaches height.
    Horizontal drift is a separate transform on the parent so the two compose. */
-@keyframes dud-flight {
-  0%   { transform: translateY(0) scale(0.7); opacity: 0; }
-  8%   { opacity: 1; }
-  45%  { transform: translateY(-78px) scale(1); }
-  55%  { transform: translateY(-70px) scale(1); }
-  100% { transform: translateY(26px) scale(0.9); opacity: 1; }
-}
-.dud-flight { animation: dud-flight 1.5s cubic-bezier(0.3, 0, 0.7, 1) both; }
-
-@keyframes dud-drift { to { transform: translateX(var(--drift, 0px)); } }
-.dud-drift { animation: dud-drift 1.5s linear both; }
-
 /* The failure itself: nothing for most of the flight, then a late low burst. */
-@keyframes dud-burst {
-  0%, 72%  { transform: scale(0); opacity: 0; }
-  80%      { transform: scale(1.5); opacity: 1; }
-  100%     { transform: scale(2.6); opacity: 0; }
-}
-.dud-burst { animation: dud-burst 1.5s ease-out both; }
-
 /* Sparks thrown sideways by the burst, so it reads as a pop rather than a fade. */
-@keyframes dud-spark {
-  0%, 74%  { transform: translate(0, 0) scale(0); opacity: 0; }
-  82%      { opacity: 1; }
-  100%     { transform: translate(var(--sx, 0px), var(--sy, 0px)) scale(0.4); opacity: 0; }
-}
-.dud-spark { animation: dud-spark 1.5s ease-out both; }
-
 /* The panel sliding out from under the button when a run starts. */
 @keyframes panel-drop {
   0%   { opacity: 0; transform: translateY(-18px) scaleY(0.9); }
@@ -243,8 +207,7 @@ html, body { height: 100%; margin: 0; }
 .panel-drop { animation: panel-drop 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; transform-origin: top center; }
 
 @media (prefers-reduced-motion: reduce) {
-  .node-pop, .cable-flow, .battery-pulse,
-  .dud-flight, .dud-drift, .dud-burst, .dud-spark, .panel-drop {
+  .battery-pulse, .panel-drop {
     animation: none !important;
   }
 }

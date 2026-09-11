@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, type CSSProperties } from "react";
+import { useState, useEffect } from "react";
 import { Lang, translations } from "@/lib/i18n";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
@@ -15,6 +15,8 @@ interface CustomerRow {
 
 interface ProcessedRow {
   invoice_id: string;
+  /** What a human calls the invoice; invoice_id remains the key. */
+  sequence?: string;
   customer_id?: string;
   status: "ok" | "skipped" | "failed";
   detail?: string;
@@ -26,6 +28,7 @@ interface ProcessedRow {
 
 interface LogRow {
   invoice_id: string;
+  sequence: string | null;
   total_weight: string | number | null;
   box_count: string | number | null;
   weight_per_box: string | number | null;
@@ -60,35 +63,36 @@ const STATUS_STYLE: Record<string, string> = {
  *  Decorative only: aria-hidden, nothing here is interactive. */
 function DeskFigure({ armDown }: { armDown: boolean }) {
   return (
-    <svg viewBox="0 0 190 250" aria-hidden="true"
-         className="hidden sm:block w-40 lg:w-52 shrink-0 self-end -mr-10 lg:-mr-14 relative z-10 pointer-events-none">
-      {/* legs */}
-      <path d="M48 250V168h48v82" fill="#23262B" />
-      {/* tunic — wide and square, buttoned to the throat */}
-      <path d="M36 172c0-40 10-62 34-69l14 2c24 7 34 29 34 67z" fill="#2E3239" />
-      <path d="M78 105v66" stroke="#1B1E22" strokeWidth="2" />
-      <circle cx="86" cy="122" r="2.3" fill="#C9CDD4" />
-      <circle cx="86" cy="138" r="2.3" fill="#C9CDD4" />
+    <svg viewBox="0 0 190 190" aria-hidden="true"
+         className="hidden sm:block w-36 lg:w-44 shrink-0 self-end -mr-10 lg:-mr-14 relative z-10 pointer-events-none">
+      {/* Stubby legs. The whole drawing was re-laid-out in a shorter viewBox
+          rather than trimming the legs in place - shortening them alone would
+          have left the tunic hanging above the feet. */}
+      <path d="M52 190v-22h40v22" fill="#23262B" />
+      {/* tunic - wide and square, buttoned to the throat */}
+      <path d="M34 172c0-46 12-72 38-80l14 2c26 8 38 34 38 78z" fill="#2E3239" />
+      <path d="M78 96v76" stroke="#1B1E22" strokeWidth="2" />
+      <circle cx="86" cy="118" r="2.3" fill="#C9CDD4" />
+      <circle cx="86" cy="136" r="2.3" fill="#C9CDD4" />
       <circle cx="86" cy="154" r="2.3" fill="#C9CDD4" />
-      {/* mandarin collar */}
-      <path d="M62 104h34l-5 12H67z" fill="#3A3F47" />
-      <rect x="62" y="100" width="34" height="7" rx="3" fill="#3A3F47" />
+      {/* mandarin collar, sitting straight under the jaw - no neck */}
+      <path d="M60 92h38l-6 12H66z" fill="#3A3F47" />
+      <rect x="60" y="86" width="38" height="8" rx="4" fill="#3A3F47" />
 
-      {/* neck + head */}
-      <rect x="68" y="86" width="22" height="18" rx="7" fill="#E8B98F" />
-      <ellipse cx="79" cy="58" rx="30" ry="29" fill="#F2C79C" />
+      {/* head */}
+      <ellipse cx="79" cy="54" rx="31" ry="32" fill="#F0B45A" />
       {/* the haircut: shaved close at the sides, flat squared top */}
-      <path d="M49 52c0-19 13-31 30-31s30 12 30 31c0 4-3 5-4 2-3-8-12-13-26-13s-23 5-26 13c-1 3-4 2-4-2z" fill="#22242A" />
-      <path d="M53 56c2 6 4 9 4 14-4-2-6-7-6-12zM105 56c-2 6-4 9-4 14 4-2 6-7 6-12z" fill="#22242A" />
-      {/* face — dot eyes and a flat mouth, same restraint as the brows */}
-      <ellipse cx="70" cy="60" rx="2.8" ry="3" fill="#24242A" />
-      <ellipse cx="88" cy="60" rx="2.8" ry="3" fill="#24242A" />
-      <path d="M64 50l11 3M94 50l-11 3" stroke="#22242A" strokeWidth="2.6" strokeLinecap="round" />
-      <path d="M71 76h16" stroke="#A8654F" strokeWidth="3" strokeLinecap="round" />
+      <path d="M48 48c0-20 14-33 31-33s31 13 31 33c0 4-3 5-4 2-3-9-13-14-27-14s-24 5-27 14c-1 3-4 2-4-2z" fill="#22242A" />
+      <path d="M52 52c2 7 4 10 4 15-4-2-6-8-6-13zM106 52c-2 7-4 10-4 15 4-2 6-8 6-13z" fill="#22242A" />
+      {/* face - dot eyes and a flat mouth, same restraint as the brows */}
+      <ellipse cx="69" cy="56" rx="2.9" ry="3.1" fill="#24242A" />
+      <ellipse cx="89" cy="56" rx="2.9" ry="3.1" fill="#24242A" />
+      <path d="M63 46l11 3M95 46l-11 3" stroke="#22242A" strokeWidth="2.6" strokeLinecap="round" />
+      <path d="M70 73h18" stroke="#B06A34" strokeWidth="3" strokeLinecap="round" />
 
       {/* Reaching arm. Its own group so it can swing from the shoulder, and
           drawn last so the sleeve sits over the torso rather than behind it.
-          transform-box: fill-box is required — without it transform-origin
+          transform-box: fill-box is required - without it transform-origin
           resolves against the SVG viewport and the arm pivots off-screen. */}
       <g
         style={{
@@ -98,134 +102,50 @@ function DeskFigure({ armDown }: { armDown: boolean }) {
           transition: "transform 260ms cubic-bezier(.34,1.4,.64,1)",
         }}
       >
-        <path d="M104 130h58" stroke="#2E3239" strokeWidth="22" fill="none" strokeLinecap="round" />
-        <path d="M158 130h4" stroke="#3A3F47" strokeWidth="22" fill="none" strokeLinecap="round" />
-        <circle cx="172" cy="130" r="12" fill="#F2C79C" />
+        <path d="M106 122h56" stroke="#2E3239" strokeWidth="22" fill="none" strokeLinecap="round" />
+        <path d="M158 122h4" stroke="#3A3F47" strokeWidth="22" fill="none" strokeLinecap="round" />
+        <circle cx="172" cy="122" r="12" fill="#F0B45A" />
         {/* the index finger, out ahead of the fist */}
-        <path d="M178 130h8" stroke="#F2C79C" strokeWidth="9" fill="none" strokeLinecap="round" />
+        <path d="M178 122h8" stroke="#F0B45A" strokeWidth="9" fill="none" strokeLinecap="round" />
       </g>
     </svg>
   );
 }
 
-/** The three cables, drawn once and then measured. Each runs from beneath the
- *  button down to the battery, winding so the run has somewhere to go. */
-const CABLES = [
-  "M150 4 C150 40 60 46 60 88 C60 128 168 120 168 162 C168 196 96 194 96 226",
-  "M150 4 C150 34 232 44 232 86 C232 126 124 124 124 160 C124 194 96 196 96 226",
-  "M150 4 C150 52 146 60 146 96 C146 136 200 140 200 176 C200 206 96 204 96 226",
-];
-
-/** How many lit nodes to spread over the cables. Deliberately high: a run can
- *  cover a lot of invoices, and a handful of dots would jump a quarter of the
- *  board at a time. */
-const NODE_COUNT = 78;
-
-interface CableNode { x: number; y: number; cable: number }
-
-/** Cable run under the button that fills as the work completes.
+/** Battery that fills as the work completes.
  *
- *  `fraction` is real progress, not a timer: nodes light in order and stop
- *  where the run actually is. Node positions are measured off the rendered
- *  paths with getPointAtLength rather than hand-placed, so the dots sit on
- *  the cable exactly and the curves stay free to change. */
+ *  `fraction` is real progress, not a timer: it is invoices actually done
+ *  over invoices found, streamed from the run itself. */
 function CircuitProgress({
   fraction, done, total, lines, finished, labels,
 }: {
   fraction: number; done: number; total: number; lines: number; finished: boolean;
   labels: { working: string; charged: string; ofInvoices: string; linesWritten: string };
 }) {
-  const pathRefs = useRef<(SVGPathElement | null)[]>([]);
-  const [nodes, setNodes] = useState<CableNode[]>([]);
-
-  useEffect(() => {
-    const paths = pathRefs.current.filter(Boolean) as SVGPathElement[];
-    if (paths.length !== CABLES.length) return;
-    const lengths = paths.map(p => p.getTotalLength());
-    const perCable = Math.round(NODE_COUNT / CABLES.length);
-    const out: CableNode[] = [];
-    // Interleaved by index, not cable after cable: the three fill together,
-    // which reads as one circuit energising rather than three in sequence.
-    for (let i = 0; i < perCable; i++) {
-      for (let c = 0; c < paths.length; c++) {
-        const at = paths[c].getPointAtLength(((i + 0.5) / perCable) * lengths[c]);
-        out.push({ x: at.x, y: at.y, cable: c });
-      }
-    }
-    setNodes(out);
-  }, []);
-
-  const litCount = Math.round(Math.min(1, Math.max(0, fraction)) * nodes.length);
-  const pct = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
+  const clamped = Math.min(1, Math.max(0, fraction));
+  const pct = Math.round(clamped * 100);
 
   return (
-    <div className="panel-drop w-full max-w-xl mx-auto">
-      <svg viewBox="0 0 300 250" className="w-full" aria-hidden="true">
+    <div className="panel-drop flex flex-col items-center gap-3">
+      <svg viewBox="0 0 120 58" className="w-40" aria-hidden="true">
         <defs>
-          <linearGradient id="bw-live" x1="0" y1="0" x2="0" y2="1">
+          <linearGradient id="bw-live" x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stopColor="#38BDF8" />
             <stop offset="100%" stopColor="#22D3EE" />
           </linearGradient>
-          <filter id="bw-glow" x="-70%" y="-70%" width="240%" height="240%">
-            <feGaussianBlur stdDeviation="3" result="b" />
-            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
         </defs>
-
-        {/* dead cable */}
-        {CABLES.map((d, i) => (
-          <path key={`dead-${i}`} ref={el => { pathRefs.current[i] = el; }}
-                d={d} fill="none" stroke="#2A3038" strokeWidth="5" strokeLinecap="round" />
-        ))}
-
-        {/* live cable, revealed by dash offset up to the current fraction */}
-        {CABLES.map((d, i) => (
-          <path key={`live-${i}`} d={d} fill="none" stroke="url(#bw-live)" strokeWidth="3"
-                strokeLinecap="round" filter="url(#bw-glow)"
-                pathLength={1} strokeDasharray={`${Math.max(0, Math.min(1, fraction))} 1`}
-                style={{ transition: "stroke-dasharray 420ms ease-out" }} />
-        ))}
-
-        {/* energy travelling along the part that is already live */}
-        {fraction > 0.02 && !finished && CABLES.map((d, i) => (
-          <path key={`flow-${i}`} d={d} fill="none" stroke="#E0F7FF" strokeWidth="1.6"
-                strokeLinecap="round" className="cable-flow"
-                pathLength={1} strokeDasharray="0.012 0.06"
-                style={{ clipPath: "none", opacity: 0.9 }} />
-        ))}
-
-        {/* the nodes */}
-        {nodes.map((n, i) => {
-          const lit = i < litCount;
-          return (
-            <circle
-              key={i} cx={n.x} cy={n.y} r={lit ? 3.1 : 1.9}
-              fill={lit ? "#7DE3FF" : "#39414B"}
-              filter={lit ? "url(#bw-glow)" : undefined}
-              className={lit ? "node-pop" : undefined}
-              style={{ transition: "r 200ms ease-out, fill 200ms ease-out" }}
-            />
-          );
-        })}
-
-        {/* battery at the end of the run */}
-        <g transform="translate(96 226)">
-          <rect x="-26" y="-13" width="52" height="26" rx="6"
-                fill="#1B2027" stroke={finished ? "#4ADE80" : "#39414B"} strokeWidth="2.5"
-                className={finished ? "battery-pulse" : undefined}
-                style={{ color: finished ? "#4ADE80" : undefined }} />
-          <rect x="26" y="-5" width="5" height="10" rx="2" fill={finished ? "#4ADE80" : "#39414B"} />
-          <rect x="-21" y="-8" width={Math.max(0, 42 * Math.min(1, fraction))} height="16" rx="3"
-                fill={finished ? "#4ADE80" : "url(#bw-live)"}
-                style={{ transition: "width 420ms ease-out" }} />
-        </g>
-
-        {/* the payoff: fireworks that do not make it */}
-        {finished && <DudFireworks />}
+        <rect x="4" y="10" width="100" height="38" rx="8"
+              fill="#1B2027" stroke={finished ? "#4ADE80" : "#39414B"} strokeWidth="3"
+              className={finished ? "battery-pulse" : undefined}
+              style={{ color: finished ? "#4ADE80" : undefined }} />
+        <rect x="105" y="22" width="8" height="14" rx="3" fill={finished ? "#4ADE80" : "#39414B"} />
+        <rect x="10" y="16" width={Math.max(0, 88 * clamped)} height="26" rx="4"
+              fill={finished ? "#4ADE80" : "url(#bw-live)"}
+              style={{ transition: "width 420ms ease-out" }} />
       </svg>
 
-      <div className="flex items-center justify-center gap-4 flex-wrap text-xs mt-1">
-        <span className="font-mono tabular-nums text-ink">{pct}%</span>
+      <div className="flex items-center justify-center gap-4 flex-wrap text-xs">
+        <span className="font-mono tabular-nums text-ink text-base font-semibold">{pct}%</span>
         <span className="text-ink-3">{done}/{total} {labels.ofInvoices}</span>
         <span className="text-ink-3">{lines} {labels.linesWritten}</span>
         <span className={finished ? "text-emerald font-semibold" : "text-ink-3"}>
@@ -233,54 +153,6 @@ function CircuitProgress({
         </span>
       </div>
     </div>
-  );
-}
-
-/** Rockets launched from the battery that stall mid-climb and burst on the
- *  way down. Positions and drifts are fixed rather than random so the scene
- *  is the same every run — a firework that lands somewhere different each
- *  time reads as a glitch. */
-const DUDS = [
-  { x: 96,  delay: 0.0,  drift: -26, hue: "#FCD34D" },
-  { x: 96,  delay: 0.18, drift: 20,  hue: "#F472B6" },
-  { x: 96,  delay: 0.32, drift: -8,  hue: "#60A5FA" },
-  { x: 96,  delay: 0.46, drift: 34,  hue: "#4ADE80" },
-  { x: 96,  delay: 0.6,  drift: -38, hue: "#FB923C" },
-];
-
-function DudFireworks() {
-  return (
-    <g>
-      {DUDS.map((d, i) => (
-        <g key={i} className="dud-drift"
-           style={{ ["--drift"]: `${d.drift}px`, animationDelay: `${d.delay}s`,
-                    transformBox: "fill-box", transformOrigin: "center" } as CSSProperties}>
-          <g transform={`translate(${d.x} 214)`}>
-            <g className="dud-flight" style={{ animationDelay: `${d.delay}s`,
-                                               transformBox: "fill-box", transformOrigin: "center" }}>
-              <circle r="2.6" fill={d.hue} filter="url(#bw-glow)" />
-            </g>
-            <g className="dud-burst" style={{ animationDelay: `${d.delay}s`,
-                                              transformBox: "fill-box", transformOrigin: "center" }}
-               transform="translate(0 26)">
-              <circle r="4" fill="none" stroke={d.hue} strokeWidth="1.6" />
-            </g>
-            {[0, 60, 120, 180, 240, 300].map(angle => (
-              <g key={angle} className="dud-spark"
-                 style={{
-                   ["--sx"]: `${Math.cos((angle * Math.PI) / 180) * 15}px`,
-                   ["--sy"]: `${Math.sin((angle * Math.PI) / 180) * 15}px`,
-                   animationDelay: `${d.delay}s`,
-                   transformBox: "fill-box", transformOrigin: "center",
-                 } as CSSProperties}
-                 transform="translate(0 26)">
-                <circle r="1.5" fill={d.hue} />
-              </g>
-            ))}
-          </g>
-        </g>
-      ))}
-    </g>
   );
 }
 
@@ -557,7 +429,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
                 <tbody>
                   {processed.map(p => (
                     <tr key={p.invoice_id} className="border-t border-border">
-                      <td className="py-1.5 pr-3 font-mono text-ink">{p.invoice_id}</td>
+                      <td className="py-1.5 pr-3 font-mono text-ink">{p.sequence || p.invoice_id}</td>
                       <td className="py-1.5 pr-3">
                         <span className={`px-2 py-0.5 rounded-md font-semibold ${STATUS_STYLE[p.status] ?? ""}`}>
                           {p.status}
@@ -650,7 +522,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
                 <tbody>
                   {log.map(r => (
                     <tr key={r.invoice_id} className="border-t border-border">
-                      <td className="py-1.5 pr-3 font-mono text-ink">{r.invoice_id}</td>
+                      <td className="py-1.5 pr-3 font-mono text-ink">{r.sequence || r.invoice_id}</td>
                       <td className="py-1.5 pr-3">
                         <span className={`px-2 py-0.5 rounded-md font-semibold ${STATUS_STYLE[r.status ?? ""] ?? ""}`}>
                           {r.status ?? "—"}
