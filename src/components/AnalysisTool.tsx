@@ -515,7 +515,7 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
   );
 
   return (
-    <div className="p-4 sm:p-6 flex flex-col gap-5">
+    <div className="flex flex-col gap-5">
       <div>
         <h2 className="text-lg font-bold text-ink">{t.title}</h2>
         <p className="text-sm text-ink-3 mt-0.5">{t.subtitle}</p>

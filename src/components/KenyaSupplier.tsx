@@ -238,7 +238,7 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-5 sm:gap-6">
       <SupplierStepBar stage={stage} steps={[t.stepUpload, t.stepReview, t.stepCreate]} />
 
       {!!error && (

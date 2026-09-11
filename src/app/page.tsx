@@ -24,6 +24,12 @@ const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
 const ECUADOR_ONLY_TABS:      Tab[] = ["delivery", "analysis"];
 const KENYA_ONLY_TABS:        Tab[] = ["boxweight", "supplier"];
 
+// ModuleCard pads its content, so a new module gets sane margins without
+// having to remember. These screens opt out because their layout depends on
+// reaching the card edge - full-bleed row dividers, or their own inner card
+// - and an outer padding would leave those lines stopping short.
+const UNPADDED_TABS:          Tab[] = ["vbn", "create", "photos", "history", "admin"];
+
 const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "vbn",       gradient: "from-emerald to-[#0D5430]",   perm: "vbn:check" },
   { id: "create",    gradient: "from-ember to-[#B83220]",     perm: "products:create" },
@@ -328,7 +334,8 @@ function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, o
             </>
           )}
 
-          <div className="bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden">
+          <div className={`bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden
+                           ${UNPADDED_TABS.includes(tab) ? "" : "p-4 sm:p-6"}`}>
             {children}
           </div>
         </div>
