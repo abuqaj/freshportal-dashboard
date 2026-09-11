@@ -643,6 +643,10 @@ const en = {
     eventNames: { valentines: "Valentine's Day", womens_day: "Women's Day", mothers_day: "Mother's Day (NL/DE)" } as Record<string, string>,
   },
   kenyaBoxWeight: {
+    circuitWorking: "charging…",
+    circuitCharged: "charged",
+    circuitInvoices: "invoices",
+    circuitLines: "lines written",
     colInvoice: "Invoice",
     colStatus: "Status",
     colWeight: "AWB weight",
@@ -1347,6 +1351,10 @@ const nl: typeof en = {
     eventNames: { valentines: "Valentijnsdag", womens_day: "Vrouwendag", mothers_day: "Moederdag (NL/DE)" } as Record<string, string>,
   },
   kenyaBoxWeight: {
+    circuitWorking: "opladen…",
+    circuitCharged: "opgeladen",
+    circuitInvoices: "facturen",
+    circuitLines: "regels geschreven",
     colInvoice: "Factuur",
     colStatus: "Status",
     colWeight: "AWB-gewicht",
@@ -2051,6 +2059,10 @@ const pl: typeof en = {
     eventNames: { valentines: "Walentynki", womens_day: "Dzień Kobiet", mothers_day: "Dzień Matki (NL/DE)" } as Record<string, string>,
   },
   kenyaBoxWeight: {
+    circuitWorking: "ładowanie…",
+    circuitCharged: "naładowane",
+    circuitInvoices: "faktur",
+    circuitLines: "zapisanych linii",
     colInvoice: "Faktura",
     colStatus: "Status",
     colWeight: "Waga z listu",
@@ -2755,6 +2767,10 @@ const es: typeof en = {
     eventNames: { valentines: "San Valentín", womens_day: "Día de la Mujer", mothers_day: "Día de la Madre (NL/DE)" } as Record<string, string>,
   },
   kenyaBoxWeight: {
+    circuitWorking: "cargando…",
+    circuitCharged: "cargado",
+    circuitInvoices: "facturas",
+    circuitLines: "líneas escritas",
     colInvoice: "Factura",
     colStatus: "Estado",
     colWeight: "Peso AWB",

@@ -1059,6 +1059,59 @@ def kenya_box_weight_set_customer(
     return {"ok": True}
 
 
+@app.post("/kenya/box-weight/run/stream")
+async def kenya_box_weight_run_stream(
+    limit: int | None = None,
+    _: dict = Depends(require_any_permission("admin:manage", "boxweight:run")),
+):
+    """Same run, streamed — per-invoice progress as it happens.
+
+    The blocking variant returns only once every invoice is done, which is
+    no use to a progress display: the denominator has to arrive before the
+    work starts, not with the result."""
+    enabled = [c["customer_id"] for c in get_kenya_box_weight_customers() if c["enabled"]]
+    if not enabled:
+        raise HTTPException(400, "No customers enabled for the Kenya box-weight module")
+
+    cfg = get_kenya_cfg()
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            result = kenya_run_correction(
+                cfg, set(enabled), limit=limit,
+                on_status=lambda msg: queue.put({"type": "status", "message": msg}),
+                on_progress=lambda fields: queue.put({"type": "progress", **fields}),
+            )
+            queue.put({"type": "result", "data": result})
+        except Exception as exc:
+            log.exception("Kenya box-weight streamed run failed")
+            queue.put({"type": "error", "message": str(exc)})
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    async def generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+        thread.join(timeout=10)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
 @app.get("/kenya/box-weight/log")
 def kenya_box_weight_log(
     limit: int = 25,

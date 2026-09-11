@@ -350,8 +350,13 @@ def _needs_run(candidate: dict, prior: dict | None, weight: float, boxes: float)
 
 
 def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None,
-                   on_status=None) -> dict:
-    """Select, then correct. One browser session for the whole batch."""
+                   on_status=None, on_progress=None) -> dict:
+    """Select, then correct. One browser session for the whole batch.
+
+    `on_progress` receives a dict after selection and after every invoice:
+    {done, total, lines, invoice_id, status}. The caller needs `total` before
+    any work starts - a progress display that only learns the denominator at
+    the end is not a progress display."""
     from playwright.sync_api import sync_playwright
     from scraper_fp import _launch_browser, _login
     from db import get_kenya_box_weight_log, record_kenya_box_weight
@@ -361,12 +366,19 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
         if on_status:
             on_status(msg)
 
+    lines_written_total = 0
+
+    def _p(**fields) -> None:
+        if on_progress:
+            on_progress(fields)
+
     _s("Pulling Kenya export and selecting open invoices…")
     selection = select_candidates(cfg, customer_ids)
     candidates = selection["candidates"]
     if limit:
         candidates = candidates[:limit]
     _s(f"{len(candidates)} candidate invoice(s), {len(selection['skipped'])} skipped by the supplier rule")
+    _p(done=0, total=len(candidates), lines=0)
     if not candidates:
         return {"ok": True, "processed": [], **selection}
 
@@ -376,6 +388,16 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
     }
 
     processed = []
+
+    def _record(result: dict) -> None:
+        """Append a result and report progress in one move, so a path that
+        forgets one cannot report the other."""
+        nonlocal lines_written_total
+        processed.append(result)
+        lines_written_total += int(result.get("lines_written") or 0)
+        _p(done=len(processed), total=len(candidates), lines=lines_written_total,
+           invoice_id=result.get("invoice_id"), status=result.get("status"))
+
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         ctx = browser.new_context()
@@ -393,7 +415,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                     if weight is None or weight <= 0:
                         result |= {"status": "skipped",
                                    "detail": "no air waybill weight recorded"}
-                        processed.append(result)
+                        _record(result)
                         record_kenya_box_weight({**result, "total_weight": weight})
                         continue
 
@@ -404,7 +426,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                     if not boxes:
                         result |= {"status": "failed", "total_weight": weight,
                                    "detail": "could not read total box count from the invoice table"}
-                        processed.append(result)
+                        _record(result)
                         record_kenya_box_weight(result)
                         continue
 
@@ -415,7 +437,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                         result |= {"status": "failed", "total_weight": weight, "box_count": boxes,
                                    "detail": f"box count mismatch: portal {boxes} vs API {api_boxes} "
                                              f"— refusing to write a weight derived from either"}
-                        processed.append(result)
+                        _record(result)
                         record_kenya_box_weight(result)
                         continue
 
@@ -423,7 +445,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                     if not should_run:
                         result |= {"status": "skipped", "total_weight": weight,
                                    "box_count": boxes, "detail": why}
-                        processed.append(result)
+                        _record(result)
                         continue
 
                     per_box = round(weight / boxes, WEIGHT_DECIMALS)
@@ -440,13 +462,13 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                         "status": "ok" if written and not problems else "failed",
                         "detail": "; ".join(problems) if problems else f"{why}; wrote {weight_text}",
                     }
-                    processed.append(result)
+                    _record(result)
                     record_kenya_box_weight(result)
 
                 except Exception as exc:
                     logger.exception("Kenya box weight failed for invoice %s", invoice_id)
                     result |= {"status": "failed", "detail": str(exc)}
-                    processed.append(result)
+                    _record(result)
                     record_kenya_box_weight(result)
         finally:
             ctx.close()
