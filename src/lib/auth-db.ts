@@ -25,6 +25,7 @@ const ALL_PERMISSIONS = [
   "admin:manage",
   "delivery:import",
   "boxweight:run",
+  "supplier:add",
   "analysis:view",
   "system:stamgegevens",
   "system:piazza",

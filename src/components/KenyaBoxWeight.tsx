@@ -15,6 +15,9 @@ interface CustomerRow {
 
 interface ProcessedRow {
   invoice_id: string;
+  /** What a human calls the invoice; invoice_id remains the key. */
+  sequence?: string;
+  invoice_url?: string;
   customer_id?: string;
   status: "ok" | "skipped" | "failed";
   detail?: string;
@@ -26,6 +29,8 @@ interface ProcessedRow {
 
 interface LogRow {
   invoice_id: string;
+  sequence: string | null;
+  invoice_url?: string;
   total_weight: string | number | null;
   box_count: string | number | null;
   weight_per_box: string | number | null;
@@ -48,44 +53,65 @@ interface CallEntry {
   summary: string;
 }
 
+/** The invoice number as a link to its page in the portal. The number shown
+ *  is the sequence a person uses; the link is built from invoice_id, which is
+ *  what the portal addresses invoices by. */
+function InvoiceLink({ label, url }: { label: string; url?: string }) {
+  if (!url) return <span className="font-mono text-ink">{label}</span>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer"
+       className="font-mono text-ink inline-flex items-center gap-1 hover:text-emerald transition-colors">
+      {label}
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className="opacity-50">
+        <path d="M14 4h6v6M20 4l-9 9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
+      </svg>
+    </a>
+  );
+}
+
 const STATUS_STYLE: Record<string, string> = {
   ok:      "bg-emerald/10 text-emerald",
   skipped: "bg-amber-500/10 text-amber-600",
   failed:  "bg-red-500/10 text-red-600",
 };
 
-/** Cartoon figure reaching for the button, as a nod to the desk-button meme
- *  the design was asked for. Purely decorative: aria-hidden, and nothing here
- *  is interactive — the button next to it is the only control.
- *
- *  The arm is its own group so it can swing from the shoulder. Rotating it
- *  needs an explicit transform-box: without it the transform-origin below is
- *  resolved against the SVG viewport rather than the group's own box, and
- *  the arm swings from somewhere off in the corner. */
+/** Cartoon leader at the button, in the political-cartoon convention: the
+ *  read comes from costume and silhouette — the buttoned Mao-collar tunic and
+ *  the squared-off undercut — rather than from exaggerated facial features.
+ *  Decorative only: aria-hidden, nothing here is interactive. */
 function DeskFigure({ armDown }: { armDown: boolean }) {
   return (
-    <svg viewBox="0 0 190 250" aria-hidden="true"
-         className="hidden sm:block w-40 lg:w-52 shrink-0 self-end -mr-10 lg:-mr-14 relative z-10 pointer-events-none">
-      {/* torso + legs */}
-      <path d="M46 250V162h52v88" fill="#1E2740" />
-      <path d="M40 164c0-38 9-60 30-67l16 2c21 7 30 27 30 65z" fill="#28324F" />
-      {/* shirt + the long red tie */}
-      <path d="M62 96h22l-5 28-6 9-6-9z" fill="#F5F7FB" />
-      <path d="M73 104l8 7-6 40-2 8-2-8-6-40z" fill="#C8102E" />
-      {/* neck + head — ruddier than a neutral skin tone, per the reference */}
-      <rect x="63" y="80" width="20" height="20" rx="7" fill="#D98A63" />
-      <ellipse cx="73" cy="54" rx="28" ry="32" fill="#E89A72" />
-      {/* blonde swoosh */}
-      <path d="M45 42c2-19 17-29 30-29s27 9 28 23c-6-7-15-9-23-7-11 3-20 10-27 18-3 4-7 1-8-5z" fill="#EBCF7B" />
-      {/* stern face: brows angled in, mouth flat and slightly down */}
-      <path d="M58 44l12 4M88 44l-12 4" stroke="#7A5230" strokeWidth="3" strokeLinecap="round" />
-      <ellipse cx="63" cy="55" rx="2.7" ry="3.3" fill="#24242A" />
-      <ellipse cx="83" cy="55" rx="2.7" ry="3.3" fill="#24242A" />
-      <path d="M64 73q9 -3 18 0" stroke="#8E4636" strokeWidth="3" fill="none" strokeLinecap="round" />
+    <svg viewBox="0 0 190 190" aria-hidden="true"
+         className="hidden sm:block w-36 lg:w-44 shrink-0 self-end -mr-10 lg:-mr-14 relative z-10 pointer-events-none">
+      {/* Stubby legs. The whole drawing was re-laid-out in a shorter viewBox
+          rather than trimming the legs in place - shortening them alone would
+          have left the tunic hanging above the feet. */}
+      <path d="M52 190v-22h40v22" fill="#23262B" />
+      {/* tunic - wide and square, buttoned to the throat */}
+      <path d="M34 172c0-46 12-72 38-80l14 2c26 8 38 34 38 78z" fill="#2E3239" />
+      <path d="M78 96v76" stroke="#1B1E22" strokeWidth="2" />
+      <circle cx="86" cy="118" r="2.3" fill="#C9CDD4" />
+      <circle cx="86" cy="136" r="2.3" fill="#C9CDD4" />
+      <circle cx="86" cy="154" r="2.3" fill="#C9CDD4" />
+      {/* mandarin collar, sitting straight under the jaw - no neck */}
+      <path d="M60 92h38l-6 12H66z" fill="#3A3F47" />
+      <rect x="60" y="86" width="38" height="8" rx="4" fill="#3A3F47" />
+
+      {/* head */}
+      <ellipse cx="79" cy="54" rx="31" ry="32" fill="#F0B45A" />
+      {/* the haircut: shaved close at the sides, flat squared top */}
+      <path d="M48 48c0-20 14-33 31-33s31 13 31 33c0 4-3 5-4 2-3-9-13-14-27-14s-24 5-27 14c-1 3-4 2-4-2z" fill="#22242A" />
+      <path d="M52 52c2 7 4 10 4 15-4-2-6-8-6-13zM106 52c-2 7-4 10-4 15 4-2 6-8 6-13z" fill="#22242A" />
+      {/* face - dot eyes and a flat mouth, same restraint as the brows */}
+      <ellipse cx="69" cy="56" rx="2.9" ry="3.1" fill="#24242A" />
+      <ellipse cx="89" cy="56" rx="2.9" ry="3.1" fill="#24242A" />
+      <path d="M63 46l11 3M95 46l-11 3" stroke="#22242A" strokeWidth="2.6" strokeLinecap="round" />
+      <path d="M70 73h18" stroke="#B06A34" strokeWidth="3" strokeLinecap="round" />
 
       {/* Reaching arm. Its own group so it can swing from the shoulder, and
           drawn last so the sleeve sits over the torso rather than behind it.
-          transform-box: fill-box is required — without it transform-origin
+          transform-box: fill-box is required - without it transform-origin
           resolves against the SVG viewport and the arm pivots off-screen. */}
       <g
         style={{
@@ -95,15 +121,60 @@ function DeskFigure({ armDown }: { armDown: boolean }) {
           transition: "transform 260ms cubic-bezier(.34,1.4,.64,1)",
         }}
       >
-        <path d="M100 122h62" stroke="#28324F" strokeWidth="22" fill="none" strokeLinecap="round" />
-        <path d="M158 122h6" stroke="#F5F7FB" strokeWidth="22" fill="none" strokeLinecap="round" />
-        <circle cx="174" cy="122" r="12" fill="#E89A72" />
+        <path d="M106 122h56" stroke="#2E3239" strokeWidth="22" fill="none" strokeLinecap="round" />
+        <path d="M158 122h4" stroke="#3A3F47" strokeWidth="22" fill="none" strokeLinecap="round" />
+        <circle cx="172" cy="122" r="12" fill="#F0B45A" />
         {/* the index finger, out ahead of the fist */}
-        <path d="M180 122h8" stroke="#E89A72" strokeWidth="9" fill="none" strokeLinecap="round" />
+        <path d="M178 122h8" stroke="#F0B45A" strokeWidth="9" fill="none" strokeLinecap="round" />
       </g>
     </svg>
   );
 }
+
+/** Battery that fills as the work completes.
+ *
+ *  `fraction` is real progress, not a timer: it is invoices actually done
+ *  over invoices found, streamed from the run itself. */
+function CircuitProgress({
+  fraction, done, total, lines, finished, labels,
+}: {
+  fraction: number; done: number; total: number; lines: number; finished: boolean;
+  labels: { working: string; charged: string; ofInvoices: string; linesWritten: string };
+}) {
+  const clamped = Math.min(1, Math.max(0, fraction));
+  const pct = Math.round(clamped * 100);
+
+  return (
+    <div className="panel-drop flex flex-col items-center gap-3">
+      <svg viewBox="0 0 120 58" className="w-40" aria-hidden="true">
+        <defs>
+          <linearGradient id="bw-live" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#38BDF8" />
+            <stop offset="100%" stopColor="#22D3EE" />
+          </linearGradient>
+        </defs>
+        <rect x="4" y="10" width="100" height="38" rx="8"
+              fill="#1B2027" stroke={finished ? "#4ADE80" : "#39414B"} strokeWidth="3"
+              className={finished ? "battery-pulse" : undefined}
+              style={{ color: finished ? "#4ADE80" : undefined }} />
+        <rect x="105" y="22" width="8" height="14" rx="3" fill={finished ? "#4ADE80" : "#39414B"} />
+        <rect x="10" y="16" width={Math.max(0, 88 * clamped)} height="26" rx="4"
+              fill={finished ? "#4ADE80" : "url(#bw-live)"}
+              style={{ transition: "width 420ms ease-out" }} />
+      </svg>
+
+      <div className="flex items-center justify-center gap-4 flex-wrap text-xs">
+        <span className="font-mono tabular-nums text-ink text-base font-semibold">{pct}%</span>
+        <span className="text-ink-3">{done}/{total} {labels.ofInvoices}</span>
+        <span className="text-ink-3">{lines} {labels.linesWritten}</span>
+        <span className={finished ? "text-emerald font-semibold" : "text-ink-3"}>
+          {finished ? labels.charged : labels.working}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 
 function fmt(value: string | number | null | undefined, suffix = ""): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -121,6 +192,10 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [pressed, setPressed] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0, lines: 0 });
+  // Kept separate from `processed`: the circuit should finish the moment
+  // the run ends, not when the results table happens to render.
+  const [finished, setFinished] = useState(false);
 
   function logCall(entry: CallEntry) {
     setCalls(c => [entry, ...c].slice(0, 50));
@@ -191,17 +266,75 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
     setBusy(t.busyRunning);
     setError("");
     setProcessed(null);
-    // No limit: the button says it corrects the available invoices, so it
-    // corrects all of them. The backend still skips anything already done
-    // with an unchanged weight and box count, so pressing it twice is cheap.
-    const data = await call<{ processed: ProcessedRow[]; skipped: { invoice_id: string; reason: string }[] }>(
-      "POST", "/kenya/box-weight/run", undefined,
-      d => t.callRunSummary(
-        String(d.processed.filter(p => p.status === "ok").length),
-        String(d.processed.length)));
-    if (data) setProcessed(data.processed);
-    setBusy("");
-    loadLog();
+    setProgress({ done: 0, total: 0, lines: 0 });
+    setFinished(false);
+
+    // Streamed, not the blocking endpoint: the circuit needs the denominator
+    // before the work starts and a tick per invoice, which a single response
+    // at the end cannot give.
+    const path = "/kenya/box-weight/run/stream";
+    const started = performance.now();
+    const at = new Date().toLocaleTimeString();
+    try {
+      const res = await fetch(`${RAILWAY}${path}`, { method: "POST" });
+      if (!res.ok || !res.body) {
+        const text = await res.text();
+        let parsed: unknown = null;
+        try { parsed = text ? JSON.parse(text) : null; } catch { /* HTML error page */ }
+        const summary = (parsed as { detail?: string } | null)?.detail ?? (text.slice(0, 200) || res.statusText);
+        logCall({ at, method: "POST", path, status: res.status, ms: Math.round(performance.now() - started), summary });
+        setError(`${path} → ${res.status}: ${summary}`);
+        setBusy("");
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let result: { processed: ProcessedRow[] } | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let event: Record<string, unknown>;
+          try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (event.type === "progress") {
+            setProgress({
+              done: Number(event.done ?? 0),
+              total: Number(event.total ?? 0),
+              lines: Number(event.lines ?? 0),
+            });
+          } else if (event.type === "result") {
+            result = event.data as { processed: ProcessedRow[] };
+          } else if (event.type === "error") {
+            setError(String(event.message ?? "unknown error"));
+          }
+        }
+      }
+
+      const ms = Math.round(performance.now() - started);
+      if (result) {
+        setProcessed(result.processed);
+        setFinished(true);
+        logCall({ at, method: "POST", path, status: 200, ms,
+                  summary: t.callRunSummary(
+                    String(result.processed.filter(p => p.status === "ok").length),
+                    String(result.processed.length)) });
+      }
+    } catch (e) {
+      const summary = e instanceof Error ? e.message : String(e);
+      logCall({ at, method: "POST", path, status: "network", ms: Math.round(performance.now() - started), summary });
+      setError(`${path} → ${summary}`);
+    } finally {
+      setBusy("");
+      loadLog();
+    }
   }
 
   async function loadLog() {
@@ -277,6 +410,18 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
           <p className="text-xs text-ink-3 text-center max-w-md">{t.customersManagedInAdmin}</p>
         )}
         {running && <p className="text-xs text-ink-3">{busy}</p>}
+
+        {(running || finished) && (
+          <CircuitProgress
+            fraction={progress.total > 0 ? progress.done / progress.total : (finished ? 1 : 0)}
+            done={progress.done}
+            total={progress.total}
+            lines={progress.lines}
+            finished={finished}
+            labels={{ working: t.circuitWorking, charged: t.circuitCharged,
+                      ofInvoices: t.circuitInvoices, linesWritten: t.circuitLines }}
+          />
+        )}
         {!!error && <p className="text-xs text-red-600 break-all">{error}</p>}
       </div>
 
@@ -303,7 +448,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
                 <tbody>
                   {processed.map(p => (
                     <tr key={p.invoice_id} className="border-t border-border">
-                      <td className="py-1.5 pr-3 font-mono text-ink">{p.invoice_id}</td>
+                      <td className="py-1.5 pr-3"><InvoiceLink label={p.sequence || p.invoice_id} url={p.invoice_url} /></td>
                       <td className="py-1.5 pr-3">
                         <span className={`px-2 py-0.5 rounded-md font-semibold ${STATUS_STYLE[p.status] ?? ""}`}>
                           {p.status}
@@ -396,7 +541,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
                 <tbody>
                   {log.map(r => (
                     <tr key={r.invoice_id} className="border-t border-border">
-                      <td className="py-1.5 pr-3 font-mono text-ink">{r.invoice_id}</td>
+                      <td className="py-1.5 pr-3"><InvoiceLink label={r.sequence || r.invoice_id} url={r.invoice_url} /></td>
                       <td className="py-1.5 pr-3">
                         <span className={`px-2 py-0.5 rounded-md font-semibold ${STATUS_STYLE[r.status ?? ""] ?? ""}`}>
                           {r.status ?? "—"}

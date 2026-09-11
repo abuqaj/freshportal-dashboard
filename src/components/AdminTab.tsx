@@ -57,6 +57,7 @@ const SYSTEM_DEFS: { id: string; label: string; dot: string; modules: { perm: st
     id: "kenya", label: "Kenya", dot: "bg-[#006600]",
     modules: [
       { perm: "boxweight:run", label: "Box Weight" },
+      { perm: "supplier:add",  label: "Add Supplier" },
     ],
   },
   { id: "coloriginz",  label: "Coloriginz",        dot: "bg-[#7C3AED]", modules: [] },
@@ -69,6 +70,7 @@ const PERM_LABELS: Record<string, string> = {
   "photos:upload":   "Photo Uploader",
   "delivery:import": "Delivery Import",
   "boxweight:run":   "Box Weight",
+  "supplier:add":    "Add Supplier",
   "analysis:view":   "Analysis Tool",
   "admin:manage":    "Admin",
 }

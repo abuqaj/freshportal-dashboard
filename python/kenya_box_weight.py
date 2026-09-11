@@ -200,6 +200,9 @@ def select_candidates(cfg: Config, customer_ids: set[str], lookback_days: int = 
 
         candidates.append({
             "invoice_id": invoice_id,
+            # What a human calls this invoice. invoice_id stays the key for
+            # dedup and retries; sequence is what gets shown.
+            "sequence": str(inv.get("sequence", "")).strip(),
             "customer_id": str(inv.get("customer_id", "")).strip(),
             "supplier_id": supplier_id,
             "line_count": len(lines),
@@ -275,7 +278,74 @@ def _read_air_waybill_weight(page, cfg: Config, invoice_id: str) -> float | None
     return _cell_number(field.get_attribute("value") or "")
 
 
-def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -> tuple[int, list[str]]:
+# How long to let the grid settle after focus moves. The column commits the
+# cell being edited and opens the one below on ArrowDown, and that round trip
+# is not instant - typing into a cell whose editor has not opened yet sends
+# the keystrokes nowhere and silently leaves the original weight in place
+# (seen in the wild 2026-09-11: "expected 33.33, reloaded cell reads 11.0",
+# where 11.0 was the line's own prior weight).
+SETTLE_MS = 500
+
+# Ceiling on the total-weight tolerance. The real allowance is derived per
+# invoice (see _total_tolerance) - this only stops a very short invoice from
+# getting an absurdly wide one.
+MAX_TOTAL_TOLERANCE = 0.05
+
+
+def _total_tolerance(line_count: int, boxes: float | None,
+                     expected_total: float | None) -> float:
+    """How far the invoice total may sit from the air waybill.
+
+    Scales with the number of lines instead of being fixed: one wrong line
+    moves the total by roughly its own share, so a flat 5% quietly passes a
+    missing line on any invoice long enough - at 30 lines one line is 3% and
+    slips straight through (user, 2026-09-11).
+
+    Half a line's share, not a whole one: at exactly 1/N the boundary case
+    sits on the threshold rather than over it.
+
+    The floor exists because the per-box weight is stored to two decimals,
+    so the portal's own multiplication can drift by up to half a cent per box
+    however carefully we write. On an invoice with many boxes and a light
+    per-box weight that rounding can exceed a line's share, and then it wins -
+    a check that fails on arithmetic nobody can avoid is worse than one that
+    occasionally lets a line through, because it trains people to ignore it.
+    """
+    share = (0.5 / line_count) if line_count else MAX_TOTAL_TOLERANCE
+    rounding = (0.01 * boxes / expected_total) if (boxes and expected_total) else 0.0
+    return max(min(share, MAX_TOTAL_TOLERANCE), rounding)
+
+
+def _cell_holds(page, cell_id: str, want: float | None) -> bool:
+    """Whether a committed cell already shows the value we meant to write."""
+    if want is None:
+        return False
+    cell = page.query_selector("#" + cell_id)
+    got = _cell_number(cell.inner_text() if cell else "")
+    return got is not None and abs(got - want) <= 0.005
+
+
+def _retype_cell(page, cell_id: str, weight_text: str) -> None:
+    """Second attempt at one cell, on its own rather than as part of the run
+    down the column.
+
+    Clicking straight at the cell avoids depending on where focus drifted to,
+    and Escape-free: the value is committed with Enter so the grid does not
+    move on and take the next cell with it."""
+    cell = page.query_selector("#" + cell_id)
+    if cell is None:
+        return
+    cell.click()
+    page.wait_for_timeout(SETTLE_MS)
+    page.keyboard.press("Control+A")
+    page.keyboard.type(weight_text)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(SETTLE_MS)
+
+
+def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str,
+                        expected_total: float | None = None,
+                        expected_boxes: float | None = None) -> tuple[int, list[str]]:
     """Type down the box_weight column the way the grid expects, then verify.
 
     The column behaves like a spreadsheet: ArrowDown commits the cell being
@@ -290,6 +360,10 @@ def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -
     text back mid-edit reported None even for the cell that had just been
     written successfully. Reloading also means what is checked is what the
     server actually stored, not what the browser is showing.
+
+    `expected_total` is the air waybill weight. Once the lines are in, the
+    invoice's own total is compared against it — the one check that covers
+    the whole invoice rather than only the cells we managed to enumerate.
     """
     ids = [
         el.get_attribute("id")
@@ -303,23 +377,48 @@ def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -
     if first is None:
         return 0, [f"{ids[0]}: cell vanished before editing"]
     first.click()
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(SETTLE_MS)
 
-    for _ in ids:
+    want = _cell_number(weight_text)
+    for idx, cell_id in enumerate(ids):
         # Select whatever the cell already holds so typing replaces it
         # rather than appending to the old weight.
         page.keyboard.press("Control+A")
         page.keyboard.type(weight_text)
         page.keyboard.press("ArrowDown")
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(SETTLE_MS)
+
+        # Check the cell we just left. Once focus has moved on it is committed
+        # and its value is back in the cell's own text, so this read is safe -
+        # unlike reading a cell that is still open for editing.
+        #
+        # This catches the failure the settle time is there to prevent: if the
+        # grid had not finished opening the editor, the keystrokes went
+        # nowhere and the cell still holds its ORIGINAL weight. That looked
+        # like a corrupted write ("expected 33.33, reads 11.0") when it was
+        # really no write at all.
+        if not _cell_holds(page, cell_id, want):
+            _retype_cell(page, cell_id, weight_text)
 
     # The last ArrowDown has no row below it to move to, so the final cell
     # may still be open; blur to force the commit before reloading.
     page.keyboard.press("Tab")
-    page.wait_for_timeout(500)
+    page.wait_for_timeout(SETTLE_MS + 300)
 
     page.goto(details_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
-    want = _cell_number(weight_text)
+
+    # Repair, don't just report. A cell that is still wrong after the reload
+    # gets one more attempt here before it counts as a failure — leaving it
+    # means the whole invoice comes back on the next run for the sake of one
+    # line (user, 2026-09-11).
+    repaired = []
+    for cell_id in ids:
+        if not _cell_holds(page, cell_id, want):
+            _retype_cell(page, cell_id, weight_text)
+            repaired.append(cell_id)
+    if repaired:
+        page.goto(details_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
+
     written, problems = 0, []
     for cell_id in ids:
         cell = page.query_selector(f"#{cell_id}")
@@ -328,7 +427,33 @@ def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str) -
             written += 1
         else:
             problems.append(f"{cell_id}: expected {weight_text}, reloaded cell reads {got!r}")
+
+    # End-to-end check on the whole invoice: the table's own total weight
+    # against the air waybill it was derived from. Every per-cell check can
+    # pass and this still fail — a line the grid never showed us, a box count
+    # that moved, a row added between reading and writing — because this
+    # multiplies by quantities we never looked at.
+    total_el = page.query_selector("#invoice_table_footer_total_weight")
+    shown_total = _cell_number(total_el.inner_text() if total_el else "")
+    if shown_total is None:
+        problems.append("could not read the invoice's total weight to cross-check")
+    elif expected_total and expected_total > 0:
+        drift = abs(shown_total - expected_total) / expected_total
+        allowance = _total_tolerance(len(ids), expected_boxes, expected_total)
+        if drift > allowance:
+            problems.append(
+                f"invoice total is {shown_total} kg against an air waybill of "
+                f"{expected_total} kg — {drift * 100:.2f}% out, over the "
+                f"{allowance * 100:.2f}% allowed for {len(ids)} line(s)"
+            )
+
     return written, problems
+
+
+def invoice_details_url(cfg: Config, invoice_id: str) -> str:
+    """The invoice's own page. Built from invoice_id, not the sequence that
+    gets displayed - the portal addresses invoices by id."""
+    return f"{cfg.freshportal_url}/invoice/invoice/details/INV_ID/{invoice_id}/"
 
 
 def _needs_run(candidate: dict, prior: dict | None, weight: float, boxes: float) -> tuple[bool, str]:
@@ -350,8 +475,13 @@ def _needs_run(candidate: dict, prior: dict | None, weight: float, boxes: float)
 
 
 def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None,
-                   on_status=None) -> dict:
-    """Select, then correct. One browser session for the whole batch."""
+                   on_status=None, on_progress=None) -> dict:
+    """Select, then correct. One browser session for the whole batch.
+
+    `on_progress` receives a dict after selection and after every invoice:
+    {done, total, lines, invoice_id, status}. The caller needs `total` before
+    any work starts - a progress display that only learns the denominator at
+    the end is not a progress display."""
     from playwright.sync_api import sync_playwright
     from scraper_fp import _launch_browser, _login
     from db import get_kenya_box_weight_log, record_kenya_box_weight
@@ -361,12 +491,19 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
         if on_status:
             on_status(msg)
 
+    lines_written_total = 0
+
+    def _p(**fields) -> None:
+        if on_progress:
+            on_progress(fields)
+
     _s("Pulling Kenya export and selecting open invoices…")
     selection = select_candidates(cfg, customer_ids)
     candidates = selection["candidates"]
     if limit:
         candidates = candidates[:limit]
     _s(f"{len(candidates)} candidate invoice(s), {len(selection['skipped'])} skipped by the supplier rule")
+    _p(done=0, total=len(candidates), lines=0)
     if not candidates:
         return {"ok": True, "processed": [], **selection}
 
@@ -376,6 +513,17 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
     }
 
     processed = []
+
+    def _record(result: dict) -> None:
+        """Append a result and report progress in one move, so a path that
+        forgets one cannot report the other."""
+        nonlocal lines_written_total
+        processed.append(result)
+        lines_written_total += int(result.get("lines_written") or 0)
+        _p(done=len(processed), total=len(candidates), lines=lines_written_total,
+           invoice_id=result.get("invoice_id"), sequence=result.get("sequence"),
+           status=result.get("status"))
+
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         ctx = browser.new_context()
@@ -386,25 +534,27 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
 
             for i, cand in enumerate(candidates, start=1):
                 invoice_id = cand["invoice_id"]
-                result = {"invoice_id": invoice_id, "customer_id": cand["customer_id"]}
+                result = {"invoice_id": invoice_id, "customer_id": cand["customer_id"],
+                          "sequence": cand.get("sequence") or "",
+                          "invoice_url": invoice_details_url(cfg, invoice_id)}
                 try:
                     _s(f"[{i}/{len(candidates)}] invoice {invoice_id}…")
                     weight = _read_air_waybill_weight(page, cfg, invoice_id)
                     if weight is None or weight <= 0:
                         result |= {"status": "skipped",
                                    "detail": "no air waybill weight recorded"}
-                        processed.append(result)
+                        _record(result)
                         record_kenya_box_weight({**result, "total_weight": weight})
                         continue
 
-                    details_url = f"{cfg.freshportal_url}/invoice/invoice/details/INV_ID/{invoice_id}/"
+                    details_url = invoice_details_url(cfg, invoice_id)
                     page.goto(details_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
                     footer = page.query_selector("#invoice_table_footer_total_quantities")
                     boxes = _cell_number(footer.inner_text() if footer else "")
                     if not boxes:
                         result |= {"status": "failed", "total_weight": weight,
                                    "detail": "could not read total box count from the invoice table"}
-                        processed.append(result)
+                        _record(result)
                         record_kenya_box_weight(result)
                         continue
 
@@ -415,7 +565,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                         result |= {"status": "failed", "total_weight": weight, "box_count": boxes,
                                    "detail": f"box count mismatch: portal {boxes} vs API {api_boxes} "
                                              f"— refusing to write a weight derived from either"}
-                        processed.append(result)
+                        _record(result)
                         record_kenya_box_weight(result)
                         continue
 
@@ -423,13 +573,13 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                     if not should_run:
                         result |= {"status": "skipped", "total_weight": weight,
                                    "box_count": boxes, "detail": why}
-                        processed.append(result)
+                        _record(result)
                         continue
 
                     per_box = round(weight / boxes, WEIGHT_DECIMALS)
                     sample = page.query_selector("#invoice_table td.box_weight")
                     weight_text = _format_weight(per_box, sample.inner_text() if sample else "")
-                    written, problems = _write_line_weights(page, cfg, details_url, weight_text)
+                    written, problems = _write_line_weights(page, cfg, details_url, weight_text, weight, boxes)
 
                     result |= {
                         "total_weight": weight, "box_count": boxes, "weight_per_box": per_box,
@@ -440,13 +590,13 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                         "status": "ok" if written and not problems else "failed",
                         "detail": "; ".join(problems) if problems else f"{why}; wrote {weight_text}",
                     }
-                    processed.append(result)
+                    _record(result)
                     record_kenya_box_weight(result)
 
                 except Exception as exc:
                     logger.exception("Kenya box weight failed for invoice %s", invoice_id)
                     result |= {"status": "failed", "detail": str(exc)}
-                    processed.append(result)
+                    _record(result)
                     record_kenya_box_weight(result)
         finally:
             ctx.close()

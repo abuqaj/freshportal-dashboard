@@ -58,10 +58,16 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
+from kenya_supplier import (
+    extract_from_pdf as kenya_supplier_extract_pdf,
+    create_supplier as kenya_supplier_create_portal,
+    DuplicateSupplierCode as KenyaDuplicateSupplierCode,
+)
 from kenya_box_weight import (
     debug_pull as kenya_debug_pull,
     open_invoice_customers as kenya_open_invoice_customers,
     run_correction as kenya_run_correction,
+    invoice_details_url as kenya_invoice_details_url,
 )
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
@@ -1054,6 +1060,59 @@ def kenya_box_weight_set_customer(
     return {"ok": True}
 
 
+@app.post("/kenya/box-weight/run/stream")
+async def kenya_box_weight_run_stream(
+    limit: int | None = None,
+    _: dict = Depends(require_any_permission("admin:manage", "boxweight:run")),
+):
+    """Same run, streamed — per-invoice progress as it happens.
+
+    The blocking variant returns only once every invoice is done, which is
+    no use to a progress display: the denominator has to arrive before the
+    work starts, not with the result."""
+    enabled = [c["customer_id"] for c in get_kenya_box_weight_customers() if c["enabled"]]
+    if not enabled:
+        raise HTTPException(400, "No customers enabled for the Kenya box-weight module")
+
+    cfg = get_kenya_cfg()
+    queue: Queue = Queue()
+
+    def run() -> None:
+        try:
+            result = kenya_run_correction(
+                cfg, set(enabled), limit=limit,
+                on_status=lambda msg: queue.put({"type": "status", "message": msg}),
+                on_progress=lambda fields: queue.put({"type": "progress", **fields}),
+            )
+            queue.put({"type": "result", "data": result})
+        except Exception as exc:
+            log.exception("Kenya box-weight streamed run failed")
+            queue.put({"type": "error", "message": str(exc)})
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    async def generate():
+        yield ": connected\n\n"
+        while True:
+            try:
+                item = queue.get_nowait()
+            except Empty:
+                yield ": k\n\n"
+                await asyncio.sleep(0.2)
+                continue
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            if item.get("type") in ("result", "error"):
+                break
+        thread.join(timeout=10)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
 @app.get("/kenya/box-weight/log")
 def kenya_box_weight_log(
     limit: int = 25,
@@ -1065,6 +1124,11 @@ def kenya_box_weight_log(
     Paginated like the other history sources so the History module can page
     through it the same way."""
     rows, has_more = get_kenya_box_weight_history(limit=limit, offset=offset)
+    # Attached at read time rather than stored: the link is derived from the
+    # portal URL in config, and a stored copy would go stale if that moved.
+    cfg = get_kenya_cfg()
+    for row in rows:
+        row["invoice_url"] = kenya_invoice_details_url(cfg, str(row.get("invoice_id") or ""))
     return {"log": rows, "hasMore": has_more}
 
 
@@ -1086,6 +1150,66 @@ def kenya_box_weight_run(
     except Exception as exc:
         log.exception("Kenya box-weight run failed")
         raise HTTPException(502, f"Kenya box-weight run failed: {exc}")
+
+
+# ── Kenya: supplier onboarding from a scanned form (2026-09-11) ───────────
+
+@app.post("/kenya/supplier/extract")
+async def kenya_supplier_extract(
+    pdf: UploadFile = File(...),
+    _: dict = Depends(require_any_permission("admin:manage", "supplier:add")),
+):
+    """Read a scanned supplier form and return the fields, for review.
+
+    Writes nothing — not to the database and not to FreshPortal. The portal
+    side of this module is deliberately not wired up until the extraction
+    has been eyeballed on real documents."""
+    try:
+        content = await pdf.read()
+        return {"ok": True, **kenya_supplier_extract_pdf(get_kenya_cfg(), content, pdf.filename or "")}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.exception("Kenya supplier extraction failed")
+        raise HTTPException(502, f"Extraction failed: {exc}")
+
+
+class KenyaSupplierCreate(BaseModel):
+    company_name: str
+    supplier_code: str
+    address: str | None = None
+    postal_code: str | None = None
+    city: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    vat_number: str | None = None
+    coc_number: str | None = None
+    # Resolved from the document by /extract, but sent back by the client so
+    # the operator's correction wins over whatever the model read.
+    currency_id: str | None = None
+
+
+@app.post("/kenya/supplier/create")
+def kenya_supplier_create(
+    req: KenyaSupplierCreate,
+    _: dict = Depends(require_any_permission("admin:manage", "supplier:add")),
+):
+    """Create the supplier in FreshPortal from the reviewed values.
+
+    WRITES — this creates a real supplier. Takes the values the operator
+    confirmed rather than re-reading the PDF, so what gets created is what
+    was on screen. Blocking: one supplier, a few seconds."""
+    try:
+        return {"ok": True, **kenya_supplier_create_portal(get_kenya_cfg(), req.model_dump())}
+    except KenyaDuplicateSupplierCode as exc:
+        # Every candidate was taken — rare, and the only case the operator
+        # has to resolve by hand.
+        raise HTTPException(409, f"Every code tried is already in use: {', '.join(exc.suggestions)}")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        log.exception("Kenya supplier creation failed")
+        raise HTTPException(502, f"Supplier creation failed: {exc}")
 
 
 def _colors_with_db_fallback(cfg) -> tuple[list[dict], str]:

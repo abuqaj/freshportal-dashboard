@@ -180,3 +180,34 @@ html, body { height: 100%; margin: 0; }
   transform: scale(0.94);
   transition-duration: 50ms;
 }
+
+/* ── Box weight: circuit progress ──────────────────────────────────────────
+   The run drives a cable that lights up node by node. These keyframes cover
+   the parts that are decorative and time-based; anything that represents
+   real progress is driven from React state, not from an animation. */
+
+/* A lit node settles in with a small overshoot rather than snapping on. */
+/* Energy travelling along the already-lit part of the cable. */
+/* The battery breathing while it charges, harder as it fills. */
+@keyframes battery-pulse {
+  0%, 100% { filter: drop-shadow(0 0 2px currentColor); }
+  50%      { filter: drop-shadow(0 0 10px currentColor); }
+}
+.battery-pulse { animation: battery-pulse 1.4s ease-in-out infinite; }
+
+/* The dud: up for a moment, stall, then back down - it never reaches height.
+   Horizontal drift is a separate transform on the parent so the two compose. */
+/* The failure itself: nothing for most of the flight, then a late low burst. */
+/* Sparks thrown sideways by the burst, so it reads as a pop rather than a fade. */
+/* The panel sliding out from under the button when a run starts. */
+@keyframes panel-drop {
+  0%   { opacity: 0; transform: translateY(-18px) scaleY(0.9); }
+  100% { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+.panel-drop { animation: panel-drop 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; transform-origin: top center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .battery-pulse, .panel-drop {
+    animation: none !important;
+  }
+}
