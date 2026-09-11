@@ -17,6 +17,7 @@ interface ProcessedRow {
   invoice_id: string;
   /** What a human calls the invoice; invoice_id remains the key. */
   sequence?: string;
+  invoice_url?: string;
   customer_id?: string;
   status: "ok" | "skipped" | "failed";
   detail?: string;
@@ -29,6 +30,7 @@ interface ProcessedRow {
 interface LogRow {
   invoice_id: string;
   sequence: string | null;
+  invoice_url?: string;
   total_weight: string | number | null;
   box_count: string | number | null;
   weight_per_box: string | number | null;
@@ -49,6 +51,23 @@ interface CallEntry {
   status: number | string;
   ms: number;
   summary: string;
+}
+
+/** The invoice number as a link to its page in the portal. The number shown
+ *  is the sequence a person uses; the link is built from invoice_id, which is
+ *  what the portal addresses invoices by. */
+function InvoiceLink({ label, url }: { label: string; url?: string }) {
+  if (!url) return <span className="font-mono text-ink">{label}</span>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer"
+       className="font-mono text-ink inline-flex items-center gap-1 hover:text-emerald transition-colors">
+      {label}
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className="opacity-50">
+        <path d="M14 4h6v6M20 4l-9 9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
+      </svg>
+    </a>
+  );
 }
 
 const STATUS_STYLE: Record<string, string> = {
@@ -429,7 +448,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
                 <tbody>
                   {processed.map(p => (
                     <tr key={p.invoice_id} className="border-t border-border">
-                      <td className="py-1.5 pr-3 font-mono text-ink">{p.sequence || p.invoice_id}</td>
+                      <td className="py-1.5 pr-3"><InvoiceLink label={p.sequence || p.invoice_id} url={p.invoice_url} /></td>
                       <td className="py-1.5 pr-3">
                         <span className={`px-2 py-0.5 rounded-md font-semibold ${STATUS_STYLE[p.status] ?? ""}`}>
                           {p.status}
@@ -522,7 +541,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
                 <tbody>
                   {log.map(r => (
                     <tr key={r.invoice_id} className="border-t border-border">
-                      <td className="py-1.5 pr-3 font-mono text-ink">{r.sequence || r.invoice_id}</td>
+                      <td className="py-1.5 pr-3"><InvoiceLink label={r.sequence || r.invoice_id} url={r.invoice_url} /></td>
                       <td className="py-1.5 pr-3">
                         <span className={`px-2 py-0.5 rounded-md font-semibold ${STATUS_STYLE[r.status ?? ""] ?? ""}`}>
                           {r.status ?? "—"}

@@ -450,6 +450,12 @@ def _write_line_weights(page, cfg: Config, details_url: str, weight_text: str,
     return written, problems
 
 
+def invoice_details_url(cfg: Config, invoice_id: str) -> str:
+    """The invoice's own page. Built from invoice_id, not the sequence that
+    gets displayed - the portal addresses invoices by id."""
+    return f"{cfg.freshportal_url}/invoice/invoice/details/INV_ID/{invoice_id}/"
+
+
 def _needs_run(candidate: dict, prior: dict | None, weight: float, boxes: float) -> tuple[bool, str]:
     """Redo when either input changed since the last successful run.
 
@@ -529,7 +535,8 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
             for i, cand in enumerate(candidates, start=1):
                 invoice_id = cand["invoice_id"]
                 result = {"invoice_id": invoice_id, "customer_id": cand["customer_id"],
-                          "sequence": cand.get("sequence") or ""}
+                          "sequence": cand.get("sequence") or "",
+                          "invoice_url": invoice_details_url(cfg, invoice_id)}
                 try:
                     _s(f"[{i}/{len(candidates)}] invoice {invoice_id}…")
                     weight = _read_air_waybill_weight(page, cfg, invoice_id)
@@ -540,7 +547,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                         record_kenya_box_weight({**result, "total_weight": weight})
                         continue
 
-                    details_url = f"{cfg.freshportal_url}/invoice/invoice/details/INV_ID/{invoice_id}/"
+                    details_url = invoice_details_url(cfg, invoice_id)
                     page.goto(details_url, wait_until="domcontentloaded", timeout=cfg.request_timeout)
                     footer = page.query_selector("#invoice_table_footer_total_quantities")
                     boxes = _cell_number(footer.inner_text() if footer else "")

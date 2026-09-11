@@ -67,6 +67,7 @@ from kenya_box_weight import (
     debug_pull as kenya_debug_pull,
     open_invoice_customers as kenya_open_invoice_customers,
     run_correction as kenya_run_correction,
+    invoice_details_url as kenya_invoice_details_url,
 )
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
@@ -1123,6 +1124,11 @@ def kenya_box_weight_log(
     Paginated like the other history sources so the History module can page
     through it the same way."""
     rows, has_more = get_kenya_box_weight_history(limit=limit, offset=offset)
+    # Attached at read time rather than stored: the link is derived from the
+    # portal URL in config, and a stored copy would go stale if that moved.
+    cfg = get_kenya_cfg()
+    for row in rows:
+        row["invoice_url"] = kenya_invoice_details_url(cfg, str(row.get("invoice_id") or ""))
     return {"log": rows, "hasMore": has_more}
 
 
