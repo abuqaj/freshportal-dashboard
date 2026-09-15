@@ -63,6 +63,11 @@ const SYSTEM_DEFS: { id: string; label: string; dot: string; modules: { perm: st
   { id: "coloriginz",  label: "Coloriginz",        dot: "bg-[#7C3AED]", modules: [] },
 ]
 
+/** Modules not tied to a system: shown in every system to groups holding the permission. */
+const SHARED_MODULES: { perm: string; label: string; note: string }[] = [
+  { perm: "knowledge:review", label: "Knowledge Base", note: "every system · review, library, runs" },
+]
+
 const PERM_LABELS: Record<string, string> = {
   "vbn:check":       "VBN Check",
   "vbn:fix":         "VBN Fix",
@@ -72,6 +77,7 @@ const PERM_LABELS: Record<string, string> = {
   "boxweight:run":   "Box Weight",
   "supplier:add":    "Add Supplier",
   "analysis:view":   "Analysis Tool",
+  "knowledge:review": "Knowledge Base",
   "admin:manage":    "Admin",
 }
 
@@ -336,14 +342,27 @@ function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string
       </Field>
 
       <Field label="Shared">
-        <div className={`rounded-xl border px-3 py-2.5 transition-all ${hasPerm("admin:manage") ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
-          <label className="flex items-center gap-2.5 cursor-pointer">
-            <input type="checkbox" className="accent-emerald w-4 h-4"
-              checked={hasPerm("admin:manage")}
-              onChange={e => togglePerm("admin:manage", e.target.checked)} />
-            <span className="text-sm font-semibold text-ink">Admin & Management</span>
-            <span className="text-xs text-ink-3 ml-1">all systems · users · history</span>
-          </label>
+        <div className="flex flex-col gap-1.5">
+          <div className={`rounded-xl border px-3 py-2.5 transition-all ${hasPerm("admin:manage") ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input type="checkbox" className="accent-emerald w-4 h-4"
+                checked={hasPerm("admin:manage")}
+                onChange={e => togglePerm("admin:manage", e.target.checked)} />
+              <span className="text-sm font-semibold text-ink">Admin & Management</span>
+              <span className="text-xs text-ink-3 ml-1">all systems · users · history</span>
+            </label>
+          </div>
+          {SHARED_MODULES.map(mod => (
+            <div key={mod.perm} className={`rounded-xl border px-3 py-2.5 transition-all ${hasPerm(mod.perm) ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input type="checkbox" className="accent-emerald w-4 h-4"
+                  checked={hasPerm(mod.perm)}
+                  onChange={e => togglePerm(mod.perm, e.target.checked)} />
+                <span className="text-sm font-semibold text-ink">{mod.label}</span>
+                <span className="text-xs text-ink-3 ml-1">{mod.note}</span>
+              </label>
+            </div>
+          ))}
         </div>
       </Field>
     </div>

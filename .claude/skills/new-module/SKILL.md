@@ -8,7 +8,8 @@ description: Adds a new module (hub tile and screen) to freshportal-dashboard en
 ## Decide first
 
 Take these from the request and ask only about what it leaves open:
-- **System:** `stamgegevens`, `ecuador` or `kenya`.
+- **System:** `stamgegevens`, `ecuador` or `kenya`, or **shared**: shown in every
+  system, with its permission in the Shared section of Admin > Groups.
 - **Names:** tab id, short and lowercase (`supplier`); permission as
   `noun:verb` (`supplier:add`); translation key in camelCase (`kenyaSupplier`).
 - **Stages?** If yes, it is a wizard with a step bar.
@@ -24,7 +25,7 @@ Take these from the request and ask only about what it leaves open:
    - `import <Name> from "@/components/<Name>"`
    - add the id to `type Tab`
    - add it to the system list: `STAMGEGEVENS_ONLY_TABS`, `ECUADOR_ONLY_TABS`
-     or `KENYA_ONLY_TABS`
+     or `KENYA_ONLY_TABS` (a shared module goes in none of them)
    - `NAV_TABS_ALL`: `{ id, gradient, perm }`, with a gradient no other module
      uses
    - `tabLabel` chain: `tab === "<id>" ? t.nav.<key>`
@@ -41,7 +42,8 @@ Take these from the request and ask only about what it leaves open:
    uses CRLF; keep it.
 4. `src/lib/auth-db.ts`: add the permission to `ALL_PERMISSIONS`.
 5. `src/components/AdminTab.tsx`: add a module entry under the right system in
-   `SYSTEM_DEFS[].modules`, and add the label to `PERM_LABELS`. Access has two
+   `SYSTEM_DEFS[].modules` (for a shared module, `SHARED_MODULES` instead), and
+   add the label to `PERM_LABELS`. Access has two
    levels: a group needs `system:<id>` **and** the module permission.
 6. `python/api_server.py`: guard every endpoint with
    `Depends(require_any_permission("admin:manage", "<perm>"))`, so admins keep
@@ -57,7 +59,7 @@ Take these from the request and ask only about what it leaves open:
 ## Audit
 
 ```
-python .claude/skills/new-module/scripts/audit_module.py <tab> <perm> --system <system> [--history]
+python .claude/skills/new-module/scripts/audit_module.py <tab> <perm> (--system <system> | --shared) [--history]
 ```
 
 Fix every ✗. Run it on an existing module, e.g. `supplier supplier:add --system

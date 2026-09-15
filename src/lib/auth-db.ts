@@ -27,6 +27,7 @@ const ALL_PERMISSIONS = [
   "boxweight:run",
   "supplier:add",
   "analysis:view",
+  "knowledge:review",
   "system:stamgegevens",
   "system:piazza",
   "system:ecuador",

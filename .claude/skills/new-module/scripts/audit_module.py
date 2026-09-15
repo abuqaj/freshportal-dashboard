@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Check that a freshportal-dashboard module is wired into every place it needs.
 
-  python .claude/skills/new-module/scripts/audit_module.py TAB PERMISSION [--system kenya] [--history]
+  python .claude/skills/new-module/scripts/audit_module.py TAB PERMISSION (--system kenya | --shared) [--history]
 
 Example: audit_module.py supplier supplier:add --system kenya
+         audit_module.py knowledge knowledge:review --shared
 Exit code 1 when a required place is missing.
 """
 from __future__ import annotations
@@ -50,11 +51,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("permission", help='permission, e.g. "supplier:add"')
     parser.add_argument("--system", choices=sorted(SYSTEM_LISTS), help="system the module belongs to")
     parser.add_argument("--history", action="store_true", help="module logs runs to the History tab")
+    parser.add_argument("--shared", action="store_true",
+                        help="module sits in the Shared section of Admin > Groups and shows in every system")
     args = parser.parse_args(argv)
     tab, perm = re.escape(args.tab), re.escape(args.permission)
 
     # page.tsx
     expect(PAGE, f'"{args.tab}" in type Tab', rf'^type Tab\s*=[^;]*"{tab}"')
+    if args.shared:
+        page_text = PAGE.read_text(encoding="utf-8")
+        listed = [name for name in SYSTEM_LISTS.values()
+                  if re.search(rf'^const {name}\s*:\s*Tab\[\]\s*=\s*\[[^\]]*"{tab}"', page_text, re.M)]
+        rows.append(("✗" if listed else "✓", _rel(PAGE),
+                     f"in {', '.join(listed)} (a shared module must not be)" if listed
+                     else "in no system-only list, so it shows in every system"))
     if args.system:
         name = SYSTEM_LISTS[args.system]
         expect(PAGE, f"listed in {name}", rf'^const {name}\s*:\s*Tab\[\]\s*=\s*\[[^\]]*"{tab}"')
@@ -104,8 +114,11 @@ def main(argv: list[str] | None = None) -> int:
     expect(AUTH, f"{args.permission} in ALL_PERMISSIONS", rf'^const ALL_PERMISSIONS\s*=\s*\[[^\]]*"{perm}"', re.M | re.S)
     expect(ADMIN, f"{args.permission} in PERM_LABELS", rf'^const PERM_LABELS[^=]*=\s*\{{[^}}]*"{perm}"\s*:', re.M | re.S)
     admin_text = ADMIN.read_text(encoding="utf-8")
-    module_entry = re.search(rf'perm:\s*"{perm}"', admin_text)
-    if module_entry:
+    module_entry = None if args.shared else re.search(rf'perm:\s*"{perm}"', admin_text)
+    if args.shared:
+        expect(ADMIN, "module in SHARED_MODULES (Admin > Groups, Shared)",
+               rf'^const SHARED_MODULES[^=]*=\s*\[[^\]]*perm:\s*"{perm}"', re.M | re.S)
+    elif module_entry:
         systems = re.findall(r'id:\s*"(\w+)"', admin_text[:module_entry.start()])
         system = systems[-1] if systems else "?"
         wrong = args.system and args.system not in system.lower()
@@ -114,14 +127,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         rows.append(("✗", _rel(ADMIN), "module in SYSTEM_DEFS (Admin > Groups)"))
 
-    # API guards
-    api_text = API.read_text(encoding="utf-8")
-    guarded = len(re.findall(rf'require_any_permission\("admin:manage",\s*"{perm}"\)', api_text))
-    rows.append(("✓" if guarded else "✗", _rel(API),
-                 f'{guarded} endpoint(s) guarded by require_any_permission("admin:manage", "{args.permission}")'))
-    without_admin = re.findall(rf'require_(?:any_)?permission\("{perm}"\)', api_text)
-    if without_admin:
-        rows.append(("✗", _rel(API), f"{len(without_admin)} endpoint(s) lock admins out (no admin:manage)"))
+    # API guards: in api_server.py or a routes module next to it (e.g. kb_routes.py)
+    guard = re.compile(rf'require_any_permission\("admin:manage",\s*"{perm}"\)')
+    lockout = re.compile(rf'require_(?:any_)?permission\("{perm}"\)')
+    guarded_in, locked = [], 0
+    for source in sorted(API.parent.glob("*.py")):
+        source_text = source.read_text(encoding="utf-8")
+        if guard.search(source_text):
+            guarded_in.append(f"{source.name} ({len(guard.findall(source_text))})")
+        locked += len(lockout.findall(source_text))
+    rows.append(("✓" if guarded_in else "✗", "python/",
+                 f'require_any_permission("admin:manage", "{args.permission}") in ' + (", ".join(guarded_in) or "no file")))
+    if locked:
+        rows.append(("✗", "python/", f"{locked} guard(s) lock admins out (no admin:manage)"))
 
     if args.history:
         expect(HISTORY, f'"{args.tab}" sub-tab in HistoryTab', rf'^type HistSubTab\s*=[^;]*"{tab}"')

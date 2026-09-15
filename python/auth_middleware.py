@@ -5,10 +5,11 @@ Shared secret: AUTH_SECRET env var (same on Railway and Vercel).
 """
 from __future__ import annotations
 
+import hmac
 import os
 from functools import lru_cache
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, Header, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
@@ -72,3 +73,18 @@ def require_any_permission(*perms: str):
         return payload
 
     return dependency
+
+
+_KB_TOKEN_MIN_LENGTH = 32
+
+
+def require_kb_sync_token(x_kb_token: str | None = Header(default=None)) -> None:
+    """Guard for /kb/sync/*: the laptop holding the knowledge base, not a person.
+
+    Off unless KB_SYNC_TOKEN is set on Railway and long enough to be a real
+    secret, so a missing or placeholder variable never leaves the routes open."""
+    expected = os.getenv("KB_SYNC_TOKEN", "")
+    if len(expected) < _KB_TOKEN_MIN_LENGTH:
+        raise HTTPException(status_code=503, detail="Knowledge base sync is not configured")
+    if not x_kb_token or not hmac.compare_digest(x_kb_token.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Invalid knowledge base sync token")

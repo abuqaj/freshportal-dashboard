@@ -108,7 +108,7 @@ _JSX_TEXT = re.compile(r">\s*([^<>{}]*[A-Za-z]{3,}[^<>{}]*?)\s*<")
 _TEXT_LINE = re.compile(r"""^\s*([A-Za-z][^<>{}=;()`"]*[A-Za-z.!?:…])\s*$""")
 _SKIP_LINE = re.compile(r"^\s*(//|/\*|\*|import |export \{|console\.)")
 _CLASSNAME = re.compile(r"""className=(["'`]).*?\1|className=\{[^}]*\}""")
-_CODE_MARKS = ("&&", "||", "==", "=>", ";", "|", "?.")
+_CODE_MARKS = ("&&", "||", "==", "=>", ";", "|", "?.", "): ", "?:")  # "): " and "?:" catch generic signatures
 _KEYWORDS = {"return", "else", "break", "continue", "default:", "try", "finally", "do"}
 
 

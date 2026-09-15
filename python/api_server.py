@@ -70,6 +70,7 @@ from kenya_box_weight import (
     invoice_details_url as kenya_invoice_details_url,
 )
 from auth_middleware import require_permission, require_any_permission, get_token_payload
+from kb_routes import router as kb_router
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
 from delivery_product_match import match_order_to_products
 from dfg_api_client import (
@@ -121,6 +122,7 @@ class PhotoExecuteRequest(BaseModel):
     lang: str = "en"
 
 app = FastAPI(title="FreshPortal API", version="1.0.0")
+app.include_router(kb_router)
 
 
 _scheduler = BackgroundScheduler(timezone="UTC")

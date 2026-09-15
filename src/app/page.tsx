@@ -14,11 +14,12 @@ import DeliveryImporter from "@/components/DeliveryImporter";
 import AnalysisTool from "@/components/AnalysisTool";
 import KenyaBoxWeight from "@/components/KenyaBoxWeight";
 import KenyaSupplier from "@/components/KenyaSupplier";
+import KnowledgeBase from "@/components/KnowledgeBase";
 import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
 import { useSystem } from "@/contexts/SystemContext";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis" | "boxweight" | "supplier";
+type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis" | "boxweight" | "supplier" | "knowledge";
 
 const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
 const ECUADOR_ONLY_TABS:      Tab[] = ["delivery", "analysis"];
@@ -40,6 +41,7 @@ const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "analysis",  gradient: "from-[#7C3AED] to-[#4C1D95]", perm: "analysis:view" },
   { id: "boxweight", gradient: "from-[#0891B2] to-[#155E75]", perm: "boxweight:run" },
   { id: "supplier",  gradient: "from-[#B45309] to-[#7C2D12]", perm: "supplier:add" },
+  { id: "knowledge", gradient: "from-[#BE185D] to-[#831843]", perm: "knowledge:review" },
 ];
 
 /* ─── 3-D tilt hook ─── */
@@ -168,6 +170,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     : tab === "analysis" ? t.nav.analysisTool
     : tab === "boxweight" ? t.nav.kenyaBoxWeight
     : tab === "supplier" ? t.nav.kenyaSupplier
+    : tab === "knowledge" ? t.nav.knowledgeBase
     : null;
 
   return (
@@ -245,6 +248,7 @@ const MODULE_WIDTH: Record<Tab, string> = {
   analysis:  "max-w-4xl",
   boxweight: "max-w-6xl",
   supplier:  "max-w-4xl",
+  knowledge: "max-w-6xl",
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, onSelectTab, children }: {
@@ -581,6 +585,21 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
         </svg>
       ),
     },
+    {
+      id: "knowledge",
+      perm: "knowledge:review",
+      label: t.nav.knowledgeBase,
+      desc: t.hub.knowledgeDesc,
+      gradient: "bg-gradient-to-br from-[#BE185D] to-[#831843]",
+      stat: t.hub.knowledgeStat,
+      statColor: "text-white/60",
+      icon: (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M5 4h9a3 3 0 013 3v13H8a3 3 0 01-3-3V4z" stroke="white" strokeWidth="1.8" strokeLinejoin="round"/>
+          <path d="M5 17a3 3 0 013-3h9M9 8h5" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+        </svg>
+      ),
+    },
   ];
 
   const isStamgegevens = system.id === "stamgegevens";
@@ -732,6 +751,7 @@ export default function Dashboard() {
               : nt.id === "delivery"  ? t.nav.deliveryImporter
               : nt.id === "boxweight" ? t.nav.kenyaBoxWeight
               : nt.id === "supplier"  ? t.nav.kenyaSupplier
+              : nt.id === "knowledge" ? t.nav.knowledgeBase
               : t.nav.analysisTool,
     }));
 
@@ -786,6 +806,7 @@ export default function Dashboard() {
             {tab === "analysis"  && <AnalysisTool     lang={lang}/>}
             {tab === "boxweight" && <KenyaBoxWeight   lang={lang}/>}
             {tab === "supplier"  && <KenyaSupplier    lang={lang}/>}
+            {tab === "knowledge" && <KnowledgeBase    lang={lang}/>}
           </ModuleCard>
         )}
       </div>
