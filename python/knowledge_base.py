@@ -79,6 +79,13 @@ def ensure_kb_tables() -> None:
                         "ON kb_review_items(status, bucket)")
             cur.execute("ALTER TABLE kb_review_items ADD COLUMN IF NOT EXISTS action TEXT")
             cur.execute("ALTER TABLE kb_review_items ADD COLUMN IF NOT EXISTS verify TEXT")
+            # Evidence sent as one string used to be stored a character per
+            # element; join those back into the path they were.
+            cur.execute("""
+                UPDATE kb_review_items SET evidence = ARRAY[array_to_string(evidence, '')]
+                WHERE cardinality(evidence) > 1
+                  AND NOT EXISTS (SELECT 1 FROM unnest(evidence) AS e WHERE char_length(e) <> 1)
+            """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS kb_always_rules (
                     id          SERIAL PRIMARY KEY,
@@ -113,6 +120,16 @@ def _rows(cur) -> list[dict]:
     return [dict(r) for r in cur.fetchall()]
 
 
+def _text_list(value) -> list[str]:
+    """A list as sent, or a single string as a one-element list, never its
+    characters. A multi-line string gives one element per line."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [line.strip() for line in value.splitlines() if line.strip()]
+    return [str(v) for v in value]
+
+
 # ── documents ───────────────────────────────────────────────────────────────
 
 def upsert_documents(documents: list[dict]) -> int:
@@ -130,7 +147,7 @@ def upsert_documents(documents: list[dict]) -> int:
             doc.get("kind") if doc.get("kind") in DOCUMENT_KINDS else "other",
             doc.get("title"),
             doc.get("topic"),
-            [str(tag) for tag in (doc.get("tags") or [])],
+            _text_list(doc.get("tags")),
             doc.get("source_date") or None,
             content,
             doc.get("size_bytes"),
@@ -215,7 +232,7 @@ def upsert_review_items(items: list[dict], run_id: str | None) -> tuple[int, lis
                 """, (
                     item_id, run_id or item.get("run_id"), bucket, str(item["kind"]), str(item["title"]),
                     item.get("target"), item.get("body"), item.get("action"), item.get("verify"),
-                    [str(e) for e in (item.get("evidence") or [])],
+                    _text_list(item.get("evidence")),
                     item.get("why"), "applied" if auto else "pending", auto,
                 ))
                 stored += 1
