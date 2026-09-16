@@ -7,7 +7,7 @@ const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 const PAGE_SIZE = 20;
 const PROPOSAL_KIND = "wiki-proposal";
 
-type SubTab = "review" | "proposals" | "library" | "runs";
+type SubTab = "review" | "proposals" | "changelog" | "library" | "runs";
 type ReviewView = "pending" | "decided" | "done";
 type Decision = "approve" | "approve_always" | "reject" | "answer" | "undo";
 type Strings = (typeof translations)[Lang]["knowledgeBase"];
@@ -28,6 +28,23 @@ interface ReviewItem {
   decided_at: string | null;
   applied_at: string | null;
   created_at: string | null;
+}
+
+interface ChangeLogEntry {
+  id: string;
+  bucket: ReviewItem["bucket"];
+  kind: string;
+  title: string;
+  target: string | null;
+  body: string | null;
+  action: string | null;
+  verify: string | null;
+  evidence: string[] | null;
+  why: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  applied_at: string | null;
+  applied_by_run: string | null;
 }
 
 interface Rule {
@@ -63,24 +80,12 @@ interface Run {
   summary: string | null;
 }
 
-interface RunRequest {
-  id: number;
-  skill: string;
-  requested_by: string | null;
-  requested_at: string | null;
-  status: string;
-  claimed_at: string | null;
-  finished_at: string | null;
-  detail: string | null;
-}
-
 interface Overview {
   pending_review: number;
   pending_proposals: number;
   pending_questions: number;
   decided_waiting: number;
   documents: number;
-  open_requests: number;
   last_runs: { skill: string; status: string | null; started_at: string | null; finished_at: string | null }[];
 }
 
@@ -132,13 +137,6 @@ function kindLabel(kind: string, t: Strings): string {
     : t.kindOther;
 }
 
-function requestLabel(status: string, t: Strings): string {
-  return status === "queued" ? t.requestQueued
-    : status === "claimed" ? t.requestClaimed
-    : status === "done" ? t.requestDone
-    : t.requestFailed;
-}
-
 function Spinner({ label }: { label: string }) {
   return (
     <div className="flex items-center justify-center gap-2 py-10 text-sm text-ink-3">
@@ -165,6 +163,18 @@ function BucketBadge({ bucket, t }: { bucket: ReviewItem["bucket"]; t: Strings }
     : "bg-emerald/10 text-emerald border-emerald/20";
   const label = bucket === "signoff" ? t.bucketSignoff : bucket === "context" ? t.bucketContext : t.bucketAuto;
   return <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border ${style}`}>{label}</span>;
+}
+
+function EvidenceList({ evidence, t }: { evidence: string[] | null; t: Strings }) {
+  if (!evidence || evidence.length === 0) return null;
+  return (
+    <div className="text-xs text-ink-3">
+      <span className="font-semibold">{t.evidence}:</span>
+      <ul className="mt-1 flex flex-col gap-0.5">
+        {evidence.map(path => <li key={path}><code className="text-ink break-all">{path}</code></li>)}
+      </ul>
+    </div>
+  );
 }
 
 /* ─── Review ─────────────────────────────────────────────────────────────── */
@@ -214,14 +224,7 @@ function ReviewCard({ item, t, lang, onDecided }: {
         </div>
       )}
       {item.why && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.why}:</span> {item.why}</p>}
-      {item.evidence && item.evidence.length > 0 && (
-        <div className="text-xs text-ink-3">
-          <span className="font-semibold">{t.evidence}:</span>
-          <ul className="mt-1 flex flex-col gap-0.5">
-            {item.evidence.map(path => <li key={path}><code className="text-ink break-all">{path}</code></li>)}
-          </ul>
-        </div>
-      )}
+      <EvidenceList evidence={item.evidence} t={t} />
 
       <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
         <span className={`text-xs font-medium ${pending ? "text-amber-700" : "text-ink-3"}`}>{statusLabel(item.status, t)}</span>
@@ -380,6 +383,80 @@ function RulesPanel({ t, lang }: { t: Strings; lang: Lang }) {
   );
 }
 
+/* ─── Change log ─────────────────────────────────────────────────────────── */
+
+function ChangeLogTab({ t, lang }: { t: Strings; lang: Lang }) {
+  const [entries, setEntries] = useState<ChangeLogEntry[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async (offset: number) => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await api<{ items: ChangeLogEntry[]; has_more: boolean }>(`/kb/change-log?limit=${PAGE_SIZE}&offset=${offset}`);
+      setEntries(prev => (offset === 0 || !prev ? res.items : [...prev, ...res.items]));
+      setHasMore(res.has_more);
+    } catch (e) {
+      setError(errorText(e));
+      if (offset === 0) setEntries([]);
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(0); }, [load]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-xs text-ink-3">{t.changeLogHint}</p>
+      {error && <ErrorBox message={`${t.loadError} ${error}`} />}
+      {entries === null ? <Spinner label={t.loading} />
+        : entries.length === 0 ? <Empty label={t.empty} />
+        : (
+          <ul className="flex flex-col gap-2">
+            {entries.map(entry => (
+              <li key={entry.id} className="rounded-xl border border-border bg-surface">
+                <button className="w-full flex flex-col gap-1 px-4 py-3 text-left" aria-expanded={expanded === entry.id}
+                  onClick={() => setExpanded(expanded === entry.id ? "" : entry.id)}>
+                  <span className="flex flex-wrap items-center gap-2">
+                    {entry.bucket === "auto"
+                      ? <BucketBadge bucket="auto" t={t} />
+                      : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md border bg-ground text-ink-3 border-border">{t.approvedBy(entry.decided_by ?? "—")}</span>}
+                    <span className="text-[10px] text-ink-3 ml-auto">{formatWhen(entry.applied_at, lang)}</span>
+                  </span>
+                  <span className="text-sm font-semibold text-ink">{entry.title}</span>
+                  <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-ink-3">
+                    {entry.target && <span><span className="font-semibold">{t.target}:</span> <code className="text-ink break-all">{entry.target}</code></span>}
+                    <span><span className="font-semibold">{t.run}:</span> <code className="text-ink">{entry.applied_by_run ?? "—"}</code></span>
+                  </span>
+                </button>
+                {expanded === entry.id && (
+                  <div className="step-enter flex flex-col gap-3 border-t border-border mx-4 py-3">
+                    {entry.body && (
+                      <div>
+                        <p className="text-[11px] font-semibold text-ink-3 mb-1">{t.changeMade}</p>
+                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-ground px-3 py-2 text-xs text-ink font-mono">{entry.body}</pre>
+                      </div>
+                    )}
+                    {entry.action && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.actionDone}:</span> {entry.action}</p>}
+                    {entry.verify && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.howToVerify}:</span> {entry.verify}</p>}
+                    {entry.why && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.why}:</span> {entry.why}</p>}
+                    <EvidenceList evidence={entry.evidence} t={t} />
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      {hasMore && (
+        <button className={`${BTN} self-center border border-border text-ink-3 hover:text-ink`} disabled={loading} onClick={() => load(entries?.length ?? 0)}>{t.loadMore}</button>
+      )}
+    </div>
+  );
+}
+
 /* ─── Library ────────────────────────────────────────────────────────────── */
 
 function LibraryTab({ t, lang }: { t: Strings; lang: Lang }) {
@@ -492,23 +569,11 @@ function LibraryTab({ t, lang }: { t: Strings; lang: Lang }) {
 
 /* ─── Runs ───────────────────────────────────────────────────────────────── */
 
-function RunsTab({ t, lang, onChanged }: { t: Strings; lang: Lang; onChanged: () => void }) {
-  const [requests, setRequests] = useState<RunRequest[] | null>(null);
+function RunsTab({ t, lang }: { t: Strings; lang: Lang }) {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [expanded, setExpanded] = useState("");
-  const [busy, setBusy] = useState("");
-  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-
-  const loadRequests = useCallback(async () => {
-    try {
-      setRequests((await api<{ requests: RunRequest[] }>("/kb/run-requests")).requests);
-    } catch (e) {
-      setError(errorText(e));
-      setRequests([]);
-    }
-  }, []);
 
   const loadRuns = useCallback(async (offset: number) => {
     try {
@@ -521,68 +586,14 @@ function RunsTab({ t, lang, onChanged }: { t: Strings; lang: Lang; onChanged: ()
     }
   }, []);
 
-  useEffect(() => {
-    loadRequests();
-    loadRuns(0);
-  }, [loadRequests, loadRuns]);
-
-  async function requestRun(skill: string) {
-    setBusy(skill);
-    setNotice("");
-    setError("");
-    try {
-      const res = await postJson<{ request: RunRequest; already_queued: boolean }>("/kb/run-requests", { skill });
-      if (res.already_queued) setNotice(t.alreadyQueued);
-      await loadRequests();
-      onChanged();
-    } catch (e) {
-      setError(errorText(e));
-    }
-    setBusy("");
-  }
+  useEffect(() => { loadRuns(0); }, [loadRuns]);
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-4">
       <p className="text-xs text-ink-3">{t.runsHint}</p>
-      <div className="flex flex-wrap gap-2">
-        <button className={`${BTN} h-9 px-4 bg-emerald text-white hover:bg-emerald/90`} disabled={busy !== ""} onClick={() => requestRun("data-ingestion")}>{t.runIngestion}</button>
-        <button className={`${BTN} h-9 px-4 border border-emerald/40 text-emerald hover:bg-emerald/5`} disabled={busy !== ""} onClick={() => requestRun("improve-system")}>{t.runImprove}</button>
-      </div>
-      {notice && <p className="text-xs text-amber-700">{notice}</p>}
       {error && <ErrorBox message={`${t.loadError} ${error}`} />}
 
       <section className="flex flex-col gap-2">
-        <h3 className="text-sm font-semibold text-ink">{t.requestsTitle}</h3>
-        {requests === null ? <Spinner label={t.loading} />
-          : requests.length === 0 ? <p className="text-xs text-ink-3">{t.empty}</p>
-          : (
-            <div className="overflow-x-auto rounded-xl border border-border">
-              <table className="w-full text-xs">
-                <thead className="bg-ground text-ink-3">
-                  <tr>
-                    <th className="text-left font-semibold px-3 py-2">{t.colSkill}</th>
-                    <th className="text-left font-semibold px-3 py-2">{t.colWhen}</th>
-                    <th className="text-left font-semibold px-3 py-2">{t.colBy}</th>
-                    <th className="text-left font-semibold px-3 py-2">{t.colStatus}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {requests.map(req => (
-                    <tr key={req.id} className="border-t border-border">
-                      <td className="px-3 py-2 font-medium text-ink">{req.skill}</td>
-                      <td className="px-3 py-2 text-ink-3">{formatWhen(req.requested_at, lang)}</td>
-                      <td className="px-3 py-2 text-ink-3">{req.requested_by ?? "—"}</td>
-                      <td className="px-3 py-2 text-ink">{requestLabel(req.status, t)}{req.detail ? ` · ${req.detail}` : ""}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <h3 className="text-sm font-semibold text-ink">{t.runsTitle}</h3>
         {runs === null ? <Spinner label={t.loading} />
           : runs.length === 0 ? <p className="text-xs text-ink-3">{t.empty}</p>
           : (
@@ -630,6 +641,7 @@ export default function KnowledgeBase({ lang }: { lang: Lang }) {
   const tabs: { id: SubTab; label: string; count: number }[] = [
     { id: "review", label: t.tabReview, count: (overview?.pending_review ?? 0) + (overview?.pending_questions ?? 0) },
     { id: "proposals", label: t.tabProposals, count: overview?.pending_proposals ?? 0 },
+    { id: "changelog", label: t.tabChangeLog, count: 0 },
     { id: "library", label: t.tabLibrary, count: 0 },
     { id: "runs", label: t.tabRuns, count: 0 },
   ];
@@ -673,8 +685,9 @@ export default function KnowledgeBase({ lang }: { lang: Lang }) {
           </div>
         )}
         {tab === "proposals" && <ReviewList t={t} lang={lang} kind={PROPOSAL_KIND} hint={t.proposalsHint} onChanged={loadOverview} />}
+        {tab === "changelog" && <ChangeLogTab t={t} lang={lang} />}
         {tab === "library" && <LibraryTab t={t} lang={lang} />}
-        {tab === "runs" && <RunsTab t={t} lang={lang} onChanged={loadOverview} />}
+        {tab === "runs" && <RunsTab t={t} lang={lang} />}
       </div>
     </div>
   );

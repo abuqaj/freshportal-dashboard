@@ -4,8 +4,8 @@ Two audiences:
 - people in the dashboard (JWT with admin:manage or knowledge:review), who
   read what the knowledge base produced and decide on its proposals;
 - the laptop that holds the knowledge base (the X-KB-Token header, checked
-  against KB_SYNC_TOKEN), which pushes what it produced and pulls decisions and
-  run requests. Those routes touch only the kb_* tables.
+  against KB_SYNC_TOKEN), which pushes what it produced and pulls decisions.
+  Those routes touch only the kb_* tables.
 """
 from __future__ import annotations
 
@@ -94,22 +94,10 @@ def kb_runs(limit: int = 20, offset: int = 0, _: dict = Depends(_reviewer)) -> d
     return {"runs": runs, "has_more": has_more}
 
 
-@router.get("/kb/run-requests")
-def kb_run_requests(limit: int = 10, _: dict = Depends(_reviewer)) -> dict:
-    return {"requests": kb.list_run_requests(min(max(limit, 1), 50))}
-
-
-class RunRequestBody(BaseModel):
-    skill: str
-
-
-@router.post("/kb/run-requests")
-def kb_request_run(req: RunRequestBody, payload: dict = Depends(_reviewer)) -> dict:
-    try:
-        request, waiting = kb.request_run(req.skill, _who(payload))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    return {"request": request, "already_queued": waiting}
+@router.get("/kb/change-log")
+def kb_change_log(limit: int = 20, offset: int = 0, _: dict = Depends(_reviewer)) -> dict:
+    items, has_more = kb.list_change_log(*_page(limit, offset))
+    return {"items": items, "has_more": has_more}
 
 
 # ── the laptop ──────────────────────────────────────────────────────────────
@@ -172,24 +160,3 @@ def sync_applied(req: SyncApplied) -> dict:
 @router.get("/kb/sync/rules", dependencies=_laptop)
 def sync_rules() -> dict:
     return {"rules": kb.list_rules()}
-
-
-@router.post("/kb/sync/run-requests/next", dependencies=_laptop)
-def sync_next_request() -> dict:
-    return {"request": kb.claim_next_request()}
-
-
-class SyncFinish(BaseModel):
-    status: str
-    detail: str | None = None
-
-
-@router.post("/kb/sync/run-requests/{request_id}/finish", dependencies=_laptop)
-def sync_finish_request(request_id: int, req: SyncFinish) -> dict:
-    try:
-        updated = kb.finish_request(request_id, req.status, req.detail)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    if not updated:
-        raise HTTPException(409, "Request is not claimed")
-    return {"ok": True}

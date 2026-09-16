@@ -3,9 +3,9 @@ Coloriginz knowledge base.
 
 The knowledge base is a git repository on one laptop and stays the source of
 truth. Its skills push documents, review items and run records here through
-the /kb/sync/* routes, and pull the user's decisions and run requests back.
-These tables are a view of that repository plus an inbox for decisions: the
-laptop applies every change itself, then reports it as applied.
+the /kb/sync/* routes, and pull the user's decisions back. These tables are a
+view of that repository plus an inbox for decisions: the laptop applies every
+change itself, then reports it as applied. Runs start only on the laptop.
 """
 from __future__ import annotations
 
@@ -77,6 +77,8 @@ def ensure_kb_tables() -> None:
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS kb_review_items_status_idx "
                         "ON kb_review_items(status, bucket)")
+            cur.execute("ALTER TABLE kb_review_items ADD COLUMN IF NOT EXISTS action TEXT")
+            cur.execute("ALTER TABLE kb_review_items ADD COLUMN IF NOT EXISTS verify TEXT")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS kb_always_rules (
                     id          SERIAL PRIMARY KEY,
@@ -100,18 +102,9 @@ def ensure_kb_tables() -> None:
                     received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS kb_run_requests (
-                    id           SERIAL PRIMARY KEY,
-                    skill        TEXT NOT NULL,
-                    requested_by TEXT,
-                    requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    status       TEXT NOT NULL DEFAULT 'queued',
-                    claimed_at   TIMESTAMPTZ,
-                    finished_at  TIMESTAMPTZ,
-                    detail       TEXT
-                )
-            """)
+            # Run now queued requests for a laptop task that was never set up;
+            # the button and its queue are gone, and nothing reads this table.
+            cur.execute("DROP TABLE IF EXISTS kb_run_requests")
         conn.commit()
     _tables_ready = True
 
@@ -212,15 +205,17 @@ def upsert_review_items(items: list[dict], run_id: str | None) -> tuple[int, lis
                 auto = bucket == "auto"
                 cur.execute("""
                     INSERT INTO kb_review_items
-                        (id, run_id, bucket, kind, title, target, body, evidence, why, status, applied_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() END)
+                        (id, run_id, bucket, kind, title, target, body, action, verify, evidence, why, status, applied_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() END)
                     ON CONFLICT (id) DO UPDATE SET
                         run_id = EXCLUDED.run_id, bucket = EXCLUDED.bucket, kind = EXCLUDED.kind,
                         title = EXCLUDED.title, target = EXCLUDED.target, body = EXCLUDED.body,
+                        action = EXCLUDED.action, verify = EXCLUDED.verify,
                         evidence = EXCLUDED.evidence, why = EXCLUDED.why, updated_at = NOW()
                 """, (
                     item_id, run_id or item.get("run_id"), bucket, str(item["kind"]), str(item["title"]),
-                    item.get("target"), item.get("body"), [str(e) for e in (item.get("evidence") or [])],
+                    item.get("target"), item.get("body"), item.get("action"), item.get("verify"),
+                    [str(e) for e in (item.get("evidence") or [])],
                     item.get("why"), "applied" if auto else "pending", auto,
                 ))
                 stored += 1
@@ -230,10 +225,11 @@ def upsert_review_items(items: list[dict], run_id: str | None) -> tuple[int, lis
 
 def list_review_items(view: str, kind: str | None, exclude_kind: str | None,
                       limit: int, offset: int) -> tuple[list[dict], bool]:
+    """Sign-off items and questions only; automatic changes are in the change log."""
     ensure_kb_tables()
-    where, params = [], []
+    where, params = ["bucket IN ('signoff', 'context')"], []
     if view == "pending":
-        where.append("status = 'pending' AND bucket IN ('signoff', 'context')")
+        where.append("status = 'pending'")
         order = "created_at ASC"
     elif view == "decided":
         where.append("status = ANY(%s)")
@@ -251,11 +247,40 @@ def list_review_items(view: str, kind: str | None, exclude_kind: str | None,
     if exclude_kind:
         where.append("kind <> %s")
         params.append(exclude_kind)
-    clause = f"WHERE {' AND '.join(where)}" if where else ""
     with _conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(f"SELECT * FROM kb_review_items {clause} ORDER BY {order}, id LIMIT %s OFFSET %s",
-                        params + [limit + 1, offset])
+            cur.execute(f"""
+                SELECT * FROM kb_review_items WHERE {' AND '.join(where)}
+                ORDER BY {order}, id LIMIT %s OFFSET %s
+            """, params + [limit + 1, offset])
+            rows = _rows(cur)
+    return rows[:limit], len(rows) > limit
+
+
+def list_change_log(limit: int, offset: int) -> tuple[list[dict], bool]:
+    """Every change already applied on the laptop, as change-log.md records it:
+    automatic fixes, and approved items once applied. An automatic fix names
+    the run that pushed it; an approved item names the improve-system run
+    whose start and finish bracket the moment it was reported applied, since
+    the laptop does not send that run's id."""
+    ensure_kb_tables()
+    with _conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT i.id, i.bucket, i.kind, i.title, i.target, i.body, i.action, i.verify,
+                       i.evidence, i.why, i.decided_by, i.decided_at, i.applied_at,
+                       CASE WHEN i.bucket = 'auto' THEN i.run_id ELSE r.id END AS applied_by_run
+                FROM kb_review_items i
+                LEFT JOIN LATERAL (
+                    SELECT id FROM kb_runs
+                    WHERE i.bucket <> 'auto' AND skill = 'improve-system'
+                      AND started_at <= i.applied_at AND finished_at >= i.applied_at
+                    ORDER BY started_at DESC LIMIT 1
+                ) r ON TRUE
+                WHERE i.bucket = 'auto' OR i.status = 'applied'
+                ORDER BY i.applied_at DESC NULLS LAST, i.id
+                LIMIT %s OFFSET %s
+            """, (limit + 1, offset))
             rows = _rows(cur)
     return rows[:limit], len(rows) > limit
 
@@ -368,7 +393,7 @@ def delete_rule(rule_id: int) -> bool:
     return deleted
 
 
-# ── runs and run requests ───────────────────────────────────────────────────
+# ── runs ────────────────────────────────────────────────────────────────────
 
 def record_run(run: dict) -> None:
     ensure_kb_tables()
@@ -400,81 +425,6 @@ def list_runs(limit: int, offset: int) -> tuple[list[dict], bool]:
     return rows[:limit], len(rows) > limit
 
 
-def _fail_stale_claims(cur) -> None:
-    """A laptop that claimed a request and never reported back (closed lid,
-    crashed session) must not block that skill's button forever."""
-    cur.execute("""
-        UPDATE kb_run_requests SET status = 'failed', finished_at = NOW(),
-            detail = 'No report from the laptop within 12 hours'
-        WHERE status = 'claimed' AND claimed_at < NOW() - INTERVAL '12 hours'
-    """)
-
-
-def request_run(skill: str, username: str) -> tuple[dict, bool]:
-    """Returns (request, already_waiting)."""
-    if skill not in SKILLS:
-        raise ValueError(f"Unknown skill: {skill}")
-    ensure_kb_tables()
-    with _conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            _fail_stale_claims(cur)
-            cur.execute("""
-                SELECT * FROM kb_run_requests WHERE skill = %s AND status IN ('queued', 'claimed')
-                ORDER BY requested_at LIMIT 1
-            """, (skill,))
-            existing = cur.fetchone()
-            if existing:
-                conn.commit()
-                return dict(existing), True
-            cur.execute("INSERT INTO kb_run_requests (skill, requested_by) VALUES (%s, %s) RETURNING *",
-                        (skill, username))
-            created = dict(cur.fetchone())
-        conn.commit()
-    return created, False
-
-
-def list_run_requests(limit: int) -> list[dict]:
-    ensure_kb_tables()
-    with _conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            _fail_stale_claims(cur)
-            cur.execute("SELECT * FROM kb_run_requests ORDER BY requested_at DESC, id DESC LIMIT %s", (limit,))
-            rows = _rows(cur)
-        conn.commit()
-    return rows
-
-
-def claim_next_request() -> dict | None:
-    ensure_kb_tables()
-    with _conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            _fail_stale_claims(cur)
-            cur.execute("""
-                UPDATE kb_run_requests SET status = 'claimed', claimed_at = NOW()
-                WHERE id = (SELECT id FROM kb_run_requests WHERE status = 'queued'
-                            ORDER BY requested_at LIMIT 1 FOR UPDATE SKIP LOCKED)
-                RETURNING *
-            """)
-            row = cur.fetchone()
-        conn.commit()
-    return dict(row) if row else None
-
-
-def finish_request(request_id: int, status: str, detail: str | None) -> bool:
-    if status not in ("done", "failed"):
-        raise ValueError("status must be done or failed")
-    ensure_kb_tables()
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE kb_run_requests SET status = %s, detail = %s, finished_at = NOW()
-                WHERE id = %s AND status = 'claimed'
-            """, (status, (detail or "")[:2000], request_id))
-            updated = cur.rowcount > 0
-        conn.commit()
-    return updated
-
-
 def overview() -> dict:
     ensure_kb_tables()
     with _conn() as conn:
@@ -490,8 +440,6 @@ def overview() -> dict:
             counts = dict(cur.fetchone())
             cur.execute("SELECT COUNT(*) AS n FROM kb_documents")
             counts["documents"] = cur.fetchone()["n"]
-            cur.execute("SELECT COUNT(*) AS n FROM kb_run_requests WHERE status IN ('queued', 'claimed')")
-            counts["open_requests"] = cur.fetchone()["n"]
             cur.execute("""
                 SELECT DISTINCT ON (skill) skill, status, started_at, finished_at
                 FROM kb_runs ORDER BY skill, COALESCE(started_at, received_at) DESC
