@@ -24,6 +24,10 @@ BUCKETS = ("auto", "signoff", "context")
 DOCUMENT_KINDS = ("thread_summary", "curated", "inbox", "wiki", "other")
 DECIDED = ("approved", "approved_always", "rejected", "answered")
 DONE = ("applied", "closed")
+# Never trusted to a don't-ask-again rule: contradictions keep both versions
+# for a person to settle, and skills change only with sign-off. improve-system
+# ignores rules for these kinds as well.
+NO_RULE_KINDS = ("contradiction", "skill-edit", "new-skill")
 MAX_BATCH = 200
 MAX_CONTENT_CHARS = 1_000_000
 _ITEM_ID = re.compile(r"^[\w.-]{3,160}$")
@@ -339,6 +343,10 @@ def decide_review_item(item_id: str, decision: str, answer: str | None, username
                 raise ValueError(f"Unknown decision: {decision}")
             if item["bucket"] != "signoff":
                 raise ValueError("Questions are answered, not approved.")
+            if decision == "approve_always" and item["kind"] in NO_RULE_KINDS:
+                raise ValueError("Contradictions and skill changes always need sign-off; approve this one on its own.")
+            if decision == "approve_always" and not item["target"]:
+                raise ValueError("A don't-ask-again rule needs a target file; approve this one on its own.")
             if item["status"] == "approved_always":
                 cur.execute("DELETE FROM kb_always_rules WHERE source_item = %s", (item_id,))
             cur.execute("""
@@ -347,7 +355,7 @@ def decide_review_item(item_id: str, decision: str, answer: str | None, username
                 WHERE id = %s RETURNING *
             """, (_STATUS_FOR[decision], username, item_id))
             updated = dict(cur.fetchone())
-            if decision == "approve_always" and item["target"]:
+            if decision == "approve_always":
                 cur.execute("""
                     INSERT INTO kb_always_rules (kind, target, source_item, created_by)
                     VALUES (%s, %s, %s, %s) ON CONFLICT (kind, target) DO NOTHING

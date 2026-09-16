@@ -6,6 +6,8 @@ import { Lang, translations } from "@/lib/i18n";
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 const PAGE_SIZE = 20;
 const PROPOSAL_KIND = "wiki-proposal";
+// Kinds a don't-ask-again rule never covers; the backend refuses them too (NO_RULE_KINDS).
+const NO_RULE_KINDS = ["contradiction", "skill-edit", "new-skill"];
 
 type SubTab = "review" | "proposals" | "changelog" | "library" | "runs";
 type ReviewView = "pending" | "decided" | "done";
@@ -237,7 +239,9 @@ function ReviewCard({ item, t, lang, onDecided }: {
       {pending && item.bucket === "signoff" && (
         <div className="flex flex-wrap gap-2">
           <button className={`${BTN} bg-emerald text-white hover:bg-emerald/90`} disabled={busy !== null} onClick={() => decide("approve")}>{t.approve}</button>
-          <button className={`${BTN} border border-emerald/40 text-emerald hover:bg-emerald/5`} disabled={busy !== null} onClick={() => decide("approve_always")}>{t.approveAlways}</button>
+          {item.target && !NO_RULE_KINDS.includes(item.kind) && (
+            <button className={`${BTN} border border-emerald/40 text-emerald hover:bg-emerald/5`} disabled={busy !== null} onClick={() => decide("approve_always")}>{t.approveAlways}</button>
+          )}
           <button className={`${BTN} border border-border text-ink-3 hover:text-ember hover:border-ember/40`} disabled={busy !== null} onClick={() => decide("reject")}>{t.reject}</button>
         </div>
       )}
