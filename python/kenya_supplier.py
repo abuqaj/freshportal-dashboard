@@ -1,10 +1,12 @@
 """Supplier onboarding for the Kenya system (850254).
 
-A scanned supplier form goes in, a new supplier in FreshPortal comes out.
-The document always has the same layout; only the values change.
+A supplier form goes in - a scanned PDF or a Word .docx - and a new supplier
+in FreshPortal comes out. The document always has the same layout; only the
+values change.
 
 Pipeline:
-  1. Read the PDF with Claude and extract the fields the portal needs.
+  1. Take the fields the portal needs out of the document: a PDF is read by
+     Claude, a .docx by label, without a model.
   2. A human checks and corrects those values on screen.
   3. Log in, fill /supplier/supplier/add, save, read the new SUP_ID off the
      URL, and set the invoice currency on the supplier's international
@@ -18,6 +20,12 @@ The PDF is sent to the model as a document block rather than being run
 through an OCR library first: these are scans, and Claude reads the page
 images directly, so a separate OCR step would only add a lossy layer
 between the scan and the model.
+
+A .docx is not sent to the model at all. It holds typed text, not a picture
+of text, so docx_reader takes its rows out and each field is found by the
+label next to it: no API call, no cost, and the same file always reads the
+same way. A label that is not recognised leaves its field empty, highlighted
+on the review screen exactly like a field the model could not read.
 """
 from __future__ import annotations
 
@@ -29,13 +37,19 @@ import anthropic
 from pydantic import BaseModel, Field
 
 from config import Config
+from docx_reader import DocxContent, read_docx
 
 logger = logging.getLogger(__name__)
 
 # Anthropic's documented ceiling for a base64 PDF is a 32 MB request; base64
 # inflates by ~4/3, so the raw file has to stay under about 24 MB. Refused
-# here with a readable message rather than as a 413 from the API.
-MAX_PDF_BYTES = 20 * 1024 * 1024
+# here with a readable message rather than as a 413 from the API. A .docx
+# gets the same cap - a form is a few hundred KB.
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+# An OLE compound file: what a Word 97-2003 .doc is, and also what a .docx
+# turns into once Word encrypts it with a password.
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 # FreshPortal's currency dropdown on the international settings page, by
 # option value. Kept here because the extraction has to resolve whatever the
@@ -156,19 +170,62 @@ def _clean_code(raw: str | None, company: str | None) -> str | None:
     return code if len(code) >= 4 else (code or None)
 
 
-def extract_from_pdf(cfg: Config, pdf_bytes: bytes, filename: str = "") -> dict:
-    """Read one scanned supplier form. Writes nothing anywhere."""
+def _review_payload(details: SupplierDetails, currency_id: str | None,
+                    usage: dict | None = None) -> dict:
+    """What the review screen gets, however the details were read."""
+    data = details.model_dump()
+    data["supplier_code"] = _clean_code(details.supplier_code, details.company_name)
+
+    data["currency_id"] = currency_id
+    data["currency_label"] = CURRENCY_OPTIONS.get(currency_id or "")
+    # The portal already defaults to Euro, so an invoice in euros needs no
+    # second page visit at all.
+    data["currency_needs_change"] = bool(currency_id) and currency_id != DEFAULT_CURRENCY_ID
+    data["country_id"] = KENYA_COUNTRY_ID
+
+    missing = [k for k in (
+        "company_name", "address", "postal_code", "city",
+        "phone", "email", "vat_number", "coc_number", "invoice_currency",
+    ) if not data.get(k)]
+
+    result = {
+        "details": data,
+        "missing": missing,
+        "unmapped_currency": bool(details.invoice_currency) and not currency_id,
+    }
+    if usage is not None:
+        result["usage"] = usage
+    return result
+
+
+def extract_from_document(cfg: Config, file_bytes: bytes, filename: str = "") -> dict:
+    """Read one supplier form, a scanned PDF or a Word .docx. Writes nothing
+    anywhere.
+
+    The kind of file is decided on its bytes rather than its name, so a
+    renamed file fails with a message about what it really is."""
+    if not file_bytes:
+        raise ValueError("Empty file")
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"The file is {len(file_bytes) / 1024 / 1024:.1f} MB; the limit is "
+            f"{MAX_UPLOAD_BYTES // 1024 // 1024} MB"
+        )
+    if file_bytes.startswith(b"%PDF"):
+        return _extract_from_pdf(cfg, file_bytes, filename)
+    if file_bytes.startswith(_OLE_MAGIC):
+        raise ValueError(
+            "That is an old Word .doc file or a password-protected document. "
+            "Save it as .docx without a password, or as PDF, and upload it again."
+        )
+    if file_bytes.startswith(b"PK"):
+        return _extract_from_docx(file_bytes, filename)
+    raise ValueError("That file is neither a PDF nor a Word .docx document")
+
+
+def _extract_from_pdf(cfg: Config, pdf_bytes: bytes, filename: str) -> dict:
     if not cfg.anthropic_api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
-    if not pdf_bytes:
-        raise ValueError("Empty file")
-    if len(pdf_bytes) > MAX_PDF_BYTES:
-        raise ValueError(
-            f"PDF is {len(pdf_bytes) / 1024 / 1024:.1f} MB; the limit is "
-            f"{MAX_PDF_BYTES // 1024 // 1024} MB"
-        )
-    if not pdf_bytes.startswith(b"%PDF"):
-        raise ValueError("That file is not a PDF")
 
     client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
     logger.info("[kenya-supplier] extracting from %s (%d bytes)", filename or "upload", len(pdf_bytes))
@@ -195,31 +252,285 @@ def extract_from_pdf(cfg: Config, pdf_bytes: bytes, filename: str = "") -> dict:
     )
 
     details: SupplierDetails = response.parsed_output
-    data = details.model_dump()
-    data["supplier_code"] = _clean_code(details.supplier_code, details.company_name)
+    return _review_payload(details, _currency_id(details.invoice_currency), {
+        "input_tokens": response.usage.input_tokens,
+        "output_tokens": response.usage.output_tokens,
+    })
 
-    currency_id = _currency_id(details.invoice_currency)
-    data["currency_id"] = currency_id
-    data["currency_label"] = CURRENCY_OPTIONS.get(currency_id or "")
-    # The portal already defaults to Euro, so an invoice in euros needs no
-    # second page visit at all.
-    data["currency_needs_change"] = bool(currency_id) and currency_id != DEFAULT_CURRENCY_ID
-    data["country_id"] = KENYA_COUNTRY_ID
 
-    missing = [k for k in (
-        "company_name", "address", "postal_code", "city",
-        "phone", "email", "vat_number", "coc_number", "invoice_currency",
-    ) if not data.get(k)]
+# ── Word .docx: read by label, no model ─────────────────────────────────────
+#
+# The supplier form (as sent in, 2026-09-17) is a two-column table of
+# label | value, split by shaded heading rows into COMPANY INFORMATION,
+# CONTACT, INVOICE AND BANK INFORMATION and DIRECTOR. Its labels keep the
+# form's own spelling ("Adress", "Email adress"), and "Postal Code and City"
+# is one field holding both. Other layouts - "Label: value" lines, a row of
+# labels over a row of values - are read too, so a reworked template does not
+# stop the module; whatever does not match is left empty for the operator.
 
-    return {
-        "details": data,
-        "missing": missing,
-        "unmapped_currency": bool(details.invoice_currency) and not currency_id,
-        "usage": {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-        },
-    }
+# The labels a form may put next to each field, most specific first. A label
+# matches a synonym when it is that synonym, or contains it as whole words
+# and is at most three words longer - long enough for "Company phone
+# number", short enough that a sentence of instructions does not count.
+# Fields are tried in this order, so "Email address" is an email before it
+# is an address and "VAT registration number" a VAT number before a
+# registration number. In Kenya the VAT number is the KRA PIN.
+_DOCX_LABELS: list[tuple[str, tuple[str, ...]]] = [
+    ("email", ("email address", "email")),
+    ("phone", ("phone number", "telephone number", "telephone", "phone", "tel",
+               "mobile number", "mobile", "cell")),
+    ("vat_number", ("vat number tax number", "vat number", "vat registration number", "kra pin",
+                    "pin number", "vat", "pin", "tax identification number", "tax number",
+                    "tax id", "tin")),
+    ("coc_number", ("chamber of commerce number registration number", "chamber of commerce number",
+                    "company registration number", "business registration number",
+                    "certificate of incorporation number", "incorporation number",
+                    "registration number", "chamber of commerce", "certificate of incorporation",
+                    "coc")),
+    ("invoice_currency", ("invoice currency", "currency")),
+    # One field on the supplier form, split into its two parts afterwards.
+    ("postal_code_city", ("postal code and city", "postal code city", "post code and city",
+                          "postcode and city", "zip code and city", "city and postal code")),
+    ("postal_code", ("postal code", "post code", "postcode", "zip code", "zip")),
+    ("city", ("city", "town")),
+    ("country", ("country",)),
+    ("company_name", ("company name", "registered company name", "name of company",
+                      "name of the company", "registered name", "business name", "legal name",
+                      "supplier name", "name of supplier", "name of business")),
+    ("address", ("physical address", "street address", "address")),
+]
+
+# Misspellings on real forms, read as the word they mean.
+_DOCX_SPELLING = {"adress": "address", "adres": "address", "addres": "address"}
+
+# A label with one of these words is about something other than the
+# supplier's own details - the bank, a delivery address, a website.
+_DOCX_IGNORE = {"bank", "branch", "swift", "bic", "iban", "account", "delivery", "web", "website"}
+
+# Sections about people rather than the company: a contact's or a director's
+# email address is not the supplier's.
+_DOCX_SKIP_SECTIONS = {"contact", "contacts", "director", "directors", "owner", "owners",
+                       "shareholder", "shareholders", "reference", "references", "delivery"}
+
+# Answers rather than values: "VAT registered? [X] Yes" is not a VAT number,
+# and "N/A" under one means the field is empty.
+_DOCX_NOT_A_VALUE = {"yes", "no", "n/a", "na", "none", "nil", "-", "--"}
+
+_DOCX_FIELD_NAMES = {
+    "company_name": "Company name", "address": "Address", "postal_code": "Postal code",
+    "city": "City", "postal_code_city": "Postal code and city", "country": "Country",
+    "phone": "Phone", "email": "Email", "vat_number": "VAT number",
+    "coc_number": "Registration number", "invoice_currency": "Invoice currency",
+}
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _label_words(text: str) -> list[str]:
+    text = re.sub(r"\(.*?\)", " ", text.lower().replace("e-mail", "email"))
+    return [_DOCX_SPELLING.get(w, w) for w in re.findall(r"[a-z]+", text)]
+
+
+def _label_field(text: str) -> tuple[str, int] | None:
+    """(field, rank) when `text` is a label for a field; lower rank is surer."""
+    words = _label_words(text)
+    if not words or len(words) > 8 or _DOCX_IGNORE & set(words):
+        return None
+    # Exact labels first, across every field, so "Registered company name"
+    # is not taken for a looser match found earlier in the list.
+    for field_key, synonyms in _DOCX_LABELS:
+        for rank, synonym in enumerate(synonyms):
+            if words == synonym.split():
+                return field_key, rank
+    for field_key, synonyms in _DOCX_LABELS:
+        for rank, synonym in enumerate(synonyms):
+            syn = synonym.split()
+            if len(words) <= len(syn) + 3 and any(
+                    words[i:i + len(syn)] == syn for i in range(len(words) - len(syn) + 1)):
+                return field_key, 100 + rank
+    return None
+
+
+def _split_label(text: str) -> tuple[str, str] | None:
+    """A label and its value written in one cell or paragraph: "Label: value",
+    the label on the first line and the value below it, "Label<tab>value" or
+    "Label ______ value"."""
+    label, sep, value = text.partition(":")
+    if sep and "\n" not in label and value.strip() and _label_field(label):
+        return label, value
+    first, sep, rest = text.partition("\n")
+    match = _label_field(first)
+    if sep and rest.strip() and match and match[1] < 100:
+        return first, rest
+    for pattern in (r"\t+", r"\s*(?:_{3,}|\.{4,}|…+)\s*"):
+        parts = re.split(pattern, text, maxsplit=1)
+        if len(parts) == 2 and parts[1].strip() and "\n" not in parts[0] and _label_field(parts[0]):
+            return parts[0], parts[1]
+    return None
+
+
+def _section_heading(row: list[str]) -> set[str] | None:
+    """The words of a section heading - capitals in the first cell and nothing
+    beside it, like the shaded rows of the supplier form - or None."""
+    first = row[0]
+    if any(row[1:]) or first != first.upper() or not re.search(r"[A-Z]{3}", first):
+        return None
+    if _label_field(first) or _split_label(first):
+        return None  # a label that happens to be in capitals
+    return set(_label_words(first))
+
+
+def _docx_value(raw: str) -> str:
+    """A value as the review screen should show it: fill-in lines removed,
+    one line, and for a row of checkboxes the one option that is ticked."""
+    text = re.sub(r"_{2,}|\.{3,}|…+", " ", raw)
+    lines = (re.sub(r"[ \t   ]+", " ", ln).strip(" :;,") for ln in text.split("\n"))
+    value = ", ".join(ln for ln in lines if ln)
+    if "[X]" in value or "[ ]" in value:
+        ticked = [t.strip(" ,;") for t in re.findall(r"\[X\]\s*([^\[\]]*)", value)]
+        ticked = [t for t in ticked if t]
+        # None ticked, or several: nothing a human would not have to decide.
+        value = ticked[0] if len(ticked) == 1 else ""
+    return "" if value.lower() in _DOCX_NOT_A_VALUE else value
+
+
+def _docx_pairs(doc: DocxContent) -> list[tuple[str, str]]:
+    """Every (label, value) the layout offers, in reading order, outside the
+    sections about people. Whether a label is one we want is decided later."""
+    pairs: list[tuple[str, str]] = []
+    rows = doc.rows
+    skipping = False
+    for i, row in enumerate(rows):
+        heading = _section_heading(row)
+        if heading is not None:
+            skipping = bool(heading & _DOCX_SKIP_SECTIONS)
+            continue
+        if skipping:
+            continue
+
+        inline = [_split_label(cell) for cell in row]
+        labels = [None if inline[j] else _label_field(cell) for j, cell in enumerate(row)]
+        below = rows[i + 1] if i + 1 < len(rows) else None
+        if below is not None and _section_heading(below) is not None:
+            below = None
+
+        # A row of labels with the values in the row underneath.
+        if (len(row) > 1 and all(labels) and below is not None and len(below) == len(row)
+                and not any(_label_field(cell) or _split_label(cell) for cell in below)):
+            pairs.extend(zip(row, below))
+            continue
+
+        for j, cell in enumerate(row):
+            if inline[j]:
+                pairs.append(inline[j])
+            elif labels[j] and j + 1 < len(row) and not labels[j + 1] and not inline[j + 1]:
+                # The value is the next cell - or, for checkboxes spread over
+                # several cells, every cell up to the next label.
+                end = j + 1
+                while end < len(row) and not labels[end] and not inline[end] and (
+                        end == j + 1 or "[" in row[end - 1] or "[" in row[end]):
+                    end += 1
+                pairs.append((cell, " ".join(row[j + 1:end])))
+            elif (labels[j] and labels[j][1] < 100 and len(row) == 1 and below is not None
+                  and len(below) == 1 and not _label_field(below[0]) and not _split_label(below[0])):
+                # A label on its own line and the value on the next.
+                pairs.append((cell, below[0]))
+    return pairs
+
+
+def _split_postal_city(value: str) -> tuple[str | None, str | None]:
+    """"00100 NAIROBI" -> ("00100", "NAIROBI"); also "Nairobi, 00100". Both
+    None when the value is not one number and one name."""
+    if re.fullmatch(r"\d[\d -]*", value):
+        return value, None
+    if not re.search(r"\d", value):
+        return None, value
+    match = re.fullmatch(r"(\d(?:[\d -]*\d)?)\s*[,/-]?\s*(\D+)", value)
+    if match:
+        return match.group(1), match.group(2).strip()
+    match = re.fullmatch(r"(\D+?)\s*[,/-]?\s*(\d(?:[\d -]*\d)?)", value)
+    if match:
+        return match.group(2), match.group(1).strip()
+    return None, None
+
+
+def _currency_in_text(raw: str | None) -> str | None:
+    """A currency named inside a longer value - "Kenya Shillings (KES)" -
+    when exactly one currency is named. Two ("EUR or USD") is left to a human."""
+    found = set()
+    for word in re.findall(r"[A-Za-z]+|[€$£]", raw or ""):
+        currency_id = _currency_id(word)
+        if currency_id is None and word.lower().endswith("s"):
+            currency_id = _currency_id(word[:-1])
+        if currency_id:
+            found.add(currency_id)
+    return found.pop() if len(found) == 1 else None
+
+
+def _extract_from_docx(file_bytes: bytes, filename: str) -> dict:
+    doc = read_docx(file_bytes)
+    logger.info("[kenya-supplier] reading %s (docx, %d rows, %d pictures)",
+                filename or "upload", len(doc.rows), doc.pictures)
+
+    found: dict[str, list[tuple[int, int, str]]] = {}
+    for order, (label, raw) in enumerate(_docx_pairs(doc)):
+        match = _label_field(label)
+        value = _docx_value(raw)
+        if match and value:
+            found.setdefault(match[0], []).append((match[1], order, value))
+
+    if not found:
+        if doc.pictures and not doc.rows:
+            raise ValueError(
+                "The Word document holds only pictures, and pictures in a Word file are "
+                "not read. If the form is a scan pasted into Word, upload the scan as PDF."
+            )
+        raise ValueError(
+            "No supplier details were found in the Word document: none of its labels "
+            "matched a field of the form."
+        )
+
+    values: dict[str, str] = {}
+    notes: list[str] = []
+    for key, candidates in found.items():
+        values[key] = min(candidates)[2]
+        distinct = list(dict.fromkeys(value for _, _, value in candidates))
+        if len(distinct) > 1:
+            notes.append(f"{_DOCX_FIELD_NAMES[key]} appears more than once "
+                         f"({' / '.join(distinct)}); {values[key]} was used.")
+
+    combined = values.pop("postal_code_city", None)
+    if combined:
+        postal, city = _split_postal_city(combined)
+        if postal is None and city is None:
+            notes.append(f'Postal code and city "{combined}" could not be split - fill them in by hand.')
+        for key, part in (("postal_code", postal), ("city", city)):
+            if part and not values.get(key):
+                values[key] = part
+
+    # The portal takes one address; the form's field sometimes lists several.
+    addresses = _EMAIL_RE.findall(values.get("email") or "")
+    if addresses:
+        values["email"] = addresses[0]
+        if len(addresses) > 1:
+            notes.append(f"The form lists {len(addresses)} email addresses "
+                         f"({', '.join(addresses)}); the first was used.")
+
+    # "COMPANY REGISTRATION: PVT-YQ19KK8E" - the supplier repeating the label.
+    for key in ("vat_number", "coc_number"):
+        match = re.fullmatch(r"[A-Za-z][A-Za-z .&/-]*:\s*(\S*\d.*)", values.get(key) or "")
+        if match:
+            values[key] = match.group(1)
+
+    codes = suggest_codes(values.get("company_name"))
+    details = SupplierDetails(**values, supplier_code=codes[0] if codes else None)
+    raw_currency = details.invoice_currency
+    result = _review_payload(details, _currency_id(raw_currency) or _currency_in_text(raw_currency))
+    if doc.pictures and result["missing"]:
+        notes.append(f"The document has {doc.pictures} picture(s), which are not read - "
+                     f"check them for the details missing here.")
+    result["details"]["notes"] = " ".join(notes) or None
+    return result
 
 
 # The add-supplier form, field id -> key in the extracted details. Every id

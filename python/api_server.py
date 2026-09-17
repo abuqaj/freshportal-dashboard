@@ -59,7 +59,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
 from kenya_supplier import (
-    extract_from_pdf as kenya_supplier_extract_pdf,
+    extract_from_document as kenya_supplier_extract_document,
     create_supplier as kenya_supplier_create_portal,
     DuplicateSupplierCode as KenyaDuplicateSupplierCode,
 )
@@ -1158,17 +1158,20 @@ def kenya_box_weight_run(
 
 @app.post("/kenya/supplier/extract")
 async def kenya_supplier_extract(
+    # Still named "pdf" although it now also takes a .docx: renaming the form
+    # field would break uploads between the Vercel and the Railway deploy.
     pdf: UploadFile = File(...),
     _: dict = Depends(require_any_permission("admin:manage", "supplier:add")),
 ):
-    """Read a scanned supplier form and return the fields, for review.
+    """Read a supplier form (scanned PDF or Word .docx) and return the
+    fields, for review.
 
     Writes nothing — not to the database and not to FreshPortal. The portal
     side of this module is deliberately not wired up until the extraction
     has been eyeballed on real documents."""
     try:
         content = await pdf.read()
-        return {"ok": True, **kenya_supplier_extract_pdf(get_kenya_cfg(), content, pdf.filename or "")}
+        return {"ok": True, **kenya_supplier_extract_document(get_kenya_cfg(), content, pdf.filename or "")}
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:

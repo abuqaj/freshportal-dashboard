@@ -35,7 +35,8 @@ interface ExtractResult {
   details: Details;
   missing: string[];
   unmapped_currency: boolean;
-  usage: { input_tokens: number; output_tokens: number };
+  /** Only for a PDF: a .docx is read by label, without the model. */
+  usage?: { input_tokens: number; output_tokens: number };
 }
 
 interface CreateResult {
@@ -152,8 +153,8 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
   }
 
   async function upload(file: File) {
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
-      setError(t.errNotPdf);
+    if (!/\.(pdf|docx)$/i.test(file.name)) {
+      setError(t.errFileType);
       return;
     }
     setStage("reading");
@@ -164,6 +165,7 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
     setFileName(file.name);
     try {
       const body = new FormData();
+      // The API's field is still called "pdf"; it takes a .docx as well.
       body.append("pdf", file);
       const res = await fetch(`${RAILWAY}/kenya/supplier/extract`, { method: "POST", body });
       const text = await res.text();
@@ -267,11 +269,11 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
               <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
             </svg>
             <p className="text-sm font-medium text-ink">{t.dropHere}</p>
-            <p className="text-xs text-ink-3">{fileName || t.pdfOnly}</p>
+            <p className="text-xs text-ink-3">{fileName || t.fileTypes}</p>
             <input
               ref={inputRef}
               type="file"
-              accept="application/pdf,.pdf"
+              accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx"
               className="hidden"
               onChange={e => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }}
             />
@@ -342,9 +344,11 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
             </p>
           </div>
 
-          <p className="text-[11px] text-ink-3">
-            {t.tokens(String(result.usage.input_tokens), String(result.usage.output_tokens))}
-          </p>
+          {result.usage && (
+            <p className="text-[11px] text-ink-3">
+              {t.tokens(String(result.usage.input_tokens), String(result.usage.output_tokens))}
+            </p>
+          )}
 
           <div className="flex items-center gap-3 flex-wrap border-t border-border pt-4">
             <button onClick={reset} className={CTRL}>{t.btnBack}</button>
