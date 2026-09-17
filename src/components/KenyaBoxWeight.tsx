@@ -345,7 +345,6 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
   }
 
   const enabledCount = customers?.length ?? 0;
-  const customerNames = (customers ?? []).map(c => c.label || c.customer_id);
   const running = busy === t.busyRunning;
   // The hand stays down for the whole run, not just the press, so the figure
   // reads as "holding it down while it works" rather than twitching once.
@@ -355,14 +354,37 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
     <div className="flex flex-col gap-4">
       {/* ── The one control ───────────────────────────────────────────────
           Everything else on this screen reports; this is the only thing that
-          acts. The customers whose invoices will be touched are printed on
-          the button itself rather than in a panel above it, so the scope of
-          the action cannot be read separately from the action. */}
+          acts. The customers whose invoices will be touched sit in the same
+          card, right beside the button, so the scope of the action cannot be
+          read separately from the action. They used to be printed on the
+          button itself, but the circle stopped fitting them as the list grew. */}
       <div className="rounded-2xl border border-border py-12 px-6 flex flex-col items-center gap-5">
+        <div className="flex flex-col md:flex-row md:items-center gap-10 w-full">
+        {/* Names, not ids — a bare number tells the operator nothing about
+            whose invoices are about to change. One per line: joined into a
+            sentence, a name that wraps reads as two customers. */}
+        <div className="md:w-72 shrink-0 flex flex-col items-center md:items-start gap-3">
+          <span className="text-[10px] text-ink-3 uppercase tracking-widest">{t.forCustomers}</span>
+          {enabledCount === 0 ? (
+            <span className="text-xs text-ink-3">{t.customersNone}</span>
+          ) : (
+            <ul className="flex flex-col items-center md:items-start gap-1.5">
+              {(customers ?? []).map(c => (
+                <li key={c.customer_id} className="text-sm font-semibold leading-relaxed text-center md:text-left">
+                  {/* box-decoration-clone so a name that wraps gets the
+                      highlight on each line, not one box around both. */}
+                  <span className="bg-[#B91C1C] text-white px-2 py-0.5 rounded box-decoration-clone">
+                    {c.label || c.customer_id}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         {/* items-center, not items-end: the hand sits at roughly the middle
             of the figure's height, so centring the two puts it level with the
             button rather than reaching up at it from below. */}
-        <div className="flex items-center justify-center w-full max-w-3xl">
+        <div className="flex-1 flex items-center justify-center">
         <DeskFigure armDown={armDown} />
         {/* Bezel — the housing the button sits in. Depth is drawn with
             stacked box-shadows rather than a bottom border: a border cannot
@@ -393,16 +415,11 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
                           ? "animate-pulse cursor-wait"
                           : "disabled:opacity-40 disabled:cursor-not-allowed"}`}
           >
-            <span className="text-xl lg:text-2xl font-extrabold uppercase tracking-wide text-center leading-tight drop-shadow-[0_2px_2px_#00000066]">
+            <span className="text-2xl lg:text-3xl font-extrabold uppercase tracking-wide text-center leading-tight drop-shadow-[0_2px_2px_#00000066]">
               {running ? t.btnRunning : t.btnRun}
             </span>
-            <span className="text-[10px] text-white/70 uppercase tracking-widest">{t.forCustomers}</span>
-            {/* Names, not ids — a bare number on the button tells the
-                operator nothing about whose invoices are about to change. */}
-            <span className="text-xs font-semibold text-center leading-snug max-h-20 overflow-y-auto px-2">
-              {enabledCount === 0 ? t.customersNone : customerNames.join(" · ")}
-            </span>
           </button>
+        </div>
         </div>
         </div>
 
