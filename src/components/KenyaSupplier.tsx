@@ -51,6 +51,8 @@ interface CreateResult {
   skipped_fields: string[];
   currency_changed: boolean;
   currency_detail: string;
+  /** Base64 JPEG of the profile right after saving; null when it could not be taken. */
+  profile_screenshot: string | null;
 }
 
 /** Order and labelling of the review form. Keyed so a field that came back
@@ -68,6 +70,21 @@ const FIELDS: { key: keyof Details; labelKey: string; wide?: boolean }[] = [
   { key: "coc_number",       labelKey: "fCoc" },
   { key: "invoice_currency", labelKey: "fCurrency" },
 ];
+
+/** Written with only the first letter capitalised, whoever typed them - the
+ *  same rule the API applies (_first_letter_capital), run here when a field
+ *  is left so the screen shows what will be created. */
+const FIRST_LETTER_ONLY: (keyof Details)[] = ["company_name", "city", "country"];
+
+function firstLetterCapital(value: string): string {
+  const text = value.trim().toLowerCase();
+  // The first letter, not the first character: "3M KENYA" -> "3M kenya".
+  const i = [...text].findIndex(ch => ch.toUpperCase() !== ch.toLowerCase());
+  if (i < 0) return text;
+  const chars = [...text];
+  chars[i] = chars[i].toUpperCase();
+  return chars.join("");
+}
 
 /** Same shape as the delivery importer's stepper, kept local rather than
  *  extracted: that component is in production and works, and lifting it out
@@ -140,6 +157,9 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
   const [fileName, setFileName] = useState("");
   const [result, setResult] = useState<ExtractResult | null>(null);
   const [edited, setEdited] = useState<Partial<Record<keyof Details, string>>>({});
+  // Fields open read-only: what was read is checked first, and changed only
+  // on purpose.
+  const [editing, setEditing] = useState(false);
   const [created, setCreated] = useState<CreateResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -149,6 +169,7 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
     setFileName("");
     setResult(null);
     setEdited({});
+    setEditing(false);
     setCreated(null);
   }
 
@@ -161,6 +182,7 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
     setError("");
     setResult(null);
     setEdited({});
+    setEditing(false);
     setCreated(null);
     setFileName(file.name);
     try {
@@ -208,11 +230,13 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          company_name: value("company_name"),
+          // Also on the way out: a field still focused when Create is clicked
+          // has not been tidied yet. The API applies the rule once more.
+          company_name: firstLetterCapital(value("company_name")),
           supplier_code: code,
           address: value("address"),
           postal_code: value("postal_code"),
-          city: value("city"),
+          city: firstLetterCapital(value("city")),
           phone: value("phone"),
           email: value("email"),
           vat_number: value("vat_number"),
@@ -292,7 +316,29 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
               <p className="text-sm font-semibold text-ink">{t.reviewTitle}</p>
               <p className="text-xs text-ink-3">{t.reviewHint}</p>
             </div>
-            <span className="text-xs text-ink-3">{fileName}</span>
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-xs text-ink-3">{fileName}</span>
+              <button
+                onClick={() => setEditing(on => !on)}
+                aria-pressed={editing}
+                className={`h-9 px-3 rounded-lg text-sm font-medium border inline-flex items-center gap-2 transition-colors
+                  ${editing
+                    ? "border-emerald bg-emerald text-white hover:bg-emerald-dark"
+                    : "border-border bg-surface text-ink-2 hover:border-emerald/50 hover:text-emerald"}`}
+              >
+                {editing ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <polyline points="20 6 9 17 4 12" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <path d="M4 20h4L19 9a2.83 2.83 0 00-4-4L4 16v4z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
+                    <path d="M13.5 6.5l4 4" stroke="currentColor" strokeWidth="2"/>
+                  </svg>
+                )}
+                {editing ? t.btnDoneEditing : t.btnEditFields}
+              </button>
+            </div>
           </div>
 
           {result.missing.length > 0 && (
@@ -311,8 +357,18 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
                   </label>
                   <input
                     value={value(f.key)}
+                    readOnly={!editing}
                     onChange={e => setEdited(prev => ({ ...prev, [f.key]: e.target.value }))}
-                    className={`${CTRL} w-full ${isMissing && !edited[f.key] ? "border-amber-500/50" : ""}`}
+                    onBlur={() => {
+                      if (!FIRST_LETTER_ONLY.includes(f.key)) return;
+                      setEdited(prev => prev[f.key] === undefined
+                        ? prev
+                        : { ...prev, [f.key]: firstLetterCapital(prev[f.key] as string) });
+                    }}
+                    className={`h-9 px-3 rounded-lg text-sm border outline-none transition-colors w-full
+                      ${editing ? "bg-surface focus:border-emerald/50" : "bg-ground text-ink cursor-default"}
+                      ${isMissing && !edited[f.key] ? "border-amber-500/50"
+                        : editing ? "border-border" : "border-transparent"}`}
                   />
                 </div>
               );
@@ -385,6 +441,41 @@ export default function KenyaSupplier({ lang }: { lang: Lang }) {
             <p className="text-xs text-amber-600">
               {t.createdSkipped(created.skipped_fields.join(", "))}
             </p>
+          )}
+          {created.profile_screenshot && (
+            <div className="flex flex-col gap-1.5 pt-1">
+              <a
+                href={created.supplier_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group relative block overflow-hidden rounded-xl border border-border bg-surface
+                           outline-none focus-visible:ring-2 focus-visible:ring-emerald"
+              >
+                <img
+                  src={`data:image/jpeg;base64,${created.profile_screenshot}`}
+                  alt={t.profileShotAlt(created.company_name)}
+                  className="block w-full max-h-[420px] object-cover object-top
+                             transition-transform duration-300 group-hover:scale-[1.01]"
+                />
+                {/* Always visible, so the picture reads as a link on touch screens too */}
+                <span className="absolute top-2 right-2 w-8 h-8 rounded-lg bg-white/90 text-ink shadow
+                                 flex items-center justify-center">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <path d="M14 4h6v6M20 4l-9 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                </span>
+                <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors
+                                 group-hover:bg-black/35 group-focus-visible:bg-black/35">
+                  <span className="h-10 px-5 rounded-lg bg-white text-sm font-semibold text-ink shadow
+                                   inline-flex items-center opacity-0 transition-opacity
+                                   group-hover:opacity-100 group-focus-visible:opacity-100">
+                    {t.openProfile}
+                  </span>
+                </span>
+              </a>
+              <p className="text-[11px] text-ink-3">{t.profileShotHint}</p>
+            </div>
           )}
           <div className="flex items-center gap-3 flex-wrap pt-1">
             <a

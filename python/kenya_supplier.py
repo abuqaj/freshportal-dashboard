@@ -170,11 +170,34 @@ def _clean_code(raw: str | None, company: str | None) -> str | None:
     return code if len(code) >= 4 else (code or None)
 
 
+# Written in the portal with only the first letter capitalised, whoever wrote
+# them - suppliers fill these in as "SHABANGU FLOWERS" as often as not, and an
+# operator correcting a field makes the same slips (user, 2026-09-17). Applied
+# to what was read and again to what is created, so a value typed on the
+# review screen cannot get past it. The screen does the same on leaving a
+# field, so what is created is what was shown.
+_FIRST_LETTER_ONLY = ("company_name", "city", "country")
+
+
+def _first_letter_capital(value: str | None) -> str | None:
+    """"SHABANGU FLOWERS" -> "Shabangu flowers", and "3M KENYA" -> "3M kenya":
+    the first letter, not the first character."""
+    if not value:
+        return value
+    text = value.strip().lower()
+    for i, char in enumerate(text):
+        if char.isalpha():
+            return text[:i] + char.upper() + text[i + 1:]
+    return text
+
+
 def _review_payload(details: SupplierDetails, currency_id: str | None,
                     usage: dict | None = None) -> dict:
     """What the review screen gets, however the details were read."""
     data = details.model_dump()
     data["supplier_code"] = _clean_code(details.supplier_code, details.company_name)
+    for key in _FIRST_LETTER_ONLY:
+        data[key] = _first_letter_capital(data[key])
 
     data["currency_id"] = currency_id
     data["currency_label"] = CURRENCY_OPTIONS.get(currency_id or "")
@@ -693,6 +716,44 @@ def supplier_profile_url(cfg: Config, supplier_id: str) -> str:
     return cfg.freshportal_url + "/supplier/supplier/index/SUP_ID/" + supplier_id + "/"
 
 
+# The top of the profile, not the whole page: the header and the details block
+# are what show the save worked, and a long profile as one full-page image
+# would be megabytes of base64 in the JSON response.
+_SCREENSHOT_VIEWPORT = {"width": 1366, "height": 900}
+_SCREENSHOT_JPEG_QUALITY = 70
+
+# How long to wait for stylesheets and images after the page is parsed.
+# Bounded rather than waiting for "load" outright: FreshPortal pages have
+# been slow and heavy enough to run Railway out of memory (see _login).
+_SCREENSHOT_LOAD_WAIT_MS = 15_000
+
+
+def _profile_screenshot(page, cfg: Config, supplier_id: str) -> str | None:
+    """The supplier's profile as it looks right after saving, as a base64
+    JPEG for the summary on the dashboard.
+
+    Never raises. The supplier exists by the time this runs, so a picture
+    that could not be taken is logged and left out - it must not turn a
+    successful create into an error the operator would retry."""
+    try:
+        page.set_viewport_size(_SCREENSHOT_VIEWPORT)
+        page.goto(supplier_profile_url(cfg, supplier_id),
+                  wait_until="domcontentloaded", timeout=cfg.request_timeout)
+        try:
+            page.wait_for_load_state("load", timeout=_SCREENSHOT_LOAD_WAIT_MS)
+        except Exception:
+            pass  # a picture of a half-styled page still shows the right supplier
+        if "login" in page.url:
+            logger.warning("[kenya-supplier] no screenshot for %s: session ended, on %s",
+                           supplier_id, page.url)
+            return None
+        shot = page.screenshot(type="jpeg", quality=_SCREENSHOT_JPEG_QUALITY, full_page=False)
+        return base64.standard_b64encode(shot).decode("ascii")
+    except Exception as exc:
+        logger.warning("[kenya-supplier] no screenshot for %s: %s", supplier_id, exc)
+        return None
+
+
 def _set_currency(page, cfg: Config, supplier_id: str, currency_id: str) -> tuple[bool, str]:
     """Set the invoice currency on the supplier's international settings.
 
@@ -737,6 +798,8 @@ def create_supplier(cfg: Config, details: dict, on_status=None) -> dict:
     no duplicate check: the portal owns that decision, and before the record
     exists we have no key to check against.
     """
+    details = {**details, **{k: _first_letter_capital(details.get(k)) for k in _FIRST_LETTER_ONLY}}
+
     # Validate before importing anything heavy: a bad code should come back as
     # a 400 without having launched a browser or opened a session.
     company = (details.get("company_name") or "").strip()
@@ -822,6 +885,10 @@ def create_supplier(cfg: Config, details: dict, on_status=None) -> dict:
             elif currency_id == DEFAULT_CURRENCY_ID:
                 currency_detail = "document currency matches the portal default, left alone"
 
+            # Last, so the picture shows the profile with the currency set.
+            _s("Taking a picture of the supplier profile...")
+            screenshot = _profile_screenshot(page, cfg, supplier_id)
+
             return {
                 "supplier_id": supplier_id,
                 "supplier_url": supplier_profile_url(cfg, supplier_id),
@@ -835,6 +902,8 @@ def create_supplier(cfg: Config, details: dict, on_status=None) -> dict:
                 "skipped_fields": skipped,
                 "currency_changed": currency_changed,
                 "currency_detail": currency_detail,
+                # Base64 JPEG, or None when it could not be taken.
+                "profile_screenshot": screenshot,
             }
         finally:
             ctx.close()
