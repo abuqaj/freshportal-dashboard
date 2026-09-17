@@ -4042,6 +4042,7 @@ _KENYA_CUSTOMER_SEED: list[tuple[str, str]] = [
     ("371", "Van Dijk Flora B.V. (Biedronka NL)"),
     ("372", "Van Dijk Flora B.V. (Biedronka Sea Nini)"),
     ("373", "Van Dijk Flora B.V. (Biedronka Sea Airflo)"),
+    ("376", "Coloriginz - Riverdale (CONS)"),
 ]
 
 
@@ -4090,8 +4091,14 @@ def ensure_kenya_box_weight_tables() -> None:
             # calls this function first, so in practice it won't, but a row
             # left without a name would otherwise display as a bare id
             # forever with no way to repair it.
-            cur.execute("SELECT COUNT(*) FROM kenya_box_weight_customers")
-            if cur.fetchone()[0] < len(_KENYA_CUSTOMER_SEED):
+            #
+            # Only seed ids are counted: a row the module created for an id
+            # outside the seed would otherwise make up for a customer added
+            # to the seed later, and that customer would never be inserted.
+            seed_ids = [cid for cid, _ in _KENYA_CUSTOMER_SEED]
+            cur.execute("SELECT COUNT(*) FROM kenya_box_weight_customers WHERE customer_id = ANY(%s)",
+                        (seed_ids,))
+            if cur.fetchone()[0] < len(seed_ids):
                 psycopg2.extras.execute_values(cur, """
                     INSERT INTO kenya_box_weight_customers (customer_id, label, enabled)
                     VALUES %s
