@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date, timedelta
+from decimal import ROUND_CEILING, Decimal
 
 from bi_sync_client import (
     get_export_url, download_export_zip, read_table,
@@ -234,6 +235,17 @@ def open_invoice_customers(cfg: Config, lookback_days: int = LOOKBACK_DAYS) -> l
 # these invoices; more would be false precision on a divided total.
 WEIGHT_DECIMALS = 2
 
+
+def _per_box_weight(weight: float, boxes: float) -> float:
+    """Air waybill weight per box, always rounded UP to WEIGHT_DECIMALS -
+    1.2111 becomes 1.22, never 1.21 (user, 2026-09-17).
+
+    Done in Decimal from the numbers' shortest text form, not with
+    math.ceil on floats: 36.6 / 3 is 12.200000000000001 in binary floating
+    point, which a float ceiling would turn into 12.21."""
+    exact = Decimal(str(weight)) / Decimal(str(boxes))
+    return float(exact.quantize(Decimal(1).scaleb(-WEIGHT_DECIMALS), rounding=ROUND_CEILING))
+
 # Boxes counted from the API and boxes read off the page should agree
 # exactly. A tolerance exists only so a portal that renders "12.0" against an
 # API "12" isn't treated as a conflict.
@@ -305,8 +317,8 @@ def _total_tolerance(line_count: int, boxes: float | None,
     sits on the threshold rather than over it.
 
     The floor exists because the per-box weight is stored to two decimals,
-    so the portal's own multiplication can drift by up to half a cent per box
-    however carefully we write. On an invoice with many boxes and a light
+    rounded up, so the invoice total can sit up to a cent per box above the
+    air waybill however carefully we write. On an invoice with many boxes and a light
     per-box weight that rounding can exceed a line's share, and then it wins -
     a check that fails on arithmetic nobody can avoid is worse than one that
     occasionally lets a line through, because it trains people to ignore it.
@@ -576,7 +588,7 @@ def run_correction(cfg: Config, customer_ids: set[str], limit: int | None = None
                         _record(result)
                         continue
 
-                    per_box = round(weight / boxes, WEIGHT_DECIMALS)
+                    per_box = _per_box_weight(weight, boxes)
                     sample = page.query_selector("#invoice_table td.box_weight")
                     weight_text = _format_weight(per_box, sample.inner_text() if sample else "")
                     written, problems = _write_line_weights(page, cfg, details_url, weight_text, weight, boxes)
