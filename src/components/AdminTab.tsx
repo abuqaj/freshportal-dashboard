@@ -109,7 +109,9 @@ function Th({ children, right }: { children?: React.ReactNode; right?: boolean }
 }
 
 /* ─── Modal wrapper ─── */
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+function Modal({ title, onClose, wide, children }: {
+  title: string; onClose: () => void; wide?: boolean; children: React.ReactNode
+}) {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -121,7 +123,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
       onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div ref={ref} className="bg-surface rounded-3xl border border-border shadow-2xl w-full max-w-md">
+      <div ref={ref} className={`bg-surface rounded-3xl border border-border shadow-2xl w-full ${wide ? "max-w-lg" : "max-w-md"}`}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <h2 className="text-sm font-semibold text-ink">{title}</h2>
           <button onClick={onClose}
@@ -296,15 +298,17 @@ function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string
           {SYSTEM_DEFS.map(sys => {
             const sysChecked = hasSystem(sys.id)
             const checkedModules = sys.modules.filter(m => hasPerm(m.perm))
+            const allModules = sys.modules.length > 0 && checkedModules.length === sys.modules.length
             return (
               <div key={sys.id}
-                className={`rounded-xl border transition-all ${sysChecked ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
+                className={`rounded-xl border overflow-hidden transition-all ${sysChecked ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
+                {/* Colour bar — the same system accent the group cards use */}
+                <span className={`block h-[3px] ${sys.dot} ${sysChecked ? "" : "opacity-30"}`} />
                 {/* System row */}
                 <label className="flex items-center gap-2.5 cursor-pointer px-3 py-2.5">
                   <input type="checkbox" className="accent-emerald w-4 h-4 flex-shrink-0"
                     checked={sysChecked}
                     onChange={e => toggleSystem(sys.id, e.target.checked)} />
-                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${sys.dot}`} />
                   <span className="text-sm font-semibold text-ink flex-1">{sys.label}</span>
                   {sys.modules.length > 0 ? (
                     <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
@@ -325,6 +329,16 @@ function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string
                 {/* Module checkboxes — shown when system is checked */}
                 {sysChecked && sys.modules.length > 0 && (
                   <div className="px-3 pb-2.5 flex flex-col gap-1.5 border-t border-emerald/15 pt-2 ml-6">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest">Modules</p>
+                      <button type="button"
+                        onClick={() => setPerms(allModules
+                          ? perms.filter(p => !sys.modules.some(m => m.perm === p))
+                          : [...perms.filter(p => !sys.modules.some(m => m.perm === p)), ...sys.modules.map(m => m.perm)])}
+                        className="text-[10px] font-semibold text-emerald hover:underline">
+                        {allModules ? "none" : "all"}
+                      </button>
+                    </div>
                     {sys.modules.map(mod => (
                       <label key={mod.perm} className="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" className="accent-emerald w-3.5 h-3.5"
@@ -334,6 +348,12 @@ function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string
                       </label>
                     ))}
                   </div>
+                )}
+                {/* Module perms survive from older grants; without the system they open nothing. */}
+                {!sysChecked && checkedModules.length > 0 && (
+                  <p className="px-3 pb-2.5 text-[10px] font-medium text-amber-600">
+                    {checkedModules.map(m => m.label).join(", ")} granted, but hidden until this system is ticked
+                  </p>
                 )}
               </div>
             )
@@ -400,7 +420,7 @@ function GroupEditModal({ group, onSaved, onClose }: {
   }
 
   return (
-    <Modal title={`Edit group: ${group.name}`} onClose={onClose}>
+    <Modal title={`Edit group: ${group.name}`} onClose={onClose} wide>
       <Field label="Name">
         <input className={INPUT} value={name} onChange={e => setName(e.target.value)} />
       </Field>
@@ -652,10 +672,153 @@ function UsersTable({ currentUsername }: { currentUsername: string | undefined }
   )
 }
 
-/* ─── Group row ─── */
-function GroupRow({ group, onRefresh }: { group: Group; onRefresh: () => void }) {
+/* ─── Group permission model ───────────────────────────────────────────────
+ *  A group's permission list is flat, but the app reads it as a tree: a module
+ *  only opens if its system is open too (the hub filters tiles by perm *and*
+ *  by the system:* list), and admin:manage opens everything. The card below
+ *  renders that tree, so the flat badge list stops hiding which module sits
+ *  under which system — and which modules are granted but unreachable.
+ */
+interface ModuleState { perm: string; label: string; granted: boolean }
+interface SystemState {
+  id: string; label: string; dot: string
+  open: boolean                 // the group can enter this system
+  modules: ModuleState[]
+}
+
+const KNOWN_PERMS = new Set<string>([
+  ...SYSTEM_DEFS.flatMap(s => [`system:${s.id}`, ...s.modules.map(m => m.perm)]),
+  ...SHARED_MODULES.map(m => m.perm),
+  "admin:manage",
+])
+
+function readPerms(perms: string[]) {
+  const isAdmin = perms.includes("admin:manage")
+  const sysIds = perms.filter(p => p.startsWith("system:")).map(p => p.slice("system:".length))
+  // Same rule as the hub: an admin group with no system: perm reaches every system.
+  const allSystems = isAdmin && sysIds.length === 0
+  const systems: SystemState[] = SYSTEM_DEFS.map(s => ({
+    id: s.id, label: s.label, dot: s.dot,
+    open: allSystems || sysIds.includes(s.id),
+    modules: s.modules.map(m => ({ ...m, granted: perms.includes(m.perm) })),
+  }))
+  return {
+    isAdmin,
+    systems,
+    other: perms.filter(p => !KNOWN_PERMS.has(p)),
+    moduleCount: systems.reduce((n, s) => n + s.modules.filter(m => m.granted).length, 0),
+    systemCount: systems.filter(s => s.open).length,
+  }
+}
+
+/* ─── State glyphs ─── */
+function Tick() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" className="flex-shrink-0">
+      <path d="M2 6.3l2.6 2.7L10 3.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  )
+}
+
+function Hollow() {
+  return <span className="w-[11px] h-[11px] rounded-full border border-current opacity-40 flex-shrink-0" />
+}
+
+/** One module under a system. "admin" = not granted outright, but the group
+ *  holds admin:manage, which the hub treats as holding every module perm. */
+function ModuleLine({ label, state }: { label: string; state: "on" | "off" | "admin" }) {
+  return (
+    <span className="flex items-center gap-1.5 text-[11px] leading-tight"
+      title={state === "admin" ? "Open because the group holds Admin & Management" : undefined}>
+      {state === "off"
+        ? <Hollow />
+        : <span className={state === "on" ? "text-emerald" : "text-emerald/50"}><Tick /></span>}
+      <span className={
+        state === "on"      ? "font-medium text-ink"
+        : state === "admin" ? "text-ink-3"
+        : "text-ink-3/45"
+      }>{label}</span>
+      {state === "admin" && (
+        <span className="text-[9px] font-semibold text-ink-3/40 uppercase tracking-wide">admin</span>
+      )}
+    </span>
+  )
+}
+
+/** One system with the modules activated for it listed underneath. */
+function SystemPanel({ sys, isAdmin }: { sys: SystemState; isAdmin: boolean }) {
+  const granted = sys.modules.filter(m => m.granted).length
+  // Module perms held without the system perm: granted, but the hub never
+  // shows them, so the panel says so instead of looking like working access.
+  const orphan = !sys.open
+
+  return (
+    <div className={`rounded-xl border overflow-hidden ${
+      orphan ? "border-amber-500/40 bg-amber-500/5" : "border-border bg-ground/40"
+    }`}>
+      <span className={`block h-[3px] ${orphan ? "bg-amber-500/50" : sys.dot}`} />
+      <div className="flex items-center gap-2 px-2.5 py-2">
+        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${sys.dot} ${orphan ? "opacity-40" : ""}`} />
+        <span className={`text-xs font-semibold flex-1 truncate ${orphan ? "text-ink-3" : "text-ink"}`}>
+          {sys.label}
+        </span>
+        {sys.modules.length > 0 ? (
+          <span className={`text-[10px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full ${
+            orphan                           ? "bg-amber-500/15 text-amber-600"
+            : granted === sys.modules.length ? "bg-emerald/15 text-emerald"
+            : granted > 0                    ? "bg-emerald/10 text-emerald/80"
+            : "bg-muted text-ink-3/60"
+          }`}>
+            {granted}/{sys.modules.length}
+          </span>
+        ) : (
+          <span className="text-[10px] text-ink-3/50">access only</span>
+        )}
+      </div>
+
+      {sys.modules.length > 0 && (
+        <div className="px-2.5 pb-2.5 flex flex-col gap-1.5">
+          {sys.modules.map(m => (
+            <ModuleLine key={m.perm} label={m.label}
+              state={m.granted ? "on" : isAdmin ? "admin" : "off"} />
+          ))}
+        </div>
+      )}
+
+      {orphan && (
+        <p className="px-2.5 pb-2 text-[10px] font-medium text-amber-600 leading-snug">
+          No system access — these modules stay hidden
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** A permission that is not tied to one system. */
+function PermChip({ label, note, on }: { label: string; note?: string; on: boolean }) {
+  return (
+    <span className={`inline-flex items-center gap-1.5 pl-1.5 pr-2.5 py-1 rounded-full text-[11px] border ${
+      on ? "bg-emerald/10 border-emerald/25 text-emerald" : "bg-ground border-border text-ink-3/50"
+    }`}>
+      {on ? <Tick /> : <Hollow />}
+      <span className="font-medium">{label}</span>
+      {note && <span className={on ? "text-emerald/60" : "text-ink-3/40"}>· {note}</span>}
+    </span>
+  )
+}
+
+/* ─── Group card ─── */
+function GroupCard({ group, members, onRefresh }: {
+  group: Group; members: string[]; onRefresh: () => void
+}) {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  const v = readPerms(group.permissions)
+  const open   = v.systems.filter(s => s.open)
+  const orphan = v.systems.filter(s => !s.open && s.modules.some(m => m.granted))
+  const shut   = v.systems.filter(s => !s.open && !s.modules.some(m => m.granted))
+  const panels = [...open, ...orphan]
 
   async function del() {
     if (!confirm(`Delete group "${group.name}"? Users lose these permissions.`)) return
@@ -677,33 +840,31 @@ function GroupRow({ group, onRefresh }: { group: Group; onRefresh: () => void })
       {editing && (
         <GroupEditModal group={group} onSaved={onRefresh} onClose={() => setEditing(false)} />
       )}
-      <tr className="border-b border-border hover:bg-ground/40 transition-colors">
-        <td className="px-4 py-3">
-          <span className="text-sm font-medium text-ink">{group.name}</span>
-        </td>
-        <td className="px-4 py-3 text-xs text-ink-3">{group.description || <span className="opacity-30">—</span>}</td>
-        <td className="px-4 py-3">
-          <div className="flex flex-wrap gap-1">
-            {group.permissions.filter(p => p.startsWith("system:")).map(p => {
-              const sysId = p.replace("system:", "")
-              const sys = SYSTEM_DEFS.find(s => s.id === sysId)
-              return (
-                <span key={p} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium border bg-muted text-ink-3 border-border">
-                  <span className={`w-1.5 h-1.5 rounded-full ${sys?.dot ?? "bg-ink-3"}`} />
-                  {sys?.label ?? sysId}
-                </span>
-              )
-            })}
-            {group.permissions.filter(p => !p.startsWith("system:")).map(p =>
-              <Badge key={p} variant="green">{PERM_LABELS[p] ?? p}</Badge>
+      <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+        {/* Header — who the group is, and who is in it */}
+        <div className="flex items-start gap-3 px-4 py-3 border-b border-border bg-ground/30">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-semibold text-ink">{group.name}</span>
+              {v.isAdmin && <Badge variant="blue">Admin</Badge>}
+              <span className="text-[11px] text-ink-3/70 tabular-nums">
+                {members.length === 0
+                  ? "no members"
+                  : `${members.length} ${members.length === 1 ? "user" : "users"}`}
+              </span>
+            </div>
+            {group.description && (
+              <p className="text-xs text-ink-3 mt-0.5 truncate">{group.description}</p>
             )}
-            {group.permissions.length === 0 && <span className="text-xs text-ink-3/40">—</span>}
+            {members.length > 0 && (
+              <p className="text-[10px] text-ink-3/50 mt-0.5 truncate" title={members.join(", ")}>
+                {members.slice(0, 5).join(", ")}{members.length > 5 ? ` +${members.length - 5}` : ""}
+              </p>
+            )}
           </div>
-        </td>
-        <td className="px-4 py-3 text-right">
-          <div className="flex items-center justify-end gap-1.5">
+          <div className="flex items-center gap-1.5 flex-shrink-0">
             <button onClick={() => setEditing(true)}
-              className="h-7 px-2.5 rounded-lg text-xs font-medium text-ink-3 bg-ground border border-border hover:bg-border/40 transition-colors">
+              className="h-7 px-2.5 rounded-lg text-xs font-medium text-ink-3 bg-surface border border-border hover:bg-border/40 transition-colors">
               Edit
             </button>
             <button disabled={saving} onClick={del}
@@ -711,8 +872,65 @@ function GroupRow({ group, onRefresh }: { group: Group; onRefresh: () => void })
               Delete
             </button>
           </div>
-        </td>
-      </tr>
+        </div>
+
+        {/* Systems, each with its activated modules underneath */}
+        <div className="p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
+              Systems &amp; modules
+            </p>
+            <span className="text-[10px] text-ink-3/60 tabular-nums whitespace-nowrap">
+              {v.systemCount}/{v.systems.length} systems · {v.moduleCount} modules
+            </span>
+            <span className="h-px flex-1 bg-border" />
+          </div>
+
+          {panels.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border px-4 py-5 text-center">
+              <p className="text-xs font-medium text-ink-3">No system access</p>
+              <p className="text-[11px] text-ink-3/60 mt-0.5">
+                Members can sign in, but the hub stays empty. Use Edit to open a system.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {panels.map(sys => <SystemPanel key={sys.id} sys={sys} isAdmin={v.isAdmin} />)}
+            </div>
+          )}
+
+          <div className="pt-1">
+            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">
+              Every system
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              <PermChip label="Admin & Management" note="users · groups · history" on={v.isAdmin} />
+              {SHARED_MODULES.map(m => (
+                <PermChip key={m.perm} label={m.label} note={m.note.replace("every system · ", "")}
+                  on={group.permissions.includes(m.perm)} />
+              ))}
+            </div>
+          </div>
+
+          {/* Only worth naming when some systems are open — otherwise the
+              empty state above already says the group reaches nothing. */}
+          {shut.length > 0 && panels.length > 0 && (
+            <p className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[10px] text-ink-3/50 pt-0.5">
+              <span className="font-semibold uppercase tracking-widest">Closed</span>
+              {shut.map(s => (
+                <span key={s.id} className="inline-flex items-center gap-1">
+                  <span className={`w-1.5 h-1.5 rounded-full ${s.dot} opacity-30`} />
+                  {s.label}
+                </span>
+              ))}
+            </p>
+          )}
+
+          {v.other.length > 0 && (
+            <p className="text-[10px] text-ink-3/50 pt-0.5">Unrecognised: {v.other.join(", ")}</p>
+          )}
+        </div>
+      </div>
     </>
   )
 }
@@ -745,7 +963,7 @@ function NewGroupModal({ onCreated, onClose }: { onCreated: () => void; onClose:
   }
 
   return (
-    <Modal title="New group" onClose={onClose}>
+    <Modal title="New group" onClose={onClose} wide>
       <Field label="Name">
         <input autoFocus className={INPUT} value={name} onChange={e => setName(e.target.value)} placeholder="group-name" />
       </Field>
@@ -771,17 +989,32 @@ function NewGroupModal({ onCreated, onClose }: { onCreated: () => void; onClose:
   )
 }
 
-/* ─── Groups table ─── */
-function GroupsTable() {
+/* ─── Groups ─── */
+function GroupsPanel() {
   const [groups, setGroups] = useState<Group[]>([])
+  const [members, setMembers] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
   const [showNew, setShowNew] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const r = await fetch("/api/admin/groups").then(r => r.json())
-      setGroups(r.groups ?? [])
+      // The groups endpoint carries no member count, so the user list — already
+      // admin-only, same as this screen — supplies it. A failure there only
+      // costs the member line, so the groups still render.
+      const [g, u] = await Promise.all([
+        fetch("/api/admin/groups").then(r => r.json()),
+        fetch("/api/admin/users").then(r => r.json()).catch(() => ({ users: [] })),
+      ])
+      setGroups(g.groups ?? [])
+      const by: Record<string, string[]> = {}
+      for (const user of (u.users ?? []) as User[]) {
+        for (const name of user.groups ?? []) {
+          if (!by[name]) by[name] = []
+          by[name].push(user.username)
+        }
+      }
+      setMembers(by)
     } finally {
       setLoading(false)
     }
@@ -790,43 +1023,52 @@ function GroupsTable() {
   useEffect(() => { load() }, [load])
 
   return (
-    <div className="overflow-x-auto">
+    <div>
       {showNew && (
         <NewGroupModal onCreated={() => { setShowNew(false); load() }} onClose={() => setShowNew(false)} />
       )}
-      <table className="w-full">
-        <thead>
-          <tr className="border-b border-border bg-ground/60">
-            <Th>Name</Th>
-            <Th>Description</Th>
-            <Th>Permissions</Th>
-            <th className="px-4 py-2.5 text-right">
-              <div className="flex items-center justify-end gap-2">
-                <button onClick={load} disabled={loading}
-                  className="w-7 h-7 rounded-lg bg-surface border border-border flex items-center justify-center text-ink-3 hover:bg-border/40 disabled:opacity-40 transition-colors">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" className={loading ? "animate-spin" : ""}>
-                    <path d="M21 12a9 9 0 11-3.2-6.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                    <path d="M21 3v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
-                <button onClick={() => setShowNew(v => !v)}
-                  className="h-7 px-3 rounded-lg bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 transition-colors whitespace-nowrap">
-                  + New group
-                </button>
-              </div>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {loading ? (
-            <tr><td colSpan={4} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
-          ) : groups.length === 0 ? (
-            <tr><td colSpan={4} className="px-4 py-10 text-center text-sm text-ink-3">No groups</td></tr>
-          ) : groups.map(g => (
-            <GroupRow key={g.id} group={g} onRefresh={load} />
-          ))}
-        </tbody>
-      </table>
+
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border bg-ground/60">
+        <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
+          {loading ? "Loading…" : `${groups.length} ${groups.length === 1 ? "group" : "groups"}`}
+        </p>
+        <div className="flex items-center gap-2">
+          <button onClick={load} disabled={loading}
+            className="w-7 h-7 rounded-lg bg-surface border border-border flex items-center justify-center text-ink-3 hover:bg-border/40 disabled:opacity-40 transition-colors">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" className={loading ? "animate-spin" : ""}>
+              <path d="M21 12a9 9 0 11-3.2-6.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M21 3v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+          <button onClick={() => setShowNew(true)}
+            className="h-7 px-3 rounded-lg bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 transition-colors whitespace-nowrap">
+            + New group
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 space-y-3 bg-ground/40">
+        {loading ? (
+          <p className="py-10 text-center text-sm text-ink-3">Loading…</p>
+        ) : groups.length === 0 ? (
+          <p className="py-10 text-center text-sm text-ink-3">No groups</p>
+        ) : (
+          <>
+            {groups.map(g => (
+              <GroupCard key={g.id} group={g} members={members[g.name] ?? []} onRefresh={load} />
+            ))}
+            <div className="flex items-center gap-4 flex-wrap pt-1 text-[10px] text-ink-3/60">
+              <span className="flex items-center gap-1.5">
+                <span className="text-emerald"><Tick /></span> module on
+              </span>
+              <span className="flex items-center gap-1.5"><Hollow /> module off</span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-[3px] rounded-full bg-amber-500/60" /> granted, but the system is closed
+              </span>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -1045,7 +1287,7 @@ export default function AdminTab({ currentUsername }: { currentUsername?: string
       {activeTab === "users"
         ? <UsersTable currentUsername={currentUsername} />
         : activeTab === "groups"
-        ? <GroupsTable />
+        ? <GroupsPanel />
         : <CustomersTable />}
     </div>
   )
