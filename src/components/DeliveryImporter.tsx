@@ -251,6 +251,12 @@ function computeLineStatuses(
 
 interface ComboOption { id: string; name: string; }
 
+// Option-list geometry, in px. MAX is the height the list prefers; it never
+// gets more than the viewport actually leaves on the side it opens to.
+const DROPDOWN_MAX_HEIGHT = 256;
+const DROPDOWN_GAP = 4;
+const DROPDOWN_MARGIN = 8;
+
 // Modern searchable single-select: type to filter, click/Enter to pick.
 // Closes on outside click (mousedown, so option clicks land before blur
 // would otherwise close it) or Escape. Used for the customer picker, which
@@ -262,26 +268,49 @@ interface ComboOption { id: string; name: string; }
 // card (and its ancestors) clip overflowing content, which silently cut the
 // list off after ~3 rows with no way to scroll to the rest (found
 // 2026-09-01). Repositions on scroll/resize while open so it stays anchored.
-function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel, className }: {
+//
+// It also keeps itself inside the viewport: an input sitting low on the page
+// opens its list upwards, and either way the list is only ever as tall as the
+// room actually available. Opening downwards regardless ran the options off
+// the bottom of the screen, where the page scroll could not reach them
+// (found 2026-09-18 on the invoice picker, which sits lowest in the card).
+function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel, className, disabled }: {
   options: ComboOption[];
   value: string;
   onChange: (id: string) => void;
   placeholder: string;
   noMatchLabel: string;
   className?: string;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState(0);
-  const [pos, setPos] = useState({ top: 0, left: 0, width: 0 });
+  const [pos, setPos] = useState({ top: 0, left: 0, width: 0, maxHeight: DROPDOWN_MAX_HEIGHT });
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const highlightedRef = useRef<HTMLButtonElement>(null);
 
   const selected = options.find(o => o.id === value);
 
   const updatePos = useCallback(() => {
     const rect = containerRef.current?.getBoundingClientRect();
-    if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+    if (!rect) return;
+    const below = window.innerHeight - rect.bottom - DROPDOWN_GAP - DROPDOWN_MARGIN;
+    const above = rect.top - DROPDOWN_GAP - DROPDOWN_MARGIN;
+    // Flip only when going up genuinely shows more: there has to be more room
+    // above, and the list must not already fit below. A list that changes
+    // sides while there was nothing to gain is just harder to follow.
+    const openUp = above > below && below < DROPDOWN_MAX_HEIGHT;
+    // Capped by the room on the chosen side, so the list can never reach past
+    // the edge it opened away from.
+    const maxHeight = Math.min(DROPDOWN_MAX_HEIGHT, openUp ? above : below);
+    setPos({
+      top: openUp ? rect.top - DROPDOWN_GAP - maxHeight : rect.bottom + DROPDOWN_GAP,
+      left: rect.left,
+      width: rect.width,
+      maxHeight,
+    });
   }, []);
 
   useEffect(() => {
@@ -294,6 +323,18 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
       window.removeEventListener("resize", updatePos);
     };
   }, [open, updatePos]);
+
+  // A list left open while its own data is being replaced would show the
+  // previous customer's invoices as if they were still selectable.
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  // Arrow keys move the highlight through a list that is taller than the box
+  // it is drawn in, so the highlight has to bring itself into view.
+  useEffect(() => {
+    highlightedRef.current?.scrollIntoView({ block: "nearest" });
+  }, [highlighted]);
 
   useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
@@ -322,9 +363,10 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
       <input
         value={open ? query : (selected?.name ?? "")}
         readOnly={!open}
-        onClick={() => { if (!open) { setOpen(true); setQuery(""); setHighlighted(0); } }}
+        disabled={disabled}
+        onClick={() => { if (!open && !disabled) { setOpen(true); setQuery(""); setHighlighted(0); } }}
         onChange={e => { setQuery(e.target.value); setHighlighted(0); if (!open) setOpen(true); }}
-        onFocus={() => { setOpen(true); setQuery(""); setHighlighted(0); }}
+        onFocus={() => { if (disabled) return; setOpen(true); setQuery(""); setHighlighted(0); }}
         onKeyDown={e => {
           if (e.key === "ArrowDown") { e.preventDefault(); setHighlighted(h => Math.min(h + 1, filtered.length - 1)); }
           else if (e.key === "ArrowUp") { e.preventDefault(); setHighlighted(h => Math.max(h - 1, 0)); }
@@ -332,19 +374,20 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
           else if (e.key === "Escape") { setOpen(false); }
         }}
         placeholder={placeholder}
-        className={`${className} ${open ? "cursor-text" : "cursor-pointer"}`}
+        className={`${className} ${disabled ? "opacity-60 cursor-wait" : open ? "cursor-text" : "cursor-pointer"}`}
       />
-      {open && typeof document !== "undefined" && createPortal(
+      {open && !disabled && typeof document !== "undefined" && createPortal(
         <div
           ref={dropdownRef}
-          style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width }}
-          className="z-[500] max-h-64 overflow-y-auto rounded-xl border border-border bg-surface shadow-2xl"
+          style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}
+          className="z-[500] overflow-y-auto rounded-xl border border-border bg-surface shadow-2xl"
         >
           {filtered.length === 0 ? (
             <p className="text-xs text-ink-3 px-3 py-2">{noMatchLabel}</p>
           ) : filtered.map((o, i) => (
             <button
               key={o.id}
+              ref={i === highlighted ? highlightedRef : undefined}
               type="button"
               onMouseDown={e => e.preventDefault()}
               onClick={() => selectOption(o)}
@@ -1562,7 +1605,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   options={invoiceOptions}
                   value={invoiceId}
                   onChange={setInvoiceId}
-                  placeholder={td.invoicePlaceholder}
+                  disabled={invoicesLoading}
+                  placeholder={invoicesLoading ? td.loadingOpenInvoices : td.invoicePlaceholder}
                   noMatchLabel={td.noOpenInvoicesFound}
                   className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
                 />
