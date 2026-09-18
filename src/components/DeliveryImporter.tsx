@@ -188,11 +188,28 @@ interface DfgCustomer {
   used_in_delivery_import: boolean;
 }
 
-// Pseudo-customer, always pinned first in the picker — selecting it omits
-// customer_id entirely from the create-shipment payload, so the shipment
-// lands in FreshPortal unallocated for manual stock placement afterwards
-// (2026-09-01, reverses the earlier "customer_id always required" rule).
+// Pseudo-customer, always pinned first in the picker — selecting it sends
+// neither customer_id nor invoice_id, so the shipment's stock goes straight
+// to stock in FreshPortal with no invoice allocation, for manual placement
+// afterwards.
 const STOCK_CUSTOMER_ID = "stock";
+
+// One still-open invoice of the selected customer (GET /dfg/v1/invoice_open,
+// via /delivery/api/open-invoices). Only the id the picker sends back and the
+// three values it displays are carried — the endpoint returns each invoice's
+// full stock items and order lines, none of which this screen reads.
+interface DfgOpenInvoice {
+  id: number;
+  sequence: string;
+  reference: string;
+  invoice_date: string;
+}
+
+// Pinned first in the invoice picker: a customer but no invoice_id, which
+// has DFG create a fresh invoice and return its id in the response — the
+// behaviour every allocated shipment had before existing invoices could be
+// chosen (2026-09-18).
+const NEW_INVOICE_ID = "new";
 
 const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   variety_length:       { label: "exact",        cls: "bg-emerald/15 text-emerald border-emerald/20" },
@@ -369,18 +386,49 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       .then(d => setDfgCustomers(d.customers ?? []))
       .catch(() => {});
   }, []);
-  // "Stock" (no customer) option removed 2026-09-02 — confirmed via the DFG
-  // API's own schema + a live 422 that batch creation always creates an
-  // invoice (invoice_id is mandatory in the response), and invoicing
-  // requires a customer. Not a payload bug on our side — needs the DFG API
-  // itself reworked with FreshPortal before this can exist. Left
-  // STOCK_CUSTOMER_ID and the customer_id:null branch in place below so
-  // it's a one-line re-add once that's resolved.
+  // "Stock" is back, pinned first (removed 2026-09-02 because batch creation
+  // always created an invoice and invoicing needs a customer — a live 422,
+  // not a payload bug on our side). The 2026-09-18 DFG API change makes a
+  // customer-less batch a supported case, so the option finally does what it
+  // always said it did.
   const customerOptions: ComboOption[] = useMemo(() => [
+    { id: STOCK_CUSTOMER_ID, name: td.stockOptionLabel },
     ...dfgCustomers
       .filter(c => c.used_in_delivery_import)
       .map(c => ({ id: c.customer_id, name: c.nm_customer })),
-  ], [dfgCustomers]);
+  ], [dfgCustomers, td]);
+
+  // ── Invoice to allocate to ───────────────────────────────────────────────
+  const [invoiceId, setInvoiceId] = useState(NEW_INVOICE_ID);
+  const [openInvoices, setOpenInvoices] = useState<DfgOpenInvoice[]>([]);
+  const [invoicesLoading, setInvoicesLoading] = useState(false);
+  // Open invoices belong to one customer, so the list is refetched — and any
+  // earlier pick dropped back to "new invoice" — whenever the customer
+  // changes. Carrying a stale invoice_id over would allocate the shipment to
+  // a different customer's invoice, which the API has no reason to reject.
+  useEffect(() => {
+    setInvoiceId(NEW_INVOICE_ID);
+    setOpenInvoices([]);
+    if (!customerId || customerId === STOCK_CUSTOMER_ID) return;
+    let cancelled = false;
+    setInvoicesLoading(true);
+    fetch(`${RAILWAY}/delivery/api/open-invoices?customer_id=${encodeURIComponent(customerId)}`)
+      .then(r => r.ok ? r.json() : { invoices: [] })
+      .then(d => { if (!cancelled) setOpenInvoices(d.invoices ?? []); })
+      .catch(() => { if (!cancelled) setOpenInvoices([]); })
+      .finally(() => { if (!cancelled) setInvoicesLoading(false); });
+    return () => { cancelled = true; };
+  }, [customerId]);
+
+  // Values only, separated by dashes — sequence, reference, invoice date is
+  // how the shipment step names an open invoice.
+  const invoiceOptions: ComboOption[] = useMemo(() => [
+    { id: NEW_INVOICE_ID, name: td.newInvoiceOptionLabel },
+    ...openInvoices.map(inv => ({
+      id: String(inv.id),
+      name: [inv.sequence, inv.reference, inv.invoice_date].filter(Boolean).join(" – "),
+    })),
+  ], [openInvoices, td]);
   const [orderDateOverride, setOrderDateOverride] = useState("");
   const [shipmentEditOpen, setShipmentEditOpen] = useState(false);
   // Set when /delivery/api/check finds the shipment already exists — blocks
@@ -899,6 +947,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           order: orderWithEdits,
           supplier_fp_id: supplierFpId,
           customer_id: customerId === STOCK_CUSTOMER_ID ? null : Number(customerId),
+          // Null means "no existing invoice to allocate to": with a customer
+          // DFG creates a new one, without a customer the stock goes to
+          // stock unallocated.
+          invoice_id: customerId === STOCK_CUSTOMER_ID || invoiceId === NEW_INVOICE_ID
+            ? null
+            : Number(invoiceId),
         },
         td.creatingShipment,
       );
@@ -1490,6 +1544,37 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               noMatchLabel={td.noCustomersFound}
               className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
             />
+
+            {/* Which invoice — only once a real customer is chosen; "Stock"
+                allocates to nothing, so there is no invoice to pick. */}
+            {customerId && customerId !== STOCK_CUSTOMER_ID && (
+              <div className="flex flex-col gap-2 pt-1">
+                <label className="text-sm font-semibold text-emerald-dark flex items-center gap-1.5">
+                  {td.invoiceLabel}
+                  <span
+                    title={td.invoiceTooltip}
+                    className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-emerald/40 text-emerald text-[10px] leading-none cursor-help shrink-0"
+                  >
+                    i
+                  </span>
+                </label>
+                <SearchableSelect
+                  options={invoiceOptions}
+                  value={invoiceId}
+                  onChange={setInvoiceId}
+                  placeholder={td.invoicePlaceholder}
+                  noMatchLabel={td.noOpenInvoicesFound}
+                  className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
+                />
+                <span className="text-[11px] text-ink-3">
+                  {invoicesLoading
+                    ? td.loadingOpenInvoices
+                    : openInvoices.length === 0
+                      ? td.noOpenInvoicesHint
+                      : td.openInvoicesCount(openInvoices.length)}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Continue to products */}
