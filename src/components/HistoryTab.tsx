@@ -395,9 +395,13 @@ export default function HistoryTab({ lang }: Props) {
                                 {row.details?.template_name && (
                                   <span className="text-ink-3/60 text-[10px]">{t.create.templateLabel} {row.details.template_name}</span>
                                 )}
-                                {row.details?.success === false && (
+                                {row.details?.status === "unconfirmed" ? (
+                                  <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] px-1.5 py-0.5 rounded-md font-medium">{t.create.badgeUnconfirmed}</span>
+                                ) : row.details?.success === false ? (
                                   <span className="bg-ember-light text-ember text-[10px] px-1.5 py-0.5 rounded-md font-medium">failed</span>
-                                )}
+                                ) : row.details?.warnings && row.details.warnings.length > 0 ? (
+                                  <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] px-1.5 py-0.5 rounded-md font-medium">{t.create.badgeWarnings}</span>
+                                ) : null}
                               </span>
                             ) : row.type === "photo_upload" ? (
                               <span className="flex items-center gap-2">

@@ -1583,6 +1583,8 @@ class ProductCreateRequest(BaseModel):
     lang: str = "en"
     vbn_code: str | None = None
     color_id: str | None = None
+    color_name: str | None = None  # label shown on screen — compared with what FreshPortal saved
+    allow_duplicate_name: bool = False  # set after the user confirms a name that already exists
 
 
 class AIAnalyzeRequest(BaseModel):
@@ -1945,7 +1947,11 @@ def product_number_suggest(name: str = "", number: str = "", _: dict = Depends(r
 
 @app.post("/product-create/stream")
 async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
-    """SSE stream: copies template product, renames it, returns result."""
+    """SSE stream: copies template product, renames it, returns result.
+
+    The creation keeps running if the client disconnects — once save may have
+    been clicked there is nothing safe to stop.
+    """
     try:
         cfg.validate()
     except ValueError as e:
@@ -1958,7 +1964,16 @@ async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(req
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
-            result = copy_and_create(req.template_id, req.new_name, cfg, on_status=on_status, product_number=req.product_number, lang=req.lang, vbn_code=req.vbn_code, color_id=req.color_id)
+            result = copy_and_create(
+                req.template_id, req.new_name, cfg,
+                on_status=on_status,
+                product_number=req.product_number,
+                lang=req.lang,
+                vbn_code=req.vbn_code,
+                color_id=req.color_id,
+                color_name=req.color_name,
+                allow_duplicate_name=req.allow_duplicate_name,
+            )
             queue.put({"type": "result", "data": result})
         except Exception as e:
             log.exception("product-create/stream failed")

@@ -689,7 +689,32 @@ def is_product_number_taken(number: str) -> bool:
                 )
                 return cur.fetchone() is not None
     except Exception:
-        return False  # on DB error assume free — Playwright will verify
+        return False  # on DB error assume free — product creation checks FreshPortal itself too
+
+
+def find_products_by_exact_name(name: str, limit: int = 10) -> list[dict]:
+    """Products named exactly *name*, ignoring case and repeated spaces.
+
+    Used right before a product is created. Returns [] on a DB error — the
+    creation also checks FreshPortal itself, so a DB outage does not block it.
+    """
+    normalized = " ".join((name or "").split()).lower()
+    if not normalized:
+        return []
+    try:
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(r"""
+                    SELECT product_id, product_number, name, vbn_number, color
+                    FROM products
+                    WHERE lower(regexp_replace(btrim(name), '\s+', ' ', 'g')) = %s
+                    ORDER BY product_id
+                    LIMIT %s
+                """, (normalized, limit))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("find_products_by_exact_name failed: %s", exc)
+        return []
 
 
 def get_products_by_vbn(vbn_codes: list[str]) -> list[dict]:

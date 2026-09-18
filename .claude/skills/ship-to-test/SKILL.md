@@ -34,4 +34,5 @@ happens only when the user explicitly asks, and is not part of this skill.
 | Line endings | Every file keeps its own style; `src/lib/i18n.ts` is CRLF, most files are LF. A flip turns the diff into the whole file |
 | Translation keys | `nl`, `pl` and `es` are typed `typeof en`, so any missing or extra key breaks the build |
 | Tab maps | Every `Record<Tab, …>` in `page.tsx` (e.g. `MODULE_WIDTH`) must list every tab; forgetting one was a repeated build break |
+| Python tests | `python/tests/test_*.py` — scenario tests that run without a database or a browser. `test_product_create.py` guards what New Products must never do: save a duplicate, or report success when the values did not land |
 | TypeScript | `tsc --noEmit` rejects what `next build` rejects. Runs only when Node.js and `node_modules` exist |

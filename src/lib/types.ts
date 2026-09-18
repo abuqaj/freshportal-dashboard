@@ -32,6 +32,43 @@ export type ProductSearchResult = {
 
 export type FixEntry = { product_id: string; name: string; old_vbn: string; new_vbn: string };
 
+/** A product as FreshPortal shows it right after it was created. */
+export type CreatedProduct = {
+  product_id: string;
+  name: string;
+  product_number: string;
+  vbn_number: string;
+  color: string;
+};
+
+/** Something that differs from what was asked for, or could not be checked. */
+export type CreateWarning = { code: string; expected?: string | null; actual?: string | null };
+
+/**
+ * Outcome of a product creation.
+ *
+ * created / created_with_warnings — found in FreshPortal after saving
+ * unconfirmed  — save was clicked but the product could not be found; it may
+ *                exist, so it must be checked before trying again
+ * failed       — nothing was saved
+ * blocked      — stopped before saving (invalid input, number taken, name in
+ *                use, another creation running); the form stays open
+ */
+export type CreateResult = {
+  status: "created" | "created_with_warnings" | "unconfirmed" | "failed" | "blocked";
+  ok: boolean;
+  name: string;
+  product_number: string;
+  product: CreatedProduct | null;
+  product_url: string | null;
+  search_url: string | null;
+  warnings: CreateWarning[];
+  reason: string | null;
+  error_text: string | null;
+  suggested_number: string | null;
+  existing: CreatedProduct[];
+};
+
 export type AIAnalysis = {
   duplicate: {
     found: boolean;
@@ -62,6 +99,12 @@ export type HistoryRow = {
     template_name?: string;
     template_id?: string;
     success?: boolean;
+    status?: CreateResult["status"];
+    reason?: string | null;
+    product_id?: string | null;
+    vbn_code?: string | null;
+    color?: string | null;
+    warnings?: string[];
     items?: PhotoUploadItem[];
   } | null;
   username: string | null;

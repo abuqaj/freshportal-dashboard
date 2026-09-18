@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { flushSync } from "react-dom";
 import { translations, Lang } from "@/lib/i18n";
-import { ProductSearchResult, AIAnalysis, SyncStatus } from "@/lib/types";
+import { ProductSearchResult, AIAnalysis, SyncStatus, CreateResult, CreateWarning } from "@/lib/types";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -100,7 +100,10 @@ export default function ProductCreator({ lang }: Props) {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createStatus, setCreateStatus] = useState<string | null>(null);
-  const [createResult, setCreateResult] = useState<{ ok: boolean; message: string; url?: string } | null>(null);
+  const [createResult, setCreateResult] = useState<CreateResult | null>(null);
+  // A creation the backend refused before saving anything: the form reopens
+  // with this shown, so the values the user entered are never lost.
+  const [createBlock, setCreateBlock] = useState<CreateResult | null>(null);
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
@@ -111,8 +114,9 @@ export default function ProductCreator({ lang }: Props) {
   const [numberCheckResult, setNumberCheckResult] = useState<{ changed: boolean; original: string } | null>(null);
   const [showDuplicateWarning, setShowDuplicateWarning] = useState<{ templateId: string; templateName: string; templateColor?: string } | null>(null);
   const [templateColorName, setTemplateColorName] = useState("");
-  const [selectedTemplateWas100Pct, setSelectedTemplateWas100Pct] = useState(false);
-  const [showSecondDuplicateWarning, setShowSecondDuplicateWarning] = useState(false);
+  // Set when the backend found the exact name already in FreshPortal — the
+  // last confirmation before a duplicate is created on purpose.
+  const [nameExists, setNameExists] = useState<CreateResult | null>(null);
   const [showAllResults, setShowAllResults] = useState(false);
   const [nameFromTemplate, setNameFromTemplate] = useState<{ original: string; corrected: string } | null>(null);
 
@@ -134,6 +138,8 @@ export default function ProductCreator({ lang }: Props) {
 
   const nameChangeDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialFormName = useRef<string>("");
+  // Kept so a blocked or failed creation can reopen the form on the same template.
+  const lastTemplate = useRef<{ templateId: string; templateName: string; templateGroup: string; templateApplication: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const aiCancelRef = useRef<{ ctrl: AbortController; token: string } | null>(null);
 
@@ -177,6 +183,16 @@ export default function ProductCreator({ lang }: Props) {
     document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, []);
+
+  // Saving cannot be stopped once it starts — closing the tab would leave the
+  // browser session on the server finishing the product without anyone seeing
+  // the result, so warn before the page goes away.
+  useEffect(() => {
+    if (!creating) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [creating]);
 
   // Load sync status on mount
   useEffect(() => {
@@ -320,7 +336,7 @@ export default function ProductCreator({ lang }: Props) {
       setSearchStatus(t.common.connecting);
       setAiAnalysis(null);
       setAiLoading(false);
-      setSelectedTemplateWas100Pct(false);
+      setCreateBlock(null);
       setShowAllResults(false);
       setPendingCreate(null);
       setVbnForCreate("");
@@ -383,7 +399,10 @@ export default function ProductCreator({ lang }: Props) {
     const name = toTitleCase(createInput);
     const initialNumber = genProductNumber(name);
     initialFormName.current = name;
-    setPendingCreate({ templateId, templateName, templateGroup, templateApplication });
+    const template = { templateId, templateName, templateGroup, templateApplication };
+    lastTemplate.current = template;
+    setPendingCreate(template);
+    setCreateBlock(null);
 
     setColorForCreate("");
     setColorSearch("");
@@ -491,29 +510,44 @@ export default function ProductCreator({ lang }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createInput, colorList, searchResults]);
 
-  async function handleConfirmCreate(skipWarning = false) {
+  /** A result for cases the backend never got to answer for. */
+  function localResult(status: CreateResult["status"], reason: string, name: string, number: string): CreateResult {
+    return {
+      status, ok: false, name, product_number: number, product: null, product_url: null,
+      search_url: null, warnings: [], reason, error_text: null, suggested_number: null, existing: [],
+    };
+  }
+
+  async function handleConfirmCreate(allowDuplicateName = false) {
     if (!pendingCreate || !RAILWAY) return;
-    if (
-      !skipWarning &&
-      selectedTemplateWas100Pct &&
-      finalName.trim().toLowerCase() === createInput.trim().toLowerCase()
-    ) {
-      setShowSecondDuplicateWarning(true);
-      return;
-    }
-    setShowSecondDuplicateWarning(false);
-    const { templateId, templateName } = pendingCreate;
+    const template = pendingCreate;
     const nameForLog = finalName.trim();
-    const numberForLog = productNumber.trim();
+    const numberForLog = productNumber.trim().toUpperCase();
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    setNameExists(null);
+    setCreateBlock(null);
     flushSync(() => { setCreating(true); setCreateStatus(t.create.creating); setCreateResult(null); setPendingCreate(null); setColorDropdownOpen(false); });
+
+    // Once the stream starts, the product may get created even if the answer
+    // never arrives — so every path below ends in a result the user can see,
+    // never in a silent return to the previous screen.
+    let result: CreateResult | null = null;
     try {
       const res = await fetch(`${RAILWAY}/product-create/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template_id: templateId, new_name: nameForLog, product_number: numberForLog || null, lang, vbn_code: vbnForCreate || null, color_id: colorForCreate || null }),
+        body: JSON.stringify({
+          template_id: template.templateId,
+          new_name: nameForLog,
+          product_number: numberForLog || null,
+          lang,
+          vbn_code: vbnForCreate || null,
+          color_id: colorForCreate || null,
+          color_name: colorList.find(c => c.id === colorForCreate)?.name ?? null,
+          allow_duplicate_name: allowDuplicateName,
+        }),
         signal: ctrl.signal,
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -531,34 +565,126 @@ export default function ProductCreator({ lang }: Props) {
           let event: Record<string, unknown>;
           try { event = JSON.parse(line.slice(6)); } catch { continue; }
           if (event.type === "status") flushSync(() => setCreateStatus(event.message as string));
-          else if (event.type === "result") {
-            const d = event.data as { ok: boolean; message: string; url?: string };
-            setCreateResult(d);
-            // Log regardless of ok/fail — if ok=false, we still want a record
-            fetch("/api/log", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                type: "product_create",
-                vbn_filter: null,
-                stats: { ok: d.ok ? 1 : 0 },
-                details: { name: nameForLog, product_number: numberForLog, template_id: templateId, template_name: templateName, success: d.ok },
-              }),
-            }).catch(() => {});
-          } else if (event.type === "error") throw new Error(event.message as string);
+          else if (event.type === "result") result = event.data as CreateResult;
+          else if (event.type === "error") {
+            // The backend itself never raises past copy_and_create, so we
+            // cannot tell whether it saved — treat it as unconfirmed.
+            result = { ...localResult("unconfirmed", "exception", nameForLog, numberForLog), error_text: String(event.message ?? "") };
+          }
         }
       }
+      // The stream ended without a result: the save may still have gone through.
+      if (!result) result = localResult("unconfirmed", "connection_lost", nameForLog, numberForLog);
     } catch (e: unknown) {
-      if (!(e instanceof Error && e.name === "AbortError")) {
-        setCreateResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
-      }
+      const aborted = e instanceof Error && e.name === "AbortError";
+      result = {
+        ...localResult(aborted ? "unconfirmed" : "failed", aborted ? "connection_lost" : "exception", nameForLog, numberForLog),
+        error_text: e instanceof Error ? e.message : String(e),
+      };
     } finally {
       setCreating(false);
       setCreateStatus(null);
     }
+
+    const outcome: CreateResult = result ?? localResult("unconfirmed", "connection_lost", nameForLog, numberForLog);
+
+    if (outcome.status === "blocked") {
+      // Nothing was saved: reopen the form with what the user entered.
+      setPendingCreate(template);
+      if (outcome.reason === "name_exists") {
+        setNameExists(outcome);
+      } else {
+        if (outcome.reason === "number_taken" && outcome.suggested_number) {
+          setProductNumber(outcome.suggested_number);
+          setNumberCheckResult({ changed: true, original: outcome.product_number });
+        }
+        setCreateBlock(outcome);
+      }
+      return;
+    }
+
+    setCreateResult(outcome);
+    // Logged whatever the outcome — an unconfirmed or failed attempt is
+    // exactly what someone looking at the history later needs to see.
+    fetch("/api/log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "product_create",
+        vbn_filter: null,
+        stats: { ok: outcome.ok ? 1 : 0 },
+        details: {
+          name: nameForLog,
+          product_number: outcome.product?.product_number || numberForLog,
+          template_id: template.templateId,
+          template_name: template.templateName,
+          success: outcome.ok,
+          status: outcome.status,
+          reason: outcome.reason,
+          product_id: outcome.product?.product_id ?? null,
+          vbn_code: vbnForCreate || null,
+          color: colorList.find(c => c.id === colorForCreate)?.name ?? null,
+          warnings: outcome.warnings.map(w => w.code),
+        },
+      }),
+    }).catch(() => {});
   }
 
   const nameValidationError = createInput ? validateProductName(createInput) : null;
+  // The backend refuses the same things, so catch them before a round trip.
+  const finalNameError = pendingCreate
+    ? (finalName.trim() ? validateProductName(finalName.trim()) : t.create.nameErrEmpty)
+    : null;
+
+  /** Human text for a warning the backend reported about the saved product. */
+  function warningText(w: CreateWarning): string {
+    const expected = w.expected ?? "";
+    const actual = w.actual ?? "";
+    switch (w.code) {
+      case "vbn_mismatch":         return t.create.warnVbnMismatch(expected, actual);
+      case "vbn_field_missing":    return t.create.warnVbnFieldMissing(expected);
+      case "vbn_not_set":          return t.create.warnVbnNotSet(expected);
+      case "color_mismatch":       return t.create.warnColorMismatch(expected, actual);
+      case "color_not_set":        return t.create.warnColorNotSet(expected);
+      case "color_unverified":     return t.create.warnColorUnverified(expected);
+      case "short_name_not_set":   return t.create.warnShortName;
+      case "catalogue_copy_not_updated": return t.create.warnCopyNotUpdated;
+      default:                     return w.code;
+    }
+  }
+
+  /** Human text for why a creation was blocked, failed, or stayed unconfirmed. */
+  function reasonText(r: CreateResult): string | null {
+    switch (r.reason) {
+      case "invalid_input":
+        switch (r.error_text) {
+          case "name_empty":        return t.create.nameErrEmpty;
+          case "name_double_space": return t.create.nameErrDoubleSpace;
+          case "name_chars":        return t.create.nameErrSpecialChars;
+          case "number":            return t.create.errInvalidNumber;
+          case "vbn":               return t.create.errInvalidVbn;
+          case "template":          return t.create.errInvalidTemplate;
+          case "color":             return t.create.errInvalidColor;
+          default:                  return r.error_text;
+        }
+      case "number_taken":
+        return r.suggested_number
+          ? t.create.numberTakenNow(r.product_number)
+          : t.create.numberTakenNoFree(r.product_number);
+      case "busy":                 return t.create.blockedBusy;
+      case "form_not_loaded":      return t.create.errFormNotLoaded;
+      case "name_field_missing":   return t.create.errNameFieldMissing;
+      case "number_not_set":       return t.create.errNumberNotSet;
+      case "name_not_set":         return t.create.errNameNotSet;
+      case "save_button_missing":  return t.create.errSaveButtonMissing;
+      case "form_error":           return t.create.errFormError;
+      case "exception":            return t.create.errException;
+      case "connection_lost":      return t.create.errConnectionLost;
+      case "not_found":            return t.create.errNotFound;
+      case "name_differs":         return t.create.errNameDiffers;
+      default:                     return null;
+    }
+  }
 
   // Derived step from existing state
   const step = creating ? "creating"
@@ -578,6 +704,8 @@ export default function ProductCreator({ lang }: Props) {
 
   function resetAll() {
     setCreateResult(null);
+    setCreateBlock(null);
+    setNameExists(null);
     setSearchResults(null);
     setAiAnalysis(null);
     setAiLoading(false);
@@ -591,6 +719,15 @@ export default function ProductCreator({ lang }: Props) {
     setColorDropdownOpen(false);
     setNameFromTemplate(null);
     setTemplateColorName("");
+    lastTemplate.current = null;
+  }
+
+  /** Back to the filled-in form after a creation that saved nothing. */
+  function backToForm() {
+    if (!lastTemplate.current) return;
+    setCreateResult(null);
+    setCreateBlock(null);
+    setPendingCreate(lastTemplate.current);
   }
 
   const highMatches = searchResults ? searchResults.filter(r => r.similarity >= 0.80).slice(0, 10) : [];
@@ -664,7 +801,7 @@ export default function ProductCreator({ lang }: Props) {
             <div className="flex gap-3 justify-end">
               <button onClick={() => setShowDuplicateWarning(null)} className="px-4 py-2 text-sm border border-border rounded-xl text-ink-3 hover:bg-ground transition-colors">{t.common.cancel}</button>
               <button
-                onClick={() => { handleCreateFromTemplate(showDuplicateWarning.templateId, showDuplicateWarning.templateName, "", showDuplicateWarning.templateColor ?? ""); setSelectedTemplateWas100Pct(true); setShowDuplicateWarning(null); }}
+                onClick={() => { handleCreateFromTemplate(showDuplicateWarning.templateId, showDuplicateWarning.templateName, "", showDuplicateWarning.templateColor ?? ""); setShowDuplicateWarning(null); }}
                 className="px-4 py-2 text-sm bg-ember hover:bg-ember-dark text-white rounded-xl font-medium transition-colors"
               >{t.create.dupWarn1Confirm}</button>
             </div>
@@ -672,19 +809,31 @@ export default function ProductCreator({ lang }: Props) {
         </div>
       )}
 
-      {/* Duplicate warning modal — step 2 */}
-      {showSecondDuplicateWarning && (
+      {/* Duplicate warning modal — step 2: the name the backend found in FreshPortal */}
+      {nameExists && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-surface rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
             <div className="flex items-start gap-4 mb-5">
               <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 text-ember text-lg font-bold border border-ember/30">!</div>
-              <div>
-                <p className="text-base font-semibold text-ink">{t.create.dupWarn2Title}</p>
-                <p className="text-sm text-ink-3 mt-1">{t.create.dupWarn2Text(finalName)}</p>
+              <div className="min-w-0">
+                <p className="text-base font-semibold text-ink">{t.create.nameExistsTitle}</p>
+                <p className="text-sm text-ink-3 mt-1">{t.create.dupWarn2Text(nameExists.name)}</p>
+                {nameExists.existing.length > 0 && (
+                  <div className="mt-3 space-y-1">
+                    <p className="text-[11px] font-semibold text-ink-3 uppercase tracking-wide">{t.create.nameExistsText}</p>
+                    {nameExists.existing.map(p => (
+                      <p key={p.product_id} className="text-xs text-ink truncate">
+                        {p.name}
+                        <span className="ml-1.5 text-ink-3 font-mono">{p.product_number}</span>
+                        <span className="ml-1.5 text-ink-3/50 font-mono">#{p.product_id}</span>
+                      </p>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex gap-3 justify-end">
-              <button onClick={() => setShowSecondDuplicateWarning(false)} className="px-4 py-2 text-sm border border-border rounded-xl text-ink-3 hover:bg-ground transition-colors">{t.create.dupWarn2Cancel}</button>
+              <button onClick={() => setNameExists(null)} className="px-4 py-2 text-sm border border-border rounded-xl text-ink-3 hover:bg-ground transition-colors">{t.create.dupWarn2Cancel}</button>
               <button onClick={() => handleConfirmCreate(true)} className="px-4 py-2 text-sm bg-ember hover:bg-ember-dark text-white rounded-xl font-medium transition-colors">{t.create.dupWarn2Confirm}</button>
             </div>
           </div>
@@ -844,6 +993,12 @@ export default function ProductCreator({ lang }: Props) {
             <div className="flex divide-x divide-border max-h-[68vh] min-h-0">
               {/* Form */}
               <div className="flex-1 p-6 space-y-4 overflow-y-auto min-h-0">
+                {/* Why the last attempt saved nothing */}
+                {createBlock && (
+                  <div className="rounded-xl bg-ember-light border border-ember/30 px-4 py-3 text-sm text-ember">
+                    ⚠ {reasonText(createBlock) ?? createBlock.reason}
+                  </div>
+                )}
                 {/* Name */}
                 <div>
                   <label className="block text-xs font-medium text-ink-3 mb-1.5">{t.create.nameLabel}</label>
@@ -900,6 +1055,9 @@ export default function ProductCreator({ lang }: Props) {
                     className={`w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 transition-colors ${nameFromTemplate ? "border-amber-300 bg-amber-50/40 focus:ring-amber-300/50 focus:border-amber-400" : "border-border bg-ground focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface"}`}
                     autoFocus
                   />
+                  {finalNameError && (
+                    <p className="mt-1.5 text-xs text-ember bg-ember-light border border-ember/30 rounded-lg px-3 py-1.5">⚠ {finalNameError}</p>
+                  )}
                   {nameFromTemplate && (
                     <NameCorrectionHint
                       hint={nameFromTemplate}
@@ -1028,7 +1186,7 @@ export default function ProductCreator({ lang }: Props) {
                 <div className="pt-1">
                   <button
                     onClick={() => handleConfirmCreate()}
-                    disabled={creating || numberChecking || !finalName.trim() || !productNumber.trim()}
+                    disabled={creating || numberChecking || !!finalNameError || !productNumber.trim()}
                     className="w-full bg-emerald hover:bg-emerald-dark disabled:opacity-40 text-white text-sm font-semibold py-3 rounded-xl transition-colors"
                   >{numberChecking ? t.create.checkingNumber : t.create.createBtn}</button>
                 </div>
@@ -1054,29 +1212,87 @@ export default function ProductCreator({ lang }: Props) {
             {createStatus && (
               <p className="text-xs text-ink-3 animate-pulse border-t border-border pt-4 w-full max-w-xs">{createStatus}</p>
             )}
-            <button
-              onClick={() => { abortRef.current?.abort(); abortRef.current = null; cancelAi(); }}
-              className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
-            >{t.common.cancel}</button>
+            {/* No cancel button: the save cannot be called back once it starts. */}
+            <p className="text-[11px] text-ink-3/60 max-w-xs">{t.create.keepOpen}</p>
           </div>
         )}
 
         {/* ── STEP 6: DONE ── */}
         {step === "done" && createResult && (
-          <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold border-2 ${createResult.ok ? "bg-emerald-light text-emerald border-emerald/30" : "bg-ember-light text-ember border-ember/30"}`}>
-              {createResult.ok ? "✓" : "✗"}
+          <div className="p-10 flex flex-col items-center gap-5 min-h-72 text-center">
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold border-2 ${
+              createResult.status === "created" ? "bg-emerald-light text-emerald border-emerald/30"
+              : createResult.status === "failed" ? "bg-ember-light text-ember border-ember/30"
+              : "bg-amber-50 text-amber-700 border-amber-300"}`}>
+              {createResult.status === "created" ? "✓" : createResult.status === "failed" ? "✗" : "!"}
             </div>
-            <div>
-              <p className="text-lg font-bold text-ink">{createResult.message}</p>
-              {createResult.ok && createResult.url && (
-                <p className="text-xs text-ink-3 mt-1.5 font-mono break-all">{createResult.url}</p>
+
+            <div className="space-y-1.5">
+              <p className="text-lg font-bold text-ink">
+                {createResult.status === "created" ? t.create.statusCreated
+                  : createResult.status === "created_with_warnings" ? t.create.statusCreatedWarnings
+                  : createResult.status === "unconfirmed" ? t.create.statusUnconfirmed
+                  : t.create.statusFailed}
+              </p>
+              <p className="text-sm text-ink-3">
+                &ldquo;{createResult.name}&rdquo;
+                <span className="ml-2 font-mono text-xs">{createResult.product_number}</span>
+              </p>
+              {createResult.status !== "created" && reasonText(createResult) && (
+                <p className="text-sm text-ink-3">{reasonText(createResult)}</p>
+              )}
+              {createResult.status === "unconfirmed" && <p className="text-sm text-amber-700">{t.create.unconfirmedHint}</p>}
+              {createResult.status === "failed" && <p className="text-sm text-ink-3">{t.create.failedHint}</p>}
+              {createResult.error_text && createResult.reason !== "invalid_input" && (
+                <p className="text-[11px] text-ink-3/60 font-mono break-all max-w-md">{createResult.error_text}</p>
               )}
             </div>
-            <button
-              onClick={resetAll}
-              className="px-6 py-2.5 bg-ink hover:bg-ink/80 text-white text-sm font-medium rounded-xl transition-colors"
-            >{t.create.createAnother}</button>
+
+            {/* What FreshPortal actually holds — read back after saving */}
+            {createResult.product && (
+              <div className="w-full max-w-md rounded-xl border border-border bg-ground px-4 py-3 text-left space-y-1">
+                <p className="text-[11px] font-semibold text-ink-3 uppercase tracking-wide">{t.create.inPortal}</p>
+                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.fieldName}:</span> {createResult.product.name}</p>
+                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.fieldNumber}:</span> <span className="font-mono">{createResult.product.product_number}</span></p>
+                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.vbnLabel}:</span> <span className="font-mono">{createResult.product.vbn_number || "—"}</span></p>
+                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.colorLabel}:</span> {createResult.product.color || "—"}</p>
+                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.fieldId}:</span> <span className="font-mono">{createResult.product.product_id}</span></p>
+              </div>
+            )}
+
+            {createResult.warnings.length > 0 && (
+              <div className="w-full max-w-md rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-left space-y-1">
+                <p className="text-[11px] font-semibold text-amber-700 uppercase tracking-wide">{t.create.warnTitle}</p>
+                {createResult.warnings.map((w, i) => (
+                  <p key={i} className="text-xs text-amber-800">{warningText(w)}</p>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-3 justify-center">
+              {createResult.product_url && (
+                <a href={createResult.product_url} target="_blank" rel="noopener noreferrer"
+                   className="px-4 py-2.5 border border-border rounded-xl text-sm text-ink-3 hover:bg-ground transition-colors">
+                  {t.create.openInPortal}
+                </a>
+              )}
+              {!createResult.product_url && createResult.search_url && createResult.status === "unconfirmed" && (
+                <a href={createResult.search_url} target="_blank" rel="noopener noreferrer"
+                   className="px-4 py-2.5 border border-amber-300 bg-amber-50 rounded-xl text-sm text-amber-800 hover:bg-amber-100 transition-colors">
+                  {t.create.checkInPortal}
+                </a>
+              )}
+              {createResult.status === "failed" && lastTemplate.current && (
+                <button onClick={backToForm}
+                        className="px-4 py-2.5 border border-border rounded-xl text-sm text-ink-3 hover:bg-ground transition-colors">
+                  {t.create.tryAgain}
+                </button>
+              )}
+              <button
+                onClick={resetAll}
+                className="px-6 py-2.5 bg-ink hover:bg-ink/80 text-white text-sm font-medium rounded-xl transition-colors"
+              >{t.create.createAnother}</button>
+            </div>
           </div>
         )}
 

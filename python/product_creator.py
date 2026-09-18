@@ -11,10 +11,12 @@ import difflib
 import itertools
 import logging
 import re
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Callable
+from urllib.parse import quote_plus
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import Page, TimeoutError as PWTimeout, sync_playwright
@@ -22,6 +24,7 @@ from playwright.sync_api import Page, TimeoutError as PWTimeout, sync_playwright
 from config import Config
 from scraper_fp import (
     CHROMIUM_ARGS,
+    FPProduct,
     _login,
     _logout,
     _block_resources,
@@ -477,6 +480,371 @@ def find_available_number(
             browser.close()
 
 
+# ── create product: checks around the copy ───────────────────────────────────
+#
+# Everything below exists so that a creation never fails silently and never
+# leaves a duplicate behind:
+#   - one creation at a time, and the number and name are checked again right
+#     before saving (the catalogue copy can be up to an hour old);
+#   - the form is read back before it is saved, so a copy of the template can't
+#     be saved under the template's own name or number;
+#   - save is clicked once;
+#   - the saved product is read back from FreshPortal and compared with what
+#     was asked for; anything that differs is reported, not swallowed.
+#
+# Result statuses:
+#   created                 found in FreshPortal with the requested values
+#   created_with_warnings   found, but something differs or could not be checked
+#   unconfirmed             save was clicked but the product could not be found;
+#                           it may exist, so the user must look before retrying
+#   failed                  FreshPortal did not save it (form error, or the save
+#                           was never clicked)
+#   blocked                 stopped before saving: invalid input, number taken,
+#                           name already in use, or another creation running
+
+# The API runs as a single process, so a process-wide lock is enough to stop
+# two people claiming the same number between the check and the save.
+_create_lock = threading.Lock()
+_CREATE_LOCK_WAIT_S = 300
+
+_NUMBER_RE = re.compile(r"[A-Z0-9]{1,8}")
+_VBN_RE = re.compile(r"[0-9]{1,6}")
+_TEMPLATE_ID_RE = re.compile(r"[0-9]{1,12}")
+
+_ROW_SELECTOR = "td[data-cell-action='product_number']"
+_NUMBER_FIELD = "product_index_form_number"
+_VERIFY_ATTEMPTS = 3
+_NUMBER_SUGGESTION_LIVE_CHECKS = 5
+
+
+def normalize_name(name: str) -> str:
+    """Case- and whitespace-insensitive form used to compare product names.
+
+    lower() rather than casefold() so it matches Postgres lower() in
+    db.find_products_by_exact_name.
+    """
+    return " ".join((name or "").split()).lower()
+
+
+def validate_create_input(
+    template_id: str | None,
+    new_name: str | None,
+    product_number: str | None,
+    vbn_code: str | None,
+    color_id: str | None,
+) -> tuple[dict, str | None]:
+    """Clean the values sent by the screen. Returns (clean, error_code).
+
+    Same rules as the screen, so a value that got past it is refused here
+    before anything is typed into FreshPortal.
+    """
+    name = (new_name or "").strip()
+    if not name:
+        return {}, "name_empty"
+    if re.search(r"\s{2,}", name):
+        return {}, "name_double_space"
+    if any(not (ch.isalnum() or ch in " '-") for ch in name):
+        return {}, "name_chars"
+
+    number = (product_number or "").strip().upper() or generate_product_number(name)
+    if not _NUMBER_RE.fullmatch(number):
+        return {}, "number"
+
+    vbn = (vbn_code or "").strip()
+    if vbn and not _VBN_RE.fullmatch(vbn):
+        return {}, "vbn"
+
+    tid = (template_id or "").strip()
+    if not _TEMPLATE_ID_RE.fullmatch(tid):
+        return {}, "template"
+
+    color = (color_id or "").strip()
+    if len(color) > 100 or any(ord(ch) < 32 for ch in color):
+        return {}, "color"
+
+    return {"template_id": tid, "name": name, "number": number, "vbn": vbn, "color_id": color}, None
+
+
+def _warning(code: str, expected: str | None = None, actual: str | None = None) -> dict:
+    return {"code": code, "expected": expected, "actual": actual}
+
+
+def _product_summary(p: FPProduct | dict | None) -> dict | None:
+    if p is None:
+        return None
+    d = asdict(p) if isinstance(p, FPProduct) else p
+    return {
+        "product_id": d.get("product_id", ""),
+        "name": d.get("name", ""),
+        "product_number": d.get("product_number", ""),
+        "vbn_number": d.get("vbn_number", ""),
+        "color": d.get("color", ""),
+    }
+
+
+def _product_url(cfg: Config, product_id: str) -> str:
+    return f"{cfg.freshportal_url}/product/index/index/?1=1&id={quote_plus(product_id)}&page=1"
+
+
+def _number_search_url(cfg: Config, number: str) -> str:
+    return f"{cfg.freshportal_url}/product/index/index/?1=1&number_adjustable={quote_plus(number)}&page=1"
+
+
+def _uses_catalogue_copy(cfg: Config) -> bool:
+    """The Postgres product table mirrors the default FreshPortal only."""
+    return cfg.freshportal_url.rstrip("/") == Config().freshportal_url.rstrip("/")
+
+
+def _parse_product_list(html: str) -> tuple[list[FPProduct], set[str]]:
+    """Rows of a FreshPortal product list page, and the columns it shows.
+
+    Number and name come from the data-cell-action cells when present (the
+    same cells the old verification relied on); the rest from the headers.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    col_map = _detect_columns_html(soup)
+    table = soup.find("table")
+    tbody = table.find("tbody") if table else None
+    if not tbody:
+        return [], set(col_map)
+
+    rows: list[FPProduct] = []
+    for tr in tbody.find_all("tr"):
+        cells = tr.find_all("td")
+        if not cells:
+            continue
+
+        def cell(field: str) -> str:
+            idx = col_map.get(field, -1)
+            return cells[idx].get_text(strip=True) if 0 <= idx < len(cells) else ""
+
+        def action_cell(action: str) -> str | None:
+            td = tr.find("td", attrs={"data-cell-action": action})
+            return td.get_text(strip=True) if td is not None else None
+
+        product_id = cells[0].get_text(strip=True)
+        number = action_cell("product_number")
+        name = action_cell("product_name")
+        if not product_id:
+            continue
+        rows.append(FPProduct(
+            product_id=product_id,
+            name=name if name is not None else cell("name"),
+            short_name=cell("short_name"),
+            vbn_number=cell("vbn_number"),
+            origin=cell("origin"),
+            product_number=number if number is not None else cell("product_number"),
+            color=cell("color"),
+            product_gtin=cell("product_gtin"),
+            product_group_code=cell("product_group_code"),
+            product_group=cell("product_group"),
+            application=cell("application"),
+            vat_rate=cell("vat_rate"),
+            cbs_group_code=cell("cbs_group_code"),
+            main_group=cell("main_group"),
+            creation_moment=cell("creation_moment"),
+            change_moment=cell("change_moment"),
+            external_id=cell("external_id"),
+        ))
+    return rows, set(col_map)
+
+
+def _load_product_list(page: Page, cfg: Config, filter_query: str, expect_rows: bool) -> tuple[list[FPProduct], set[str]]:
+    """Open the product list with *filter_query* and parse what it shows.
+
+    expect_rows=True waits longer for a row (verifying a product just saved);
+    otherwise it waits for the list's data requests to settle, so a free
+    number or name doesn't cost the full row timeout.
+    """
+    url = f"{cfg.freshportal_url}/product/index/index/?1=1&{filter_query}&page=1"
+    page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+    if "login" in page.url.lower():
+        _login(page, cfg)
+        page.goto(url, wait_until="load", timeout=cfg.request_timeout)
+    if expect_rows:
+        try:
+            page.wait_for_selector(_ROW_SELECTOR, timeout=12_000)
+        except PWTimeout:
+            pass
+    else:
+        try:
+            page.wait_for_load_state("networkidle", timeout=8_000)
+        except PWTimeout:
+            pass
+        try:
+            page.wait_for_selector(_ROW_SELECTOR, timeout=3_000)
+        except PWTimeout:
+            pass
+    return _parse_product_list(page.content())
+
+
+def _number_taken_live(page: Page, cfg: Config, number: str) -> bool:
+    # number_adjustable is a "contains" filter — compare exactly ourselves.
+    rows, _ = _load_product_list(page, cfg, f"number_adjustable={quote_plus(number)}", expect_rows=False)
+    return any(r.product_number.strip().upper() == number for r in rows)
+
+
+def _suggest_free_number(number: str, name: str, page: Page | None, cfg: Config, use_copy: bool) -> str | None:
+    """First variant of *number* that is free — catalogue copy first, then live."""
+    from db import is_product_number_taken
+
+    live_checks = 0
+    for candidate in itertools.islice(_number_candidates(number, name), 1, 40):
+        if use_copy and is_product_number_taken(candidate):
+            continue
+        if page is None:
+            return candidate
+        if live_checks >= _NUMBER_SUGGESTION_LIVE_CHECKS:
+            return None
+        live_checks += 1
+        if not _number_taken_live(page, cfg, candidate):
+            return candidate
+    return None
+
+
+_FPS_NAMES_JS = """
+(tag) => Array.from(document.querySelectorAll(tag)).map(e => e.getAttribute('name') || '')
+"""
+
+_FILL_FPS_INPUT_JS = """
+([fieldName, value]) => {
+    const host = Array.from(document.querySelectorAll('fps-input'))
+        .find(e => e.getAttribute('name') === fieldName);
+    const inp = host && host.shadowRoot ? host.shadowRoot.querySelector('input') : null;
+    if (!inp) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(inp, value);
+    ['input', 'change', 'blur'].forEach(t => inp.dispatchEvent(new Event(t, {bubbles: true})));
+    return true;
+}
+"""
+
+_READ_FPS_INPUT_JS = """
+(fieldName) => {
+    const host = Array.from(document.querySelectorAll('fps-input'))
+        .find(e => e.getAttribute('name') === fieldName);
+    const inp = host && host.shadowRoot ? host.shadowRoot.querySelector('input') : null;
+    return inp ? inp.value : null;
+}
+"""
+
+# Exact option value first (Floricode id), then the option label (colour name,
+# or the id itself when the colour list came from the catalogue copy).
+_SELECT_COLOR_JS = """
+([fieldName, colorId, colorName]) => {
+    const host = Array.from(document.querySelectorAll('fps-select'))
+        .find(e => e.getAttribute('name') === fieldName);
+    const s = host && host.shadowRoot ? host.shadowRoot.querySelector('select') : null;
+    if (!s) return null;
+    const opts = Array.from(s.options);
+    const label = o => o.textContent.trim().toLowerCase();
+    const match = opts.find(o => o.value === colorId)
+        || (colorName ? opts.find(o => label(o) === colorName.toLowerCase()) : undefined)
+        || opts.find(o => label(o) === colorId.toLowerCase());
+    if (!match) return null;
+    s.value = match.value;
+    s.dispatchEvent(new Event('change', {bubbles: true}));
+    return s.value === match.value ? match.textContent.trim() : null;
+}
+"""
+
+
+def _fps_names(page: Page, tag: str) -> list[str]:
+    return [n for n in page.evaluate(_FPS_NAMES_JS, tag) if n]
+
+
+def _pick_vbn_field(input_names: list[str]) -> str | None:
+    for predicate in (
+        lambda n: n == "product_index_form_vbn_number",
+        lambda n: "form_vbn" in n,
+        lambda n: "vbn_number" in n,
+    ):
+        for n in input_names:
+            if predicate(n):
+                return n
+    return None
+
+
+def _pick_color_field(select_names: list[str]) -> str | None:
+    for fragment in ("color_id", "form_color", "colour"):
+        for n in select_names:
+            if fragment in n:
+                return n
+    return None
+
+
+def _click_save(page: Page) -> bool:
+    """Click the save button once. False if there is no save button."""
+    for sel in ("#product_index_form_submit", "fps-button[name='submit']", "fps-button[type='save']"):
+        host = page.locator(sel)
+        if host.count() == 0:
+            continue
+        inner = host.first.locator("button")
+        (inner.first if inner.count() > 0 else host.first).click()
+        return True
+    return False
+
+
+def _visible_form_error(page: Page) -> str:
+    """Text of a visible error on the copy form, or "" when none/unknown."""
+    try:
+        for sel in (".alert-danger", "[class*='error-message']", ".text-danger"):
+            for el in page.query_selector_all(sel):
+                if not el.is_visible():
+                    continue
+                text = " ".join((el.inner_text() or "").split())
+                # Required-field asterisks are often styled as .text-danger.
+                if len(text.strip("* ")) >= 3:
+                    return text[:300]
+    except Exception:
+        pass
+    return ""
+
+
+def _still_on_copy_form(page: Page) -> bool:
+    try:
+        return page.query_selector("#product_index_form_submit") is not None
+    except Exception:
+        return False
+
+
+def _saved_value_warnings(
+    found: FPProduct,
+    columns: set[str],
+    vbn: str,
+    color_id: str,
+    color_name: str,
+    pre_save: list[dict],
+) -> list[dict]:
+    """Compare the saved product with the request.
+
+    What FreshPortal actually saved replaces the form-level VBN and colour
+    warnings: if the value got saved anyway there is nothing to report, and if
+    it didn't, the saved value is the more useful thing to show.
+    """
+    codes = {w["code"] for w in pre_save}
+    out = [w for w in pre_save if w["code"] not in ("vbn_field_missing", "vbn_not_set", "color_not_set")]
+
+    if vbn:
+        actual = found.vbn_number.strip()
+        if actual != vbn:
+            out.append(_warning("vbn_mismatch", expected=vbn, actual=actual))
+
+    if color_id:
+        label = color_name or color_id
+        expected = {normalize_name(v) for v in (color_name, color_id) if v and v.strip()}
+        if "color" in columns:
+            actual = found.color.strip()
+            if normalize_name(actual) not in expected:
+                out.append(_warning("color_mismatch", expected=label, actual=actual))
+        elif "color_not_set" in codes:
+            out.append(_warning("color_not_set", expected=label))
+        else:
+            out.append(_warning("color_unverified", expected=label))
+
+    return out
+
+
 def copy_and_create(
     template_id: str,
     new_name: str,
@@ -486,289 +854,259 @@ def copy_and_create(
     lang: str = "en",
     vbn_code: str | None = None,
     color_id: str | None = None,
+    color_name: str | None = None,
+    allow_duplicate_name: bool = False,
 ) -> dict:
     """Copy *template_id* in FreshPortal and save it as *new_name*.
 
-    FreshPortal copy flow (discovered via /debug/product-row):
-      1. Navigate to list filtered by product ID
-      2. Click the row to select it
-      3. Click fps-button[name="button_copy"] in the toolbar
-      4. A popup/dialog appears — fill in the name fields
-      5. Submit
-
-    Returns {"ok": True, "product_id": "...", "message": "..."}
-    or      {"ok": False, "message": "..."}.
+    Never raises. Returns a dict with "status" (see the list above this
+    function), "ok" (True for created / created_with_warnings), the product as
+    FreshPortal shows it when found, links, "warnings" and, for blocked /
+    failed / unconfirmed, a "reason" code and "error_text".
     """
-    def _s(m: str) -> None:
+    def _s(key: str, **kwargs: object) -> None:
+        m = msg(lang, key, **kwargs)
         logger.info(m)
         if on_status:
             on_status(m)
 
-    with sync_playwright() as pw:
-        browser = _launch_browser(pw)
-        context = browser.new_context()
-        page = context.new_page()
-        # Allow stylesheets — Angular/fps-button components need them to render
-        page.route("**/*", lambda route: route.abort()
-            if route.request.resource_type in ("image", "font", "media")
-            else route.continue_())
+    clean, invalid = validate_create_input(template_id, new_name, product_number, vbn_code, color_id)
+    name = clean.get("name", (new_name or "").strip())
+    number = clean.get("number", (product_number or "").strip().upper())
 
-        try:
-            _s(msg(lang, "logging_in"))
-            _login(page, cfg)
+    def _result(status: str, **extra: object) -> dict:
+        out = {
+            "status": status,
+            "ok": status in ("created", "created_with_warnings"),
+            "name": name,
+            "product_number": number,
+            "product": None,
+            "product_url": None,
+            "search_url": _number_search_url(cfg, number) if number else None,
+            "warnings": [],
+            "reason": None,
+            "error_text": None,
+            "suggested_number": None,
+            "existing": [],
+        }
+        out.update(extra)
+        logger.info("copy_and_create → %s (%s, nr %s): reason=%s warnings=%s",
+                    status, name, number, out["reason"], [w["code"] for w in out["warnings"]])
+        return out
 
-            # Number was already validated by /product-number-suggest before the
-            # user clicked Create — no need to re-check here.
-            pnum = product_number or generate_product_number(new_name)
+    if invalid:
+        return _result("blocked", reason="invalid_input", error_text=invalid)
 
-            _s(msg(lang, "opening_copy_form", id=template_id))
-            copy_url = f"{cfg.freshportal_url}/product/index/copy/PRO_ID/{template_id}/"
-            page.goto(copy_url, wait_until="load", timeout=cfg.request_timeout)
+    if not _create_lock.acquire(blocking=False):
+        _s("create_waiting_lock")
+        if not _create_lock.acquire(timeout=_CREATE_LOCK_WAIT_S):
+            return _result("blocked", reason="busy")
+    try:
+        return _copy_and_create_locked(
+            cfg, _s, _result,
+            template_id=clean["template_id"], name=name, number=number,
+            vbn=clean["vbn"], color_id=clean["color_id"], color_name=(color_name or "").strip(),
+            allow_duplicate_name=allow_duplicate_name,
+        )
+    finally:
+        _create_lock.release()
+
+
+def _copy_and_create_locked(
+    cfg: Config,
+    _s: Callable,
+    _result: Callable,
+    *,
+    template_id: str,
+    name: str,
+    number: str,
+    vbn: str,
+    color_id: str,
+    color_name: str,
+    allow_duplicate_name: bool,
+) -> dict:
+    from db import find_products_by_exact_name, is_product_number_taken, upsert_products
+
+    use_copy = _uses_catalogue_copy(cfg)
+    # From the moment save is clicked the product may exist, so any later
+    # error must be reported as "unconfirmed", never as "failed".
+    submitted = False
+
+    try:
+        # ── 1. catalogue copy: instant, catches everything older than ~1 h ──
+        if use_copy:
+            _s("create_checking_copy")
+            if not allow_duplicate_name:
+                existing = find_products_by_exact_name(name)
+                if existing:
+                    return _result("blocked", reason="name_exists",
+                                   existing=[_product_summary(p) for p in existing])
+            if is_product_number_taken(number):
+                _s("number_taken_search", base=number)
+                return _result("blocked", reason="number_taken",
+                               suggested_number=_suggest_free_number(number, name, None, cfg, use_copy))
+
+        with sync_playwright() as pw:
+            browser = _launch_browser(pw)
+            context = browser.new_context()
+            page = context.new_page()
+            # Stylesheets stay allowed — the fps-* components need them to render.
+            page.route("**/*", lambda route: route.abort()
+                if route.request.resource_type in ("image", "font", "media")
+                else route.continue_())
 
             try:
-                page.wait_for_selector("#product_index_form_submit", timeout=15_000)
-            except PWTimeout:
-                return {"ok": False, "message": f"Formularz kopiowania nie załadował się ({copy_url})"}
+                _s("logging_in")
+                _login(page, cfg)
 
-            # ── Fill name fields via Angular-compatible JS ──────────────────
-            # fps-input uses Shadow DOM. Playwright's fill() dispatches input
-            # events, but Angular reactive forms also need 'change' and 'blur'.
-            # Use native value setter + full event sequence to trigger Angular
-            # change detection.
-            _s(msg(lang, "filling_name", name=new_name))
+                # ── 2. FreshPortal itself: catches what the copy doesn't have yet ──
+                _s("create_checking_number", num=number)
+                if _number_taken_live(page, cfg, number):
+                    _s("number_taken_search", base=number)
+                    return _result("blocked", reason="number_taken",
+                                   suggested_number=_suggest_free_number(number, name, page, cfg, use_copy))
 
-            name_field_ids: list[str] = []
-            for fps in page.query_selector_all("fps-input"):
-                fps_name = fps.get_attribute("name") or ""
-                if "form_name_" in fps_name and "short" not in fps_name:
-                    name_field_ids.append(fps_name)
+                if not allow_duplicate_name:
+                    _s("create_checking_name")
+                    rows, _ = _load_product_list(page, cfg, f"name_adjustable={quote_plus(name)}", expect_rows=False)
+                    existing_live = [r for r in rows if normalize_name(r.name) == normalize_name(name)]
+                    if existing_live:
+                        return _result("blocked", reason="name_exists",
+                                       existing=[_product_summary(r) for r in existing_live])
 
-            if not name_field_ids:
-                return {"ok": False, "message": "Nie znaleziono fps-input[name*='form_name_'] w formularzu"}
-
-            # ── Fill product number (mandatory, unique) ─────────────────────
-            _s(msg(lang, "filling_number", num=pnum))
-            page.evaluate(f"""
-                () => {{
-                    const el = document.querySelector("fps-input[name='product_index_form_number']");
-                    if (!el || !el.shadowRoot) return;
-                    const inp = el.shadowRoot.querySelector('input');
-                    if (!inp) return;
-                    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-                    setter.call(inp, '{pnum}');
-                    ['input', 'change', 'blur'].forEach(t =>
-                        inp.dispatchEvent(new Event(t, {{bubbles: true}}))
-                    );
-                }}
-            """)
-            time.sleep(0.3)
-
-            # Collect short name field IDs
-            short_name_ids: list[str] = []
-            for fps in page.query_selector_all("fps-input"):
-                fps_nm = fps.get_attribute("name") or ""
-                if "form_short_name_" in fps_nm:
-                    short_name_ids.append(fps_nm)
-
-            def _fill_fps(field_name: str, value: str) -> None:
-                safe = value.replace("'", "\\'").replace('"', '\\"')
-                page.evaluate(f"""
-                    () => {{
-                        const el = document.querySelector("fps-input[name='{field_name}']");
-                        if (!el || !el.shadowRoot) return;
-                        const inp = el.shadowRoot.querySelector('input');
-                        if (!inp) return;
-                        const setter = Object.getOwnPropertyDescriptor(
-                            HTMLInputElement.prototype, 'value'
-                        ).set;
-                        setter.call(inp, '{safe}');
-                        ['input', 'change', 'blur'].forEach(t =>
-                            inp.dispatchEvent(new Event(t, {{bubbles: true}}))
-                        );
-                    }}
-                """)
-
-            for fps_name in name_field_ids:
-                _fill_fps(fps_name, new_name)
-            for fps_name in short_name_ids:
-                _fill_fps(fps_name, new_name)
-
-            _s(msg(lang, "fields_filled", name_n=len(name_field_ids), short_n=len(short_name_ids)))
-
-            # ── Fill VBN code (best-effort — field name varies by FreshPortal config) ──
-            if vbn_code:
-                _s(msg(lang, "filling_vbn", code=vbn_code))
-                vbn_field_found = False
-                for vbn_sel in [
-                    "fps-input[name='product_index_form_vbn_number']",
-                    "fps-input[name*='form_vbn']",
-                    "fps-input[name*='vbn_number']",
-                ]:
-                    try:
-                        el = page.query_selector(vbn_sel)
-                        if el:
-                            _fill_fps(el.get_attribute("name") or vbn_sel, vbn_code)
-                            vbn_field_found = True
-                            break
-                    except Exception as exc:
-                        logger.debug("VBN fill failed for %s: %s", vbn_sel, exc)
-                if not vbn_field_found:
-                    logger.warning("VBN field not found on copy form — template's original VBN (%s) will be submitted unchanged", template_id)
-                    _s(f"⚠ VBN field not found on form — template's VBN kept as-is (not {vbn_code})")
-
-            # ── Fill color (best-effort) ─────────────────────────────────────
-            if color_id:
-                _s(msg(lang, "filling_color", name=color_id))
-                color_field_set = False
-                for color_sel in [
-                    "fps-select[name*='color_id']",
-                    "fps-select[name*='form_color']",
-                    "fps-select[name*='colour']",
-                ]:
-                    try:
-                        el = page.query_selector(color_sel)
-                        if el:
-                            # fps-select uses Shadow DOM; set value on inner <select>.
-                            # Try exact value match first (Floricode numeric ID), then
-                            # fall back to matching by option text label (DB color name).
-                            color_field_set = page.evaluate(
-                                """([el, val]) => {
-                                    const s = el.shadowRoot?.querySelector('select');
-                                    if (!s) return false;
-                                    if (Array.from(s.options).some(o => o.value === val)) {
-                                        s.value = val;
-                                    } else {
-                                        const match = Array.from(s.options).find(
-                                            o => o.textContent.trim().toLowerCase() === val.toLowerCase()
-                                        );
-                                        if (match) s.value = match.value;
-                                        else return false;
-                                    }
-                                    s.dispatchEvent(new Event('change', {bubbles: true}));
-                                    return true;
-                                }""",
-                                [el, color_id],
-                            )
-                            if color_field_set:
-                                break
-                    except Exception as exc:
-                        logger.debug("Color fill failed for %s: %s", color_sel, exc)
-                if not color_field_set:
-                    logger.warning("Color field not found/matched on copy form — template's original color will be submitted unchanged")
-                    _s("⚠ Color field not found or option not matched — template's color kept as-is")
-
-            time.sleep(1)
-
-            # ── Submit form ─────────────────────────────────────────────────
-            _s(msg(lang, "saving_product"))
-            submitted = False
-
-            # Try 1: click inner shadow DOM button of the save fps-button
-            for save_sel in ["#product_index_form_submit", "fps-button[name='submit']", "fps-button[type='save']"]:
-                loc = page.locator(save_sel)
-                if loc.count() > 0:
-                    inner = loc.locator("button")
-                    if inner.count() > 0:
-                        inner.click()
-                        submitted = True
-                        break
-
-            # Try 2: JS click on both the fps-button AND its inner button
-            if not submitted:
-                page.evaluate("""
-                    () => {
-                        const btn = document.querySelector('#product_index_form_submit');
-                        if (!btn) return;
-                        btn.click();
-                        const inner = btn.shadowRoot?.querySelector('button');
-                        if (inner) inner.click();
-                    }
-                """)
-                submitted = True
-
-            # Try 3: press Enter on the last name field
-            time.sleep(0.5)
-            page.keyboard.press("Enter")
-
-            # Wait for save to complete — page may or may not navigate
-            _s(msg(lang, "waiting_save"))
-            try:
-                page.wait_for_load_state("load", timeout=10_000)
-            except Exception:
-                pass
-            time.sleep(3)
-
-            # Check for form error messages (execution context may be gone after nav)
-            try:
-                for err_sel in [".alert-danger", ".text-danger", "[class*='error-message']"]:
-                    err = page.query_selector(err_sel)
-                    if err and err.is_visible():
-                        return {"ok": False, "message": f"Błąd formularza: {err.inner_text()[:300]}"}
-            except Exception:
-                pass
-
-            # Validate: search by number on a *fresh* page so we don't race with
-            # FreshPortal's own post-submit SPA navigation still running on `page`.
-            _s(msg(lang, "verifying_product"))
-            encoded_num = pnum.replace(" ", "+")
-            verify_url = (
-                f"{cfg.freshportal_url}/product/index/index/"
-                f"?1=1&number_adjustable={encoded_num}&page=1"
-            )
-            verify_page = context.new_page()
-            _block_resources(verify_page)
-            try:
-                verify_page.goto(verify_url, wait_until="load", timeout=cfg.request_timeout)
+                # ── 3. fill the copy form ──
+                _s("opening_copy_form", id=template_id)
+                copy_url = f"{cfg.freshportal_url}/product/index/copy/PRO_ID/{template_id}/"
+                page.goto(copy_url, wait_until="load", timeout=cfg.request_timeout)
                 try:
-                    verify_page.wait_for_selector(
-                        "td[data-cell-action='product_number']", timeout=12_000
-                    )
+                    page.wait_for_selector("#product_index_form_submit", timeout=15_000)
+                except PWTimeout:
+                    return _result("failed", reason="form_not_loaded")
+
+                input_names = _fps_names(page, "fps-input")
+                name_fields = [n for n in input_names if "form_name_" in n and "short" not in n]
+                short_fields = [n for n in input_names if "form_short_name_" in n]
+                if not name_fields:
+                    return _result("failed", reason="name_field_missing")
+
+                warnings: list[dict] = []
+
+                _s("filling_number", num=number)
+                page.evaluate(_FILL_FPS_INPUT_JS, [_NUMBER_FIELD, number])
+                time.sleep(0.3)
+
+                _s("filling_name", name=name)
+                for field in name_fields + short_fields:
+                    page.evaluate(_FILL_FPS_INPUT_JS, [field, name])
+                _s("fields_filled", name_n=len(name_fields), short_n=len(short_fields))
+
+                vbn_field = None
+                if vbn:
+                    _s("filling_vbn", code=vbn)
+                    vbn_field = _pick_vbn_field(input_names)
+                    if vbn_field:
+                        page.evaluate(_FILL_FPS_INPUT_JS, [vbn_field, vbn])
+                    else:
+                        warnings.append(_warning("vbn_field_missing", expected=vbn))
+
+                if color_id:
+                    label = color_name or color_id
+                    _s("filling_color", name=label)
+                    color_field = _pick_color_field(_fps_names(page, "fps-select"))
+                    selected = page.evaluate(_SELECT_COLOR_JS, [color_field, color_id, color_name]) if color_field else None
+                    if not selected:
+                        warnings.append(_warning("color_not_set", expected=label))
+
+                time.sleep(1)
+
+                # ── 4. read the form back: never save a copy that still carries
+                #       the template's name or number ──
+                _s("create_reading_back")
+                typed_number = (page.evaluate(_READ_FPS_INPUT_JS, _NUMBER_FIELD) or "").strip().upper()
+                if typed_number != number:
+                    return _result("failed", reason="number_not_set", error_text=typed_number or None)
+                for field in name_fields:
+                    typed = (page.evaluate(_READ_FPS_INPUT_JS, field) or "").strip()
+                    if typed != name:
+                        return _result("failed", reason="name_not_set", error_text=typed or None)
+                if any((page.evaluate(_READ_FPS_INPUT_JS, f) or "").strip() != name for f in short_fields):
+                    warnings.append(_warning("short_name_not_set", expected=name))
+                if vbn_field and (page.evaluate(_READ_FPS_INPUT_JS, vbn_field) or "").strip() != vbn:
+                    warnings.append(_warning("vbn_not_set", expected=vbn))
+
+                # ── 5. save — one click, nothing else ──
+                _s("saving_product")
+                if page.locator("#product_index_form_submit, fps-button[name='submit'], fps-button[type='save']").count() == 0:
+                    return _result("failed", reason="save_button_missing")
+                submitted = True
+                _click_save(page)
+
+                _s("waiting_save")
+                try:
+                    page.wait_for_load_state("load", timeout=10_000)
                 except Exception:
                     pass
+                time.sleep(3)
 
-                found: bool = verify_page.evaluate(
-                    """
-                    ([pnum, pname]) => {
-                        const numTarget  = pnum.toUpperCase();
-                        const nameTarget = pname.toUpperCase();
-                        for (const tr of document.querySelectorAll('table tbody tr')) {
-                            const numCell  = tr.querySelector(
-                                'td[data-cell-action="product_number"]');
-                            const nameCell = tr.querySelector(
-                                'td[data-cell-action="product_name"]');
-                            if (!numCell || !nameCell) continue;
-                            if (numCell.textContent.trim().toUpperCase()  === numTarget &&
-                                nameCell.textContent.trim().toUpperCase() === nameTarget) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                    """,
-                    [pnum, new_name],
+                # ── 6. read the saved product back ──
+                found: FPProduct | None = None
+                same_number: list[FPProduct] = []
+                columns: set[str] = set()
+                # A fresh page, so we don't race FreshPortal's own post-save navigation.
+                verify_page = context.new_page()
+                _block_resources(verify_page)
+                try:
+                    for attempt in range(1, _VERIFY_ATTEMPTS + 1):
+                        if attempt == 1:
+                            _s("verifying_product")
+                        else:
+                            _s("create_verify_retry", attempt=attempt, total=_VERIFY_ATTEMPTS)
+                        rows, columns = _load_product_list(
+                            verify_page, cfg, f"number_adjustable={quote_plus(number)}", expect_rows=True)
+                        same_number = [r for r in rows if r.product_number.strip().upper() == number]
+                        found = next((r for r in same_number if normalize_name(r.name) == normalize_name(name)), None)
+                        # A row with our number but another name won't change on a retry.
+                        if found or same_number:
+                            break
+                        if attempt < _VERIFY_ATTEMPTS:
+                            time.sleep(5 * attempt)
+                finally:
+                    verify_page.close()
+
+                if found:
+                    warnings = _saved_value_warnings(found, columns, vbn, color_id, color_name, warnings)
+                    if use_copy:
+                        try:
+                            upsert_products([asdict(found)])
+                        except Exception:
+                            logger.exception("Could not add product %s to the catalogue copy", found.product_id)
+                            warnings.append(_warning("catalogue_copy_not_updated"))
+                    _s("product_verified")
+                    return _result(
+                        "created_with_warnings" if warnings else "created",
+                        product=_product_summary(found),
+                        product_url=_product_url(cfg, found.product_id),
+                        warnings=warnings,
+                    )
+
+                form_error = _visible_form_error(page)
+                if form_error and _still_on_copy_form(page):
+                    return _result("failed", reason="form_error", error_text=form_error, warnings=warnings)
+
+                other = same_number[0] if same_number else None
+                return _result(
+                    "unconfirmed",
+                    reason="name_differs" if other else "not_found",
+                    product=_product_summary(other),
+                    product_url=_product_url(cfg, other.product_id) if other else None,
+                    warnings=warnings,
                 )
+
             finally:
-                verify_page.close()
+                _logout(context, cfg)
+                context.close()
+                browser.close()
 
-            if found:
-                _s(msg(lang, "product_verified"))
-                return {
-                    "ok": True,
-                    "message": f"Produkt '{new_name}' (nr {pnum}) został pomyślnie utworzony",
-                }
-
-            return {
-                "ok": False,
-                "message": (
-                    f"Nie znaleziono produktu '{new_name}' (nr {pnum}) "
-                    "w FreshPortal — sprawdź ręcznie"
-                ),
-            }
-
-        except Exception as exc:
-            logger.exception("copy_and_create failed")
-            return {"ok": False, "message": str(exc)}
-        finally:
-            _logout(context, cfg)
-            context.close()
-            browser.close()
+    except Exception as exc:
+        logger.exception("copy_and_create failed")
+        return _result("unconfirmed" if submitted else "failed", reason="exception", error_text=str(exc)[:300])

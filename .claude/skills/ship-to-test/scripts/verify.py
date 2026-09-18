@@ -140,6 +140,29 @@ def check_tab_maps(page: Path) -> None:
         report("PASS", "Tab maps", f"{len(tabs)} tabs, every Record<Tab, …> complete")
 
 
+def check_python_tests() -> None:
+    """Run the scenario tests under python/tests (they need nothing installed)."""
+    tests = sorted((ROOT / "python" / "tests").glob("test_*.py"))
+    if not tests:
+        report("SKIP", "Python tests", "no python/tests/test_*.py found")
+        return
+    failures, skipped, summaries = [], [], []
+    for test in tests:
+        run = subprocess.run([sys.executable, str(test)], cwd=ROOT, capture_output=True, text=True)
+        tail = (run.stdout + run.stderr).strip().splitlines()
+        summaries.append(f"{test.name}: {tail[-1] if tail else 'no output'}")
+        if run.returncode == 2:
+            skipped.append(test.name)
+        elif run.returncode != 0:
+            failures.append(f"{test.name}\n" + "\n".join(tail[-25:]))
+    if failures:
+        report("FAIL", "Python tests", "\n".join(failures))
+    elif skipped:
+        report("WARN", "Python tests", "could not run: " + ", ".join(skipped) + "\n" + "\n".join(summaries))
+    else:
+        report("PASS", "Python tests", "\n".join(summaries))
+
+
 def check_typescript() -> None:
     npx = shutil.which("npx") or shutil.which("npx.cmd")
     if not npx:
@@ -173,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     check_line_endings(files, base)
     check_translations(args.i18n)
     check_tab_maps(args.page)
+    check_python_tests()
     check_typescript()
 
     print(f"Changed since {base}: {len(files)} file(s)")
