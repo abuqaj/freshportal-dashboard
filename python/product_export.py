@@ -31,10 +31,13 @@ name in the portal itself.
 """
 from __future__ import annotations
 
+import io
 import logging
 import os
+import re
 import threading
 import time
+import zipfile
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -68,6 +71,16 @@ LOOKUP_TABLES: dict[str, tuple[str, ...]] = {
     "vat":         ("vat", "vat_rate"),
 }
 
+# Which table is the product master is decided by its columns, not its name.
+# An export can hold more than one table called after products — one with
+# id/code and a name per language, and the master with the number, the VBN
+# code and the references to group, application and VAT. Reading the wrong one
+# leaves every number and VBN empty, which would quietly turn "this number is
+# free" into a guess.
+PRODUCT_TABLE_PREFERRED = "product"
+MASTER_REQUIRED_COLUMNS = ("id", "number")
+MASTER_WANTED_COLUMNS = ("vbn_number",)
+
 _NAME_COLUMNS = ("name_en", "name_nl", "name_es", "name")
 _ALL_NAME_COLUMNS = ("name_en", "name_nl", "name_es", "name_ru", "name_zh", "name")
 _LOOKUP_ID_COLUMNS = ("id", "group_id", "application_id", "vat_id", "code")
@@ -88,6 +101,8 @@ class ExportProducts:
     since: str = ""
     zip_size_bytes: int = 0
     source_files: list[str] = field(default_factory=list)
+    # Which file in the export the products were read from.
+    product_table: str = ""
 
     @property
     def age_s(self) -> float:
@@ -171,6 +186,48 @@ def _lookup_labels(zip_bytes: bytes, table_names: tuple[str, ...]) -> dict[str, 
     return {}
 
 
+def _header_columns(zf: zipfile.ZipFile, name: str) -> list[str]:
+    """Column names of a zipped CSV, without reading the whole file."""
+    try:
+        with zf.open(name) as fh:
+            first_line = fh.readline().decode("utf-8-sig", errors="replace")
+    except Exception:
+        return []
+    return [c.strip().strip('"').lower() for c in re.split(r"[,;\t|]", first_line.strip())]
+
+
+def read_product_master(zip_bytes: bytes) -> tuple[list[dict], str]:
+    """The product master's rows, and the file they came from.
+
+    Prefers the table called "product", but only when it carries the master's
+    columns; otherwise looks through the export for a table that does.
+    """
+    from bi_sync_client import read_csv_rows, read_table
+
+    rows = read_table(zip_bytes, PRODUCT_TABLE_PREFERRED)
+    if rows and all(c in rows[0] for c in MASTER_REQUIRED_COLUMNS):
+        return rows, PRODUCT_TABLE_PREFERRED
+    if rows:
+        logger.warning("export table '%s' is missing %s — looking for the master elsewhere. Columns: %s",
+                       PRODUCT_TABLE_PREFERRED, ", ".join(MASTER_REQUIRED_COLUMNS), list(rows[0]))
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        candidates = []
+        for name in zf.namelist():
+            header = _header_columns(zf, name)
+            if all(c in header for c in MASTER_REQUIRED_COLUMNS):
+                wanted = sum(1 for c in MASTER_WANTED_COLUMNS if c in header)
+                candidates.append((wanted, name))
+        if not candidates:
+            return [], ""
+        # The one carrying the most of what the module needs.
+        candidates.sort(key=lambda c: (-c[0], len(c[1])))
+        chosen = candidates[0][1]
+        logger.info("product master read from %s (candidates: %s)",
+                    chosen, ", ".join(n for _, n in candidates))
+        return read_csv_rows(zf.read(chosen)), chosen
+
+
 def _map_row(row: dict, groups: dict[str, str], applications: dict[str, str], vats: dict[str, str]) -> dict | None:
     """One product.csv row in the shape the search and the form expect."""
     product_id = (row.get("id") or "").strip()
@@ -206,19 +263,20 @@ def _download(system_id: str, cfg: Config) -> ExportProducts:
     started = time.time()
     zip_bytes = download_export_zip(get_export_url(cfg, since, timeout=EXPORT_URL_TIMEOUT_S))
     files = [name for name, _ in list_export_files(zip_bytes)]
-    raw = read_table(zip_bytes, "product")
+    raw, table = read_product_master(zip_bytes)
     if not raw:
-        raise RuntimeError(f"export has no product table (files: {', '.join(files) or 'none'})")
+        raise RuntimeError(f"export has no product table with {', '.join(MASTER_REQUIRED_COLUMNS)} "
+                           f"(files: {', '.join(files) or 'none'})")
 
     groups = _lookup_labels(zip_bytes, LOOKUP_TABLES["group"])
     applications = _lookup_labels(zip_bytes, LOOKUP_TABLES["application"])
     vats = _lookup_labels(zip_bytes, LOOKUP_TABLES["vat"])
     rows = [m for m in (_map_row(r, groups, applications, vats) for r in raw) if m]
 
-    logger.info("product export for %s: %d products from %d rows since %s in %.0fs (zip %.1f MB)",
-                system_id, len(rows), len(raw), since, time.time() - started, len(zip_bytes) / 1e6)
+    logger.info("product export for %s: %d products from %d rows of %s since %s in %.0fs (zip %.1f MB)",
+                system_id, len(rows), len(raw), table, since, time.time() - started, len(zip_bytes) / 1e6)
     return ExportProducts(system_id=system_id, rows=rows, fetched_at=time.time(), since=since,
-                          zip_size_bytes=len(zip_bytes), source_files=files)
+                          zip_size_bytes=len(zip_bytes), source_files=files, product_table=table)
 
 
 def _load_now(key: _Key, system_id: str, cfg: Config) -> ExportProducts | None:
@@ -320,6 +378,7 @@ def state() -> list[dict]:
                 "age_seconds": round(products.age_s) if products else None,
                 "since": products.since if products else since_date(),
                 "zip_size_bytes": products.zip_size_bytes if products else None,
+                "product_table": products.product_table if products else None,
                 "files_in_export": products.source_files if products else [],
                 "loading": key in _loading,
                 "last_error": _last_error.get(key),
