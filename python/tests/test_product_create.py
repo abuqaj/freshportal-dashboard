@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -268,6 +269,17 @@ def create(portal: Portal, **overrides) -> dict:
     return pc.copy_and_create(cfg=cfg, lang="en", **args)
 
 
+def pc_export_stub(products: list[dict]):
+    """A product list as product_export builds it from product.csv."""
+    import product_export
+    rows = [product_export._map_row(
+        {"id": p["product_id"], "number": p["product_number"], "name_en": p["name"],
+         "name_nl": p.get("name_nl", p["name"]), "vbn_number": p.get("vbn_number", "")},
+        {}, {}, {}) for p in products]
+    return product_export.ExportProducts(system_id="test", rows=[r for r in rows if r],
+                                         fetched_at=time.time())
+
+
 def other_system_cfg() -> Config:
     """A portal other than the one the catalogue copy mirrors.
 
@@ -502,6 +514,46 @@ def test_another_system_never_touches_the_catalogue_copy():
     reset_db()
 
 
+def test_reading_a_system_from_its_export():
+    """A system with an export key gets a product list without a browser.
+
+    The rows come from product.csv, so they carry no colour and no short name;
+    what matters here is that the list is used for the checks and is never
+    written back into the copy.
+    """
+    export = pc_export_stub([
+        {"product_id": "70001", "product_number": "ROECTO", "name": "Rosa Ec Toxic"},
+        {"product_id": "70002", "product_number": "ROECMO", "name": "Rosa Ec Mondial"},
+    ])
+    other = other_system_cfg()
+    catalogue = pc.catalogue_for(other, export=export)
+    check("a system with an export reads its list, not the copy and not the browser",
+          catalogue.source == "export" and catalogue.search is not None
+          and not catalogue.writes_back, catalogue.source)
+
+    reset_db()
+    r = create(Portal(saved=saved_row()), cfg=other, catalogue=catalogue)
+    check("a name in that system's export blocks before saving",
+          r["status"] == "blocked" and r["reason"] == "name_exists"
+          and r["existing"][0]["product_id"] == "70001" and Portal.clicks == 0, r)
+
+    r = create(Portal(saved=saved_row(product_number="ROECMOX")), cfg=other, catalogue=catalogue,
+               new_name="Rosa Ec Mondial Plus", product_number="ROECMO")
+    check("a number in that system's export blocks, with a suggestion",
+          r["status"] == "blocked" and r["reason"] == "number_taken"
+          and r["suggested_number"] and Portal.clicks == 0, r)
+
+    r = create(Portal(saved=saved_row(name="Rosa Ec Novelty", product_number="ROECNO")), cfg=other,
+               catalogue=catalogue, new_name="Rosa Ec Novelty", product_number="ROECNO")
+    check("a product the export does not have is created and stays out of the copy",
+          r["status"] == "created" and db.state["upserted"] == [], r)
+
+    check("searching the export finds a product by part of its name",
+          [row["product_id"] for row in export.search("toxic")] == ["70001"], export.search("toxic"))
+    check("the export answers in any language it carries",
+          export.by_exact_name("rosa ec mondial")[0]["product_id"] == "70002")
+
+
 def test_only_one_creation_at_a_time():
     reset_db()
     pc._create_lock.acquire()
@@ -548,6 +600,7 @@ TESTS = [
     test_saved_product_is_compared_with_what_was_asked_for,
     test_when_the_product_cannot_be_found_afterwards,
     test_another_system_never_touches_the_catalogue_copy,
+    test_reading_a_system_from_its_export,
     test_only_one_creation_at_a_time,
     test_product_list_parsing,
 ]

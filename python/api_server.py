@@ -25,11 +25,13 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import Config, FP_SYSTEM_BY_URL, get_kenya_cfg
+from config import (Config, FP_SYSTEM_BY_URL, apply_system_login, export_cfg,
+                    system_id_for_url, get_kenya_cfg)
 from i18n import msg as i18n_msg
 from scraper_fp import fetch_products, fix_vbn_batch, FPProduct, _debug_fetch, _debug_rendered
 from product_creator import (ProductMatch, search_products, find_best_template, copy_and_create,
-                             generate_product_number, find_available_number, uses_catalogue_copy)
+                             generate_product_number, find_available_number, uses_catalogue_copy,
+                             catalogue_for)
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name, get_floricode_colors, invalidate_colors_cache
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
@@ -104,6 +106,7 @@ def get_cfg(request: Request, payload: dict = Depends(get_token_payload)) -> Con
                        ("admin:manage", "delivery:import", "catalogue:sync", f"system:{system}"))
     if can_override:
         cfg.freshportal_url = fp_url
+        apply_system_login(cfg, system)
     return cfg
 
 
@@ -695,6 +698,7 @@ def sync_history_ecuador(limit: int = 10, offset: int = 0, _: dict = Depends(req
 def bi_sync_debug_pull(
     mutation_datetime: str,
     tables: str = "",
+    system: str = "",
     _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """TEMP admin debug endpoint (2026-08-26) — pull a BI Sync export and
@@ -706,7 +710,14 @@ def bi_sync_debug_pull(
     """
     from bi_sync_client import pull_and_summarize, BiSyncError
 
+    # `system` looks at another tenant's export (e.g. "test"); without it the
+    # main BI Sync credentials are used, as before.
     cfg = Config()
+    if system:
+        creds = export_cfg(system)
+        if creds is None:
+            raise HTTPException(400, f"No export key configured for system '{system}'")
+        cfg = creds
     table_filter = tuple(t.strip() for t in tables.split(",") if t.strip())
     try:
         return pull_and_summarize(cfg, mutation_datetime, tables_of_interest=table_filter)
@@ -1618,13 +1629,31 @@ def cancel_task(token: str, _: dict = Depends(get_token_payload)):
     return {"ok": True, "found": token in _cancel_tokens}
 
 
+def _product_catalogue(cfg: Config, on_status=None, lang: str = "en"):
+    """The product list to read for the system *cfg* points at.
+
+    The Postgres copy for the system it mirrors; otherwise that system's BI
+    Sync export, held in memory, when it has an export key of its own. With
+    neither, the module falls back to reading FreshPortal through the browser.
+    """
+    if uses_catalogue_copy(cfg):
+        return catalogue_for(cfg)
+    system = system_id_for_url(cfg.freshportal_url)
+    creds = export_cfg(system) if system else None
+    export = None
+    if creds is not None:
+        import product_export
+        export = product_export.load(system, creds, on_status=on_status, lang=lang)
+    return catalogue_for(cfg, export=export)
+
+
 @app.post("/product-search")
 def product_search(req: ProductSearchRequest, _: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
     try:
         cfg.validate()
     except ValueError as e:
         raise HTTPException(400, str(e))
-    matches = search_products(req.name, cfg, use_catalogue_copy=uses_catalogue_copy(cfg))
+    matches = search_products(req.name, cfg, catalogue=_product_catalogue(cfg))
     return {
         "results": [
             {
@@ -1675,10 +1704,10 @@ async def product_search_stream(req: ProductSearchRequest, _: dict = Depends(req
 
             # Use the variety-aware search (typo-resistant ILIKE substrings + genus).
             # Falls back to Playwright automatically when DB is not yet populated.
-            use_copy = uses_catalogue_copy(cfg)
+            catalogue = _product_catalogue(cfg, on_status=on_status, lang=req.lang)
             matches = search_products(req.name, cfg, on_status=on_status, lang=req.lang,
-                                      use_catalogue_copy=use_copy)
-            source = "db" if use_copy and get_product_count() > 0 else "scrape"
+                                      catalogue=catalogue)
+            source = {"copy": "db", "portal": "scrape"}.get(catalogue.source, catalogue.source)
             queue.put({"type": "result", "data": {
                 "results": _matches_to_results(matches),
                 "source": source,
@@ -1952,8 +1981,7 @@ def product_number_suggest(name: str = "", number: str = "", _: dict = Depends(r
     base = number.strip() or (generate_product_number(name.strip()) if name.strip() else "")
     if not base:
         raise HTTPException(400, "Provide 'name' or 'number' query param")
-    result = find_available_number(base, cfg, name=name.strip(),
-                                   use_catalogue_copy=uses_catalogue_copy(cfg))
+    result = find_available_number(base, cfg, name=name.strip(), catalogue=_product_catalogue(cfg))
     if result is None:
         return {"available_number": None, "original_number": base, "changed": False}
     return {"available_number": result, "original_number": base, "changed": result != base}
@@ -1987,6 +2015,7 @@ async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(req
                 color_id=req.color_id,
                 color_name=req.color_name,
                 allow_duplicate_name=req.allow_duplicate_name,
+                catalogue=_product_catalogue(cfg, on_status=on_status, lang=req.lang),
             )
             queue.put({"type": "result", "data": result})
         except Exception as e:
@@ -2015,6 +2044,34 @@ async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(req
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
+
+
+@app.get("/product-export/status")
+def product_export_status(_: dict = Depends(require_any_permission("admin:manage", "products:create"))):
+    """What product lists are held in memory, per system, and how old they are."""
+    import product_export
+    return {"since_days": product_export.SINCE_DAYS,
+            "max_age_seconds": product_export.DEFAULT_MAX_AGE_S,
+            "lists": product_export.state()}
+
+
+@app.post("/product-export/refresh")
+def product_export_refresh(system: str = "", _: dict = Depends(require_permission("admin:manage"))):
+    """Download a system's product list again, now, and wait for it.
+
+    Slow on purpose — a years-wide export is why the module normally fetches
+    in the background.
+    """
+    import product_export
+    creds = export_cfg(system)
+    if creds is None:
+        raise HTTPException(400, f"No export key configured for system '{system}'")
+    products = product_export.load(system, creds, wait=True, force=True)
+    if products is None:
+        raise HTTPException(502, "Could not read the export — see /product-export/status for the error")
+    return {"ok": True, "system": system, "products": len(products.rows),
+            "since": products.since, "zip_size_bytes": products.zip_size_bytes,
+            "files_in_export": products.source_files}
 
 
 @app.get("/debug/colour-table")

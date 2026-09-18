@@ -22,6 +22,18 @@ Dashboard do zarządzania produktami w FreshPortal — weryfikacja VBN, tworzeni
 |--------|----------------|
 | `stamgegevens` | VBN Checker, Nowe produkty, Photo Uploader, Historia, Admin |
 | `ecuador` | Import dostawy, Analysis Tool, Historia, Admin |
+| `test` (850255test) | Nowe produkty, Historia, Admin — system testowy do sprawdzenia modułu przed produkcją |
+
+Moduł widać na danym systemie tylko wtedy, gdy naprawdę na nim pracuje. Nowe
+produkty kierują każde żądanie na wybrany system, więc są dostępne także na
+`test`; VBN Checker, VBN Fix i Photo Uploader zawsze pracują na Stamgegevens,
+dlatego nie pojawiają się nigdzie indziej.
+
+Listę produktów wybranego systemu moduł czyta z: kopii katalogu w Postgresie
+(tylko system, który ta kopia odwzorowuje), eksportu BI Sync trzymanego w
+pamięci (system z własnym kluczem — `TEST_BI_SYNC_API_KEY` dla `test`), albo —
+gdy nie ma ani jednego, ani drugiego — wprost z portalu przez przeglądarkę.
+Numer i nazwa są przed zapisem sprawdzane w portalu niezależnie od źródła.
 
 Admin po zalogowaniu wybiera system. Użytkownicy bez uprawnienia `admin:manage` trafiają bezpośrednio do modułów (bez wyboru systemu).
 

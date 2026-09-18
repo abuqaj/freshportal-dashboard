@@ -90,6 +90,10 @@ def get_kenya_cfg() -> Config:
     return cfg
 
 
+# Defined after get_kenya_cfg so the helpers below can stay next to the
+# system tables they read.
+
+
 # FreshPortal systems the X-FP-URL header may point at, each with the
 # system:<id> permission that goes with it — the same ids src/lib/systems.ts
 # uses, so a module can be pointed at a system only by someone the screen
@@ -107,3 +111,58 @@ FP_SYSTEM_BY_URL: dict[str, str] = {
 
 # Kept as the plain set of addresses, for checks that only ask "is this ours?".
 ALLOWED_FP_URLS: frozenset[str] = frozenset(FP_SYSTEM_BY_URL)
+
+
+def system_id_for_url(fp_url: str) -> str:
+    """The system id of a FreshPortal address, or "" when it isn't one of ours."""
+    return FP_SYSTEM_BY_URL.get((fp_url or "").strip().rstrip("/"), "")
+
+
+# A tenant's own portal login, where it has one. Falls back to the main
+# credentials, which is what every system except Kenya has always used.
+_SYSTEM_LOGIN_ENV_PREFIX: dict[str, str] = {
+    "kenya": "KENYA_FP",
+    "test":  "TEST_FP",
+}
+
+# BI Sync export credentials per system: (key env, base-url env, default base).
+# Explicit per system and never inherited — a key belonging to another tenant
+# authenticates perfectly well and returns that tenant's export, which is the
+# same trap bi_sync_client's per-key token cache was written to avoid.
+_SYSTEM_EXPORT_ENV: dict[str, tuple[str, str, str]] = {
+    "ecuador": ("BI_SYNC_API_KEY",       "BI_SYNC_API_BASE_URL",       "https://850255-api.freshportal.com"),
+    "kenya":   ("KENYA_BI_SYNC_API_KEY", "KENYA_BI_SYNC_API_BASE_URL", ""),
+    "test":    ("TEST_BI_SYNC_API_KEY",  "TEST_BI_SYNC_API_BASE_URL",  "https://850255test-api.freshportal.com"),
+}
+
+
+def apply_system_login(cfg: Config, system_id: str) -> Config:
+    """Swap in *system_id*'s own portal login, where it has one set."""
+    prefix = _SYSTEM_LOGIN_ENV_PREFIX.get(system_id)
+    if not prefix:
+        return cfg
+    for suffix, attr in (("USERNAME", "freshportal_username"), ("PASSWORD", "freshportal_password")):
+        value = os.getenv(f"{prefix}_{suffix}", "")
+        if value:
+            setattr(cfg, attr, value)
+    return cfg
+
+
+def export_cfg(system_id: str) -> Config | None:
+    """Config for reading *system_id*'s BI Sync export.
+
+    None when that system has no export key of its own — the caller then falls
+    back to reading the portal itself rather than to another tenant's export.
+    """
+    env = _SYSTEM_EXPORT_ENV.get(system_id)
+    if not env:
+        return None
+    key_env, base_env, default_base = env
+    key = os.getenv(key_env, "").strip()
+    base = (os.getenv(base_env, "").strip() or default_base).rstrip("/")
+    if not key or not base:
+        return None
+    cfg = Config()
+    cfg.bi_sync_api_key = key
+    cfg.bi_sync_api_base_url = base
+    return cfg

@@ -55,20 +55,21 @@ def _get_token(cfg: Config, force_refresh: bool = False) -> str:
     return _tokens[key]
 
 
-def get_export_url(cfg: Config, mutation_datetime: str) -> str:
+def get_export_url(cfg: Config, mutation_datetime: str, timeout: float = 60) -> str:
     """GET /v2/export?mutation_datetime=YYYY-MM-DD — returns a presigned S3
     URL (valid ~10 minutes) to a ZIP of every table mutated since that date.
 
     A wide "since" window means FreshPortal has to assemble a larger export
     before it can respond, so this can legitimately take longer than a
     routine call — 60s rather than 30s (bumped alongside the range-backfill
-    chunking fix, 2026-09-03)."""
+    chunking fix, 2026-09-03). A years-wide window needs more than that again,
+    so the caller can raise it."""
     url = f"{cfg.bi_sync_api_base_url}/v2/export"
     headers = {"Authorization": f"Bearer {_get_token(cfg)}"}
-    resp = httpx.get(url, headers=headers, params={"mutation_datetime": mutation_datetime}, timeout=60)
+    resp = httpx.get(url, headers=headers, params={"mutation_datetime": mutation_datetime}, timeout=timeout)
     if resp.status_code == 401:
         headers["Authorization"] = f"Bearer {_get_token(cfg, force_refresh=True)}"
-        resp = httpx.get(url, headers=headers, params={"mutation_datetime": mutation_datetime}, timeout=60)
+        resp = httpx.get(url, headers=headers, params={"mutation_datetime": mutation_datetime}, timeout=timeout)
     resp.raise_for_status()
     export_url = resp.json().get("export_url")
     if not export_url:

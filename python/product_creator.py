@@ -152,25 +152,67 @@ def _variety_search_terms(variety: str) -> list[str]:
     return terms
 
 
+@dataclass
+class Catalogue:
+    """Where one system's product list is read from.
+
+    "copy"    the Postgres mirror — instant, and up to an hour behind. Only
+              ever the system it mirrors, whose products it also takes back.
+    "export"  that system's BI Sync export, held in memory by product_export.
+    "portal"  no list at all: FreshPortal is read through the browser, one
+              page load per search term.
+
+    Whatever the source, the number and the name are checked in the portal
+    itself right before saving — a list is never the last word.
+    """
+
+    source: str
+    search: Callable[[str], list[dict]] | None = None
+    number_taken: Callable[[str], bool] | None = None
+    by_exact_name: Callable[[str], list[dict]] | None = None
+    writes_back: bool = False
+
+
+def catalogue_for(cfg: Config, export=None) -> Catalogue:
+    """Pick the product list for the system *cfg* points at."""
+    if uses_catalogue_copy(cfg):
+        from db import get_product_count, is_product_number_taken, search_products_ilike_term, \
+            find_products_by_exact_name
+        if get_product_count() > 0:
+            return Catalogue(
+                "copy",
+                search=lambda term: search_products_ilike_term(term, limit=100),
+                number_taken=is_product_number_taken,
+                by_exact_name=find_products_by_exact_name,
+                writes_back=True,
+            )
+    if export is not None:
+        return Catalogue(
+            "export",
+            search=export.search,
+            number_taken=export.number_taken,
+            by_exact_name=export.by_exact_name,
+        )
+    return Catalogue("portal")
+
+
 def search_products(
     query: str,
     cfg: Config,
     on_status: Callable | None = None,
     lang: str = "en",
-    use_catalogue_copy: bool = True,
+    catalogue: Catalogue | None = None,
 ) -> list[ProductMatch]:
-    """Two-phase product search — DB-first, Playwright fallback.
+    """Two-phase product search — from a product list, or else the browser.
 
     Phase 1: search exact query + typo-resistant variety substrings.
     Phase 2: if no ≥80% matches and ANTHROPIC_API_KEY set, ask Claude for
              correct spellings and search those too.
     Same similarity logic regardless of data source.
 
-    use_catalogue_copy=False searches the portal in *cfg* through the browser
-    instead of the Postgres copy. The copy mirrors one system, so on any other
-    system (the test tenant, say) its product ids belong to a different portal
-    and would copy the wrong product. The browser path searches far fewer
-    terms — every term is a page load — so it finds less than the copy does.
+    With no list to search ("portal"), FreshPortal is read through the browser:
+    every term is a page load, so only the query, the variety and the genus are
+    searched, and it therefore finds less.
     """
     def _s(m: str) -> None:
         logger.info(m)
@@ -236,16 +278,16 @@ def search_products(
             else:
                 _s(msg(lang, "ai_unavailable"))
 
-    # ── DB path (fast, no browser) ────────────────────────────────────────────
-    from db import get_product_count, search_products_ilike_term
-    if use_catalogue_copy and get_product_count() > 0:
-        _run_phases(lambda term: search_products_ilike_term(term, limit=100), phase1)
+    # ── From a product list: the copy or the export, both without a browser ──
+    catalogue = catalogue or catalogue_for(cfg)
+    if catalogue.search:
+        _run_phases(catalogue.search, phase1)
         all_matches.sort(key=lambda m: m.similarity, reverse=True)
         best = f", best: {all_matches[0].similarity:.0%}" if all_matches else ""
         _s(msg(lang, "finished_search", total=len(all_matches), best=best))
         return all_matches
 
-    # ── Browser path: another system than the copy mirrors, or an empty copy ──
+    # ── Browser path: no product list for this system ─────────────────────────
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         context = browser.new_context()
@@ -458,23 +500,24 @@ def find_available_number(
     on_status: Callable | None = None,
     name: str = "",
     lang: str = "en",
-    use_catalogue_copy: bool = True,
+    catalogue: Catalogue | None = None,
 ) -> str | None:
-    """Return the first available product number — DB-first, Playwright fallback.
+    """Return the first available product number for the system in *cfg*.
 
-    DB path is instant (<10 ms). The browser is used when the copy is empty, or
-    when *cfg* points at a system the copy does not mirror — a number free in
-    the copy says nothing about a different portal.
+    Reads the system's product list when there is one (instant), and otherwise
+    asks FreshPortal itself, one page load per candidate. A number free in one
+    system's list says nothing about another system's portal, which is why the
+    list comes from *catalogue* rather than always from the copy.
     """
     def _s(m: str) -> None:
         logger.info(m)
         if on_status:
             on_status(m)
 
-    from db import is_product_number_taken, get_product_count
-    if use_catalogue_copy and get_product_count() > 0:
+    catalogue = catalogue or catalogue_for(cfg)
+    if catalogue.number_taken:
         for candidate in itertools.islice(_number_candidates(base, name), 11):
-            if not is_product_number_taken(candidate):
+            if not catalogue.number_taken(candidate):
                 if candidate != base:
                     _s(msg(lang, "number_taken_using", base=base, candidate=candidate))
                 return candidate
@@ -702,13 +745,11 @@ def _number_taken_live(page: Page, cfg: Config, number: str) -> bool:
     return any(r.product_number.strip().upper() == number for r in rows)
 
 
-def _suggest_free_number(number: str, name: str, page: Page | None, cfg: Config, use_copy: bool) -> str | None:
-    """First variant of *number* that is free — catalogue copy first, then live."""
-    from db import is_product_number_taken
-
+def _suggest_free_number(number: str, name: str, page: Page | None, cfg: Config, catalogue: Catalogue) -> str | None:
+    """First variant of *number* that is free — the product list first, then live."""
     live_checks = 0
     for candidate in itertools.islice(_number_candidates(number, name), 1, 40):
-        if use_copy and is_product_number_taken(candidate):
+        if catalogue.number_taken and catalogue.number_taken(candidate):
             continue
         if page is None:
             return candidate
@@ -874,6 +915,7 @@ def copy_and_create(
     color_id: str | None = None,
     color_name: str | None = None,
     allow_duplicate_name: bool = False,
+    catalogue: Catalogue | None = None,
 ) -> dict:
     """Copy *template_id* in FreshPortal and save it as *new_name*.
 
@@ -925,6 +967,7 @@ def copy_and_create(
             template_id=clean["template_id"], name=name, number=number,
             vbn=clean["vbn"], color_id=clean["color_id"], color_name=(color_name or "").strip(),
             allow_duplicate_name=allow_duplicate_name,
+            catalogue=catalogue or catalogue_for(cfg),
         )
     finally:
         _create_lock.release()
@@ -942,27 +985,25 @@ def _copy_and_create_locked(
     color_id: str,
     color_name: str,
     allow_duplicate_name: bool,
+    catalogue: Catalogue,
 ) -> dict:
-    from db import find_products_by_exact_name, is_product_number_taken, upsert_products
-
-    use_copy = uses_catalogue_copy(cfg)
     # From the moment save is clicked the product may exist, so any later
     # error must be reported as "unconfirmed", never as "failed".
     submitted = False
 
     try:
-        # ── 1. catalogue copy: instant, catches everything older than ~1 h ──
-        if use_copy:
-            _s("create_checking_copy")
-            if not allow_duplicate_name:
-                existing = find_products_by_exact_name(name)
+        # ── 1. the system's product list: instant, and catches most of it ──
+        if catalogue.by_exact_name or catalogue.number_taken:
+            _s("create_checking_list")
+            if catalogue.by_exact_name and not allow_duplicate_name:
+                existing = catalogue.by_exact_name(name)
                 if existing:
                     return _result("blocked", reason="name_exists",
                                    existing=[_product_summary(p) for p in existing])
-            if is_product_number_taken(number):
+            if catalogue.number_taken and catalogue.number_taken(number):
                 _s("number_taken_search", base=number)
                 return _result("blocked", reason="number_taken",
-                               suggested_number=_suggest_free_number(number, name, None, cfg, use_copy))
+                               suggested_number=_suggest_free_number(number, name, None, cfg, catalogue))
 
         with sync_playwright() as pw:
             browser = _launch_browser(pw)
@@ -982,7 +1023,7 @@ def _copy_and_create_locked(
                 if _number_taken_live(page, cfg, number):
                     _s("number_taken_search", base=number)
                     return _result("blocked", reason="number_taken",
-                                   suggested_number=_suggest_free_number(number, name, page, cfg, use_copy))
+                                   suggested_number=_suggest_free_number(number, name, page, cfg, catalogue))
 
                 if not allow_duplicate_name:
                     _s("create_checking_name")
@@ -1093,8 +1134,11 @@ def _copy_and_create_locked(
 
                 if found:
                     warnings = _saved_value_warnings(found, columns, vbn, color_id, color_name, warnings)
-                    if use_copy:
+                    # Only the copy takes products back; an export is read-only
+                    # and belongs to a system the copy does not mirror.
+                    if catalogue.writes_back:
                         try:
+                            from db import upsert_products
                             upsert_products([asdict(found)])
                         except Exception:
                             logger.exception("Could not add product %s to the catalogue copy", found.product_id)
