@@ -554,6 +554,64 @@ def test_reading_a_system_from_its_export():
           export.by_exact_name("rosa ec mondial")[0]["product_id"] == "70002")
 
 
+def test_export_lookup_tables():
+    """Group, application and VAT names come out of the export's own tables.
+
+    Built as a real zip, because the part worth checking is which file each
+    label is taken from: "product_application" has to win over any other table
+    whose name merely contains "application".
+    """
+    import csv as csv_mod
+    import io
+    import zipfile
+    import product_export
+
+    _stub_module("httpx", get=None, post=None)
+    try:
+        import bi_sync_client  # noqa: F401
+    except Exception as exc:
+        check(f"export lookups (bi_sync_client unavailable: {exc}) — skipped", True)
+        return
+
+    def sheet(rows: list[dict]) -> bytes:
+        buf = io.StringIO()
+        writer = csv_mod.DictWriter(buf, fieldnames=list(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        return buf.getvalue().encode("utf-8")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("product.csv", sheet([{
+            "id": "65537", "group_id": "2188", "number": "2", "vbn_number": "2",
+            "application_id": "1", "name_nl": "Agapanthus overig", "name_en": "Agapanthus overig",
+            "vat_id": "2", "barcode": "",
+            "mutation_date_time": "2026-06-17 00:49:52.000", "creation_date_time": "24/10/2016 10:21",
+        }]))
+        zf.writestr("product_group.csv", sheet([{"id": "2188", "name_en": "Cut flowers"}]))
+        zf.writestr("product_application.csv", sheet([{"id": "1", "name_en": "Cut flower"}]))
+        zf.writestr("vat.csv", sheet([{"id": "2", "percentage": "9"}]))
+        # Decoy: contains "application", must not be mistaken for the real one.
+        zf.writestr("application_log.csv", sheet([{"id": "1", "name_en": "WRONG TABLE"}]))
+    zip_bytes = buf.getvalue()
+
+    groups = product_export._lookup_labels(zip_bytes, product_export.LOOKUP_TABLES["group"])
+    applications = product_export._lookup_labels(zip_bytes, product_export.LOOKUP_TABLES["application"])
+    vats = product_export._lookup_labels(zip_bytes, product_export.LOOKUP_TABLES["vat"])
+    check("group names read from product_group.csv", groups == {"2188": "Cut flowers"}, groups)
+    check("application names read from product_application.csv, not a lookalike",
+          applications == {"1": "Cut flower"}, applications)
+    check("VAT read from vat.csv", vats == {"2": "9"}, vats)
+
+    from bi_sync_client import read_table
+    row = product_export._map_row(read_table(zip_bytes, "product")[0], groups, applications, vats)
+    check("a product row carries the copy id and the labels",
+          row["product_id"] == "65537" and row["product_number"] == "2"
+          and row["name"] == "Agapanthus overig" and row["vbn_number"] == "2"
+          and row["product_group"] == "Cut flowers" and row["application"] == "Cut flower"
+          and row["vat_rate"] == "9" and row["color"] == "", row)
+
+
 def test_only_one_creation_at_a_time():
     reset_db()
     pc._create_lock.acquire()
@@ -601,6 +659,7 @@ TESTS = [
     test_when_the_product_cannot_be_found_afterwards,
     test_another_system_never_touches_the_catalogue_copy,
     test_reading_a_system_from_its_export,
+    test_export_lookup_tables,
     test_only_one_creation_at_a_time,
     test_product_list_parsing,
 ]

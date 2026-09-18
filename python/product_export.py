@@ -11,10 +11,12 @@ products must not end up in the copy that mirrors the first one. The rows live
 in this process only.
 
 product.csv carries id, group_id, number, vbn_number, application_id, a name
-per language, vat_id, barcode and the two timestamps. Group, application and
-VAT names come from the export's own lookup tables. Colour is NOT in there —
-the form still offers Floricode's colour list, and a saved product's colour is
-read back from the portal.
+per language, vat_id, barcode and the two timestamps. Its `id` is the id the
+copy form takes (/product/index/copy/PRO_ID/<id>/), which is what makes a row
+from here usable as a template. Group, application and VAT names come from the
+export's own lookup tables. Colour is NOT in there — the form still offers
+Floricode's colour list, and a saved product's colour is read back from the
+portal.
 
 Cost, and what follows from it: /v2/export is a delta feed, so catching every
 product means asking for a window of years, and FreshPortal then assembles
@@ -54,6 +56,17 @@ EXPORT_URL_TIMEOUT_S = 300.0
 # Per term, so a three-letter n-gram matching half the catalogue cannot make
 # one search rank tens of thousands of names.
 MATCHES_PER_TERM = 500
+
+# The export's own lookup tables, confirmed against the test tenant's export:
+# product_group.csv, product_application.csv, vat.csv. The looser names are
+# kept behind them in case another tenant's export spells them differently —
+# and "product_application" has to come first, or a substring match could pick
+# up any other table with "application" in its name.
+LOOKUP_TABLES: dict[str, tuple[str, ...]] = {
+    "group":       ("product_group", "group"),
+    "application": ("product_application", "application"),
+    "vat":         ("vat", "vat_rate"),
+}
 
 _NAME_COLUMNS = ("name_en", "name_nl", "name_es", "name")
 _ALL_NAME_COLUMNS = ("name_en", "name_nl", "name_es", "name_ru", "name_zh", "name")
@@ -197,9 +210,9 @@ def _download(system_id: str, cfg: Config) -> ExportProducts:
     if not raw:
         raise RuntimeError(f"export has no product table (files: {', '.join(files) or 'none'})")
 
-    groups = _lookup_labels(zip_bytes, ("product_group", "group"))
-    applications = _lookup_labels(zip_bytes, ("application",))
-    vats = _lookup_labels(zip_bytes, ("vat", "vat_rate"))
+    groups = _lookup_labels(zip_bytes, LOOKUP_TABLES["group"])
+    applications = _lookup_labels(zip_bytes, LOOKUP_TABLES["application"])
+    vats = _lookup_labels(zip_bytes, LOOKUP_TABLES["vat"])
     rows = [m for m in (_map_row(r, groups, applications, vats) for r in raw) if m]
 
     logger.info("product export for %s: %d products from %d rows since %s in %.0fs (zip %.1f MB)",
