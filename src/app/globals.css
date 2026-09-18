@@ -34,13 +34,19 @@
 html, body { height: 100%; margin: 0; }
 
 /* ─── Tile entrance (staggered via inline delay) ─── */
+/* These three page-level entrances fill "backwards", never "both": a filled
+ * "to" keyframe keeps its transform applied after the animation ends, and a
+ * transform other than none makes the element a containing block for
+ * position:fixed. That is what pinned every modal to the top of the scrolled
+ * module instead of the viewport. It also outranked the inline transform the
+ * 3-D tilt writes, so the hub tiles could not tilt. */
 @keyframes tile-enter {
   0%   { opacity: 0; transform: translateY(60px) scale(0.88); filter: blur(8px); }
   60%  { filter: blur(0); }
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 .tile-enter {
-  animation: tile-enter 0.55s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+  animation: tile-enter 0.55s cubic-bezier(0.34, 1.45, 0.64, 1) backwards;
 }
 
 /* ─── Module slide in from bottom ─── */
@@ -48,14 +54,14 @@ html, body { height: 100%; margin: 0; }
   from { opacity: 0; transform: translateY(28px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.module-enter { animation: module-enter 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94) both; }
+.module-enter { animation: module-enter 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94) backwards; }
 
 /* ─── Hub fade-in ─── */
 @keyframes hub-enter {
   from { opacity: 0; transform: scale(0.98); }
   to   { opacity: 1; transform: scale(1); }
 }
-.hub-enter { animation: hub-enter 0.4s ease both; }
+.hub-enter { animation: hub-enter 0.4s ease backwards; }
 
 /* ─── Icon float ─── */
 @keyframes float-y {

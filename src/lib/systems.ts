@@ -3,6 +3,10 @@ export interface FPSystem {
   name: string;
   url: string;
   svgPath: string;
+  /** Brand colour as a Tailwind class, written out so the JIT can see it.
+   *  The one place a system's colour is decided — Admin > Groups reads it
+   *  from here rather than keeping a second copy of the palette. */
+  accent: string;
   fallbackGradient: string;
 }
 
@@ -12,6 +16,8 @@ export const FP_SYSTEMS: FPSystem[] = [
     name: "Stamgegevens",
     url: "https://fp042100.freshportal.nl",
     svgPath: "/icons/systems/stamgegevens.svg",
+    // No brand colour agreed yet — stays on the house emerald.
+    accent: "bg-emerald",
     fallbackGradient: "bg-gradient-to-br from-emerald to-[#0D5430]",
   },
   {
@@ -19,35 +25,40 @@ export const FP_SYSTEMS: FPSystem[] = [
     name: "Piazza dei Fiori",
     url: "https://850295.freshportal.nl",
     svgPath: "/icons/systems/italy.svg",
-    fallbackGradient: "bg-gradient-to-br from-[#009246] to-[#006830]",
+    accent: "bg-[#070000]",
+    fallbackGradient: "bg-gradient-to-br from-[#2E2828] to-[#070000]",
   },
   {
     id: "ecuador",
     name: "Ecuador",
     url: "https://850255.freshportal.nl",
     svgPath: "/icons/systems/ecuador.svg",
-    fallbackGradient: "bg-gradient-to-br from-[#E8A200] to-[#A86E00]",
+    accent: "bg-[#ffcc00]",
+    fallbackGradient: "bg-gradient-to-br from-[#ffcc00] to-[#C79E00]",
   },
   {
     id: "netherlands",
     name: "Netherlands",
     url: "https://fp012603.freshportal.com",
     svgPath: "/icons/systems/netherlands.svg",
-    fallbackGradient: "bg-gradient-to-br from-[#AE1C28] to-[#7A1320]",
+    accent: "bg-[#f79a19]",
+    fallbackGradient: "bg-gradient-to-br from-[#f79a19] to-[#B86B08]",
   },
   {
     id: "kenya",
     name: "Kenya",
     url: "https://850254.freshportal.nl",
     svgPath: "/icons/systems/kenya.svg",
-    fallbackGradient: "bg-gradient-to-br from-[#006600] to-[#004000]",
+    accent: "bg-[#2b379c]",
+    fallbackGradient: "bg-gradient-to-br from-[#2b379c] to-[#1B2367]",
   },
   {
     id: "coloriginz",
     name: "Coloriginz",
     url: "https://fp066801.freshportal.com",
     svgPath: "/icons/systems/coloriginz.svg",
-    fallbackGradient: "bg-gradient-to-br from-[#7C3AED] to-[#4C1D95]",
+    accent: "bg-[#009cde]",
+    fallbackGradient: "bg-gradient-to-br from-[#009cde] to-[#006793]",
   },
 ];
 

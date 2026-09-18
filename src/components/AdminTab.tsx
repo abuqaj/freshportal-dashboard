@@ -1,6 +1,8 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
+import { createPortal } from "react-dom"
+import { FP_SYSTEMS } from "@/lib/systems"
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? ""
 
@@ -34,34 +36,34 @@ interface Group {
   permissions: string[]
 }
 
-const SYSTEM_DEFS: { id: string; label: string; dot: string; modules: { perm: string; label: string }[] }[] = [
-  {
-    id: "stamgegevens", label: "Stamgegevens", dot: "bg-emerald",
-    modules: [
-      { perm: "vbn:check",       label: "VBN Check" },
-      { perm: "vbn:fix",         label: "VBN Fix" },
-      { perm: "products:create", label: "New Products" },
-      { perm: "photos:upload",   label: "Photo Uploader" },
-    ],
-  },
-  {
-    id: "ecuador", label: "Ecuador", dot: "bg-[#E8A200]",
-    modules: [
-      { perm: "delivery:import", label: "Delivery Import" },
-      { perm: "analysis:view",   label: "Analysis Tool" },
-    ],
-  },
-  { id: "piazza",      label: "Piazza dei Fiori", dot: "bg-[#009246]", modules: [] },
-  { id: "netherlands", label: "Netherlands",       dot: "bg-[#AE1C28]", modules: [] },
-  {
-    id: "kenya", label: "Kenya", dot: "bg-[#006600]",
-    modules: [
-      { perm: "boxweight:run", label: "Box Weight" },
-      { perm: "supplier:add",  label: "Add Supplier" },
-    ],
-  },
-  { id: "coloriginz",  label: "Coloriginz",        dot: "bg-[#7C3AED]", modules: [] },
-]
+/** Which modules live under which system. Systems missing here grant access
+ *  to the FreshPortal system itself and nothing else. */
+const MODULES_BY_SYSTEM: Record<string, { perm: string; label: string }[]> = {
+  stamgegevens: [
+    { perm: "vbn:check",       label: "VBN Check" },
+    { perm: "vbn:fix",         label: "VBN Fix" },
+    { perm: "products:create", label: "New Products" },
+    { perm: "photos:upload",   label: "Photo Uploader" },
+  ],
+  ecuador: [
+    { perm: "delivery:import", label: "Delivery Import" },
+    { perm: "analysis:view",   label: "Analysis Tool" },
+  ],
+  kenya: [
+    { perm: "boxweight:run", label: "Box Weight" },
+    { perm: "supplier:add",  label: "Add Supplier" },
+  ],
+}
+
+/** Built from FP_SYSTEMS so the name, the colour and the order here always
+ *  match the system selector — they used to be a second copy that drifted. */
+const SYSTEM_DEFS: { id: string; label: string; dot: string; modules: { perm: string; label: string }[] }[] =
+  FP_SYSTEMS.map(s => ({
+    id: s.id,
+    label: s.name,
+    dot: s.accent,
+    modules: MODULES_BY_SYSTEM[s.id] ?? [],
+  }))
 
 /** Modules not tied to a system: shown in every system to groups holding the permission. */
 const SHARED_MODULES: { perm: string; label: string; note: string }[] = [
@@ -109,10 +111,18 @@ function Th({ children, right }: { children?: React.ReactNode; right?: boolean }
 }
 
 /* ─── Modal wrapper ─── */
+/** Rendered into document.body. Inside the module the dialog sits under a
+ *  scrolled container, and any transformed ancestor would turn its
+ *  position:fixed into position:absolute — which put the dialog at the top of
+ *  the page and left you scrolling up to find it. A portal cannot be caught
+ *  that way again. */
 function Modal({ title, onClose, wide, children }: {
   title: string; onClose: () => void; wide?: boolean; children: React.ReactNode
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => { setMounted(true) }, [])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
@@ -120,7 +130,9 @@ function Modal({ title, onClose, wide, children }: {
     return () => document.removeEventListener("keydown", onKey)
   }, [onClose])
 
-  return (
+  if (!mounted) return null
+
+  return createPortal(
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
       onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div ref={ref} className={`bg-surface rounded-3xl border border-border shadow-2xl w-full ${wide ? "max-w-lg" : "max-w-md"}`}>
@@ -135,7 +147,8 @@ function Modal({ title, onClose, wide, children }: {
         </div>
         <div className="px-6 py-5 space-y-4 overflow-y-auto max-h-[75vh]">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -813,6 +826,7 @@ function GroupCard({ group, members, onRefresh }: {
 }) {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [expanded, setExpanded] = useState(false)
 
   const v = readPerms(group.permissions)
   const open   = v.systems.filter(s => s.open)
@@ -841,27 +855,47 @@ function GroupCard({ group, members, onRefresh }: {
         <GroupEditModal group={group} onSaved={onRefresh} onClose={() => setEditing(false)} />
       )}
       <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
-        {/* Header — who the group is, and who is in it */}
-        <div className="flex items-start gap-3 px-4 py-3 border-b border-border bg-ground/30">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm font-semibold text-ink">{group.name}</span>
-              {v.isAdmin && <Badge variant="blue">Admin</Badge>}
-              <span className="text-[11px] text-ink-3/70 tabular-nums">
-                {members.length === 0
-                  ? "no members"
-                  : `${members.length} ${members.length === 1 ? "user" : "users"}`}
-              </span>
+        {/* Header — click to open. Collapsed, it still shows a colour dot per
+            open system, so a glance says how much the group reaches. */}
+        <div className={`flex items-start gap-3 px-4 py-3 bg-ground/30 ${expanded ? "border-b border-border" : ""}`}>
+          <button type="button" onClick={() => setExpanded(e => !e)}
+            aria-expanded={expanded}
+            aria-controls={`group-perms-${group.id}`}
+            className="min-w-0 flex-1 flex items-start gap-2.5 text-left group/head">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+              className={`mt-1 flex-shrink-0 text-ink-3/60 group-hover/head:text-ink transition-transform ${expanded ? "rotate-90" : ""}`}>
+              <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-semibold text-ink group-hover/head:text-emerald transition-colors">{group.name}</span>
+                {v.isAdmin && <Badge variant="blue">Admin</Badge>}
+                <span className="text-[11px] text-ink-3/70 tabular-nums">
+                  {members.length === 0
+                    ? "no members"
+                    : `${members.length} ${members.length === 1 ? "user" : "users"}`}
+                </span>
+              </div>
+              {group.description && (
+                <p className="text-xs text-ink-3 mt-0.5 truncate">{group.description}</p>
+              )}
+              <div className="flex items-center gap-2 mt-1">
+                <span className="flex items-center gap-1">
+                  {open.map(s => (
+                    <span key={s.id} title={s.label}
+                      className={`w-2 h-2 rounded-full ${s.dot} ring-1 ring-black/5`} />
+                  ))}
+                  {orphan.length > 0 && (
+                    <span title={`${orphan.length} system(s) with modules granted but no access`}
+                      className="w-2 h-2 rounded-full bg-amber-500" />
+                  )}
+                </span>
+                <span className="text-[10px] text-ink-3/60 tabular-nums">
+                  {v.systemCount}/{v.systems.length} systems · {v.moduleCount} modules
+                </span>
+              </div>
             </div>
-            {group.description && (
-              <p className="text-xs text-ink-3 mt-0.5 truncate">{group.description}</p>
-            )}
-            {members.length > 0 && (
-              <p className="text-[10px] text-ink-3/50 mt-0.5 truncate" title={members.join(", ")}>
-                {members.slice(0, 5).join(", ")}{members.length > 5 ? ` +${members.length - 5}` : ""}
-              </p>
-            )}
-          </div>
+          </button>
           <div className="flex items-center gap-1.5 flex-shrink-0">
             <button onClick={() => setEditing(true)}
               className="h-7 px-2.5 rounded-lg text-xs font-medium text-ink-3 bg-surface border border-border hover:bg-border/40 transition-colors">
@@ -875,14 +909,12 @@ function GroupCard({ group, members, onRefresh }: {
         </div>
 
         {/* Systems, each with its activated modules underneath */}
-        <div className="p-4 space-y-3">
+        {expanded && (
+        <div id={`group-perms-${group.id}`} className="p-4 space-y-3">
           <div className="flex items-center gap-2">
             <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
               Systems &amp; modules
             </p>
-            <span className="text-[10px] text-ink-3/60 tabular-nums whitespace-nowrap">
-              {v.systemCount}/{v.systems.length} systems · {v.moduleCount} modules
-            </span>
             <span className="h-px flex-1 bg-border" />
           </div>
 
@@ -929,7 +961,15 @@ function GroupCard({ group, members, onRefresh }: {
           {v.other.length > 0 && (
             <p className="text-[10px] text-ink-3/50 pt-0.5">Unrecognised: {v.other.join(", ")}</p>
           )}
+
+          {members.length > 0 && (
+            <p className="text-[10px] text-ink-3/50 pt-0.5">
+              <span className="font-semibold uppercase tracking-widest">Members</span>{" "}
+              {members.join(", ")}
+            </p>
+          )}
         </div>
+        )}
       </div>
     </>
   )
@@ -1057,15 +1097,11 @@ function GroupsPanel() {
             {groups.map(g => (
               <GroupCard key={g.id} group={g} members={members[g.name] ?? []} onRefresh={load} />
             ))}
-            <div className="flex items-center gap-4 flex-wrap pt-1 text-[10px] text-ink-3/60">
-              <span className="flex items-center gap-1.5">
-                <span className="text-emerald"><Tick /></span> module on
-              </span>
-              <span className="flex items-center gap-1.5"><Hollow /> module off</span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-[3px] rounded-full bg-amber-500/60" /> granted, but the system is closed
-              </span>
-            </div>
+            <p className="flex items-center gap-1.5 flex-wrap pt-1 text-[10px] text-ink-3/60">
+              Click a group to see its systems and the modules under them · an
+              <span className="w-2 h-2 rounded-full bg-amber-500" />
+              dot means modules are granted while their system stays closed
+            </p>
           </>
         )}
       </div>
