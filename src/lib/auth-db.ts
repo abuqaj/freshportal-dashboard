@@ -101,19 +101,25 @@ async function _migrateAuth() {
     await sql`INSERT INTO auth_permissions (name) VALUES (${perm}) ON CONFLICT (name) DO NOTHING`
   }
 
-  // Seed default groups — only insert permissions when the group is first created
-  for (const [groupName, groupPerms] of Object.entries(DEFAULT_GROUPS)) {
-    const inserted = await sql`INSERT INTO auth_groups (name) VALUES (${groupName}) ON CONFLICT (name) DO NOTHING`
-    if ((inserted.rowCount ?? 0) > 0) {
+  // Seed default groups on an empty database only. This used to run on every
+  // cold start, which undid deletions: remove the viewer group in Admin, and
+  // the next cold instance inserted it again — often before the screen had
+  // finished refreshing, so it looked like Delete did nothing. Same rule as
+  // the default admin user below: seed when there is nothing there, never on
+  // top of groups someone has since edited.
+  const { rows: [{ count: groupCount }] } = await sql`SELECT COUNT(*)::int AS count FROM auth_groups`
+  if (groupCount === 0) {
+    for (const [groupName, groupPerms] of Object.entries(DEFAULT_GROUPS)) {
+      // ON CONFLICT keeps two cold starts racing each other harmless.
+      await sql`INSERT INTO auth_groups (name) VALUES (${groupName}) ON CONFLICT (name) DO NOTHING`
       const { rows: [group] } = await sql`SELECT id FROM auth_groups WHERE name = ${groupName}`
-      if (group) {
-        for (const perm of groupPerms) {
-          await sql`
-            INSERT INTO auth_group_permissions (group_id, permission_id)
-            SELECT ${group.id}, id FROM auth_permissions WHERE name = ${perm}
-            ON CONFLICT DO NOTHING
-          `
-        }
+      if (!group) continue
+      for (const perm of groupPerms) {
+        await sql`
+          INSERT INTO auth_group_permissions (group_id, permission_id)
+          SELECT ${group.id}, id FROM auth_permissions WHERE name = ${perm}
+          ON CONFLICT DO NOTHING
+        `
       }
     }
   }

@@ -827,6 +827,7 @@ function GroupCard({ group, members, onRefresh }: {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const [error, setError] = useState("")
 
   const v = readPerms(group.permissions)
   const open   = v.systems.filter(s => s.open)
@@ -835,15 +836,27 @@ function GroupCard({ group, members, onRefresh }: {
   const panels = [...open, ...orphan]
 
   async function del() {
-    if (!confirm(`Delete group "${group.name}"? Users lose these permissions.`)) return
+    const warning = members.length > 0
+      ? `Delete group "${group.name}"? ${members.length} user(s) lose these permissions.`
+      : `Delete group "${group.name}"?`
+    if (!confirm(warning)) return
     setSaving(true)
+    setError("")
     try {
-      await fetch("/api/admin/groups", {
+      // The reply was ignored here, so a refused delete looked like a silent
+      // no-op: the row simply came back on the refresh with no reason given.
+      const r = await fetch("/api/admin/groups", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "delete", groupId: group.id }),
       })
+      if (!r.ok) {
+        setError((await r.json().catch(() => ({}))).error ?? `Delete failed (${r.status})`)
+        return
+      }
       onRefresh()
+    } catch (e) {
+      setError(String(e))
     } finally {
       setSaving(false)
     }
@@ -907,6 +920,12 @@ function GroupCard({ group, members, onRefresh }: {
             </button>
           </div>
         </div>
+
+        {error && (
+          <p className="px-4 py-2 text-[11px] font-medium text-ember bg-ember/5 border-t border-ember/20">
+            {error}
+          </p>
+        )}
 
         {/* Systems, each with its activated modules underneath */}
         {expanded && (

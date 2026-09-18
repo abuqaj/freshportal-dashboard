@@ -355,6 +355,10 @@ function SystemCard({
   system: FPSystem; isActive: boolean; index: number; onClick: () => void;
 }) {
   const tilt = useTilt(6);
+  // A flag covers the tile, so the brand colour behind it never shows. A logo
+  // does not: painting the brand colour behind a brand logo swallowed it, so
+  // logo tiles keep a light surface and wear the colour as a top strip.
+  const isLogo = system.art === "logo";
   return (
     <div
       ref={tilt.ref}
@@ -362,27 +366,36 @@ function SystemCard({
       onMouseLeave={tilt.onMouseLeave}
       onClick={onClick}
       style={{ animationDelay: `${index * 70}ms` }}
-      className={`tile-enter relative overflow-hidden rounded-3xl cursor-pointer ${system.fallbackGradient} group min-h-[200px]
-        ${isActive ? "ring-4 ring-white/70 ring-offset-4 ring-offset-ground" : ""}`}
+      className={`tile-enter relative overflow-hidden rounded-3xl cursor-pointer group min-h-[200px]
+        ${isLogo ? "bg-surface border border-border" : system.fallbackGradient}
+        ${isActive ? `ring-4 ring-offset-4 ring-offset-ground ${isLogo ? "ring-emerald" : "ring-white/70"}` : ""}`}
     >
-      {/* Full-bleed SVG background */}
+      {/* Brand colour, kept clear of the logo */}
+      {isLogo && <span className={`absolute inset-x-0 top-0 h-1.5 ${system.accent} z-10`} />}
+
+      {/* Flags fill the tile; a logo is shown whole, above the caption */}
       <img
         src={system.svgPath}
         alt=""
         aria-hidden="true"
-        className="absolute inset-0 w-full h-full object-cover select-none pointer-events-none"
+        className={`absolute inset-0 w-full h-full select-none pointer-events-none ${
+          isLogo ? "object-contain px-8 pt-10 pb-24" : "object-cover"
+        }`}
         draggable={false}
       />
 
-      {/* Bottom scrim for text readability */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+      {/* Bottom scrim for text readability — over a light tile it only needs
+          to cover the caption, so it fades out before reaching the logo */}
+      <div className={`absolute inset-0 bg-gradient-to-t ${
+        isLogo ? "from-black/75 via-transparent to-transparent" : "from-black/70 via-black/20 to-transparent"
+      }`} />
 
       {/* Hover darkening */}
       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/15 transition-colors duration-300" />
 
       {/* Active checkmark badge */}
       {isActive && (
-        <div className="absolute top-3 right-3 w-7 h-7 rounded-full bg-white flex items-center justify-center shadow">
+        <div className="absolute top-4 right-3 w-7 h-7 rounded-full bg-white border border-border flex items-center justify-center shadow z-10">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <path d="M2.5 7l3.5 3.5 5.5-6" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>

@@ -39,7 +39,20 @@ export async function POST(req: NextRequest) {
       }
       case "delete": {
         if (!groupId) return NextResponse.json({ error: "groupId required" }, { status: 400 })
-        await deleteGroup(groupId)
+        // Default groups are no longer re-seeded on a cold start, so deleting
+        // the last group that carries admin:manage would shut everyone out of
+        // Admin for good, with no way back through the UI.
+        const gid = Number(groupId)
+        const groups = await listGroups()
+        const target = groups.find(g => g.id === gid)
+        if (!target) return NextResponse.json({ error: "Group not found" }, { status: 404 })
+        const adminGroups = groups.filter(g => g.permissions?.includes("admin:manage"))
+        if (adminGroups.length === 1 && adminGroups[0].id === gid) {
+          return NextResponse.json({
+            error: `"${target.name}" is the only group with Admin & Management. Give another group that permission first, or nobody can reach Admin again.`,
+          }, { status: 409 })
+        }
+        await deleteGroup(gid)
         return NextResponse.json({ ok: true })
       }
       default:
