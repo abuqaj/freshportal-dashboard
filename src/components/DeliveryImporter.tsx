@@ -286,7 +286,7 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState(0);
-  const [pos, setPos] = useState({ top: 0, left: 0, width: 0, maxHeight: DROPDOWN_MAX_HEIGHT });
+  const [pos, setPos] = useState({ top: 0, bottom: 0, left: 0, width: 0, maxHeight: DROPDOWN_MAX_HEIGHT, openUp: false });
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const highlightedRef = useRef<HTMLButtonElement>(null);
@@ -305,11 +305,18 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
     // Capped by the room on the chosen side, so the list can never reach past
     // the edge it opened away from.
     const maxHeight = Math.min(DROPDOWN_MAX_HEIGHT, openUp ? above : below);
+    // Opening upwards anchors the list's *bottom* edge to the input rather
+    // than deriving a top from maxHeight: a list of three options is nowhere
+    // near maxHeight tall, and subtracting the full height floated it far
+    // above the input with a gap underneath it. Anchored this way it grows
+    // out of the input whatever its content measures.
     setPos({
-      top: openUp ? rect.top - DROPDOWN_GAP - maxHeight : rect.bottom + DROPDOWN_GAP,
+      top: rect.bottom + DROPDOWN_GAP,
+      bottom: window.innerHeight - rect.top + DROPDOWN_GAP,
       left: rect.left,
       width: rect.width,
       maxHeight,
+      openUp,
     });
   }, []);
 
@@ -379,7 +386,13 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
       {open && !disabled && typeof document !== "undefined" && createPortal(
         <div
           ref={dropdownRef}
-          style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}
+          style={{
+            position: "fixed",
+            left: pos.left,
+            width: pos.width,
+            maxHeight: pos.maxHeight,
+            ...(pos.openUp ? { bottom: pos.bottom } : { top: pos.top }),
+          }}
           className="z-[500] overflow-y-auto rounded-xl border border-border bg-surface shadow-2xl"
         >
           {filtered.length === 0 ? (
@@ -1601,22 +1614,28 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     i
                   </span>
                 </label>
-                <SearchableSelect
-                  options={invoiceOptions}
-                  value={invoiceId}
-                  onChange={setInvoiceId}
-                  disabled={invoicesLoading}
-                  placeholder={invoicesLoading ? td.loadingOpenInvoices : td.invoicePlaceholder}
-                  noMatchLabel={td.noOpenInvoicesFound}
-                  className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
-                />
-                <span className="text-[11px] text-ink-3">
-                  {invoicesLoading
-                    ? td.loadingOpenInvoices
-                    : openInvoices.length === 0
-                      ? td.noOpenInvoicesHint
-                      : td.openInvoicesCount(openInvoices.length)}
-                </span>
+                {!invoicesLoading && openInvoices.length === 0 ? (
+                  /* Nothing to choose from, so no control to choose with —
+                     just what is going to happen instead. */
+                  <div className="h-10 px-3 rounded-xl text-sm border-2 border-dashed border-emerald/25 bg-surface/60 text-ink-3 flex items-center">
+                    {td.noOpenInvoicesHint}
+                  </div>
+                ) : (
+                  <>
+                    <SearchableSelect
+                      options={invoiceOptions}
+                      value={invoiceId}
+                      onChange={setInvoiceId}
+                      disabled={invoicesLoading}
+                      placeholder={invoicesLoading ? td.loadingOpenInvoices : td.invoicePlaceholder}
+                      noMatchLabel={td.noOpenInvoicesFound}
+                      className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
+                    />
+                    <span className="text-[11px] text-ink-3">
+                      {invoicesLoading ? td.loadingOpenInvoices : td.openInvoicesCount(openInvoices.length)}
+                    </span>
+                  </>
+                )}
               </div>
             )}
           </div>
