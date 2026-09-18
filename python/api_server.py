@@ -25,10 +25,11 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import Config, ALLOWED_FP_URLS, get_kenya_cfg
+from config import Config, FP_SYSTEM_BY_URL, get_kenya_cfg
 from i18n import msg as i18n_msg
 from scraper_fp import fetch_products, fix_vbn_batch, FPProduct, _debug_fetch, _debug_rendered
-from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
+from product_creator import (ProductMatch, search_products, find_best_template, copy_and_create,
+                             generate_product_number, find_available_number, uses_catalogue_copy)
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name, get_floricode_colors, invalidate_colors_cache
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
@@ -85,14 +86,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 
 def get_cfg(request: Request, payload: dict = Depends(get_token_payload)) -> Config:
-    """Return a Config instance, overriding freshportal_url when the user has a system-scoped permission."""
+    """Return a Config instance, pointed at the system the screen has selected.
+
+    The X-FP-URL header is honoured for admins, for the two module permissions
+    that have always carried it, and for anyone holding the system:<id>
+    permission of the system asked for — the same rule the hub uses to offer a
+    system at all. Without that, someone who picked the test portal would have
+    their products created on the live one instead.
+    """
     cfg = Config()
     user_perms = payload.get("permissions", [])
-    can_override = any(p in user_perms for p in ("admin:manage", "delivery:import", "catalogue:sync"))
+    fp_url = request.headers.get("X-FP-URL", "").strip().rstrip("/")
+    system = FP_SYSTEM_BY_URL.get(fp_url)
+    if not system:
+        return cfg
+    can_override = any(p in user_perms for p in
+                       ("admin:manage", "delivery:import", "catalogue:sync", f"system:{system}"))
     if can_override:
-        fp_url = request.headers.get("X-FP-URL", "").strip().rstrip("/")
-        if fp_url in ALLOWED_FP_URLS:
-            cfg.freshportal_url = fp_url
+        cfg.freshportal_url = fp_url
     return cfg
 
 
@@ -1613,7 +1624,7 @@ def product_search(req: ProductSearchRequest, _: dict = Depends(require_permissi
         cfg.validate()
     except ValueError as e:
         raise HTTPException(400, str(e))
-    matches = search_products(req.name, cfg)
+    matches = search_products(req.name, cfg, use_catalogue_copy=uses_catalogue_copy(cfg))
     return {
         "results": [
             {
@@ -1664,8 +1675,10 @@ async def product_search_stream(req: ProductSearchRequest, _: dict = Depends(req
 
             # Use the variety-aware search (typo-resistant ILIKE substrings + genus).
             # Falls back to Playwright automatically when DB is not yet populated.
-            matches = search_products(req.name, cfg, on_status=on_status, lang=req.lang)
-            source = "db" if get_product_count() > 0 else "scrape"
+            use_copy = uses_catalogue_copy(cfg)
+            matches = search_products(req.name, cfg, on_status=on_status, lang=req.lang,
+                                      use_catalogue_copy=use_copy)
+            source = "db" if use_copy and get_product_count() > 0 else "scrape"
             queue.put({"type": "result", "data": {
                 "results": _matches_to_results(matches),
                 "source": source,
@@ -1939,7 +1952,8 @@ def product_number_suggest(name: str = "", number: str = "", _: dict = Depends(r
     base = number.strip() or (generate_product_number(name.strip()) if name.strip() else "")
     if not base:
         raise HTTPException(400, "Provide 'name' or 'number' query param")
-    result = find_available_number(base, cfg, name=name.strip())
+    result = find_available_number(base, cfg, name=name.strip(),
+                                   use_catalogue_copy=uses_catalogue_copy(cfg))
     if result is None:
         return {"available_number": None, "original_number": base, "changed": False}
     return {"available_number": result, "original_number": base, "changed": result != base}

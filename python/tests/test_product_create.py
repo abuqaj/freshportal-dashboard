@@ -261,10 +261,26 @@ def create(portal: Portal, **overrides) -> dict:
             new_page=lambda: FakePage(portal), close=lambda: None),
         close=lambda: None,
     )
+    cfg = overrides.pop("cfg", None) or Config()
     args = dict(template_id="65945", new_name="Rosa Ec Toxic", product_number="ROECTO",
                 vbn_code="580", color_id="12", color_name="Pink")
     args.update(overrides)
-    return pc.copy_and_create(cfg=Config(), lang="en", **args)
+    return pc.copy_and_create(cfg=cfg, lang="en", **args)
+
+
+def other_system_cfg() -> Config:
+    """A portal other than the one the catalogue copy mirrors.
+
+    Which one that is depends on FRESHPORTAL_URL, and the repo's own default is
+    the test tenant — so pick a second address whenever the first one turns out
+    to be the mirrored one.
+    """
+    cfg = Config()
+    for url in ("https://850255test.freshportal.com", "https://850254.freshportal.nl"):
+        cfg.freshportal_url = url
+        if not pc.uses_catalogue_copy(cfg):
+            break
+    return cfg
 
 
 def saved_row(**kw) -> FPProduct:
@@ -462,6 +478,30 @@ def test_when_the_product_cannot_be_found_afterwards():
           r["status"] == "failed" and r["reason"] == "exception" and Portal.clicks == 0, r)
 
 
+def test_another_system_never_touches_the_catalogue_copy():
+    """The copy mirrors one portal; its names, numbers and ids mean nothing elsewhere."""
+    other = other_system_cfg()
+    check("the copy is only used for the system it mirrors",
+          pc.uses_catalogue_copy(Config()) and not pc.uses_catalogue_copy(other),
+          other.freshportal_url)
+
+    reset_db(names=[{"product_id": "5", "name": "Rosa Ec Toxic", "product_number": "ROECTO",
+                     "vbn_number": "580", "color": ""}],
+             numbers={"ROECTO"})
+    r = create(Portal(saved=saved_row()), cfg=other)
+    check("a name and number taken in the copy do not block another system",
+          r["status"] == "created" and Portal.clicks == 1, r)
+    check("a product created on another system is not written into the copy",
+          db.state["upserted"] == [], db.state["upserted"])
+    check("the link points at the system it was created on",
+          (r["product_url"] or "").startswith(other.freshportal_url), r["product_url"])
+
+    r = create(Portal(live_numbers={"ROECTO"}, saved=saved_row()), cfg=other)
+    check("that system's own portal is still checked before saving",
+          r["status"] == "blocked" and r["reason"] == "number_taken" and Portal.clicks == 0, r)
+    reset_db()
+
+
 def test_only_one_creation_at_a_time():
     reset_db()
     pc._create_lock.acquire()
@@ -507,6 +547,7 @@ TESTS = [
     test_form_is_read_back_before_saving,
     test_saved_product_is_compared_with_what_was_asked_for,
     test_when_the_product_cannot_be_found_afterwards,
+    test_another_system_never_touches_the_catalogue_copy,
     test_only_one_creation_at_a_time,
     test_product_list_parsing,
 ]

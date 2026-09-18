@@ -34,6 +34,7 @@ const ALL_PERMISSIONS = [
   "system:netherlands",
   "system:kenya",
   "system:coloriginz",
+  "system:test",
 ]
 
 const DEFAULT_GROUPS: Record<string, string[]> = {

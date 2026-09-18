@@ -157,6 +157,7 @@ def search_products(
     cfg: Config,
     on_status: Callable | None = None,
     lang: str = "en",
+    use_catalogue_copy: bool = True,
 ) -> list[ProductMatch]:
     """Two-phase product search — DB-first, Playwright fallback.
 
@@ -164,6 +165,12 @@ def search_products(
     Phase 2: if no ≥80% matches and ANTHROPIC_API_KEY set, ask Claude for
              correct spellings and search those too.
     Same similarity logic regardless of data source.
+
+    use_catalogue_copy=False searches the portal in *cfg* through the browser
+    instead of the Postgres copy. The copy mirrors one system, so on any other
+    system (the test tenant, say) its product ids belong to a different portal
+    and would copy the wrong product. The browser path searches far fewer
+    terms — every term is a page load — so it finds less than the copy does.
     """
     def _s(m: str) -> None:
         logger.info(m)
@@ -186,6 +193,9 @@ def search_products(
     # (e.g. "Scaibosa" → n-grams "Scai","aibo","bosa" still share "osa" with "Scabiosa").
     genus_terms = _variety_search_terms(genus) if genus else []
     phase1 = list(dict.fromkeys(filter(None, [query.strip()] + variety_terms + genus_terms)))
+    # One page load per term in the browser, so keep that list to the terms
+    # that carry the most: the whole query, the variety, the genus.
+    browser_terms = list(dict.fromkeys(filter(None, [query.strip(), variety, genus])))
 
     def _collect(rows: list[dict]) -> None:
         """Apply similarity filter and accumulate matches from a list of dicts."""
@@ -208,9 +218,9 @@ def search_products(
                     application=r.get("application", ""),
                 ))
 
-    def _run_phases(fetch_fn: Callable[[str], list[dict]]) -> None:
+    def _run_phases(fetch_fn: Callable[[str], list[dict]], terms: list[str]) -> None:
         """Execute phase 1 + optional AI phase 2 using the given fetch function."""
-        for term in phase1:
+        for term in terms:
             _s(msg(lang, "searching", term=term))
             _collect(fetch_fn(term))
 
@@ -228,14 +238,14 @@ def search_products(
 
     # ── DB path (fast, no browser) ────────────────────────────────────────────
     from db import get_product_count, search_products_ilike_term
-    if get_product_count() > 0:
-        _run_phases(lambda term: search_products_ilike_term(term, limit=100))
+    if use_catalogue_copy and get_product_count() > 0:
+        _run_phases(lambda term: search_products_ilike_term(term, limit=100), phase1)
         all_matches.sort(key=lambda m: m.similarity, reverse=True)
         best = f", best: {all_matches[0].similarity:.0%}" if all_matches else ""
         _s(msg(lang, "finished_search", total=len(all_matches), best=best))
         return all_matches
 
-    # ── Playwright fallback (DB not yet populated) ────────────────────────────
+    # ── Browser path: another system than the copy mirrors, or an empty copy ──
     with sync_playwright() as pw:
         browser = _launch_browser(pw)
         context = browser.new_context()
@@ -248,11 +258,10 @@ def search_products(
 
             def _pw_fetch(term: str) -> list[dict]:
                 results: list[dict] = []
-                encoded = term.replace(" ", "+")
                 for page_num in range(1, 3):
                     url = (
                         f"{cfg.freshportal_url}/product/index/index/"
-                        f"?1=1&name_adjustable={encoded}&page={page_num}"
+                        f"?1=1&name_adjustable={quote_plus(term)}&page={page_num}"
                     )
                     try:
                         _goto_and_wait(fp_page, url, cfg)
@@ -263,16 +272,22 @@ def search_products(
                     if not rows:
                         break
                     for r in rows:
+                        # Colour, group and application come along so the
+                        # confirmation form can fill itself in from a template
+                        # found this way, exactly as it does from the copy.
                         results.append({
                             "product_id": r.product_id,
                             "name": r.name,
                             "short_name": r.short_name,
                             "vbn_number": r.vbn_number,
+                            "color": r.color,
+                            "product_group": r.product_group,
+                            "application": r.application,
                         })
                     _s(msg(lang, "page_result", term=term, page=page_num, total=len(results)))
                 return results
 
-            _run_phases(_pw_fetch)
+            _run_phases(_pw_fetch, browser_terms)
 
         finally:
             _logout(context, cfg)
@@ -443,10 +458,13 @@ def find_available_number(
     on_status: Callable | None = None,
     name: str = "",
     lang: str = "en",
+    use_catalogue_copy: bool = True,
 ) -> str | None:
     """Return the first available product number — DB-first, Playwright fallback.
 
-    DB path is instant (<10 ms); Playwright fallback used only when DB is empty.
+    DB path is instant (<10 ms). The browser is used when the copy is empty, or
+    when *cfg* points at a system the copy does not mirror — a number free in
+    the copy says nothing about a different portal.
     """
     def _s(m: str) -> None:
         logger.info(m)
@@ -454,7 +472,7 @@ def find_available_number(
             on_status(m)
 
     from db import is_product_number_taken, get_product_count
-    if get_product_count() > 0:
+    if use_catalogue_copy and get_product_count() > 0:
         for candidate in itertools.islice(_number_candidates(base, name), 11):
             if not is_product_number_taken(candidate):
                 if candidate != base:
@@ -590,7 +608,7 @@ def _number_search_url(cfg: Config, number: str) -> str:
     return f"{cfg.freshportal_url}/product/index/index/?1=1&number_adjustable={quote_plus(number)}&page=1"
 
 
-def _uses_catalogue_copy(cfg: Config) -> bool:
+def uses_catalogue_copy(cfg: Config) -> bool:
     """The Postgres product table mirrors the default FreshPortal only."""
     return cfg.freshportal_url.rstrip("/") == Config().freshportal_url.rstrip("/")
 
@@ -927,7 +945,7 @@ def _copy_and_create_locked(
 ) -> dict:
     from db import find_products_by_exact_name, is_product_number_taken, upsert_products
 
-    use_copy = _uses_catalogue_copy(cfg)
+    use_copy = uses_catalogue_copy(cfg)
     # From the moment save is clicked the product may exist, so any later
     # error must be reported as "unconfirmed", never as "failed".
     submitted = False

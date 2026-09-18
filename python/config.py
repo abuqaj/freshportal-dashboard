@@ -90,11 +90,20 @@ def get_kenya_cfg() -> Config:
     return cfg
 
 
-ALLOWED_FP_URLS: frozenset[str] = frozenset({
-    "https://fp042100.freshportal.nl",
-    "https://850295.freshportal.nl",
-    "https://850255.freshportal.nl",
-    "https://fp012603.freshportal.com",
-    "https://850254.freshportal.nl",
-    "https://fp066801.freshportal.com",
-})
+# FreshPortal systems the X-FP-URL header may point at, each with the
+# system:<id> permission that goes with it — the same ids src/lib/systems.ts
+# uses, so a module can be pointed at a system only by someone the screen
+# would have offered it to.
+FP_SYSTEM_BY_URL: dict[str, str] = {
+    "https://fp042100.freshportal.nl":     "stamgegevens",
+    "https://850295.freshportal.nl":       "piazza",
+    "https://850255.freshportal.nl":       "ecuador",
+    "https://fp012603.freshportal.com":    "netherlands",
+    "https://850254.freshportal.nl":       "kenya",
+    "https://fp066801.freshportal.com":    "coloriginz",
+    # Test tenant, for trying a module out before pointing it at a live system.
+    "https://850255test.freshportal.com":  "test",
+}
+
+# Kept as the plain set of addresses, for checks that only ask "is this ours?".
+ALLOWED_FP_URLS: frozenset[str] = frozenset(FP_SYSTEM_BY_URL)

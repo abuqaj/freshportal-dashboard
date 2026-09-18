@@ -4,6 +4,8 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { flushSync } from "react-dom";
 import { translations, Lang } from "@/lib/i18n";
 import { ProductSearchResult, AIAnalysis, SyncStatus, CreateResult, CreateWarning } from "@/lib/types";
+import { useSystem } from "@/contexts/SystemContext";
+import { DEFAULT_SYSTEM } from "@/lib/systems";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -93,6 +95,10 @@ function NameCorrectionHint({ hint, onRevert, fromTemplateLabel, useOriginalLabe
 
 export default function ProductCreator({ lang }: Props) {
   const t = translations[lang];
+  // Every request this module makes carries the selected system, so say which
+  // portal the products will land in whenever it isn't the usual one.
+  const { system } = useSystem();
+  const otherSystem = system.id !== DEFAULT_SYSTEM.id ? system : null;
 
   const [createInput, setCreateInput] = useState("");
   const [searching, setSearching] = useState(false);
@@ -787,6 +793,15 @@ export default function ProductCreator({ lang }: Props) {
 
   return (
     <div>
+      {/* Which portal this module is pointed at, when it isn't the usual one */}
+      {otherSystem && (
+        <div className="flex items-center gap-2 px-6 py-2.5 bg-ink/5 border-b border-border text-xs text-ink-3">
+          <span className={`w-2 h-2 rounded-full ${otherSystem.accent}`} />
+          <span className="font-medium text-ink">{t.create.onSystem(otherSystem.name)}</span>
+          <span className="font-mono opacity-60 truncate">{otherSystem.url}</span>
+        </div>
+      )}
+
       {/* Duplicate warning modal — step 1 */}
       {showDuplicateWarning && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">

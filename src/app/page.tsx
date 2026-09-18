@@ -21,9 +21,25 @@ import { useSystem } from "@/contexts/SystemContext";
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis" | "boxweight" | "supplier" | "knowledge";
 
-const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
-const ECUADOR_ONLY_TABS:      Tab[] = ["delivery", "analysis"];
-const KENYA_ONLY_TABS:        Tab[] = ["boxweight", "supplier"];
+// Which modules each system offers. A module listed here shows up only on the
+// systems that list it; anything not listed anywhere (history, admin,
+// knowledge) reads from our own database and shows everywhere.
+//
+// The test tenant offers New Products alone: its endpoints follow the selected
+// system, while VBN Check/Fix and Photo Uploader always run against
+// Stamgegevens and would quietly work on live data under a "Test" heading.
+const SYSTEM_TABS: Record<string, Tab[]> = {
+  stamgegevens: ["vbn", "create", "photos"],
+  ecuador:      ["delivery", "analysis"],
+  kenya:        ["boxweight", "supplier"],
+  test:         ["create"],
+};
+
+const SYSTEM_SCOPED_TABS = new Set<Tab>(Object.values(SYSTEM_TABS).flat());
+
+function systemOffers(systemId: string, tab: Tab): boolean {
+  return !SYSTEM_SCOPED_TABS.has(tab) || (SYSTEM_TABS[systemId] ?? []).includes(tab);
+}
 
 // ModuleCard pads its content, so a new module gets sane margins without
 // having to remember. These screens opt out because their layout depends on
@@ -480,7 +496,11 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
       label: t.nav.newProducts,
       desc: t.hub.createDesc,
       gradient: "bg-gradient-to-br from-ember to-[#B83220]",
-      stat: productCount != null ? t.hub.catalogueStat(productCount) : t.hub.catalogueLoading,
+      // The product count comes from our copy of Stamgegevens, so on any other
+      // system it would be someone else's number — name the portal instead.
+      stat: system.id === "stamgegevens"
+        ? (productCount != null ? t.hub.catalogueStat(productCount) : t.hub.catalogueLoading)
+        : t.hub.onSystem(system.name),
       statColor: "text-white/70",
       icon: (
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -615,15 +635,8 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
     },
   ];
 
-  const isStamgegevens = system.id === "stamgegevens";
-  const isEcuador = system.id === "ecuador";
-  const isKenya = system.id === "kenya";
-
   const tiles = allTiles.filter(tile =>
-    (isAdmin || permissions.includes(tile.perm)) &&
-    (isStamgegevens || !STAMGEGEVENS_ONLY_TABS.includes(tile.id)) &&
-    (isEcuador || !ECUADOR_ONLY_TABS.includes(tile.id)) &&
-    (isKenya || !KENYA_ONLY_TABS.includes(tile.id))
+    (isAdmin || permissions.includes(tile.perm)) && systemOffers(system.id, tile.id)
   );
 
   const colsClass = tiles.length <= 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
@@ -750,9 +763,7 @@ export default function Dashboard() {
 
   const navTabs = NAV_TABS_ALL
     .filter(nt => isAdmin || permissions.includes(nt.perm))
-    .filter(nt => system.id === "stamgegevens" || !STAMGEGEVENS_ONLY_TABS.includes(nt.id))
-    .filter(nt => system.id === "ecuador"      || !ECUADOR_ONLY_TABS.includes(nt.id))
-    .filter(nt => system.id === "kenya"        || !KENYA_ONLY_TABS.includes(nt.id))
+    .filter(nt => systemOffers(system.id, nt.id))
     .map(nt => ({
       id:       nt.id,
       gradient: nt.gradient,

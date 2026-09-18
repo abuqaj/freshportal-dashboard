@@ -53,6 +53,12 @@ const MODULES_BY_SYSTEM: Record<string, { perm: string; label: string }[]> = {
     { perm: "boxweight:run", label: "Box Weight" },
     { perm: "supplier:add",  label: "Add Supplier" },
   ],
+  // Only modules whose endpoints follow the selected system can be offered on
+  // the test tenant; VBN Check/Fix and Photo Uploader always run against
+  // Stamgegevens, so they are not listed here.
+  test: [
+    { perm: "products:create", label: "New Products" },
+  ],
 }
 
 /** Built from FP_SYSTEMS so the name, the colour and the order here always

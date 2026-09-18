@@ -70,6 +70,19 @@ export const FP_SYSTEMS: FPSystem[] = [
     accent: "bg-[#009cde]",
     fallbackGradient: "bg-gradient-to-br from-[#009cde] to-[#006793]",
   },
+  {
+    // The test tenant, for trying a module out before pointing it at a live
+    // system. Grey on purpose: it is an environment, not a brand. Only the
+    // modules that follow the selected system are offered here — see
+    // SYSTEM_TABS in page.tsx.
+    id: "test",
+    name: "Test",
+    url: "https://850255test.freshportal.com",
+    svgPath: "/icons/systems/test.svg",
+    art: "logo",
+    accent: "bg-[#475569]",
+    fallbackGradient: "bg-gradient-to-br from-[#64748b] to-[#334155]",
+  },
 ];
 
 export const DEFAULT_SYSTEM = FP_SYSTEMS[0];
