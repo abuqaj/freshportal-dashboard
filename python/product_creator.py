@@ -40,62 +40,117 @@ logger = logging.getLogger(__name__)
 
 # ── similarity ──────────────────────────────────────────────────────────────
 
-# Country/origin tokens that appear between genus and variety in FreshPortal names
-# e.g. "Rosa Ec Toxic" → genus="rosa", variety="toxic"
+# What makes two FreshPortal names the same product (as the people who create
+# them define it):
+#   - the country a flower came from does not: "Rosa Col Toxic" and "Rosa
+#     Toxic" are one product;
+#   - except for Ecuadorian roses, which are graded as better quality and kept
+#     as their own product, so "Ec" on a Rosa is part of what that product is;
+#   - spray / single / double and any treatment each make a separate product;
+#   - length does not (it belongs to a stock entry, not to a product).
 _ORIGIN_TOKENS = {"ec", "col", "co", "ke", "ken", "nl", "et", "zim", "sa", "tz", "be", "de"}
+_QUALITY_ORIGIN = "ec"
+_QUALITY_ORIGIN_GENUS = "rosa"
+
+# Words that say what kind of product this is rather than which variety. Two
+# names that disagree here are never the same product, and these words are
+# kept out of the variety: "Rosa Spray Toxic" and "Rosa Spray Mondial" share
+# nothing but the word "Spray".
+_MARKER_ALIASES = {
+    "spray": "spray", "tros": "spray", "sp": "spray",
+    "single": "single", "double": "double",
+    "preserved": "preserved", "bleached": "bleached",
+    "dried": "dried", "droog": "dried",
+    "treated": "treated", "kleurbehandeld": "treated",
+    "painted": "treated", "tinted": "treated", "absorbed": "treated",
+}
+
+# At or above this a product counts as already existing; the screen warns, and
+# an exact name is refused outright before saving.
+DUPLICATE_SCORE = 0.80
+# Same series, different variety ("Matsumoto Lavender" vs "Matsumoto Blue"):
+# worth offering as a template, never a duplicate.
+_SERIES_SCORE = 0.75
+# Same variety but another kind (a spray, a treatment, an Ecuadorian rose):
+# a good template and a different product, so it stays under the threshold.
+_DIFFERENT_KIND_CAP = 0.75
 
 
-def _extract_parts(name: str) -> tuple[str, str]:
-    """Return (genus, variety) stripping known origin tokens.
+@dataclass(frozen=True)
+class _Identity:
+    genus: str
+    markers: frozenset[str]
+    variety: str
 
-    "Rosa Ec Atena"  → ("rosa", "atena")
-    "Rosa Athena"    → ("rosa", "athena")
-    "Rosa Ec Toxic"  → ("rosa", "toxic")
+
+def _product_identity(name: str) -> _Identity:
+    """Split a name into what decides whether two products are the same.
+
+    "Rosa Ec Spray Toxic" → genus "rosa", markers {ec, spray}, variety "toxic"
+    "Rosa Col Toxic"      → genus "rosa", markers {},           variety "toxic"
     """
     tokens = name.lower().strip().split()
     if not tokens:
-        return "", ""
+        return _Identity("", frozenset(), "")
     genus = tokens[0]
-    variety = " ".join(t for t in tokens[1:] if t not in _ORIGIN_TOKENS)
-    return genus, variety
+    markers: set[str] = set()
+    variety: list[str] = []
+    for token in tokens[1:]:
+        marker = _MARKER_ALIASES.get(token)
+        if marker:
+            markers.add(marker)
+        elif token == _QUALITY_ORIGIN and genus == _QUALITY_ORIGIN_GENUS:
+            markers.add(_QUALITY_ORIGIN)
+        elif token in _ORIGIN_TOKENS:
+            continue
+        else:
+            variety.append(token)
+    return _Identity(genus, frozenset(markers), " ".join(variety))
+
+
+def _extract_parts(name: str) -> tuple[str, str]:
+    """Return (genus, variety) — the name with origin and kind words removed.
+
+    "Rosa Ec Atena"       → ("rosa", "atena")
+    "Rosa Spray Julieta"  → ("rosa", "julieta")
+    """
+    identity = _product_identity(name)
+    return identity.genus, identity.variety
 
 
 def _similarity(a: str, b: str) -> float:
-    """Variety-aware similarity that ignores origin prefixes and handles typos.
-
-    Compares only the variety portion (after stripping genus + origin tokens).
-    Same genus required — different genus gets a heavy penalty.
+    """How close two product names are to being the same product.
 
     Examples:
-      "Rosa Ec Atena"  vs "Rosa Athena"     → ~0.91  (atena ≈ athena, typo)
-      "Rosa Ec Toxic"  vs "Rosa Ec Marilyn" → ~0.17  (toxic ≠ marilyn)
-      "Rosa Ec Toxic"  vs "Rosa Toxic"      → 1.00   (same variety, origin stripped)
+      "Rosa Ec Atena"    vs "Rosa Ec Athena"      → ~0.91  (typo, same product)
+      "Rosa Col Toxic"   vs "Rosa Toxic"          → 1.00   (country ignored)
+      "Rosa Ec Toxic"    vs "Rosa Toxic"          → 0.75   (Ecuador is its own)
+      "Rosa Spray Toxic" vs "Rosa Toxic"          → 0.75   (spray is its own)
+      "Rosa Spray Toxic" vs "Rosa Spray Mondial"  → ~0.15  (other variety)
+      "Rosa Ec Toxic"    vs "Dianthus Toxic"      → 0.00   (other genus)
     """
-    genus_a, variety_a = _extract_parts(a)
-    genus_b, variety_b = _extract_parts(b)
+    id_a, id_b = _product_identity(a), _product_identity(b)
 
-    if genus_a and genus_b and genus_a != genus_b:
-        genus_sim = difflib.SequenceMatcher(None, genus_a, genus_b).ratio()
+    if id_a.genus and id_b.genus and id_a.genus != id_b.genus:
+        genus_sim = difflib.SequenceMatcher(None, id_a.genus, id_b.genus).ratio()
         if genus_sim < 0.85:
             return 0.0  # Different genus (Rosa ≠ Dianthus) — never a match
 
-    if not variety_a and not variety_b:
-        return 1.0 if genus_a == genus_b else 0.5
-    if not variety_a or not variety_b:
-        return 0.5
+    if not id_a.variety and not id_b.variety:
+        score = 1.0 if id_a.genus == id_b.genus else 0.5
+    elif not id_a.variety or not id_b.variety:
+        score = 0.5
+    else:
+        score = difflib.SequenceMatcher(None, id_a.variety, id_b.variety).ratio()
+        # Same named series (shared first variety word) — a sibling worth
+        # copying from, not the same flower.
+        words_a, words_b = id_a.variety.split(), id_b.variety.split()
+        if difflib.SequenceMatcher(None, words_a[0], words_b[0]).ratio() >= 0.90:
+            score = max(score, _SERIES_SCORE)
 
-    full_sim = difflib.SequenceMatcher(None, variety_a, variety_b).ratio()
-
-    # Boost for products in the same named series (shared first variety word).
-    # e.g. "Matsumoto Lavender" vs "Matsumoto Blue" → treat as same template pool.
-    words_a = variety_a.split()
-    words_b = variety_b.split()
-    if words_a and words_b:
-        first_word_sim = difflib.SequenceMatcher(None, words_a[0], words_b[0]).ratio()
-        if first_word_sim >= 0.90:
-            return max(full_sim, 0.82)
-
-    return full_sim
+    if id_a.markers != id_b.markers:
+        return min(score, _DIFFERENT_KIND_CAP)
+    return score
 
 
 @dataclass
@@ -344,20 +399,30 @@ def search_products(
 
 # ── template selection ───────────────────────────────────────────────────────
 
+NUMBER_MAX_LEN = 7
+
+
+def _number_words(name: str) -> list[str]:
+    return re.sub(r"[^A-Za-z0-9\s]", "", name).upper().split()
+
+
+def _code_from(words: list[str], letters_per_word: list[int]) -> str:
+    return "".join(w[:n] for w, n in zip(words, letters_per_word))[:NUMBER_MAX_LEN]
+
+
 def generate_product_number(name: str) -> str:
     """Generate a FreshPortal product number from a product name.
 
-    Rules: max 8 chars, uppercase only, no spaces or special characters.
-    Strategy: first 2 chars of each word, concatenated and truncated.
+    Rules: at most 7 characters, uppercase letters and digits only.
+    Strategy: the first 2 characters of each word, truncated.
 
     Examples:
-      "Rosa Ec Atena"             → ROECAT
-      "Rosa Ec Honey Hearst"      → ROECHOHE
-      "Rosa Ec Spray Julieta Honey" → ROECSPJU
+      "Rosa Ec Atena"               → ROECAT
+      "Rosa Ec Honey Hearst"        → ROECHOH
+      "Rosa Ec Spray Julieta Honey" → ROECSPJ
     """
-    words = re.sub(r"[^A-Za-z0-9\s]", "", name).upper().split()
-    code = "".join(w[:2] for w in words)[:8]
-    return code if code else "PROD"
+    words = _number_words(name)
+    return _code_from(words, [2] * len(words)) if words else "PROD"
 
 
 def find_best_template(
@@ -379,34 +444,44 @@ def find_best_template(
 # ── copy product via Playwright ───────────────────────────────────────────────
 
 def _number_candidates(base: str, name: str = ""):
-    """Yield product number candidates.
+    """Yield product numbers for *name*, starting with *base*.
 
-    Strategy:
-    1. base itself
-    2. Extend using the remaining chars of the last word in *name* (after the 2
-       already used), e.g. base=CAMALA, name="… Lavender" → CAMALAV, CAMALAVE
-    3. Fall back to alphabet / digits suffix / last-char replacement
+    Variants change how many letters each word contributes — three letters
+    from the first word, or from the last one, and so on. They never append a
+    counter: people read these codes off the screen, and ROECSP01 or ROECSPJA
+    say nothing about the product. When every variant is taken the operator is
+    asked for a number instead of being handed a meaningless one.
     """
     yield base
     seen: set[str] = {base}
+    words = _number_words(name)
+    if not words:
+        return
+    n = len(words)
 
-    # Phase 1: extend with next chars of the last word
-    if name:
-        words = re.sub(r"[^A-Za-z0-9]", " ", name).upper().split()
-        if words:
-            extra = ""
-            for ch in words[-1][2:]:          # skip the 2 chars already in base
-                extra += ch
-                candidate = (base + extra)[:8]
-                if candidate not in seen:
-                    seen.add(candidate)
-                    yield candidate
+    patterns: list[list[int]] = [
+        [1] * n,                       # one letter per word
+        [3] + [2] * (n - 1),           # three from the first word
+        [2] * (n - 1) + [3],           # three from the last word
+        [3] + [1] * (n - 1),
+        [1] * (n - 1) + [3],
+        [4] + [2] * (n - 1),
+        [2] * (n - 1) + [4],
+        [3] * n,
+    ]
+    # Then one word at a time gets an extra letter, left to right.
+    for extra in (3, 4, 5):
+        for i in range(n):
+            pattern = [2] * n
+            pattern[i] = extra
+            patterns.append(pattern)
+    # A single-word name has no words to redistribute between, so lengthen it.
+    if n == 1:
+        patterns.extend([[i] for i in range(1, NUMBER_MAX_LEN + 1)])
 
-    # Phase 2: alphabet / digits fallback (append when room, else replace last char)
-    for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789":
-        candidate = (base + ch) if len(base) < 8 else base[:7] + ch
-        candidate = candidate[:8]
-        if candidate not in seen:
+    for pattern in patterns:
+        candidate = _code_from(words, pattern)
+        if candidate and candidate not in seen:
             seen.add(candidate)
             yield candidate
 
@@ -568,7 +643,7 @@ def find_available_number(
 _create_lock = threading.Lock()
 _CREATE_LOCK_WAIT_S = 300
 
-_NUMBER_RE = re.compile(r"[A-Z0-9]{1,8}")
+_NUMBER_RE = re.compile(rf"[A-Z0-9]{{1,{NUMBER_MAX_LEN}}}")
 _VBN_RE = re.compile(r"[0-9]{1,6}")
 _TEMPLATE_ID_RE = re.compile(r"[0-9]{1,12}")
 

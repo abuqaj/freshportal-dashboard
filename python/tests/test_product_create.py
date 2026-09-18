@@ -353,11 +353,11 @@ def test_catalogue_copy_stops_known_duplicates():
     check("the same name goes through once the operator confirms it",
           r["status"] == "created" and Portal.clicks == 1, r)
 
-    reset_db(numbers={"ROECTO", "ROECTOX"})
+    reset_db(numbers={"ROECTO", "RET"})
     r = create(Portal(saved=saved_row()))
     check("taken number blocks and a free variant is suggested",
           r["status"] == "blocked" and r["reason"] == "number_taken"
-          and r["suggested_number"] == "ROECTOXI" and Portal.clicks == 0, r)
+          and r["suggested_number"] == "ROSECTO" and Portal.clicks == 0, r)
 
 
 def test_freshportal_itself_is_checked_too():
@@ -661,6 +661,78 @@ def test_product_master_is_chosen_by_its_columns():
           table == "product_master.csv" and raw and raw[0]["number"] == "AGOV", (table, raw[:1]))
 
 
+def test_what_counts_as_the_same_product():
+    """The rules the people who create these products work by.
+
+    Country does not make a product, except for Ecuadorian roses, which are
+    graded as better quality and kept separate. Spray, single, double and any
+    treatment each make their own product. Length does not — it belongs to a
+    stock entry. At or above DUPLICATE_SCORE the screen says "this may already
+    exist", so anything that is a different product has to stay below it.
+    """
+    same = [
+        ("Rosa Col Toxic", "Rosa Toxic", "country ignored"),
+        ("Rosa Ec Atena", "Rosa Ec Athena", "a typo is the same variety"),
+        ("Rosa Ec Spray Julieta", "Rosa Ec Sp Julieta", "Sp is Spray"),
+        ("Rosa Ke Toxic", "Rosa Col Toxic", "two other countries"),
+    ]
+    for a, b, why in same:
+        score = pc._similarity(a, b)
+        check(f"same product: {a} / {b} ({why})", score >= pc.DUPLICATE_SCORE, round(score, 2))
+
+    different = [
+        ("Rosa Ec Toxic", "Rosa Toxic", "an Ecuadorian rose is its own product"),
+        ("Rosa Ec Toxic", "Rosa Col Toxic", "Ecuador against another country"),
+        ("Rosa Spray Toxic", "Rosa Toxic", "spray is its own product"),
+        ("Rosa Ec Toxic", "Rosa Ec Preserved Toxic", "a treatment is its own product"),
+        ("Rosa Single Toxic", "Rosa Double Toxic", "single against double"),
+        ("Rosa Spray Toxic", "Rosa Spray Mondial", "another variety"),
+        ("Rosa Pink Floyd", "Rosa Pink Mondial", "same series, another variety"),
+        ("Rosa Ec Toxic", "Dianthus Ec Toxic", "another genus"),
+    ]
+    for a, b, why in different:
+        score = pc._similarity(a, b)
+        check(f"different products: {a} / {b} ({why})", score < pc.DUPLICATE_SCORE, round(score, 2))
+
+    check("Ecuador only counts on roses",
+          pc._similarity("Gypsophila Ec Xlence", "Gypsophila Xlence") >= pc.DUPLICATE_SCORE,
+          round(pc._similarity("Gypsophila Ec Xlence", "Gypsophila Xlence"), 2))
+    check("a different kind still ranks as a template, above an unrelated variety",
+          pc._similarity("Rosa Spray Toxic", "Rosa Toxic") > pc._similarity("Rosa Spray Toxic", "Rosa Spray Mondial"))
+
+
+def test_product_numbers_follow_the_house_rules():
+    """At most 7 characters, two letters per word, and no counters.
+
+    A variant is made by moving letters between words, never by appending 1, 2,
+    3 or A, B, C: these codes are read off the screen, so they have to keep
+    saying what the product is.
+    """
+    check("two letters per word, cut to seven",
+          pc.generate_product_number("Rosa Ec Spray Julieta Honey") == "ROECSPJ",
+          pc.generate_product_number("Rosa Ec Spray Julieta Honey"))
+    check("a short name keeps its own length",
+          pc.generate_product_number("Rosa Ec Toxic") == "ROECTO", pc.generate_product_number("Rosa Ec Toxic"))
+    check("a name with no usable letters still gives a code",
+          pc.generate_product_number("...") == "PROD", pc.generate_product_number("..."))
+
+    import itertools
+    name = "Rosa Ec Toxic"
+    variants = list(itertools.islice(pc._number_candidates(pc.generate_product_number(name), name), 12))
+    check("the base comes first", variants[0] == "ROECTO", variants[:3])
+    check("one letter per word is offered", "RET" in variants, variants)
+    check("three letters from the first word are offered", "ROSECTO" in variants, variants)
+    check("three letters from the last word are offered", "ROECTOX" in variants, variants)
+    check("no variant is longer than seven", all(len(v) <= pc.NUMBER_MAX_LEN for v in variants), variants)
+    check("no variant ends in a counter",
+          not any(v[-1].isdigit() for v in variants), variants)
+    check("every variant is different", len(variants) == len(set(variants)), variants)
+
+    single = list(itertools.islice(pc._number_candidates(pc.generate_product_number("Aster"), "Aster"), 6))
+    check("a one-word name is lengthened rather than suffixed",
+          single[:4] == ["AS", "A", "AST", "ASTE"], single)
+
+
 def test_only_one_creation_at_a_time():
     reset_db()
     pc._create_lock.acquire()
@@ -710,6 +782,8 @@ TESTS = [
     test_reading_a_system_from_its_export,
     test_export_lookup_tables,
     test_product_master_is_chosen_by_its_columns,
+    test_what_counts_as_the_same_product,
+    test_product_numbers_follow_the_house_rules,
     test_only_one_creation_at_a_time,
     test_product_list_parsing,
 ]

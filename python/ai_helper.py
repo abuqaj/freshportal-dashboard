@@ -84,7 +84,9 @@ Category VBN codes (use ONLY when no specific variety code exists for this produ
   15126 — Rosa large flowered colour treated
   16128 — Rosa spray colour treated
 
-"Ec" in name = Ecuador COUNTRY OF ORIGIN only.
+"Ec" in name = Ecuador. For the VBN code it is origin only (the code does not
+change with the country); for whether a product already exists it is not —
+an Ecuadorian rose is its own product.
 """
 
 _PROMPT_TEMPLATE = """\
@@ -110,9 +112,16 @@ You are an expert in Dutch flower auction product names and VBN product codes.
 Is any of the candidates the SAME variety as "{query}"?
 
 Rules:
-- Origin prefixes are NOT part of the variety name and must be ignored:
-  "Ec" = Ecuador, "Col" = Colombia, "Ke" = Kenya, "Nl" = Netherlands, etc.
+- Country prefixes are NOT part of the variety name and must be ignored:
+  "Col" = Colombia, "Ke" = Kenya, "Nl" = Netherlands, etc.
+  "Rosa Col Toxic" and "Rosa Toxic" are the SAME product.
+- ONE exception: "Ec" (Ecuador) on a Rosa. Ecuadorian roses are graded as
+  better quality and are kept as separate products, so "Rosa Ec Toxic" and
+  "Rosa Toxic" are TWO products and neither is a duplicate of the other.
 - "Sp" or "Spray" in the name IS significant — spray variety ≠ non-spray variety.
+  So are "Single" and "Double", and any treatment (Preserved, Bleached, Dried,
+  Painted, Tinted, Colour treated): each makes a separate product.
+- Length (50cm, 60cm) is NOT part of a product — it belongs to a stock entry.
 - Common misspellings count as the same variety:
   Atena ≈ Athena, Litchi ≈ Lychee, Naomi ≈ Naomy, Jaques ≈ Jacques, etc.
 - Only mark as duplicate when you are reasonably sure.

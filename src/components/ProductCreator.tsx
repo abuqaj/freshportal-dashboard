@@ -8,6 +8,11 @@ import { useSystem } from "@/contexts/SystemContext";
 import { DEFAULT_SYSTEM } from "@/lib/systems";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
+// Product numbers are at most 7 characters (product_creator.NUMBER_MAX_LEN).
+const NUMBER_MAX_LEN = 7;
+// Results at or above this count as "this product may already exist"; below
+// it they are templates to copy from. Mirrors product_creator.DUPLICATE_SCORE.
+const DUPLICATE_SCORE = 0.80;
 
 interface Props {
   lang: Lang;
@@ -324,9 +329,11 @@ export default function ProductCreator({ lang }: Props) {
     return null;
   }
 
+  // Two characters per word, at most 7 — the same rule the backend applies
+  // when it has to find a free variant of this number.
   function genProductNumber(name: string): string {
     const words = name.replace(/[^A-Za-z0-9\s]/g, "").toUpperCase().split(/\s+/).filter(Boolean);
-    return words.map(w => w.slice(0, 2)).join("").slice(0, 8) || "PROD";
+    return words.map(w => w.slice(0, 2)).join("").slice(0, NUMBER_MAX_LEN) || "PROD";
   }
 
   async function handleProductSearch() {
@@ -736,9 +743,11 @@ export default function ProductCreator({ lang }: Props) {
     setPendingCreate(lastTemplate.current);
   }
 
-  const highMatches = searchResults ? searchResults.filter(r => r.similarity >= 0.80).slice(0, 10) : [];
+  const highMatches = searchResults ? searchResults.filter(r => r.similarity >= DUPLICATE_SCORE).slice(0, 10) : [];
   const isFallback = highMatches.length === 0 && (searchResults?.length ?? 0) > 0;
-  const allDisplayResults = isFallback ? (searchResults ?? []).slice(0, 1) : highMatches;
+  // Nothing close enough to be the same product, so these are templates to
+  // copy from: show a handful to choose between, not just the closest one.
+  const allDisplayResults = isFallback ? (searchResults ?? []).slice(0, 10) : highMatches;
   const displayResults = showAllResults ? allDisplayResults : allDisplayResults.slice(0, 6);
 
   const SpinnerSm = () => (
@@ -945,7 +954,7 @@ export default function ProductCreator({ lang }: Props) {
                           handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "", r.product_group ?? "", r.application ?? "");
                         }
                       }}
-                      className={`w-full text-left px-4 py-3 rounded-xl border transition-all hover:shadow-sm group ${r.similarity >= 1.0 ? "border-ember/40 bg-ember-light/30 hover:bg-ember-light/50" : r.similarity >= 0.80 ? "border-amber-200 bg-amber-50/60 hover:bg-amber-50" : "border-border bg-surface hover:bg-ground"}`}
+                      className={`w-full text-left px-4 py-3 rounded-xl border transition-all hover:shadow-sm group ${r.similarity >= 1.0 ? "border-ember/40 bg-ember-light/30 hover:bg-ember-light/50" : r.similarity >= DUPLICATE_SCORE ? "border-amber-200 bg-amber-50/60 hover:bg-amber-50" : "border-border bg-surface hover:bg-ground"}`}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
@@ -959,7 +968,7 @@ export default function ProductCreator({ lang }: Props) {
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
                           {r.vbn_number && <span className="text-[11px] font-mono text-ink-3">{r.vbn_number}</span>}
-                          <span className={`text-[11px] px-2 py-0.5 rounded-md font-bold ${r.similarity >= 1.0 ? "bg-ember text-white" : r.similarity >= 0.80 ? "bg-amber-500 text-white" : "bg-ink/10 text-ink-3"}`}>
+                          <span className={`text-[11px] px-2 py-0.5 rounded-md font-bold ${r.similarity >= 1.0 ? "bg-ember text-white" : r.similarity >= DUPLICATE_SCORE ? "bg-amber-500 text-white" : "bg-ink/10 text-ink-3"}`}>
                             {Math.round(r.similarity * 100)}%
                           </span>
                           <span className={`text-xs font-semibold px-3 py-1 rounded-lg border transition-colors whitespace-nowrap ${r.similarity >= 1.0 ? "bg-ember-light text-ember border-ember/30 group-hover:bg-ember group-hover:text-white" : "bg-emerald-light text-emerald border-emerald/30 group-hover:bg-emerald group-hover:text-white"}`}>
@@ -1093,7 +1102,7 @@ export default function ProductCreator({ lang }: Props) {
                   <input
                     type="text"
                     value={productNumber}
-                    onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8)); setNumberCheckResult(null); }}
+                    onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, NUMBER_MAX_LEN)); setNumberCheckResult(null); }}
                     placeholder={t.create.numberPlaceholder}
                     className="w-full border border-border rounded-xl px-4 py-2.5 text-sm font-mono uppercase bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
                   />
