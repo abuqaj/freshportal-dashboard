@@ -76,6 +76,7 @@ from dfg_api_client import (
     DfgApiError, resolve_supplier, get_batch as dfg_get_batch,
     build_batch_payload, create_batch as dfg_create_batch,
     add_stock_entries as dfg_add_stock_entries,
+    get_open_invoices as dfg_get_open_invoices,
 )
 from scraper_catalogue import fetch_supplier_list
 from scraper_fust import fetch_fust_catalogue
@@ -2739,6 +2740,7 @@ class DfgCreateRequest(BaseModel):
     order: dict
     supplier_fp_id: str = ""
     customer_id: int | None = None
+    invoice_id: int | None = None
 
 
 @app.post("/delivery/api/create")
@@ -2746,14 +2748,14 @@ def delivery_api_create(
     req: DfgCreateRequest,
     _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
-    """POST /dfg/v1/batch — create the shipment, invoiced to customer_id.
+    """POST /dfg/v1/batch — create the shipment and allocate its stock.
 
-    customer_id is optional (reversed 2026-09-01 from the earlier 2026-08-25
-    "every shipment must be allocated" rule): the UI's customer picker now
-    has a "Stock" option (no customer_id sent) for shipments meant to be
-    manually allocated from stock in FreshPortal afterwards — the DFG API
-    and build_batch_payload() already supported an omitted customer_id, only
-    this endpoint's own validation was blocking it.
+    Where the stock lands is the caller's choice (2026-09-18 API change):
+    neither id sends it straight to stock with no invoice ("Stock" in the
+    picker, which the API only started honouring with this change);
+    customer_id alone has DFG create a new invoice and return its id;
+    customer_id plus invoice_id allocates every product to that existing
+    open invoice, as listed by /delivery/api/open-invoices.
 
     Only lines with a resolved product_number (fp_product_id) are sent; unmatched
     lines are skipped and reported back in `skipped_unmatched` so the UI can flag
@@ -2789,7 +2791,8 @@ def delivery_api_create(
         raise HTTPException(400, "No matched products to send — confirm product matches first")
 
     try:
-        payload = build_batch_payload(order, customer_id=req.customer_id)
+        payload = build_batch_payload(
+            order, customer_id=req.customer_id, invoice_id=req.invoice_id)
         log.info("[delivery/api/create] POST payload: %s", payload)
         result = dfg_create_batch(cfg, payload)
     except DfgApiError as exc:
@@ -2809,6 +2812,28 @@ def delivery_api_create(
         "invoice_id": result.invoice_id,
         "invoice_url": result.invoice_url,
     }
+
+
+@app.get("/delivery/api/open-invoices")
+def delivery_api_open_invoices(
+    customer_id: int,
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
+):
+    """GET /dfg/v1/invoice_open — the customer's still-open invoices, for the
+    shipment step's invoice picker.
+
+    Only id / sequence / reference / invoice_date are passed on; the picker
+    shows the last three and sends the id back as invoice_id on create. An
+    empty list is a normal answer (customer has nothing open yet), so the UI
+    can fall back to letting DFG create a new invoice.
+    """
+    cfg = get_ecuador_cfg()
+    try:
+        invoices = dfg_get_open_invoices(cfg, customer_id)
+    except Exception as exc:
+        log.exception("[delivery/api/open-invoices] failed")
+        raise HTTPException(502, f"DFG API error: {exc}")
+    return {"invoices": invoices}
 
 
 class DfgRetryRequest(BaseModel):

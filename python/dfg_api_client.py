@@ -120,6 +120,37 @@ def get_batch(cfg: Config, supplier_id: str, batch_number: str) -> dict[str, Any
     return resp.json()
 
 
+def get_open_invoices(cfg: Config, customer_id: int) -> list[dict[str, Any]]:
+    """GET /dfg/v1/invoice_open — the customer's invoices that are still open.
+
+    Offered in the UI so a shipment can be allocated to an invoice that
+    already exists instead of always creating a new one (2026-09-18 API
+    change). Only the four fields the picker needs are kept; the endpoint
+    also returns every stock item and order line of every invoice, which is
+    a lot of payload nobody here reads.
+
+    Returns [] rather than raising when the customer has none — an empty
+    picker is a normal state ("this customer has no open invoice yet"), not
+    an error. A 204 is treated the same way as the empty list, matching
+    get_batch()'s handling of the same convention.
+    """
+    resp = _request(cfg, "GET", "/dfg/v1/invoice_open", params={"customer_id": int(customer_id)})
+    if resp.status_code in (204, 404):
+        return []
+    _raise_for_status_with_body(resp)
+    data = resp.json() or {}
+    return [
+        {
+            "id": inv.get("id"),
+            "sequence": str(inv.get("sequence") or ""),
+            "reference": str(inv.get("reference") or ""),
+            "invoice_date": str(inv.get("invoice_date") or ""),
+        }
+        for inv in (data.get("invoices") or [])
+        if inv.get("id")
+    ]
+
+
 def resolve_supplier(cfg: Config, order: DeliveryOrder) -> None:
     """Resolve order.supplier_fp_id from the local supplier DB (matched by tx_company), in place.
 
@@ -190,18 +221,33 @@ def build_stock_entry(line: DeliveryLine) -> dict[str, Any]:
     return entry
 
 
-def build_batch_payload(order: DeliveryOrder, customer_id: int | None = None) -> dict[str, Any]:
+def build_batch_payload(
+    order: DeliveryOrder,
+    customer_id: int | None = None,
+    invoice_id: int | None = None,
+) -> dict[str, Any]:
     """Build the full DFG BatchV1 POST body from a parsed DeliveryOrder.
 
     `order.supplier_fp_id` must already be resolved (matched from tx_company
-    against the local supplier DB) before calling this. `customer_id` is
-    optional — the "Stock" picker option creates the shipment without an
-    invoice, for manual allocation in FreshPortal afterwards.
+    against the local supplier DB) before calling this.
 
-    customer_id is always sent as a key, with an explicit null when not
-    provided, rather than omitted entirely — omitting it outright returned
-    422 Unprocessable Entity (found 2026-09-01), consistent with a schema
-    that requires the key present-but-nullable rather than absent.
+    The two allocation fields decide where the shipment's stock lands
+    (2026-09-18 API change):
+
+    * neither — the stock goes straight to stock, with no invoice allocation
+      at all. This is what the picker's "Stock" option sends; it finally works
+      as intended, having been blocked since 2026-09-02 by the API always
+      creating an invoice.
+    * customer_id only — DFG creates a new invoice for that customer and
+      returns its id in the response.
+    * customer_id + invoice_id — every product is allocated to that existing
+      (still open) invoice, listed by get_open_invoices().
+
+    Both are always sent as keys, with an explicit null when not provided,
+    rather than omitted entirely — omitting customer_id outright returned 422
+    Unprocessable Entity (found 2026-09-01), consistent with a schema that
+    requires the key present-but-nullable rather than absent, and invoice_id
+    arrived in the same body schema.
     """
     if not order.supplier_fp_id:
         raise DfgApiError(f"supplier_fp_id not resolved for {order.tx_company!r} — cannot build payload")
@@ -213,6 +259,7 @@ def build_batch_payload(order: DeliveryOrder, customer_id: int | None = None) ->
         "supplier_id": int(order.supplier_fp_id),
         "stock_entries": [build_stock_entry(line) for line in order.lines],
         "customer_id": customer_id,
+        "invoice_id": invoice_id,
     }
 
 
