@@ -477,6 +477,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [invoiceId, setInvoiceId] = useState(NEW_INVOICE_ID);
   const [openInvoices, setOpenInvoices] = useState<DfgOpenInvoice[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
+  const [invoicesFailed, setInvoicesFailed] = useState(false);
   // The lookup is slow at the FreshPortal end: it builds every invoice's stock
   // items and order lines before we keep four fields per invoice and drop the
   // rest. Nothing here can make that call quicker, so it is started earlier
@@ -488,19 +489,25 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // One request per customer at a time, and one answer kept per customer. A
   // failure is deliberately not cached, so picking the customer again retries.
+  //
+  // It rejects rather than resolving to []: a customer with open invoices that
+  // could not be fetched, and a customer with no open invoices, are opposite
+  // answers. Flattening the first into the second told the user "a new invoice
+  // will be created" over a failed lookup, which is how a shipment gets a new
+  // invoice while an open one was sitting there (found 2026-09-21, from live
+  // 500/502s on customers with many invoices).
   const loadOpenInvoices = useCallback((cid: string): Promise<DfgOpenInvoice[]> => {
     const cached = invoiceCacheRef.current.get(cid);
     if (cached) return Promise.resolve(cached);
     const inflight = invoiceInflightRef.current.get(cid);
     if (inflight) return inflight;
     const req = fetch(`${RAILWAY}/delivery/api/open-invoices?customer_id=${encodeURIComponent(cid)}`)
-      .then(r => r.ok ? r.json() : { invoices: [] })
-      .then(d => {
-        const rows: DfgOpenInvoice[] = d.invoices ?? [];
+      .then(async r => {
+        if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+        const rows: DfgOpenInvoice[] = (await r.json()).invoices ?? [];
         invoiceCacheRef.current.set(cid, rows);
         return rows;
       })
-      .catch(() => [] as DfgOpenInvoice[])
       .finally(() => { invoiceInflightRef.current.delete(cid); });
     invoiceInflightRef.current.set(cid, req);
     return req;
@@ -511,7 +518,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!cid || cid === STOCK_CUSTOMER_ID) return;
     if (invoiceCacheRef.current.has(cid) || invoiceInflightRef.current.has(cid)) return;
     if (preloadTimerRef.current) clearTimeout(preloadTimerRef.current);
-    preloadTimerRef.current = setTimeout(() => { void loadOpenInvoices(cid); }, INVOICE_PRELOAD_DWELL_MS);
+    preloadTimerRef.current = setTimeout(() => {
+      // Nothing is shown for a preload, so a failure here is silent; the pick
+      // that follows retries it and reports properly.
+      loadOpenInvoices(cid).catch(() => {});
+    }, INVOICE_PRELOAD_DWELL_MS);
   }, [loadOpenInvoices]);
 
   useEffect(() => () => { if (preloadTimerRef.current) clearTimeout(preloadTimerRef.current); }, []);
@@ -522,6 +533,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // a different customer's invoice, which the API has no reason to reject.
   useEffect(() => {
     setInvoiceId(NEW_INVOICE_ID);
+    setInvoicesFailed(false);
     if (!customerId || customerId === STOCK_CUSTOMER_ID) {
       setOpenInvoices([]);
       return;
@@ -537,13 +549,22 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     let cancelled = false;
     setOpenInvoices([]);
     setInvoicesLoading(true);
-    loadOpenInvoices(customerId).then(rows => {
-      if (cancelled) return;
-      setOpenInvoices(rows);
-      setInvoicesLoading(false);
-    });
+    loadOpenInvoices(customerId)
+      .then(rows => { if (!cancelled) setOpenInvoices(rows); })
+      .catch(() => { if (!cancelled) setInvoicesFailed(true); })
+      .finally(() => { if (!cancelled) setInvoicesLoading(false); });
     return () => { cancelled = true; };
   }, [customerId, loadOpenInvoices]);
+
+  function retryOpenInvoices() {
+    if (!customerId || customerId === STOCK_CUSTOMER_ID) return;
+    setInvoicesFailed(false);
+    setInvoicesLoading(true);
+    loadOpenInvoices(customerId)
+      .then(rows => setOpenInvoices(rows))
+      .catch(() => setInvoicesFailed(true))
+      .finally(() => setInvoicesLoading(false));
+  }
 
   // Values only, separated by dashes — sequence, reference, invoice date is
   // how the shipment step names an open invoice.
@@ -1687,7 +1708,19 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     i
                   </span>
                 </label>
-                {!invoicesLoading && openInvoices.length === 0 ? (
+                {invoicesFailed ? (
+                  /* The lookup failed — say so, rather than letting an empty
+                     list pass for "this customer has none". */
+                  <div className="rounded-xl border-2 border-dashed border-ember/40 bg-ember/5 px-3 py-2 flex items-center justify-between gap-3">
+                    <span className="text-xs text-ember">{td.openInvoicesFailed}</span>
+                    <button
+                      onClick={retryOpenInvoices}
+                      className="h-7 px-3 shrink-0 rounded-lg text-xs font-medium border border-ember/40 text-ember hover:bg-ember/10 transition-colors"
+                    >
+                      {td.retryBtn}
+                    </button>
+                  </div>
+                ) : !invoicesLoading && openInvoices.length === 0 ? (
                   /* Nothing to choose from, so no control to choose with —
                      just what is going to happen instead. */
                   <div className="h-10 px-3 rounded-xl text-sm border-2 border-dashed border-emerald/25 bg-surface/60 text-ink-3 flex items-center">
