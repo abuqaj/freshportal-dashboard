@@ -58,9 +58,12 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_price_trend_by_length, get_bi_price_vs_length, get_bi_price_elasticity,
                get_bi_supplier_price_comparison, get_bi_supplier_volatility,
                get_bi_supplier_market_deviation, get_bi_seasonality, get_bi_event_impact,
-               get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
+               get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags,
+               search_vbn_catalog, get_vbn_catalog_product, get_vbn_catalog_status,
+               get_vbn_catalog_history, vbn_catalog_has_rows)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
 from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
+from vbn_catalog import run_vbn_catalog_sync
 from kenya_supplier import (
     extract_from_document as kenya_supplier_extract_document,
     create_supplier as kenya_supplier_create_portal,
@@ -173,6 +176,30 @@ def _daily_bi_sync() -> None:
     log.info("Daily BI sync finished: %s", result)
     if result.get("ok"):
         set_setting(_BI_AUTO_LAST_CHECK_KEY, datetime.datetime.now(datetime.timezone.utc).isoformat())
+
+
+_VBN_CATALOG_LAST_CHECK_KEY = "vbn_catalog_last_check"
+_VBN_CATALOG_JOB_ID = "daily_vbn_catalog_sync"
+
+
+def _daily_vbn_catalog_sync() -> None:
+    """Refresh the Floricode VBN mirror. Delta by default — vbn_catalog
+    promotes it to a full read by itself whenever the tables are empty, so a
+    fresh deploy fills them without anyone having to press anything.
+
+    Like the BI sync above, the last-check setting is only stamped on success,
+    so a failed run stays overdue and the startup logic retries it soon
+    instead of standing down for a full day."""
+    import datetime
+    cfg = Config()
+    log.info("Daily VBN catalogue sync started")
+    try:
+        result = run_vbn_catalog_sync(cfg)
+    except Exception:
+        log.exception("Daily VBN catalogue sync failed")
+        return
+    log.info("Daily VBN catalogue sync finished: %s", result)
+    set_setting(_VBN_CATALOG_LAST_CHECK_KEY, datetime.datetime.now(datetime.timezone.utc).isoformat())
 
 
 def _auto_vbn_check() -> None:
@@ -301,6 +328,37 @@ async def _on_startup() -> None:
                       bi_elapsed / 3600, bi_next_run.isoformat())
 
     _scheduler.add_job(_daily_bi_sync, "interval", days=1, id="daily_bi_sync", next_run_time=bi_next_run)
+
+    # Daily Floricode catalogue refresh — same DB-persisted cadence as the BI
+    # sync. Floricode changes a few thousand rows a year, so a delta is
+    # normally seconds; the point of running it daily is that the mirror must
+    # never be the reason a brand-new VBN code looks unknown.
+    vc_last_str = get_setting(_VBN_CATALOG_LAST_CHECK_KEY)
+    vc_reference_dt = None
+    if vc_last_str:
+        try:
+            vc_reference_dt = datetime.datetime.fromisoformat(vc_last_str)
+        except ValueError:
+            vc_reference_dt = None
+
+    if vc_reference_dt is None:
+        # First deploy of this feature: the tables are empty, so this run is
+        # the full ~12 s read that fills them. Staggered past the BI sync so
+        # a fresh deploy doesn't start both at once.
+        vc_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=240)
+        log.info("VBN catalogue sync: no prior run recorded — first (full) run in 240 s")
+    else:
+        vc_elapsed = (datetime.datetime.now(datetime.timezone.utc) - vc_reference_dt).total_seconds()
+        if vc_elapsed >= 23 * 3600:
+            vc_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=240)
+            log.info("VBN catalogue sync: overdue by %.1f h — catch-up run in 240 s", vc_elapsed / 3600)
+        else:
+            vc_next_run = vc_reference_dt + datetime.timedelta(days=1)
+            log.info("VBN catalogue sync: %.1f h since last run — next run at %s",
+                     vc_elapsed / 3600, vc_next_run.isoformat())
+
+    _scheduler.add_job(_daily_vbn_catalog_sync, "interval", days=1,
+                       id=_VBN_CATALOG_JOB_ID, next_run_time=vc_next_run)
 
     # Restore auto VBN scheduler state from DB
     if get_setting("vbn_auto_enabled") == "1":
@@ -1564,19 +1622,125 @@ async def photo_upload(xlsx: UploadFile = File(...), _: dict = Depends(require_p
     return {"success": True, "message": "Photo upload completed."}
 
 
+def _catalog_row_to_result(r: dict) -> dict:
+    """Shape a mirrored row like the Floricode search result the UI expects.
+
+    `name` stays the Dutch official name: the verifier, the AI prompts and the
+    checker's own display all treat it as "what Floricode calls this code", and
+    switching it here would change what those compare against. The English name
+    rides alongside as `name_en` — it is what the *search* now matches on.
+    """
+    return {
+        "id": str(r.get("id")),
+        "name": r.get("name_nl") or r.get("name_en") or "",
+        "name_en": r.get("name_en") or "",
+        "short_name": r.get("short_name") or "",
+        "product_group_id": r.get("product_group_id"),
+        "product_group": r.get("group_en") or r.get("group_nl") or "",
+        "expired": bool(r.get("expiry_date")),
+        "score": float(r["score"]) if r.get("score") is not None else None,
+    }
+
+
 @app.get("/vbn-search")
-def vbn_search_endpoint(q: str, limit: int = 8, _: dict = Depends(require_permission("vbn:check")), cfg: Config = Depends(get_cfg)):
-    """Search VBN codes by name words. q='dianthus solex' finds VBNs containing both words."""
+def vbn_search_endpoint(
+    q: str,
+    limit: int = 8,
+    include_expired: bool = False,
+    all_applications: bool = False,
+    _: dict = Depends(require_permission("vbn:check")),
+    cfg: Config = Depends(get_cfg),
+):
+    """Search VBN codes by name. q='dianthus solex' finds codes matching both.
+
+    Answered from the local Floricode mirror, which ranks the whole catalogue
+    by similarity and matches English names directly. Falls back to the live
+    Floricode search only while the mirror is still empty (first deploy, or a
+    sync that has never succeeded) — so this endpoint keeps working before the
+    first sync lands, just with the old Dutch-only, unranked behaviour.
+    """
+    rows = search_vbn_catalog(
+        q, limit=limit,
+        application_id=None if all_applications else 1,
+        include_expired=include_expired,
+    )
+    if rows:
+        return {"results": [_catalog_row_to_result(r) for r in rows], "source": "mirror"}
+
+    if vbn_catalog_has_rows():
+        # Mirror is populated and simply has no match — a live call would not
+        # find one either, and pretending otherwise would hide a real "this
+        # name matches nothing" answer behind a slow network round-trip.
+        return {"results": [], "source": "mirror"}
+
     results = search_vbn_by_name(q, cfg.floricode_username, cfg.floricode_password, limit=limit)
-    return {"results": results}
+    return {"results": results, "source": "floricode"}
+
+
+@app.get("/vbn-catalog/status")
+def vbn_catalog_status(_: dict = Depends(require_permission("vbn:check"))):
+    """Row counts, freshness and the last sync run of the Floricode mirror."""
+    return get_vbn_catalog_status()
+
+
+@app.get("/vbn-catalog/history")
+def vbn_catalog_history(limit: int = 20, _: dict = Depends(require_permission("vbn:check"))):
+    return {"history": get_vbn_catalog_history(limit)}
+
+
+@app.post("/vbn-catalog/sync")
+def vbn_catalog_sync(
+    mode: str = "delta",
+    _: dict = Depends(require_permission("admin:manage")),
+    cfg: Config = Depends(get_cfg),
+):
+    """Kick off a catalogue refresh in the background.
+
+    mode='delta' reads only what Floricode changed since the last run;
+    mode='full' re-reads everything (~12 s). A delta against empty tables
+    promotes itself to a full read, so 'delta' is always safe to call.
+    """
+    if mode not in ("delta", "full"):
+        raise HTTPException(status_code=400, detail="mode must be 'delta' or 'full'")
+
+    def _run():
+        try:
+            run_vbn_catalog_sync(cfg, mode=mode)
+        except Exception:
+            log.exception("Manual VBN catalogue sync failed")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"ok": True, "started": True, "mode": mode}
 
 
 @app.get("/vbn-name/{code}")
 def get_vbn_name(code: str, _: dict = Depends(require_any_permission("vbn:check", "products:create")), cfg: Config = Depends(get_cfg)):
-    """Return the official Floricode name for a single VBN code."""
-    # Check hardcoded table first (instant, no API call)
+    """Return the official Floricode name for a single VBN code.
+
+    The mirror answers first. It is a verbatim copy of what Floricode serves,
+    so it is the authority here — ahead of KNOWN_VBN, which is a hand-kept
+    stopgap from before the mirror existed and spells some codes in English
+    ("Ranunculus other") where Floricode says Dutch ("Ranunculus overig").
+    KNOWN_VBN stays on as the offline fallback for the window before the
+    first sync lands.
+    """
+    row = get_vbn_catalog_product(code)
+    if row and (row.get("name_nl") or row.get("name_en")):
+        return {
+            "code": code,
+            "name": row.get("name_nl") or row.get("name_en"),
+            "name_en": row.get("name_en") or "",
+            "short_name": row.get("short_name") or "",
+            "product_group_id": row.get("product_group_id"),
+            "product_group": row.get("group_en") or row.get("group_nl") or "",
+            "expired": bool(row.get("expiry_date")),
+            "found": True,
+            "source": "mirror",
+        }
+    # Hand-kept table (instant, no API call) — only reached while the mirror
+    # has no answer for this code.
     if code in KNOWN_VBN:
-        return {"code": code, "name": KNOWN_VBN[code], "found": True}
+        return {"code": code, "name": KNOWN_VBN[code], "found": True, "source": "known"}
     # Query Floricode
     result = lookup_vbn_codes(
         [code],

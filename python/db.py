@@ -4235,3 +4235,437 @@ def record_kenya_box_weight(entry: dict) -> None:
                 (entry.get("detail") or "")[:2000],
             ))
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# VBN catalogue mirror (Floricode)
+# ---------------------------------------------------------------------------
+# Why mirror it: every VBN lookup used to be a live Floricode call on the
+# request path, against Dutch names only, with no ranking and a hard $top
+# cut-off. That made matching depend both on Floricode being up and on Claude
+# first translating the FreshPortal (English) name into Dutch — the single
+# biggest source of wrong codes. The catalogue is small (~26k cut-flower
+# products, measured at 3.2 MB of heap plus ~4.4 MB of trigram indexes),
+# changes a few thousand rows a year, and carries the English name and the
+# product group that the live path never even asked for. Mirroring turns the
+# lookup into one indexed SQL query and leaves Floricode to a daily job.
+
+_vbn_catalog_ensured = False
+_vbn_trgm: bool | None = None   # None = not probed yet
+
+
+def _probe_trgm(cur) -> bool:
+    """True when pg_trgm is usable, creating the extension if this role may.
+
+    Neon grants extension creation to the owner role, but a restricted role
+    would fail here. A missing extension has to degrade the search to ILIKE
+    rather than break it, so this failure is swallowed deliberately.
+    """
+    try:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    except Exception as exc:
+        logger.warning("pg_trgm unavailable (%s) - VBN search falls back to ILIKE", exc)
+        return False
+    return True
+
+
+def ensure_vbn_catalog_tables() -> None:
+    """Idempotent DDL, cached per process like ensure_bi_tables() - the GIN
+    builds below are the expensive part and must not re-run on every query."""
+    global _vbn_catalog_ensured, _vbn_trgm
+    if _vbn_catalog_ensured:
+        return
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS vbn_product_groups (
+                    id          INTEGER PRIMARY KEY,
+                    description TEXT,
+                    name_en     TEXT,
+                    expiry_date DATE,
+                    synced_at   TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS vbn_products (
+                    id               INTEGER PRIMARY KEY,
+                    application_id   INTEGER,
+                    product_group_id INTEGER,
+                    name_nl          TEXT,
+                    name_en          TEXT,
+                    short_name       TEXT,
+                    expiry_date      DATE,
+                    change_date_time TIMESTAMPTZ,
+                    synced_at        TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS vbn_products_group_idx  ON vbn_products(product_group_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS vbn_products_app_idx    ON vbn_products(application_id)")
+            # Delta syncs read MAX(change_date_time) off this index as cursor.
+            cur.execute("CREATE INDEX IF NOT EXISTS vbn_products_change_idx ON vbn_products(change_date_time DESC)")
+
+            _vbn_trgm = _probe_trgm(cur)
+            if _vbn_trgm:
+                cur.execute("CREATE INDEX IF NOT EXISTS vbn_products_en_trgm ON vbn_products USING gin (name_en gin_trgm_ops)")
+                cur.execute("CREATE INDEX IF NOT EXISTS vbn_products_nl_trgm ON vbn_products USING gin (name_nl gin_trgm_ops)")
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS vbn_catalog_sync_log (
+                    id            SERIAL PRIMARY KEY,
+                    started_at    TIMESTAMPTZ DEFAULT NOW(),
+                    finished_at   TIMESTAMPTZ,
+                    mode          TEXT,
+                    cursor_from   TEXT,
+                    products_seen INT DEFAULT 0,
+                    groups_seen   INT DEFAULT 0,
+                    names_seen    INT DEFAULT 0,
+                    status        TEXT DEFAULT 'running',
+                    error         TEXT,
+                    messages      JSONB DEFAULT '[]'::jsonb
+                )
+            """)
+        conn.commit()
+    _vbn_catalog_ensured = True
+
+
+def vbn_trgm_enabled() -> bool:
+    ensure_vbn_catalog_tables()
+    return bool(_vbn_trgm)
+
+
+def upsert_vbn_product_groups(rows: list[dict]) -> int:
+    """Upsert VBN/ProductGroup rows, already merged with their English name."""
+    if not rows:
+        return 0
+    ensure_vbn_catalog_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(rows), _BATCH_SIZE):
+                values = [
+                    (
+                        _int(r.get("id")), r.get("description") or "",
+                        r.get("name_en") or "", r.get("expiry_date") or None,
+                    )
+                    for r in rows[i:i + _BATCH_SIZE] if _int(r.get("id")) is not None
+                ]
+                if not values:
+                    continue
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO vbn_product_groups (id, description, name_en, expiry_date)
+                    VALUES %s
+                    ON CONFLICT (id) DO UPDATE SET
+                        description = EXCLUDED.description,
+                        name_en     = COALESCE(NULLIF(EXCLUDED.name_en, ''), vbn_product_groups.name_en),
+                        expiry_date = EXCLUDED.expiry_date,
+                        synced_at   = NOW()
+                """, values)
+                conn.commit()
+    return len(rows)
+
+
+def upsert_vbn_products(rows: list[dict]) -> int:
+    """Upsert VBN/Product rows, already merged with their English name.
+
+    name_en keeps its stored value when the incoming row has none: a product
+    delta carries no translation, and blanking the English name would silently
+    knock that code out of the English-first search until the next full sync.
+    """
+    if not rows:
+        return 0
+    ensure_vbn_catalog_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(rows), _BATCH_SIZE):
+                values = [
+                    (
+                        _int(r.get("id")), _int(r.get("application_id")),
+                        _int(r.get("product_group_id")),
+                        r.get("name_nl") or r.get("name") or "",
+                        r.get("name_en") or "",
+                        r.get("short_name") or "",
+                        r.get("expiry_date") or None,
+                        r.get("change_date_time") or None,
+                    )
+                    for r in rows[i:i + _BATCH_SIZE] if _int(r.get("id")) is not None
+                ]
+                if not values:
+                    continue
+                psycopg2.extras.execute_values(cur, """
+                    INSERT INTO vbn_products (
+                        id, application_id, product_group_id, name_nl, name_en,
+                        short_name, expiry_date, change_date_time
+                    ) VALUES %s
+                    ON CONFLICT (id) DO UPDATE SET
+                        application_id   = EXCLUDED.application_id,
+                        product_group_id = EXCLUDED.product_group_id,
+                        name_nl          = EXCLUDED.name_nl,
+                        name_en          = COALESCE(NULLIF(EXCLUDED.name_en, ''), vbn_products.name_en),
+                        short_name       = EXCLUDED.short_name,
+                        expiry_date      = EXCLUDED.expiry_date,
+                        change_date_time = EXCLUDED.change_date_time,
+                        synced_at        = NOW()
+                """, values)
+                conn.commit()
+    return len(rows)
+
+
+def update_vbn_product_names_en(pairs: list[tuple[int, str]]) -> int:
+    """Apply English-name changes to products already mirrored.
+
+    VBN/Name has its own change_date_time, independent of VBN/Product, so a
+    retranslated name never appears in the product delta and needs its own
+    pass. Codes we do not mirror (other applications) drop out on the join.
+    """
+    if not pairs:
+        return 0
+    ensure_vbn_catalog_tables()
+    updated = 0
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for i in range(0, len(pairs), _BATCH_SIZE):
+                batch = [(_int(c), n) for c, n in pairs[i:i + _BATCH_SIZE] if _int(c) is not None and n]
+                if not batch:
+                    continue
+                psycopg2.extras.execute_values(cur, """
+                    UPDATE vbn_products p SET name_en = v.name_en, synced_at = NOW()
+                    FROM (VALUES %s) AS v(id, name_en)
+                    WHERE p.id = v.id AND p.name_en IS DISTINCT FROM v.name_en
+                """, batch)
+                if cur.rowcount and cur.rowcount > 0:
+                    updated += cur.rowcount
+                conn.commit()
+    return updated
+
+
+def vbn_catalog_cursor() -> str:
+    """Newest change_date_time mirrored, as the OData literal a delta resumes
+    from. Empty when the mirror is empty, which means 'do a full sync'.
+
+    Read from the data rather than kept in settings on purpose: a sync that
+    dies halfway must resume from what actually landed, not from a cursor
+    that was already moved forward.
+    """
+    try:
+        ensure_vbn_catalog_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(change_date_time) FROM vbn_products")
+                row = cur.fetchone()
+                if not row or not row[0]:
+                    return ""
+                return row[0].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception as exc:
+        logger.warning("vbn_catalog_cursor failed: %s", exc)
+        return ""
+
+
+# Shared projection so every VBN search stage returns identically shaped rows.
+_VBN_SELECT = """
+    SELECT p.id, p.name_en, p.name_nl, p.short_name, p.application_id,
+           p.product_group_id, p.expiry_date,
+           g.description AS group_nl, g.name_en AS group_en, {score} AS score
+    FROM vbn_products p
+    LEFT JOIN vbn_product_groups g ON g.id = p.product_group_id
+"""
+
+
+def _vbn_where_active(include_expired: bool) -> str:
+    if include_expired:
+        return ""
+    return " AND (p.expiry_date IS NULL OR p.expiry_date > CURRENT_DATE)"
+
+
+def search_vbn_catalog(
+    query: str,
+    limit: int = 8,
+    application_id: int | None = 1,
+    include_expired: bool = False,
+) -> list[dict]:
+    """Rank the mirrored catalogue for *query*, English name first.
+
+    Three stages, narrowest first, mirroring search_products_db():
+      1. every word present in the English or the Dutch name (what the old
+         Floricode $filter did, but over the whole table and ranked),
+      2. the first two words only, for over-specified names,
+      3. trigram similarity, which is the one that survives a typo.
+
+    application_id defaults to 1 (Snijbloemen / cut flowers); pass None to
+    search every application.
+    """
+    try:
+        ensure_vbn_catalog_tables()
+        words = [w.strip() for w in query.strip().split() if len(w.strip()) >= 2]
+        if not words:
+            return []
+
+        trgm = bool(_vbn_trgm)
+        score = "GREATEST(similarity(p.name_en, %s), similarity(p.name_nl, %s))" if trgm else "0.3"
+        base = _VBN_SELECT.format(score=score)
+        active = _vbn_where_active(include_expired)
+        app_sql = " AND p.application_id = %s" if application_id is not None else ""
+        # Shortest name first among equals: with no species word typed, the
+        # generic "<genus> other" code is the correct one, and it is always
+        # the shortest of its genus.
+        order = " ORDER BY score DESC, LENGTH(p.name_en) ASC, p.id ASC LIMIT %s"
+
+        def run(cur, ws: list[str]) -> list[dict]:
+            conds = " AND ".join("(p.name_en ILIKE %s OR p.name_nl ILIKE %s)" for _ in ws)
+            params: list = []
+            if trgm:
+                params += [query, query]
+            params += [p for w in ws for p in (f"%{w}%", f"%{w}%")]
+            if application_id is not None:
+                params.append(application_id)
+            params.append(limit)
+            cur.execute(f"{base} WHERE {conds}{app_sql}{active}{order}", params)
+            return [dict(r) for r in cur.fetchall()]
+
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                rows = run(cur, words)
+                if rows:
+                    return rows
+
+                if len(words) > 2:
+                    rows = run(cur, words[:2])
+                    if rows:
+                        return rows
+
+                if not trgm:
+                    return []
+
+                # Typo-tolerant last resort. The % operator is what the GIN
+                # indexes answer; its threshold is lowered for this statement
+                # only, since VBN names are short and a two-word query rarely
+                # clears the 0.3 default against a four-word name.
+                cur.execute("SET LOCAL pg_trgm.similarity_threshold = 0.2")
+                params = [query, query, query, query]
+                if application_id is not None:
+                    params.append(application_id)
+                params.append(limit)
+                cur.execute(
+                    f"{base} WHERE (p.name_en %% %s OR p.name_nl %% %s)"
+                    f"{app_sql}{active}{order}",
+                    params,
+                )
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("search_vbn_catalog('%s') failed: %s", query, exc)
+        return []
+
+
+def get_vbn_catalog_product(code: str) -> dict | None:
+    """One mirrored VBN code with its group, or None when not mirrored."""
+    try:
+        ensure_vbn_catalog_tables()
+        cid = _int(code)
+        if cid is None:
+            return None
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(_VBN_SELECT.format(score="1.0") + " WHERE p.id = %s", (cid,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception as exc:
+        logger.warning("get_vbn_catalog_product(%s) failed: %s", code, exc)
+        return None
+
+
+def vbn_catalog_has_rows() -> bool:
+    """Cheap "is the mirror populated at all" probe.
+
+    Separate from get_vbn_catalog_status() on purpose: the search path asks
+    this on every miss, and the status aggregates scan the table.
+    """
+    try:
+        ensure_vbn_catalog_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT EXISTS (SELECT 1 FROM vbn_products)")
+                return bool(cur.fetchone()[0])
+    except Exception as exc:
+        logger.warning("vbn_catalog_has_rows failed: %s", exc)
+        return False
+
+
+def get_vbn_catalog_status() -> dict:
+    """Row counts, freshness and the last sync run - for the admin screen."""
+    try:
+        ensure_vbn_catalog_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT COUNT(*) AS products,
+                           COUNT(*) FILTER (WHERE expiry_date IS NULL OR expiry_date > CURRENT_DATE) AS active,
+                           COUNT(*) FILTER (WHERE application_id = 1) AS cut_flowers,
+                           COUNT(*) FILTER (WHERE name_en IS NULL OR name_en = '') AS missing_en,
+                           MAX(synced_at) AS last_synced,
+                           MAX(change_date_time) AS newest_change
+                    FROM vbn_products
+                """)
+                stats = dict(cur.fetchone() or {})
+                cur.execute("SELECT COUNT(*) AS groups FROM vbn_product_groups")
+                stats.update(dict(cur.fetchone() or {}))
+                cur.execute("""
+                    SELECT id, started_at, finished_at, mode, cursor_from,
+                           products_seen, groups_seen, names_seen, status, error
+                    FROM vbn_catalog_sync_log ORDER BY id DESC LIMIT 1
+                """)
+                last = cur.fetchone()
+                stats["last_run"] = dict(last) if last else None
+                stats["trgm"] = bool(_vbn_trgm)
+                return stats
+    except Exception as exc:
+        logger.warning("get_vbn_catalog_status failed: %s", exc)
+        return {"error": str(exc)}
+
+
+def log_vbn_catalog_start(mode: str, cursor_from: str = "") -> int:
+    ensure_vbn_catalog_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO vbn_catalog_sync_log (mode, cursor_from) VALUES (%s, %s) RETURNING id",
+                (mode, cursor_from),
+            )
+            return cur.fetchone()[0]
+
+
+def log_vbn_catalog_finish(
+    run_id: int,
+    products: int,
+    groups: int,
+    names: int,
+    error: str = "",
+    messages: list[str] | None = None,
+) -> None:
+    ensure_vbn_catalog_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE vbn_catalog_sync_log
+                   SET finished_at = NOW(), products_seen = %s, groups_seen = %s,
+                       names_seen = %s, status = %s, error = %s, messages = %s
+                 WHERE id = %s
+            """, (
+                products, groups, names,
+                "error" if error else "ok", error or None,
+                json.dumps(messages or []), run_id,
+            ))
+        conn.commit()
+
+
+def get_vbn_catalog_history(limit: int = 20) -> list[dict]:
+    try:
+        ensure_vbn_catalog_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, started_at, finished_at, mode, cursor_from,
+                           products_seen, groups_seen, names_seen, status, error, messages
+                    FROM vbn_catalog_sync_log ORDER BY id DESC LIMIT %s
+                """, (limit,))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("get_vbn_catalog_history failed: %s", exc)
+        return []

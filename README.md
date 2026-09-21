@@ -147,10 +147,11 @@ src/
     i18n.ts                       — tłumaczenia EN / NL / PL / ES
 
 python/
-  api_server.py                   — FastAPI: endpointy + SSE + APScheduler (hourly Ecuador sync, daily BI sync, daily/toggleable Auto VBN)
+  api_server.py                   — FastAPI: endpointy + SSE + APScheduler (hourly Ecuador sync, daily BI sync, daily VBN catalogue sync, daily/toggleable Auto VBN)
   auth_middleware.py              — weryfikacja JWT, require_permission / require_any_permission, CORS
   scraper_fp.py                   — Playwright: FreshPortal login, pobieranie, inline edit VBN
   scraper_vbn.py                  — Floricode API: weryfikacja VBN, wyszukiwanie, kolory
+  vbn_catalog.py                  — mirror katalogu VBN (Floricode) do Postgresa: pełny zaciąg + dzienna delta
   scraper_catalogue.py            — Playwright: lista dostawców FreshPortal (do pickera w imporcie dostaw)
   scraper_fust.py                 — Playwright: tabela opakowań (fust) FreshPortal
   verifier.py                     — reguły weryfikacji VBN + AI z cancel_event
@@ -215,6 +216,7 @@ Ustaw `NEXT_PUBLIC_RAILWAY_API_URL=http://localhost:8000` w `.env.local`.
 | `FLORICODE_USERNAME` | tak | Client ID Floricode (OAuth2) |
 | `FLORICODE_PASSWORD` | tak | Client Secret Floricode |
 | `ANTHROPIC_API_KEY` | tak | Claude AI — sugestie VBN, wykrywanie duplikatów |
+| `VBN_CATALOG_APPLICATIONS` | nie | Które grupy asortymentu VBN mirrorować, po przecinku. Domyślnie `1` (Snijbloemen / cut flowers); `2` = kamerplanten, `3` = tuinplanten |
 
 ### Vercel (frontend)
 
@@ -252,7 +254,9 @@ Pełna, żywa lista jest w `python/api_server.py` (`@app.get/post/put/delete`) �
 | `/vbn-check/stream` | POST | `vbn:check` | SSE: sprawdzenie VBN (`{ vbn, lang, cancel_token }`) |
 | `/vbn-fix/stream` | POST | `vbn:fix` | SSE: naprawa VBN (`{ fixes: [{product_id, new_vbn}], lang }`) |
 | `/vbn-name/{code}` | GET | `vbn:check` | Oficjalna nazwa kodu VBN |
-| `/vbn-search` | GET | `vbn:check` | Wyszukiwanie kodów VBN (`?q=rosa tros&limit=15`) |
+| `/vbn-search` | GET | `vbn:check` | Wyszukiwanie kodów VBN (`?q=rosa tros&limit=15`) — z lokalnego mirrora, ranking po podobieństwie, dopasowanie po nazwie EN |
+| `/vbn-catalog/status` `/history` | GET | `vbn:check` | Stan mirrora katalogu VBN: liczby wierszy, świeżość, historia synchronizacji |
+| `/vbn-catalog/sync` | POST | `admin:manage` | Ręczne odświeżenie katalogu (`?mode=delta` lub `full`) |
 | `/vbn-auto/status` `/toggle` `/history` `/run-now` | GET/POST | `vbn:check` / `admin:manage` | Auto VBN check — status, włącz/wyłącz, historia, ręczne odpalenie |
 | `/product-search/stream` | POST | `products:create` | SSE: wyszukiwanie podobnych produktów |
 | `/product-number-suggest` | GET | `products:create` | Wolny numer produktu |
