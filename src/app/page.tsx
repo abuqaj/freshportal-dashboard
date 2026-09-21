@@ -61,32 +61,62 @@ const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
 ];
 
 /* ─── 3-D tilt hook ─── */
+/** A frame of the gesture writes the transform and nothing else. The tilt used
+ *  to re-declare the transition on every mouse move, which dirties the
+ *  element's style each frame, and it left the card unpromoted, so the browser
+ *  redrew the whole tile — artwork included — instead of re-composing a layer
+ *  it already had. That is invisible on a gradient tile and very visible on a
+ *  system tile carrying a full-bleed flag. The promotion is taken on the way in
+ *  and handed back once the card has settled, so a hover that is over does not
+ *  keep a layer per tile. */
 function useTilt(strength = 10) {
   const ref = useRef<HTMLDivElement>(null);
   const raf = useRef<number | null>(null);
+  const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onMouseEnter = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (settle.current) { clearTimeout(settle.current); settle.current = null; }
+    el.style.willChange = "transform";
+    el.style.transition = "transform 0.08s ease";
+  }, []);
 
   const onMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = ref.current;
     if (!el) return;
+    const { clientX, clientY } = e;
     if (raf.current) cancelAnimationFrame(raf.current);
     raf.current = requestAnimationFrame(() => {
+      raf.current = null;
       const rect = el.getBoundingClientRect();
-      const x = ((e.clientX - rect.left) / rect.width  - 0.5) * strength;
-      const y = ((e.clientY - rect.top)  / rect.height - 0.5) * strength;
+      const x = ((clientX - rect.left) / rect.width  - 0.5) * strength;
+      const y = ((clientY - rect.top)  / rect.height - 0.5) * strength;
       el.style.transform = `perspective(900px) rotateY(${x}deg) rotateX(${-y}deg) scale(1.035)`;
-      el.style.transition = "transform 0.08s ease";
     });
   }, [strength]);
 
   const onMouseLeave = useCallback(() => {
-    if (raf.current) cancelAnimationFrame(raf.current);
+    if (raf.current) { cancelAnimationFrame(raf.current); raf.current = null; }
     const el = ref.current;
     if (!el) return;
     el.style.transition = "transform 0.5s cubic-bezier(0.34,1.3,0.64,1)";
     el.style.transform = "";
+    settle.current = setTimeout(() => {
+      el.style.willChange = "";
+      settle.current = null;
+    }, 520);
   }, []);
 
-  return { ref, onMouseMove, onMouseLeave };
+  useEffect(() => {
+    const pending = raf, settling = settle;
+    return () => {
+      if (pending.current) cancelAnimationFrame(pending.current);
+      if (settling.current) clearTimeout(settling.current);
+    };
+  }, []);
+
+  return { ref, onMouseEnter, onMouseMove, onMouseLeave };
 }
 
 /* ─── Decorative SVG bg inside hub tiles ─── */
@@ -140,6 +170,7 @@ function Tile({
   return (
     <div
       ref={tilt.ref}
+      onMouseEnter={tilt.onMouseEnter}
       onMouseMove={tilt.onMouseMove}
       onMouseLeave={tilt.onMouseLeave}
       onClick={onClick}
@@ -378,23 +409,29 @@ function SystemCard({
   return (
     <div
       ref={tilt.ref}
+      onMouseEnter={tilt.onMouseEnter}
       onMouseMove={tilt.onMouseMove}
       onMouseLeave={tilt.onMouseLeave}
       onClick={onClick}
       style={{ animationDelay: `${index * 70}ms` }}
-      className={`tile-enter relative overflow-hidden rounded-3xl cursor-pointer group min-h-[200px]
+      className={`tile-enter-flat relative overflow-hidden rounded-3xl cursor-pointer group min-h-[200px]
         ${isLogo ? "bg-surface border border-border" : system.fallbackGradient}
         ${isActive ? `ring-4 ring-offset-4 ring-offset-ground ${isLogo ? "ring-emerald" : "ring-white/70"}` : ""}`}
     >
       {/* Brand colour, kept clear of the logo */}
       {isLogo && <span className={`absolute inset-x-0 top-0 h-1.5 ${system.accent} z-10`} />}
 
-      {/* Flags fill the tile; a logo is shown whole, above the caption */}
+      {/* Flags fill the tile; a logo is shown whole, above the caption.
+          will-change keeps the artwork on a layer of its own: everything else
+          here — the hover darkening, the arrow bubble — animates a colour on
+          hover, and without the split every one of those frames redrew the
+          flag underneath it. Ecuador alone is over a thousand paths. */}
       <img
         src={system.svgPath}
         alt=""
         aria-hidden="true"
-        className={`absolute inset-0 w-full h-full select-none pointer-events-none ${
+        decoding="async"
+        className={`absolute inset-0 w-full h-full select-none pointer-events-none will-change-transform ${
           isLogo ? "object-contain px-8 pt-10 pb-24" : "object-cover"
         }`}
         draggable={false}
