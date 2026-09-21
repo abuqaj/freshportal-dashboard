@@ -2895,7 +2895,11 @@ def delivery_api_open_invoices(
     try:
         invoices = dfg_get_open_invoices(cfg, customer_id)
     except Exception as exc:
-        log.exception("[delivery/api/open-invoices] failed")
+        # 502, not 500: the failure is upstream. FreshPortal returns 500 on
+        # this endpoint for customers with a lot of open invoices (reproduced
+        # in their own Swagger, 2026-09-21), so the customer id goes in the
+        # log — it is the one thing that tells the two cases apart.
+        log.exception("[delivery/api/open-invoices] failed for customer_id=%s", customer_id)
         raise HTTPException(502, f"DFG API error: {exc}")
     return {"invoices": invoices}
 
