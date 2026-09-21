@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import calendar
 import logging
+import time
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -69,10 +70,29 @@ class BatchResult:
 
 _token: str | None = None
 
+# One pooled client for every DFG call. httpx.request()/httpx.post() build and
+# throw away a client per call, which means a fresh TCP connect and TLS
+# handshake every time — paid on each of the three calls a single import makes,
+# and again on every invoice-picker lookup. Keeping the connection alive across
+# calls removes that handshake from all but the first. Safe to share: an
+# httpx.Client is thread-safe, and FastAPI runs these sync endpoints in a
+# threadpool.
+_client: httpx.Client | None = None
+
+
+def _get_client() -> httpx.Client:
+    global _client
+    if _client is None:
+        _client = httpx.Client(
+            timeout=30,
+            limits=httpx.Limits(max_keepalive_connections=8, keepalive_expiry=120),
+        )
+    return _client
+
 
 def _authenticate(cfg: Config) -> str:
     """Exchange the DFG API key for a bearer token via POST /v1/auth."""
-    resp = httpx.post(
+    resp = _get_client().post(
         f"{cfg.dfg_api_base_url}/v1/auth",
         json={"username": cfg.dfg_api_key, "type": "api"},
         timeout=30,
@@ -92,13 +112,22 @@ def _get_token(cfg: Config, force_refresh: bool = False) -> str:
 
 
 def _request(cfg: Config, method: str, path: str, **kwargs: Any) -> httpx.Response:
-    """Send an authenticated request, retrying once with a fresh token on 401."""
+    """Send an authenticated request, retrying once with a fresh token on 401.
+
+    Logs how long DFG took and how much it sent back, so a slow screen can be
+    pinned on this call rather than guessed at.
+    """
     url = f"{cfg.dfg_api_base_url}{path}"
     headers = {"Authorization": f"Bearer {_get_token(cfg)}", "Content-Type": "application/json"}
-    resp = httpx.request(method, url, headers=headers, timeout=30, **kwargs)
+    client = _get_client()
+    started = time.monotonic()
+    resp = client.request(method, url, headers=headers, **kwargs)
     if resp.status_code == 401:
         headers["Authorization"] = f"Bearer {_get_token(cfg, force_refresh=True)}"
-        resp = httpx.request(method, url, headers=headers, timeout=30, **kwargs)
+        resp = client.request(method, url, headers=headers, **kwargs)
+    log.info("[dfg] %s %s -> %s in %.0f ms, %.1f kB",
+             method, path, resp.status_code,
+             (time.monotonic() - started) * 1000, len(resp.content) / 1024)
     return resp
 
 
