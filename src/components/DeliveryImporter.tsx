@@ -211,6 +211,11 @@ interface DfgOpenInvoice {
 // chosen (2026-09-18).
 const NEW_INVOICE_ID = "new";
 
+// How long a customer has to stay highlighted in the picker before its
+// invoices are fetched. Long enough that scrolling the list does not fire a
+// request per row, short enough that a deliberate hover beats the click.
+const INVOICE_PRELOAD_DWELL_MS = 180;
+
 const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   variety_length:       { label: "exact",        cls: "bg-emerald/15 text-emerald border-emerald/20" },
   variety_nolen:        { label: "exact~len",    cls: "bg-emerald/10 text-emerald border-emerald/15" },
@@ -274,10 +279,13 @@ const DROPDOWN_MARGIN = 8;
 // room actually available. Opening downwards regardless ran the options off
 // the bottom of the screen, where the page scroll could not reach them
 // (found 2026-09-18 on the invoice picker, which sits lowest in the card).
-function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel, className, disabled }: {
+function SearchableSelect({ options, value, onChange, onPreload, placeholder, noMatchLabel, className, disabled }: {
   options: ComboOption[];
   value: string;
   onChange: (id: string) => void;
+  // Called with an option the pointer or the keyboard has landed on but not
+  // chosen, so a caller with slow work behind an option can start it early.
+  onPreload?: (id: string) => void;
   placeholder: string;
   noMatchLabel: string;
   className?: string;
@@ -375,8 +383,18 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
         onChange={e => { setQuery(e.target.value); setHighlighted(0); if (!open) setOpen(true); }}
         onFocus={() => { if (disabled) return; setOpen(true); setQuery(""); setHighlighted(0); }}
         onKeyDown={e => {
-          if (e.key === "ArrowDown") { e.preventDefault(); setHighlighted(h => Math.min(h + 1, filtered.length - 1)); }
-          else if (e.key === "ArrowUp") { e.preventDefault(); setHighlighted(h => Math.max(h - 1, 0)); }
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            const next = Math.min(highlighted + 1, filtered.length - 1);
+            setHighlighted(next);
+            if (filtered[next]) onPreload?.(filtered[next].id);
+          }
+          else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            const next = Math.max(highlighted - 1, 0);
+            setHighlighted(next);
+            if (filtered[next]) onPreload?.(filtered[next].id);
+          }
           else if (e.key === "Enter") { e.preventDefault(); if (filtered[highlighted]) selectOption(filtered[highlighted]); }
           else if (e.key === "Escape") { setOpen(false); }
         }}
@@ -403,6 +421,7 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchLabel,
               ref={i === highlighted ? highlightedRef : undefined}
               type="button"
               onMouseDown={e => e.preventDefault()}
+              onMouseEnter={() => onPreload?.(o.id)}
               onClick={() => selectOption(o)}
               className={`w-full text-left px-3 py-2 text-sm transition-colors
                 ${o.id === value ? "bg-emerald/10 text-emerald font-medium" : "text-ink"}
@@ -458,23 +477,73 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [invoiceId, setInvoiceId] = useState(NEW_INVOICE_ID);
   const [openInvoices, setOpenInvoices] = useState<DfgOpenInvoice[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
-  // Open invoices belong to one customer, so the list is refetched — and any
+  // The lookup is slow at the FreshPortal end: it builds every invoice's stock
+  // items and order lines before we keep four fields per invoice and drop the
+  // rest. Nothing here can make that call quicker, so it is started earlier
+  // (while the customer is still only highlighted) and its answer is kept, so
+  // the wait overlaps the reading and the clicking instead of following it.
+  const invoiceCacheRef = useRef<Map<string, DfgOpenInvoice[]>>(new Map());
+  const invoiceInflightRef = useRef<Map<string, Promise<DfgOpenInvoice[]>>>(new Map());
+  const preloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // One request per customer at a time, and one answer kept per customer. A
+  // failure is deliberately not cached, so picking the customer again retries.
+  const loadOpenInvoices = useCallback((cid: string): Promise<DfgOpenInvoice[]> => {
+    const cached = invoiceCacheRef.current.get(cid);
+    if (cached) return Promise.resolve(cached);
+    const inflight = invoiceInflightRef.current.get(cid);
+    if (inflight) return inflight;
+    const req = fetch(`${RAILWAY}/delivery/api/open-invoices?customer_id=${encodeURIComponent(cid)}`)
+      .then(r => r.ok ? r.json() : { invoices: [] })
+      .then(d => {
+        const rows: DfgOpenInvoice[] = d.invoices ?? [];
+        invoiceCacheRef.current.set(cid, rows);
+        return rows;
+      })
+      .catch(() => [] as DfgOpenInvoice[])
+      .finally(() => { invoiceInflightRef.current.delete(cid); });
+    invoiceInflightRef.current.set(cid, req);
+    return req;
+  }, []);
+
+  // Called while a customer is only highlighted, not chosen yet.
+  const preloadOpenInvoices = useCallback((cid: string) => {
+    if (!cid || cid === STOCK_CUSTOMER_ID) return;
+    if (invoiceCacheRef.current.has(cid) || invoiceInflightRef.current.has(cid)) return;
+    if (preloadTimerRef.current) clearTimeout(preloadTimerRef.current);
+    preloadTimerRef.current = setTimeout(() => { void loadOpenInvoices(cid); }, INVOICE_PRELOAD_DWELL_MS);
+  }, [loadOpenInvoices]);
+
+  useEffect(() => () => { if (preloadTimerRef.current) clearTimeout(preloadTimerRef.current); }, []);
+
+  // Open invoices belong to one customer, so the list is replaced — and any
   // earlier pick dropped back to "new invoice" — whenever the customer
   // changes. Carrying a stale invoice_id over would allocate the shipment to
   // a different customer's invoice, which the API has no reason to reject.
   useEffect(() => {
     setInvoiceId(NEW_INVOICE_ID);
-    setOpenInvoices([]);
-    if (!customerId || customerId === STOCK_CUSTOMER_ID) return;
+    if (!customerId || customerId === STOCK_CUSTOMER_ID) {
+      setOpenInvoices([]);
+      return;
+    }
+    // Already fetched while it was being browsed: no loading state at all, so
+    // the picker is usable the moment the customer is chosen.
+    const cached = invoiceCacheRef.current.get(customerId);
+    if (cached) {
+      setOpenInvoices(cached);
+      setInvoicesLoading(false);
+      return;
+    }
     let cancelled = false;
+    setOpenInvoices([]);
     setInvoicesLoading(true);
-    fetch(`${RAILWAY}/delivery/api/open-invoices?customer_id=${encodeURIComponent(customerId)}`)
-      .then(r => r.ok ? r.json() : { invoices: [] })
-      .then(d => { if (!cancelled) setOpenInvoices(d.invoices ?? []); })
-      .catch(() => { if (!cancelled) setOpenInvoices([]); })
-      .finally(() => { if (!cancelled) setInvoicesLoading(false); });
+    loadOpenInvoices(customerId).then(rows => {
+      if (cancelled) return;
+      setOpenInvoices(rows);
+      setInvoicesLoading(false);
+    });
     return () => { cancelled = true; };
-  }, [customerId]);
+  }, [customerId, loadOpenInvoices]);
 
   // Values only, separated by dashes — sequence, reference, invoice date is
   // how the shipment step names an open invoice.
@@ -1141,6 +1210,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setImportResult(null);
     setExistingBatch(null);
     setCustomerId("");
+    // An import can create an invoice, so what was cached before it no longer
+    // describes the customer.
+    invoiceCacheRef.current.clear();
     setOrderDateOverride("");
     setShipmentEditOpen(false);
     setApprovedKeys(new Set());
@@ -1596,6 +1668,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               options={customerOptions}
               value={customerId}
               onChange={setCustomerId}
+              onPreload={preloadOpenInvoices}
               placeholder={td.customerIdPlaceholder}
               noMatchLabel={td.noCustomersFound}
               className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
