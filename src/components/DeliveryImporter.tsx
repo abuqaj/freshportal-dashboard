@@ -188,10 +188,10 @@ interface DfgCustomer {
   used_in_delivery_import: boolean;
 }
 
-// Pseudo-customer, always pinned first in the picker — selecting it omits
-// customer_id entirely from the create-shipment payload, so the shipment
-// lands in FreshPortal unallocated for manual stock placement afterwards
-// (2026-09-01, reverses the earlier "customer_id always required" rule).
+// Pseudo-customer, always pinned first in the picker — selecting it sends no
+// customer_id at all, so the shipment's stock goes straight to stock in
+// FreshPortal with no invoice allocation, for manual placement afterwards
+// (2026-09-18: the DFG API finally honours a customer-less batch).
 const STOCK_CUSTOMER_ID = "stock";
 
 const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
@@ -369,18 +369,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       .then(d => setDfgCustomers(d.customers ?? []))
       .catch(() => {});
   }, []);
-  // "Stock" (no customer) option removed 2026-09-02 — confirmed via the DFG
-  // API's own schema + a live 422 that batch creation always creates an
-  // invoice (invoice_id is mandatory in the response), and invoicing
-  // requires a customer. Not a payload bug on our side — needs the DFG API
-  // itself reworked with FreshPortal before this can exist. Left
-  // STOCK_CUSTOMER_ID and the customer_id:null branch in place below so
-  // it's a one-line re-add once that's resolved.
+  // "Stock" is back, pinned first. It was taken out on 2026-09-02 because
+  // batch creation always created an invoice and invoicing needs a customer —
+  // a live 422, not a payload bug on our side. The 2026-09-18 DFG API change
+  // makes a customer-less batch a supported case, so the option now does what
+  // it always said it did.
   const customerOptions: ComboOption[] = useMemo(() => [
+    { id: STOCK_CUSTOMER_ID, name: td.stockOptionLabel },
     ...dfgCustomers
       .filter(c => c.used_in_delivery_import)
       .map(c => ({ id: c.customer_id, name: c.nm_customer })),
-  ], [dfgCustomers]);
+  ], [dfgCustomers, td]);
   const [orderDateOverride, setOrderDateOverride] = useState("");
   const [shipmentEditOpen, setShipmentEditOpen] = useState(false);
   // Set when /delivery/api/check finds the shipment already exists — blocks
