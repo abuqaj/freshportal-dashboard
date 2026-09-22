@@ -37,9 +37,9 @@ from parser_delivery_pdf import (
     date_us,
     first_line,
     kv,
+    last_word,
     nospace,
     rx,
-    short_code,
 )
 
 # ---------------------------------------------------------------------------
@@ -48,9 +48,10 @@ from parser_delivery_pdf import (
 # 11-column grid, one block per set of identical boxes:
 #   Order Type | Boxes | Box Type | Species | Varieties | CM | Bunch Box |
 #   Total Stems | Unit Price | Total Price | Box Label
-# The header is a label/value box on the right, which the page text scrambles
-# into a run of labels followed by a run of values — hence kv() for the dates
-# and waybills, which only the table pairs back up correctly.
+# The header box on the right is drawn without ruling lines, so it is not a
+# table pdfplumber can return — but each label lands on the same text line as
+# its value ("Invoice Date 2026-09-01"), so regexes read it. The invoice title
+# runs into the invoice number with no space between them.
 
 QUALISA = LayoutSpec(
     name="qualisa",
@@ -66,20 +67,22 @@ QUALISA = LayoutSpec(
     # match what the JSON carries: "PIERROT 90CM 10ST QUCT".
     nm_product="{variety} {length}CM {stems_bunch}ST {qual}",
     header={
-        "tx_company": first_line(),
-        "id_invoice": any_of(rx(r"Customer\s+Invoice\s*#?\s*:?\s*(\d+)"),
-                             kv("customer invoice")),
-        "dt_invoice": kv("invoice date", date_iso),
-        "dt_fly": kv("delivery date", date_iso),
-        # Printed under "Ship to (Destinatario):", a label the page text
-        # separates from its value.
-        "nm_ship": short_code(),
-        # Values in the bill-to block are printed in the order of their
-        # labels, so the carrier is the line directly above the airline.
-        "nm_cargo": rx(r"Airline\s*:[^\n]*\n(?:[^\n]*\n)*?([^\n]+)\n[^\n]+\n\s*Invoice\s+Date"),
-        # Both waybills wrap mid-code in a narrow column.
-        "tx_awb": kv("awb", nospace),
-        "tx_hawb": kv("hawb", nospace),
+        # The title runs straight into the invoice label on the first line:
+        # "QUALITY SERVICE QUALISA S.A.SCustomer Invoice#: 21022".
+        "tx_company": any_of(rx(r"^\s*(.+?)\s*Customer\s+Invoice\s*#"), first_line()),
+        "id_invoice": rx(r"Customer\s+Invoice\s*#?\s*:?\s*(\d+)"),
+        "dt_invoice": rx(r"Invoice\s+Date\s+(\d{4}-\d{2}-\d{2})", date_iso),
+        "dt_fly": rx(r"Delivery\s+Date\s+(\d{4}-\d{2}-\d{2})", date_iso),
+        # Bill-to and ship-to are printed side by side, so the line under the
+        # two labels carries both: "FRESH FROM SOURCE BV 1OZH".
+        "nm_ship": rx(r"Ship\s+to\s*\(Destinatario\)[^\n]*\n([^\n]+)", last_word),
+        # The carrier is printed on its own line directly above "Airline:".
+        "nm_cargo": rx(r"\n([^\n]+)\n\s*Airline\s*:"),
+        # \bAWB does not match inside HAWB. The house air waybill wraps
+        # mid-code in a narrow column ("LA160900067" + "8" on the next line),
+        # so the spaces the wrap leaves behind are stripped out.
+        "tx_awb": rx(r"\bAWB\s+([\d][\d\s]*)", nospace),
+        "tx_hawb": rx(r"\bHAWB\s+([A-Z0-9]+(?:\s*\n\s*\d+)?)", nospace),
     },
     # "20 Total 320 3,200 0.2500 800.00" — boxes, bunches, stems, rate, amount.
     totals_re=r"(\d+)\s+Total\s+([\d,]+)\s+([\d,]+)\s+[\d.]+\s+([\d,.]+)",
@@ -98,8 +101,10 @@ QUALISA = LayoutSpec(
 # 13-column grid, one row per product, already aggregated across its boxes:
 #   # | BOX | PRODUCT | SPECIES | QTY BUNCH | RATE PER BUNCH | QTY STEMS |
 #   RATE PER Stem | SUB-TOTAL | LABEL | VOLUME WEIGHT | REAL WEIGHT | BOX NAME
-# The header prints each label beside its value on the same text line, so
-# plain regexes read it.
+# The address boxes above the grid share its borders, so pdfplumber returns
+# the lot as one table whose first rows are the bill-to block; the engine
+# finds the product header further down. The invoice's own label/value box is
+# a separate ruled table, which is where the dates and numbers are read from.
 
 ALISSROSES = LayoutSpec(
     name="alissroses",
@@ -114,15 +119,24 @@ ALISSROSES = LayoutSpec(
     # is "QB" — the same code the JSON carries in tp_box.
     box_re=r"^([A-Za-z]+)",
     header={
-        # The trading name is printed directly under the invoice title.
-        "tx_company": any_of(rx(r"CUSTOMER\s+INVOICE\s+\d+\s*\n\s*([^\n]+)"),
+        # The trading name sits on the line above the tax id — anchoring on
+        # "RUC:" rather than on a corporate suffix, so a rename still reads.
+        "tx_company": any_of(rx(r"([^\n]+)\n\s*RUC\s*:"),
                              rx(r"^([^\n]*S\.?A\.?S\.?)\s*$",
                                 flags=re.IGNORECASE | re.MULTILINE)),
-        "id_invoice": rx(r"Invoice\s+Numbers?\s+(\d+)"),
-        "id_purchaseorder": rx(r"Internal\s+PO\s+ID:?\s+(\d+)"),
-        "dt_invoice": rx(r"Invoice\s+Date\s+(\d{2}/\d{2}/\d{4})", date_us),
-        "dt_fly": rx(r"Fly\s+Date\s+(\d{2}/\d{2}/\d{4})", date_us),
-        "nm_ship": rx(r"SHIP\s+CUSTOMER\s*\n\s*([^\n]+)"),
+        # This invoice prints a real label/value box, so those fields are read
+        # from the table, which cannot be thrown off by the surrounding text
+        # reflowing. The regexes stay as a fallback.
+        "id_invoice": any_of(kv("invoice numbers"), rx(r"Invoice\s+Numbers?\s+(\d+)")),
+        "id_purchaseorder": any_of(kv("internal po id"),
+                                   rx(r"Internal\s+PO\s+ID:?\s+(\d+)")),
+        "dt_invoice": any_of(kv("invoice date", date_us),
+                             rx(r"Invoice\s+Date\s+(\d{2}/\d{2}/\d{4})", date_us)),
+        "dt_fly": any_of(kv("fly date", date_us),
+                         rx(r"Fly\s+Date\s+(\d{2}/\d{2}/\d{4})", date_us)),
+        # Bill-to and ship-to are printed side by side, so the line under the
+        # two labels carries both: "FRESH FROM SOURCE B.V. 1OZH".
+        "nm_ship": rx(r"SHIP\s+CUSTOMER\s*\n\s*([^\n]+)", last_word),
         "nm_cargo": rx(r"Cargo\s+Agency\s+([A-Z0-9 .\-]+?)(?:\s*Truck|\n|$)"),
         "tx_awb": rx(r"\bMAWB\b\s+([0-9][0-9\- ]{6,}?)(?:\s+HAWB|\n|$)"),
         "tx_hawb": rx(r"\bHAWB\b\s+(\S+)"),

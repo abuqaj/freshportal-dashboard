@@ -161,6 +161,17 @@ def date_us(v: str) -> str:
     return _normalise_date(v)
 
 
+def last_word(v: str) -> str:
+    """The last token of a line.
+
+    Invoices print the bill-to and ship-to blocks side by side, so a line of
+    the page text holds one field from each: "FRESH FROM SOURCE BV 1OZH".
+    The consignee code is the tail.
+    """
+    parts = v.split()
+    return parts[-1] if parts else ""
+
+
 def rx(pattern: str, transform: Callable[[str], str] | None = None,
        flags: int = re.IGNORECASE) -> Reader:
     """Read a header field with a regex over the page text (group 1)."""
@@ -206,34 +217,10 @@ def any_of(*readers: Reader) -> Reader:
     return read
 
 
-def short_code() -> Reader:
-    """The invoice's only standalone short code mixing letters and digits.
-
-    Consignee codes like "1OZH" are printed under a label that the page text
-    separates from its value, but nothing else in the header has this shape —
-    address lines contain spaces, and RUC/AWB/DAE numbers are pure digits.
-    """
-    def read(doc: PdfDoc, _kv: dict[str, str]) -> str:
-        for line in _header_text(doc).split("\n"):
-            token = line.strip()
-            if (3 <= len(token) <= 8 and token.isalnum() and token.isupper()
-                    and any(c.isdigit() for c in token)
-                    and any(c.isalpha() for c in token)):
-                return token
-        return ""
-    return read
-
-
 def const(value: str) -> Reader:
     def read(_doc: PdfDoc, _kv: dict[str, str]) -> str:
         return value
     return read
-
-
-def _header_text(doc: PdfDoc) -> str:
-    """Everything printed before the product grid starts."""
-    return re.split(r"Order\s+Type|#\s+BOX\s+PRODUCT", doc.text, maxsplit=1,
-                    flags=re.IGNORECASE)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -256,27 +243,38 @@ def _unwrap(value: str) -> str:
     return _WRAP_TAIL_RE.sub("", value or "")
 
 
+def _is_grid_header(row: list[str], wanted: list[str]) -> bool:
+    return all(any(w in c.lower() for c in row) for w in wanted)
+
+
 def _grid_rows(doc: PdfDoc, header_cells: tuple[str, ...]) -> list[list[str]]:
     """Every data row of the product grid, in printed order, across pages.
 
-    The grid is found by its header row, which invoices reprint on each page;
-    a table with no header but the same column count is treated as a
-    continuation of the grid.
+    The grid is found by its header row, searched for anywhere in a table
+    rather than only at the top. Where an invoice's address boxes share their
+    borders with the grid below them, pdfplumber sees the lot as one table
+    whose first row is the bill-to block, and the product header sits some
+    rows down (found 2026-09-22 on a real Alissroses invoice, which was
+    refused as having no product table at all).
+
+    A table with no header but the same column count is a continuation of the
+    grid — invoices reprint the header on each page, but not always.
     """
     wanted = [h.lower() for h in header_cells]
     width = 0
     rows: list[list[str]] = []
 
-    def _is_header(row: list[str]) -> bool:
-        cells = [c.lower() for c in row]
-        return all(any(w in c for c in cells) for w in wanted)
-
     for table in doc.tables:
-        if _is_header(table[0]):
-            width = width or len(table[0])
-            rows.extend(r for r in table[1:] if not _is_header(r))
+        header_at = next((i for i, r in enumerate(table)
+                          if _is_grid_header(r, wanted)), None)
+        if header_at is not None:
+            width = width or len(table[header_at])
+            body = table[header_at + 1:]
         elif width and len(table[0]) == width:
-            rows.extend(r for r in table if not _is_header(r))
+            body = table
+        else:
+            continue
+        rows.extend(r for r in body if not _is_grid_header(r, wanted))
 
     return rows
 
@@ -615,6 +613,16 @@ def _check_totals(printed: dict, order: DeliveryOrder, layout: str) -> None:
 # Parsing one document against one spec
 # ---------------------------------------------------------------------------
 
+def _table_shapes(doc: PdfDoc) -> str:
+    """"3 tables (7x2, 6x13, 4x4)" — enough detail in a failure message for
+    someone to tell a missing table from a mis-mapped one."""
+    if not doc.tables:
+        return "no tables at all, so its rows are not ruled"
+    shapes = ", ".join(f"{len(t)}x{len(t[0])}" for t in doc.tables[:8])
+    more = "" if len(doc.tables) <= 8 else f", +{len(doc.tables) - 8} more"
+    return f"{len(doc.tables)} table(s) ({shapes}{more})"
+
+
 def _warehouse(doc: PdfDoc, spec: LayoutSpec) -> str:
     """The nm_location the JSON carries per product, when the invoice prints a
     warehouse summary naming exactly one warehouse. With several there is no
@@ -637,12 +645,19 @@ def parse_with_spec(doc: PdfDoc, spec: LayoutSpec) -> DeliveryOrder:
     if not rows:
         raise PdfParseError(
             f"{spec.name} layout: the product table was not found in this PDF. "
-            f"If the invoice has no ruled table, its layout needs its own reader."
+            f"Expected a table with {', '.join(spec.grid_header)} in its header; "
+            f"the PDF has {_table_shapes(doc)}. Run "
+            f"`python -m pdf_layouts <file.pdf>` to see what it actually contains."
         )
 
     blocks, extra = _read_blocks(rows, spec)
     if not blocks:
-        raise PdfParseError(f"{spec.name} layout: no product rows found in the product table")
+        raise PdfParseError(
+            f"{spec.name} layout: the product table was found ({len(rows)} rows) but no "
+            f"row in it parsed as a product. The column map or product_re in this "
+            f"layout's spec no longer matches what the invoice prints — run "
+            f"`python -m pdf_layouts <file.pdf>` to compare."
+        )
 
     nm_location = _warehouse(doc, spec)
     lines, nu_boxes = _build_lines(
