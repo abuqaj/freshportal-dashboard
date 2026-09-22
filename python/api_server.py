@@ -1060,9 +1060,39 @@ def kenya_box_weight_set_customer(
     return {"ok": True}
 
 
+class KenyaRunRequest(BaseModel):
+    """Which enabled customers this one run should cover.
+
+    Omitted or empty means all of them, so a caller that knows nothing about
+    the selection keeps working."""
+    customer_ids: list[str] | None = None
+
+
+def _kenya_run_scope(req: KenyaRunRequest | None) -> set[str]:
+    """The customers one run may touch.
+
+    The admin's enabled list is the ceiling; the operator's tick boxes can
+    only narrow it. A run asking for a customer the admin has not enabled is
+    refused rather than silently dropped — an operator who thinks they are
+    checking that customer would otherwise read an empty result as "nothing
+    to fix" instead of "not allowed here"."""
+    enabled = [c["customer_id"] for c in get_kenya_box_weight_customers() if c["enabled"]]
+    if not enabled:
+        raise HTTPException(400, "No customers enabled for the Kenya box-weight module")
+    wanted = [str(c).strip() for c in (req.customer_ids if req else None) or []]
+    wanted = [c for c in wanted if c]
+    if not wanted:
+        return set(enabled)
+    unknown = sorted(set(wanted) - set(enabled))
+    if unknown:
+        raise HTTPException(400, f"Not enabled for the Kenya box-weight module: {', '.join(unknown)}")
+    return set(wanted)
+
+
 @app.post("/kenya/box-weight/run/stream")
 async def kenya_box_weight_run_stream(
     limit: int | None = None,
+    req: KenyaRunRequest | None = None,
     _: dict = Depends(require_any_permission("admin:manage", "boxweight:run")),
 ):
     """Same run, streamed — per-invoice progress as it happens.
@@ -1070,9 +1100,7 @@ async def kenya_box_weight_run_stream(
     The blocking variant returns only once every invoice is done, which is
     no use to a progress display: the denominator has to arrive before the
     work starts, not with the result."""
-    enabled = [c["customer_id"] for c in get_kenya_box_weight_customers() if c["enabled"]]
-    if not enabled:
-        raise HTTPException(400, "No customers enabled for the Kenya box-weight module")
+    scope = _kenya_run_scope(req)
 
     cfg = get_kenya_cfg()
     queue: Queue = Queue()
@@ -1080,7 +1108,7 @@ async def kenya_box_weight_run_stream(
     def run() -> None:
         try:
             result = kenya_run_correction(
-                cfg, set(enabled), limit=limit,
+                cfg, scope, limit=limit,
                 on_status=lambda msg: queue.put({"type": "status", "message": msg}),
                 on_progress=lambda fields: queue.put({"type": "progress", **fields}),
             )
@@ -1135,6 +1163,7 @@ def kenya_box_weight_log(
 @app.post("/kenya/box-weight/run")
 def kenya_box_weight_run(
     limit: int | None = None,
+    req: KenyaRunRequest | None = None,
     _: dict = Depends(require_any_permission("admin:manage", "boxweight:run")),
 ):
     """Correct every qualifying open invoice. WRITES to live invoices.
@@ -1142,11 +1171,9 @@ def kenya_box_weight_run(
     Blocking: the caller gets the per-invoice outcome back rather than
     having to poll, since a run covers a handful of invoices rather than a
     full export ingest. `limit` caps how many are touched in one go."""
-    enabled = [c["customer_id"] for c in get_kenya_box_weight_customers() if c["enabled"]]
-    if not enabled:
-        raise HTTPException(400, "No customers enabled for the Kenya box-weight module")
+    scope = _kenya_run_scope(req)
     try:
-        return kenya_run_correction(get_kenya_cfg(), set(enabled), limit=limit)
+        return kenya_run_correction(get_kenya_cfg(), scope, limit=limit)
     except Exception as exc:
         log.exception("Kenya box-weight run failed")
         raise HTTPException(502, f"Kenya box-weight run failed: {exc}")
