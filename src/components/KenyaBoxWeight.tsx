@@ -191,11 +191,32 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
   const [log, setLog] = useState<LogRow[] | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  // null means "all of them". Kept as an absence rather than a filled-in set
+  // so reloading the customer list needs no reconciliation: the scope is
+  // derived from `customers` on every render, and a customer the admin has
+  // since removed drops out of it on its own.
+  const [selected, setSelected] = useState<Set<string> | null>(null);
   const [pressed, setPressed] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0, lines: 0 });
   // Kept separate from `processed`: the circuit should finish the moment
   // the run ends, not when the results table happens to render.
   const [finished, setFinished] = useState(false);
+
+  const enabledCount = customers?.length ?? 0;
+  // The admin's list filtered by this run's ticks. Order follows the list on
+  // screen, so what is sent matches what the operator read top to bottom.
+  const selectedIds = (customers ?? [])
+    .map(c => c.customer_id)
+    .filter(id => selected === null || selected.has(id));
+  const allSelected = enabledCount > 0 && selectedIds.length === enabledCount;
+
+  function toggleCustomer(id: string, on: boolean) {
+    setSelected(prev => {
+      const next = new Set(prev ?? (customers ?? []).map(c => c.customer_id));
+      if (on) next.add(id); else next.delete(id);
+      return next;
+    });
+  }
 
   function logCall(entry: CallEntry) {
     setCalls(c => [entry, ...c].slice(0, 50));
@@ -246,8 +267,11 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
     setBusy("");
   }
 
-  // Which customers are in scope is an admin setting, not a per-run choice,
-  // so it is only read here — the list is edited in Admin > Customers > Kenya.
+  // Which customers this module MAY touch is an admin setting, only read
+  // here — the list is edited in Admin > Customers > Kenya. Which of them a
+  // single run actually walks is the operator's, through the tick boxes
+  // beside the button: checking one customer should not cost the minute it
+  // takes to walk the others first.
   useEffect(() => { loadCustomers(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
   async function runDebugPull() {
@@ -276,7 +300,14 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
     const started = performance.now();
     const at = new Date().toLocaleTimeString();
     try {
-      const res = await fetch(`${RAILWAY}${path}`, { method: "POST" });
+      const res = await fetch(`${RAILWAY}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Always sent, even when it is every enabled customer: the server
+        // then never has to guess whether an absent list meant "all" or a
+        // selection that failed to reach it.
+        body: JSON.stringify({ customer_ids: selectedIds }),
+      });
       if (!res.ok || !res.body) {
         const text = await res.text();
         let parsed: unknown = null;
@@ -344,7 +375,6 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
     if (data) setLog(data.log);
   }
 
-  const enabledCount = customers?.length ?? 0;
   const running = busy === t.busyRunning;
   // The hand stays down for the whole run, not just the press, so the figure
   // reads as "holding it down while it works" rather than twitching once.
@@ -364,21 +394,51 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
             whose invoices are about to change. One per line: joined into a
             sentence, a name that wraps reads as two customers. */}
         <div className="md:w-72 shrink-0 flex flex-col items-center md:items-start gap-3">
-          <span className="text-[10px] text-ink-3 uppercase tracking-widest">{t.forCustomers}</span>
+          <div className="flex items-baseline gap-3 flex-wrap justify-center md:justify-start">
+            <span className="text-[10px] text-ink-3 uppercase tracking-widest">{t.forCustomers}</span>
+            {enabledCount > 0 && (
+              <button type="button" disabled={!!busy}
+                onClick={() => setSelected(allSelected ? new Set<string>() : null)}
+                className="text-[10px] uppercase tracking-widest text-emerald hover:underline disabled:opacity-40 disabled:no-underline">
+                {allSelected ? t.selectNone : t.selectAll}
+              </button>
+            )}
+          </div>
           {enabledCount === 0 ? (
             <span className="text-xs text-ink-3">{t.customersNone}</span>
           ) : (
             <ul className="flex flex-col items-center md:items-start gap-1.5">
-              {(customers ?? []).map(c => (
-                <li key={c.customer_id} className="text-sm font-semibold leading-relaxed text-center md:text-left">
-                  {/* box-decoration-clone so a name that wraps gets the
-                      highlight on each line, not one box around both. */}
-                  <span className="bg-[#B91C1C] text-white px-2 py-0.5 rounded box-decoration-clone">
-                    {c.label || c.customer_id}
-                  </span>
-                </li>
-              ))}
+              {(customers ?? []).map(c => {
+                const on = selected === null || selected.has(c.customer_id);
+                return (
+                  <li key={c.customer_id} className="text-sm font-semibold leading-relaxed text-left">
+                    {/* The whole row is the hit area — these names are short
+                        and a bare 16px box is a poor target. */}
+                    <label className={`flex items-start gap-2 ${busy ? "cursor-default" : "cursor-pointer"}`}>
+                      <input type="checkbox" checked={on} disabled={!!busy}
+                        onChange={e => toggleCustomer(c.customer_id, e.target.checked)}
+                        className="accent-emerald w-4 h-4 mt-1 shrink-0 cursor-pointer disabled:cursor-default" />
+                      {/* box-decoration-clone so a name that wraps gets the
+                          highlight on each line, not one box around both.
+                          Unticked keeps the name legible but drops the red:
+                          the highlight means "this one is going to be
+                          touched", so it cannot stay on a skipped customer. */}
+                      <span className={`px-2 py-0.5 rounded box-decoration-clone transition-colors ${
+                        on ? "bg-[#B91C1C] text-white" : "bg-ground text-ink-3"}`}>
+                        {c.label || c.customer_id}
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
             </ul>
+          )}
+          {enabledCount > 0 && (
+            <span className={`text-[11px] ${selectedIds.length === 0 ? "text-amber-600" : "text-ink-3"}`}>
+              {selectedIds.length === 0
+                ? t.selectEmpty
+                : t.selectedCount(String(selectedIds.length), String(enabledCount))}
+            </span>
           )}
         </div>
         {/* items-center, not items-end: the hand sits at roughly the middle
@@ -400,7 +460,7 @@ export default function KenyaBoxWeight({ lang }: { lang: Lang }) {
             onPointerDown={() => setPressed(true)}
             onPointerUp={() => setPressed(false)}
             onPointerLeave={() => setPressed(false)}
-            disabled={!!busy || enabledCount === 0}
+            disabled={!!busy || selectedIds.length === 0}
             className={`w-full h-full rounded-full px-8 flex flex-col items-center justify-center gap-2 select-none
                         text-white bg-gradient-to-b from-[#E8483A] to-[#A31710]
                         shadow-[inset_0_3px_0_0_#ffffff59,inset_0_-2px_0_0_#00000040,0_10px_0_0_#7A0F0A,0_18px_26px_-8px_#000000a6]
