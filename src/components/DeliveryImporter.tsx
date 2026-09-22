@@ -639,6 +639,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [duplicateWarning, setDuplicateWarning] = useState<string[]>([]);
   const [multiFileError, setMultiFileError] = useState(false);
   const [fileLoaded, setFileLoaded] = useState(false);
+  // A PDF is sent to the server as-is: only the parser knows how to read a
+  // supplier's printed layout, so there is nothing useful to show in the
+  // textarea and nothing the browser can check before parsing.
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
 
   // Keyed by variety name only (length excluded) — a confirmed product match is a
   // variety-identity decision, so it applies to every line sharing the name in this
@@ -712,11 +716,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   useEffect(() => {
     if (!autoParseRef.current) return;
-    if (!jsonText.trim() || stage !== "idle") return;
+    if ((!jsonText.trim() && !pdfFile) || stage !== "idle") return;
     autoParseRef.current = false;
     handleParseClick();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jsonText]);
+  }, [jsonText, pdfFile]);
 
   // Live product search for the manual match-correction modal — the products
   // table is ~44k rows, too large to preload client-side like the old
@@ -784,8 +788,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── File drop / select ──────────────────────────────────────────────────
 
   function handleFile(file: File) {
+    if (/\.pdf$/i.test(file.name)) {
+      setJsonText("");
+      setPdfFile(file);
+      setFileLoaded(true);
+      autoParseRef.current = true;
+      return;
+    }
     const reader = new FileReader();
     reader.onload = e => {
+      setPdfFile(null);
       setJsonText((e.target?.result as string) || "");
       setFileLoaded(true);
       autoParseRef.current = true;
@@ -799,7 +811,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (files.length > 1) { setMultiFileError(true); return; }
     setMultiFileError(false);
     const f = files[0];
-    if (f && /\.(json|txt)$/i.test(f.name)) handleFile(f);
+    if (f && /\.(json|txt|pdf)$/i.test(f.name)) handleFile(f);
   }
 
   // ── Clear match cache ──────────────────────────────────────────────────
@@ -830,19 +842,30 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     try {
       const body = JSON.parse(text);
       const rawInvoices: { id_invoice?: string }[] = body.invoices ?? (Array.isArray(body) ? body : [body]);
-      const ids = rawInvoices.map(i => i.id_invoice).filter(Boolean) as string[];
-      if (!ids.length) return [];
+      return await knownInvoices(rawInvoices.map(i => i.id_invoice).filter(Boolean) as string[]);
+    } catch { return []; }
+  }
+
+  /** Invoice numbers in `ids` that a previous import already logged. */
+  async function knownInvoices(ids: string[]): Promise<string[]> {
+    if (!ids.length) return [];
+    try {
       const res = await fetch(`${RAILWAY}/delivery/import-log?limit=500`);
       if (!res.ok) return [];
       const data = await res.json();
-      const entries: { id_invoice?: string }[] = data.history ?? data.logs ?? (Array.isArray(data) ? data : []);
+      const entries: { id_invoice?: string }[] =
+        data.history ?? data.logs ?? (Array.isArray(data) ? data : []);
       const existing = new Set<string>(entries.map(l => l.id_invoice).filter(Boolean) as string[]);
       return ids.filter(id => existing.has(id));
     } catch { return []; }
   }
 
   async function handleParseClick() {
-    if (!jsonText.trim()) return;
+    if (!jsonText.trim() && !pdfFile) return;
+    // Only the server can read an invoice number out of a PDF, so a PDF is
+    // parsed first and checked for a duplicate against the result. A JSON is
+    // still checked up front, where the answer costs nothing.
+    if (pdfFile) { await handleParse(); return; }
     const dupes = await checkDuplicate(jsonText);
     if (dupes.length > 0) {
       setDuplicateWarning(dupes);
@@ -854,21 +877,31 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Parse & match ──────────────────────────────────────────────────────
 
   async function handleParse(supplierIdOverride?: string, keepStage = false) {
-    if (!jsonText.trim()) return;
+    if (!jsonText.trim() && !pdfFile) return;
     setStage("parsing");
     setDuplicateWarning([]);
     setError("");
     try {
-      const body = JSON.parse(jsonText);
-      const res = await fetch(`${RAILWAY}/delivery/parse`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          raw_json: body,
-          with_matching: true,
-          ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
-        }),
-      });
+      let res: Response;
+      if (pdfFile) {
+        // Sent as multipart: the file goes up untouched, since reading a
+        // supplier's printed layout only happens server-side.
+        const form = new FormData();
+        form.append("pdf", pdfFile);
+        form.append("with_matching", "true");
+        if (supplierIdOverride) form.append("supplier_id", supplierIdOverride);
+        res = await fetch(`${RAILWAY}/delivery/parse-pdf`, { method: "POST", body: form });
+      } else {
+        res = await fetch(`${RAILWAY}/delivery/parse`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            raw_json: JSON.parse(jsonText),
+            with_matching: true,
+            ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
+          }),
+        });
+      }
       if (!res.ok) throw new Error(await res.text());
       const data: ParseResult = await res.json();
       setParseResult(data);
@@ -892,6 +925,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         }
       }
       setApprovedKeys(preApproved);
+      if (pdfFile) {
+        // The invoice number was only readable once the server had parsed the
+        // PDF, so the duplicate warning arrives with the result rather than
+        // before it.
+        const dupes = await knownInvoices(
+          data.orders.map(o => o.id_invoice).filter(Boolean) as string[],
+        );
+        if (dupes.length > 0) setDuplicateWarning(dupes);
+      }
       if (!keepStage) setStage("shipment");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1224,6 +1266,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   function reset() {
     setStage("idle");
     setJsonText("");
+    setPdfFile(null);
+    setFileLoaded(false);
+    setDuplicateWarning([]);
     setParseResult(null);
     logsRef.current = [];
     setLogs([]);
@@ -1459,6 +1504,40 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         </div>
       )}
 
+      {/* Duplicate invoice — rendered at any stage, not just idle: a PDF's
+          invoice number is only known once the server has parsed it, so the
+          warning arrives after the result rather than before it. */}
+      {duplicateWarning.length > 0 && (
+        <>
+          <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setDuplicateWarning([])} />
+          <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-amber-500/40 bg-surface shadow-2xl p-6 flex flex-col gap-4">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xl">
+                ⚠
+              </div>
+              <div>
+                <p className="text-sm font-bold text-amber-700">{td.duplicateWarningTitle}</p>
+                <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.duplicateWarningMsg(duplicateWarning.join(", "))}</p>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => { setDuplicateWarning([]); if (pdfFile) reset(); }}
+                className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
+              >
+                {t.common.cancel}
+              </button>
+              <button
+                onClick={() => { setDuplicateWarning([]); if (!pdfFile) handleParse(); }}
+                className="h-9 px-5 rounded-xl text-sm font-semibold bg-amber-500 text-white hover:bg-amber-500/90 transition-colors"
+              >
+                {pdfFile ? t.common.continueBtn : td.parseBtn}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       {/* ── IDLE / INPUT ── */}
       {stage === "idle" && (
         <div key="idle" className="step-enter flex flex-col gap-4">
@@ -1470,38 +1549,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
           )}
 
-          {/* Duplicate warning — centered modal */}
-          {duplicateWarning.length > 0 && (
-            <>
-              <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setDuplicateWarning([])} />
-              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-amber-500/40 bg-surface shadow-2xl p-6 flex flex-col gap-4">
-                <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xl">
-                    ⚠
-                  </div>
-                  <div>
-                    <p className="text-sm font-bold text-amber-700">{td.duplicateWarningTitle}</p>
-                    <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.duplicateWarningMsg(duplicateWarning.join(", "))}</p>
-                  </div>
-                </div>
-                <div className="flex gap-2 justify-end">
-                  <button
-                    onClick={() => setDuplicateWarning([])}
-                    className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
-                  >
-                    {t.common.cancel}
-                  </button>
-                  <button
-                    onClick={() => { setDuplicateWarning([]); handleParse(); }}
-                    className="h-9 px-5 rounded-xl text-sm font-semibold bg-amber-500 text-white hover:bg-amber-500/90 transition-colors"
-                  >
-                    {td.parseBtn}
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-
           <div
             ref={refDropZone}
             className={`border-2 border-dashed rounded-2xl p-4 transition-colors
@@ -1509,20 +1556,28 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             onDragOver={e => e.preventDefault()}
             onDrop={onDrop}
           >
-            <textarea
-              className={`w-full h-40 bg-transparent text-sm font-mono outline-none resize-none placeholder:text-ink-3/40 transition-colors
-                ${fileLoaded ? "text-ink-3/60 cursor-not-allowed select-none" : "text-ink"}`}
-              placeholder={td.pastePlaceholder}
-              value={jsonText}
-              readOnly={fileLoaded}
-              onChange={e => { if (!fileLoaded) setJsonText(e.target.value); }}
-            />
+            {pdfFile ? (
+              <div className="w-full h-40 flex flex-col items-center justify-center gap-2 text-center">
+                <span className="text-3xl">📄</span>
+                <span className="text-sm font-medium text-ink">{pdfFile.name}</span>
+                <span className="text-xs text-ink-3 max-w-sm leading-relaxed">{td.pdfNote}</span>
+              </div>
+            ) : (
+              <textarea
+                className={`w-full h-40 bg-transparent text-sm font-mono outline-none resize-none placeholder:text-ink-3/40 transition-colors
+                  ${fileLoaded ? "text-ink-3/60 cursor-not-allowed select-none" : "text-ink"}`}
+                placeholder={td.pastePlaceholder}
+                value={jsonText}
+                readOnly={fileLoaded}
+                onChange={e => { if (!fileLoaded) setJsonText(e.target.value); }}
+              />
+            )}
             <div className="flex items-center justify-between mt-3">
               <span className="text-xs text-ink-3">{td.dropHint}</span>
               <div className="flex items-center gap-2">
-                {jsonText && (
+                {(jsonText || pdfFile) && (
                   <button
-                    onClick={() => { setJsonText(""); setDuplicateWarning([]); setMultiFileError(false); setFileLoaded(false); }}
+                    onClick={() => { setJsonText(""); setPdfFile(null); setDuplicateWarning([]); setMultiFileError(false); setFileLoaded(false); }}
                     className="h-7 px-3 rounded-lg text-xs font-medium text-red-500 border border-red-400/30 hover:bg-red-500/10 transition-colors"
                   >
                     {td.clearJson}
@@ -1537,14 +1592,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </div>
             </div>
           </div>
-          <input ref={fileInputRef} type="file" accept=".json,.txt" className="hidden"
+          <input ref={fileInputRef} type="file" accept=".json,.txt,.pdf" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
 
           <div className="flex items-center justify-end gap-3">
             <button
               ref={refParseBtn}
               onClick={handleParseClick}
-              disabled={!jsonText.trim() || duplicateWarning.length > 0}
+              disabled={(!jsonText.trim() && !pdfFile) || duplicateWarning.length > 0}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
             >
               {td.parseBtn}

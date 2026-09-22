@@ -18,7 +18,7 @@ from queue import Empty, Queue
 
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -78,6 +78,7 @@ from kenya_box_weight import (
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from kb_routes import router as kb_router
 from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
+from parser_delivery_pdf import parse_delivery_pdf, PdfParseError
 from delivery_product_match import match_order_to_products
 from dfg_api_client import (
     DfgApiError, resolve_supplier, get_batch as dfg_get_batch,
@@ -2613,6 +2614,94 @@ class DeliveryParseRequest(BaseModel):
 
 
 
+def _resolve_and_match(
+    orders: list[DeliveryOrder],
+    supplier_id_in: str,
+    with_matching: bool,
+) -> dict:
+    """Everything that happens to a parsed delivery regardless of the file it
+    came from: resolve the supplier, match every line against the products
+    master DB, resolve growers, and shape the response.
+
+    Shared by /delivery/parse (JSON) and /delivery/parse-pdf, so a PDF import
+    behaves identically to the JSON one — including reusing the supplier's
+    confirmed product matches, which are cached by variety name rather than by
+    the supplier's own product id, and so carry across both file types.
+    """
+    if not orders:
+        raise HTTPException(400, "No invoices found in the file")
+
+    log.info("[delivery/parse] parsed %d order(s)", len(orders))
+
+    # Resolve supplier_id from the parsed order's company name.
+    # This ensures we never rely on a hardcoded value from the UI.
+    fp_url = get_ecuador_cfg().freshportal_url
+    supplier_id = supplier_id_in
+    # supplier_confirmed=True when the supplier is already known:
+    #   • user sent explicit supplier_id in the request (already selected/confirmed)
+    #   • saved tx_company→fp_supplier_id mapping exists in DB (manually confirmed before)
+    #   • auto-resolved from fp_suppliers (name match already exists)
+    # False = nothing found → truly new supplier → show confirmation popup.
+    supplier_confirmed = bool(supplier_id_in)
+    if orders:
+        saved_map = get_supplier_name_map(fp_url, orders[0].tx_company)
+        if saved_map:
+            supplier_id = saved_map
+            supplier_confirmed = True
+            log.info("[delivery/parse] supplier_id=%s from saved map for tx_company=%r", supplier_id, orders[0].tx_company)
+        else:
+            resolved = find_supplier_fp_id(fp_url, orders[0].tx_company)
+            if resolved:
+                supplier_id = resolved
+                supplier_confirmed = True
+                log.info("[delivery/parse] auto-resolved supplier_id=%s from tx_company=%r", supplier_id, orders[0].tx_company)
+            elif not supplier_id:
+                log.warning("[delivery/parse] could not resolve supplier from tx_company=%r", orders[0].tx_company)
+
+    cached_matches: dict = {}
+    if with_matching and supplier_id:
+        cached_matches = get_delivery_matches(fp_url, supplier_id)
+        log.info("[delivery/parse] supplier=%s cached_matches=%d", supplier_id, len(cached_matches))
+
+    # Resolved once, ahead of the loop, so grower resolution can match
+    # against FreshPortal's own canonical supplier name instead of the
+    # raw tx_company text from the JSON — the same delivery's tx_company
+    # varies in formatting between documents (e.g. "Quality Service
+    # Qualisa S.A.S" vs FreshPortal's registered "Qualisa"), which
+    # find_supplier_fp_id() above already resolved through robust
+    # word-based matching; reusing that result avoids re-solving the
+    # same "which supplier is this really" problem a second time in
+    # _resolve_grower_id() with a weaker heuristic (found 2026-08-28).
+    supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
+
+    matched_count = 0
+    unmatched_count = 0
+
+    result_orders = []
+    for order in orders:
+        order.supplier_fp_id = supplier_id
+        if with_matching:
+            m, u = match_order_to_products(order, cached_matches)
+            matched_count += m
+            unmatched_count += u
+            for line in order.lines:
+                log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
+                          line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
+        resolve_growers(order, supplier_nm)
+        result_orders.append(order_to_dict(order))
+
+    log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
+    return {
+        "orders": result_orders,
+        "supplier_id": supplier_id,
+        "supplier_nm": supplier_nm,
+        "supplier_confirmed": supplier_confirmed,
+        "matched_count": matched_count,
+        "unmatched_count": unmatched_count,
+        "cached_matches_used": len(cached_matches),
+    }
+
+
 @app.post("/delivery/parse")
 def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
     """Parse delivery JSON, aggregate products, match against the products master DB
@@ -2644,82 +2733,68 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
             log.exception("[delivery/parse] parse_delivery_json failed")
             raise HTTPException(400, f"Invalid delivery JSON: {exc}")
 
-        if not orders:
-            raise HTTPException(400, "No invoices found in JSON")
-
-        log.info("[delivery/parse] parsed %d order(s)", len(orders))
-
-        # Resolve supplier_id from the parsed order's company name.
-        # This ensures we never rely on a hardcoded value from the UI.
-        fp_url = get_ecuador_cfg().freshportal_url
-        supplier_id = req.supplier_id
-        # supplier_confirmed=True when the supplier is already known:
-        #   • user sent explicit supplier_id in the request (already selected/confirmed)
-        #   • saved tx_company→fp_supplier_id mapping exists in DB (manually confirmed before)
-        #   • auto-resolved from fp_suppliers (name match already exists)
-        # False = nothing found → truly new supplier → show confirmation popup.
-        supplier_confirmed = bool(req.supplier_id)
-        if orders:
-            saved_map = get_supplier_name_map(fp_url, orders[0].tx_company)
-            if saved_map:
-                supplier_id = saved_map
-                supplier_confirmed = True
-                log.info("[delivery/parse] supplier_id=%s from saved map for tx_company=%r", supplier_id, orders[0].tx_company)
-            else:
-                resolved = find_supplier_fp_id(fp_url, orders[0].tx_company)
-                if resolved:
-                    supplier_id = resolved
-                    supplier_confirmed = True
-                    log.info("[delivery/parse] auto-resolved supplier_id=%s from tx_company=%r", supplier_id, orders[0].tx_company)
-                elif not supplier_id:
-                    log.warning("[delivery/parse] could not resolve supplier from tx_company=%r", orders[0].tx_company)
-
-        cached_matches: dict = {}
-        if req.with_matching and supplier_id:
-            cached_matches = get_delivery_matches(fp_url, supplier_id)
-            log.info("[delivery/parse] supplier=%s cached_matches=%d", supplier_id, len(cached_matches))
-
-        # Resolved once, ahead of the loop, so grower resolution can match
-        # against FreshPortal's own canonical supplier name instead of the
-        # raw tx_company text from the JSON — the same delivery's tx_company
-        # varies in formatting between documents (e.g. "Quality Service
-        # Qualisa S.A.S" vs FreshPortal's registered "Qualisa"), which
-        # find_supplier_fp_id() above already resolved through robust
-        # word-based matching; reusing that result avoids re-solving the
-        # same "which supplier is this really" problem a second time in
-        # _resolve_grower_id() with a weaker heuristic (found 2026-08-28).
-        supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
-
-        matched_count = 0
-        unmatched_count = 0
-
-        result_orders = []
-        for order in orders:
-            order.supplier_fp_id = supplier_id
-            if req.with_matching:
-                m, u = match_order_to_products(order, cached_matches)
-                matched_count += m
-                unmatched_count += u
-                for line in order.lines:
-                    log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
-                              line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
-            resolve_growers(order, supplier_nm)
-            result_orders.append(order_to_dict(order))
-
-        log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
-        return {
-            "orders": result_orders,
-            "supplier_id": supplier_id,
-            "supplier_nm": supplier_nm,
-            "supplier_confirmed": supplier_confirmed,
-            "matched_count": matched_count,
-            "unmatched_count": unmatched_count,
-            "cached_matches_used": len(cached_matches),
-        }
+        return _resolve_and_match(orders, req.supplier_id, req.with_matching)
     except HTTPException:
         raise
     except Exception as exc:
         log.exception("[delivery/parse] unexpected error")
+        raise HTTPException(500, f"Internal error: {exc}")
+
+
+# An invoice PDF is a few hundred KB; the largest sample so far is 8 pages at
+# under 200 KB. The cap is there so a wrong file cannot tie up the worker.
+MAX_DELIVERY_PDF_BYTES = 20 * 1024 * 1024
+
+
+@app.post("/delivery/parse-pdf")
+async def delivery_parse_pdf(
+    pdf: UploadFile = File(...),
+    supplier_id: str = Form(""),
+    with_matching: bool = Form(True),
+    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
+):
+    """Same as /delivery/parse, for suppliers who send a printed invoice
+    instead of a data feed.
+
+    The PDF is read against the supplier layouts described in pdf_layouts.py
+    and produces the same DeliveryOrder shape, so matching, grower resolution
+    and the DFG payload are identical from here on — including the confirmed
+    product matches already cached for this supplier, which are keyed by
+    variety name and so apply to both file types.
+
+    A PDF carries less than a JSON export: no box weights, no per-stem
+    weights, and a farm/location only when the invoice prints a single
+    warehouse. Where a supplier offers both, the JSON is the better import.
+    """
+    log.info("[delivery/parse-pdf] starting — file=%r supplier=%s",
+             pdf.filename, supplier_id)
+    try:
+        content = await pdf.read()
+        if not content:
+            raise HTTPException(400, "The uploaded file is empty")
+        if len(content) > MAX_DELIVERY_PDF_BYTES:
+            raise HTTPException(
+                413,
+                f"That PDF is {len(content) // (1024 * 1024)} MB — the limit is "
+                f"{MAX_DELIVERY_PDF_BYTES // (1024 * 1024)} MB.",
+            )
+
+        try:
+            orders = parse_delivery_pdf(content)
+        except PdfParseError as exc:
+            # Both an unknown layout and a failed checksum are the user's to
+            # act on, not a server fault — the message says what to do next.
+            log.warning("[delivery/parse-pdf] %s: %s", pdf.filename, exc)
+            raise HTTPException(400, str(exc))
+        except Exception as exc:
+            log.exception("[delivery/parse-pdf] parse_delivery_pdf failed")
+            raise HTTPException(400, f"Could not read this PDF: {exc}")
+
+        return _resolve_and_match(orders, supplier_id, with_matching)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("[delivery/parse-pdf] unexpected error")
         raise HTTPException(500, f"Internal error: {exc}")
 
 
