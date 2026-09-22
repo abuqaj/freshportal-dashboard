@@ -15,7 +15,10 @@ To add a supplier:
     id_invoice, dt_invoice, dt_fly.
  3. Point `totals_marker` or `totals_re` at the invoice's own totals, so a
     silent change to the template is caught instead of imported.
- 4. Add a case to tests/test_parser_delivery_pdf.py with a few real rows.
+ 4. For a grouped layout, parse one of the supplier's JSON exports too and
+    set `merge_across_boxes` to whatever parser_delivery does with it. A
+    delivery must import the same way whichever file arrives.
+ 5. Add a case to tests/test_parser_delivery_pdf.py with a few real rows.
 
 Two row models cover both suppliers so far:
 
@@ -63,6 +66,12 @@ QUALISA = LayoutSpec(
     # "<grade> <n>ST", leaving a multi-word name ("DIRTY DANCING") whole.
     product_re=r"^(?P<variety>.+)\s+\S+\s+(?P<stems_bunch>\d+)\s*ST\b\s*(?P<qual>\S*)$",
     row_model="grouped",
+    # Qualisa's JSON products carry no gu_product, and the mix-box test in
+    # parser_delivery counts distinct gu_product values — so its boxes go down
+    # the single-variety branch there and merge into one line per product,
+    # carrying the printed box type. Matching that keeps one delivery
+    # importing the same way whether the JSON or the PDF arrives.
+    merge_across_boxes=True,
     # The grid prints the length in its own column, so the name is rebuilt to
     # match what the JSON carries: "PIERROT 90CM 10ST QUCT".
     nm_product="{variety} {length}CM {stems_bunch}ST {qual}",

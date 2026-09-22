@@ -355,25 +355,66 @@ def test_qualisa_header():
     assert order.nm_location == "QUALISA 3"
 
 
-def test_qualisa_block_expands_into_one_box_each():
-    """Two identical boxes printed as one block of 32 bunches become two boxes
-    of 16, labelled MB1 and MB2 — the JSON's boxes 262632 and 262645."""
+def test_qualisa_block_merges_across_its_boxes():
+    """Qualisa's JSON products carry no gu_product, so parser_delivery treats
+    its boxes as single-variety ones and merges each product across them.
+    The PDF has to land on the same lines, or one delivery would import two
+    different ways depending on which file arrived."""
     order = parse_with_spec(_qualisa_doc([QUALISA_BLOCK_1], 2, 32, 320, "80.00"), QUALISA)
 
     assert order.nu_boxes == 2
     assert order.nu_stems_total == 320
     assert order.mny_total == 80.0
 
-    boxes = sorted({l.nm_box for l in order.lines})
-    assert boxes == ["MB1", "MB2"]
-    for box in boxes:
+    # One line per product, carrying the printed box type, not a per-box code.
+    assert {l.nm_box for l in order.lines} == {"QB3 ALSTRO"}
+    assert len(order.lines) == 15
+    assert sum(l.nu_bunches for l in order.lines) == 32
+    assert all(l.nu_physical_boxes == 2 for l in order.lines)
+
+    winterfell = next(l for l in order.lines if l.nm_variety == "Winterfell")
+    assert winterfell.nu_bunches == 4          # as printed, across both boxes
+    assert winterfell.nu_physical_boxes == 2
+
+
+def test_qualisa_counts_every_box_a_product_appears_in():
+    """A product in three boxes across two blocks is one line of quantity 3 —
+    what build_stock_entry divides back down per box."""
+    from dfg_api_client import build_stock_entry
+
+    doc = _qualisa_doc([QUALISA_BLOCK_1, QUALISA_BLOCK_2], 3, 48, 480, "120.00")
+    order = parse_with_spec(doc, QUALISA)
+
+    assert order.nu_boxes == 3
+    pierrot80 = [l for l in order.lines
+                 if l.nm_variety == "Pierrot" and l.nu_length == 80]
+    assert len(pierrot80) == 1
+    # 2 bunches over the 2-box block, 1 over the single-box block.
+    assert pierrot80[0].nu_bunches == 3
+    assert pierrot80[0].nu_physical_boxes == 3
+
+    pierrot80[0].fp_product_id = "TEST"
+    entry = build_stock_entry(pierrot80[0])
+    assert entry["quantity"] == 3
+    assert entry["characteristics"]["number_of_bunches"] == "1"
+    assert entry["fust"] == "QB3 ALSTRO"
+
+
+def test_a_layout_that_does_not_merge_gives_each_box_its_own_code():
+    """The other half of merge_across_boxes, kept covered for the next
+    supplier whose JSON does treat its boxes as mix boxes."""
+    import dataclasses
+
+    per_box = dataclasses.replace(QUALISA, merge_across_boxes=False)
+    order = parse_with_spec(_qualisa_doc([QUALISA_BLOCK_1], 2, 32, 320, "80.00"), per_box)
+
+    assert sorted({l.nm_box for l in order.lines}) == ["MB1", "MB2"]
+    for box in ("MB1", "MB2"):
         in_box = [l for l in order.lines if l.nm_box == box]
         assert len(in_box) == 15                              # 15 products per box
         assert sum(l.nu_bunches for l in in_box) == 16        # 16 bunches per box
         assert all(l.nu_physical_boxes == 1 for l in in_box)
-
-    winterfell = [l for l in order.lines if l.nm_variety == "Winterfell"]
-    assert [l.nu_bunches for l in winterfell] == [2, 2]       # 4 printed, 2 per box
+    assert order.nu_stems_total == 320
 
 
 def test_qualisa_line_shape_matches_the_json():

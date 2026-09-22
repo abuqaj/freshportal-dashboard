@@ -332,6 +332,17 @@ class LayoutSpec:
                  r"^([A-Za-z]+)" here.
     totals_re    regex over the page text yielding (boxes, _, stems, amount)
                  when the totals are not a row of the grid itself
+    merge_across_boxes  for a grouped layout, whether a product becomes one
+                 line per physical box, each with its own MB code (False), or
+                 one line merged across every box holding it, carrying the
+                 printed box type and a box count (True).
+
+                 Set this to whatever parser_delivery already does for the
+                 same supplier's JSON, so one delivery imports the same way
+                 whichever file arrives. Qualisa is True: its JSON products
+                 carry no gu_product, and the mix-box test there counts
+                 distinct gu_product values, so its boxes go down the
+                 single-variety branch and merge.
     totals_marker  product-cell text that marks the grid's own totals row
     location_block  regex whose group 1 is the warehouse summary block. Needed
                  because a bare warehouse-row pattern also matches ordinary
@@ -348,6 +359,7 @@ class LayoutSpec:
     header: dict[str, Reader]
     nm_product: str = ""
     box_re: str = ""
+    merge_across_boxes: bool = False
     totals_re: str = ""
     totals_marker: str = ""
     location_block: str = ""
@@ -496,9 +508,16 @@ def _species_resolver(species_seen: list[str]) -> Callable[[str], str]:
 
 def _build_lines(blocks: list[_Block], spec: LayoutSpec,
                  nm_location: str, species: Callable[[str], str]) -> tuple[list[DeliveryLine], int]:
-    """Turn blocks of identical boxes into DeliveryLines, one set per box for
-    a grouped layout and one merged line per product for a flat one."""
+    """Turn blocks of boxes into DeliveryLines.
+
+    A flat layout already has one row per product. A grouped layout is walked
+    box by box, and `spec.merge_across_boxes` decides whether each box keeps
+    its own identity or the products are merged across every box holding them.
+    """
     lines: list[DeliveryLine] = []
+    # Keyed the way _parse_invoices_format keys a single-variety box, so a
+    # merging layout lands on the lines the same delivery's JSON produces.
+    merged: dict[str, DeliveryLine] = {}
     mix_box_counter = 0
     nu_boxes = 0
 
@@ -531,24 +550,39 @@ def _build_lines(blocks: list[_Block], spec: LayoutSpec,
 
         is_mix = len({p.variety for p in block.products}) > 1
         for _ in range(count):
-            if is_mix:
+            if spec.merge_across_boxes:
+                box_code = box_type
+            elif is_mix:
                 mix_box_counter += 1
                 box_code = f"MB{mix_box_counter}"
             else:
                 box_code = box_type
-            # Within one box the same product can be printed on two rows; the
-            # JSON parser merges those into a single line, so this does too.
-            merged: dict[str, DeliveryLine] = {}
+
+            # Products merge within one physical box always — the same product
+            # can be printed on two rows of it — and across boxes only when the
+            # layout says so. A box that contributes to a line it did not open
+            # raises that line's box count by one, which is what
+            # build_stock_entry sends as `quantity`.
+            into = merged if spec.merge_across_boxes else {}
+            opened_here: set[str] = set()
             for product in block.products:
                 line = _line(product, spec, species, nm_location,
                              box_code=box_code, bunches=product.bunches // count,
                              physical_boxes=1)
-                key = f"{line.gu_product}|{box_code}|{line.nm_variety.lower()}"
-                if key in merged:
-                    merged[key].nu_bunches += line.nu_bunches
+                key = (f"{line.gu_product}|{box_code}|{line.nm_variety.lower()}"
+                       f"|{line.mny_rate_stem}")
+                if key in into:
+                    into[key].nu_bunches += line.nu_bunches
+                    if key not in opened_here:
+                        into[key].nu_physical_boxes += 1
                 else:
-                    merged[key] = line
-            lines.extend(merged.values())
+                    into[key] = line
+                opened_here.add(key)
+            if not spec.merge_across_boxes:
+                lines.extend(into.values())
+
+    if spec.merge_across_boxes:
+        lines.extend(merged.values())
 
     lines.sort(key=lambda l: (l.nm_species, l.nm_variety, l.nu_length))
     return lines, nu_boxes
