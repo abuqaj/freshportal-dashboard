@@ -61,6 +61,24 @@ def kb_decide(item_id: str, req: DecisionRequest, payload: dict = Depends(_revie
         raise HTTPException(409, str(exc))
 
 
+# No body: which item, and who is asking, is all an install needs.
+@router.post("/kb/review/{item_id}/install")
+def kb_request_install(item_id: str, payload: dict = Depends(_reviewer)) -> dict:
+    try:
+        return {"item": kb.request_install(item_id, _who(payload))}
+    except LookupError:
+        raise HTTPException(404, "Review item not found")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.get("/kb/agent-state")
+def kb_agent_state(_: dict = Depends(_reviewer)) -> dict:
+    """What the laptop last reported, so the Install button knows whether it
+    can be pressed and what to say when it cannot."""
+    return {"repos": kb.agent_state()}
+
+
 @router.get("/kb/rules")
 def kb_rules(_: dict = Depends(_reviewer)) -> dict:
     return {"rules": kb.list_rules()}
@@ -160,3 +178,38 @@ def sync_applied(req: SyncApplied) -> dict:
 @router.get("/kb/sync/rules", dependencies=_laptop)
 def sync_rules() -> dict:
     return {"rules": kb.list_rules()}
+
+
+class AgentHeartbeat(BaseModel):
+    at: str | None = None
+    candidates: list[dict[str, Any]] = []
+    repos: dict[str, dict[str, Any]] = {}
+
+
+@router.post("/kb/sync/agent/heartbeat", dependencies=_laptop)
+def sync_agent_heartbeat(req: AgentHeartbeat) -> dict:
+    """The five-minute heartbeat: what the laptop sees, and what it should do.
+    An empty install_requests is the normal answer."""
+    _batch(req.candidates, "candidates")
+    try:
+        return {"install_requests": kb.record_agent_heartbeat(req.model_dump())}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class AgentInstallResult(BaseModel):
+    id: str
+    state: str
+    commit: str | None = None
+    message: str | None = None
+
+
+@router.post("/kb/sync/agent/install-result", dependencies=_laptop)
+def sync_agent_install_result(req: AgentInstallResult) -> dict:
+    try:
+        return {"item": kb.record_install_result(req.id, req.state, req.commit, req.message)}
+    except LookupError:
+        raise HTTPException(404, "Review item not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+

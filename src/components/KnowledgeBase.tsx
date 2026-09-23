@@ -8,6 +8,10 @@ const PAGE_SIZE = 20;
 const PROPOSAL_KIND = "wiki-proposal";
 // Kinds a don't-ask-again rule never covers; the backend refuses them too (NO_RULE_KINDS).
 const NO_RULE_KINDS = ["contradiction", "skill-edit", "new-skill"];
+// .claude/skills/ exists only on test_1, so installing a skill is always a
+// commit there. Mirrors SKILL_BRANCH and HEARTBEAT_FRESH in knowledge_base.py.
+const SKILL_BRANCH = "test_1";
+const HEARTBEAT_FRESH_MS = 15 * 60 * 1000;
 
 type SubTab = "review" | "proposals" | "changelog" | "library" | "runs";
 type ReviewView = "pending" | "decided" | "done";
@@ -30,6 +34,20 @@ interface ReviewItem {
   decided_at: string | null;
   applied_at: string | null;
   created_at: string | null;
+  install_state: "available" | "requested" | "installed" | "blocked" | "failed" | null;
+  install_target_repo: string | null;
+  install_target_path: string | null;
+  install_commit: string | null;
+  install_message: string | null;
+}
+
+// What the laptop's five-minute heartbeat last reported for one repository.
+interface AgentState {
+  repo: string;
+  present: boolean;
+  branch: string | null;
+  clean: boolean;
+  seen_at: string | null;
 }
 
 interface ChangeLogEntry {
@@ -131,6 +149,29 @@ function statusLabel(status: string, t: Strings): string {
   }
 }
 
+type InstallBlock = "offline" | "absent" | "branch" | "dirty";
+
+/** The four conditions install_block_reason() checks in knowledge_base.py.
+ *  The backend refuses a blocked request as well; this only decides whether
+ *  the button is pressable and what it says when it is not. */
+function installBlockReason(state: AgentState | null): InstallBlock | null {
+  const seenAt = state?.seen_at ? new Date(state.seen_at).getTime() : NaN;
+  if (!state || Number.isNaN(seenAt) || Date.now() - seenAt > HEARTBEAT_FRESH_MS) return "offline";
+  if (!state.present) return "absent";
+  if (state.branch !== SKILL_BRANCH) return "branch";
+  if (!state.clean) return "dirty";
+  return null;
+}
+
+function blockText(reason: InstallBlock, state: AgentState | null, t: Strings): string {
+  switch (reason) {
+    case "absent": return t.installNotFound;
+    case "branch": return t.installWrongBranch(state?.branch ?? "—");
+    case "dirty":  return t.installDirty;
+    default:       return t.installOffline;
+  }
+}
+
 function kindLabel(kind: string, t: Strings): string {
   return kind === "thread_summary" ? t.kindThread
     : kind === "curated" ? t.kindCurated
@@ -181,8 +222,64 @@ function EvidenceList({ evidence, t }: { evidence: string[] | null; t: Strings }
 
 /* ─── Review ─────────────────────────────────────────────────────────────── */
 
-function ReviewCard({ item, t, lang, onDecided }: {
-  item: ReviewItem; t: Strings; lang: Lang; onDecided: (item: ReviewItem) => void;
+/** Install into the repository the item names. Pressing only records the
+ *  intent; the laptop collects it within five minutes and makes the commit. */
+function InstallPanel({ item, agents, t, onChanged }: {
+  item: ReviewItem; agents: AgentState[] | null; t: Strings; onChanged: (item: ReviewItem) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const repo = item.install_target_repo;
+  if (!item.install_state || !repo) return null;
+
+  const state = agents?.find(a => a.repo === repo) ?? null;
+  // While the state is still loading, say nothing rather than "offline".
+  const reason = agents === null ? null : installBlockReason(state);
+  const waiting = item.install_state === "requested";
+  const done = item.install_state === "installed";
+  const pressable = agents !== null && reason === null && !waiting && !done;
+
+  async function install() {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await postJson<{ item: ReviewItem }>(`/kb/review/${encodeURIComponent(item.id)}/install`, {});
+      onChanged(res.item);
+    } catch (e) {
+      setError(errorText(e));
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-3">
+      {!done && (
+        <button className={`${BTN} self-start bg-sky-700 text-white hover:bg-sky-700/90`}
+          disabled={!pressable || busy} onClick={install}>
+          {t.install(repo)}
+        </button>
+      )}
+      {item.install_state === "blocked" && (
+        <p className="text-xs text-amber-700">{t.installBlockedLabel}{item.install_message ? `: ${item.install_message}` : ""}</p>
+      )}
+      {item.install_state === "failed" && (
+        <p className="text-xs text-ember">{t.installFailedLabel}{item.install_message ? `: ${item.install_message}` : ""}</p>
+      )}
+      {waiting && <p className="text-xs text-ink-3">{t.installWaiting}</p>}
+      {done && (
+        <p className="text-xs text-emerald">
+          {t.installDone}{item.install_commit && <> · <code>{item.install_commit}</code></>}
+        </p>
+      )}
+      {!waiting && !done && reason && <p className="text-xs text-ink-3">{blockText(reason, state, t)}</p>}
+      {error && <ErrorBox message={error} />}
+    </div>
+  );
+}
+
+function ReviewCard({ item, agents, t, lang, onDecided }: {
+  item: ReviewItem; agents: AgentState[] | null; t: Strings; lang: Lang; onDecided: (item: ReviewItem) => void;
 }) {
   const [answer, setAnswer] = useState(item.answer ?? "");
   const [busy, setBusy] = useState<Decision | null>(null);
@@ -261,6 +358,7 @@ function ReviewCard({ item, t, lang, onDecided }: {
         <button className={`${BTN} self-start border border-border text-ink-3 hover:text-ink`} disabled={busy !== null} onClick={() => decide("undo")}>{t.undo}</button>
       )}
       {error && <ErrorBox message={error} />}
+      <InstallPanel item={item} agents={agents} t={t} onChanged={onDecided} />
     </div>
   );
 }
@@ -270,6 +368,7 @@ function ReviewList({ t, lang, kind, excludeKind, hint, onChanged }: {
 }) {
   const [view, setView] = useState<ReviewView>("pending");
   const [items, setItems] = useState<ReviewItem[] | null>(null);
+  const [agents, setAgents] = useState<AgentState[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -295,6 +394,14 @@ function ReviewList({ t, lang, kind, excludeKind, hint, onChanged }: {
     setItems(null);
     load(0);
   }, [load]);
+
+  // Refresh remounts this list, so a heartbeat that clears a condition makes
+  // the button pressable again without reloading the page.
+  useEffect(() => {
+    api<{ repos: AgentState[] }>("/kb/agent-state")
+      .then(res => setAgents(res.repos))
+      .catch(() => setAgents([]));  // no state reads as offline, which is the safe default
+  }, []);
 
   function handleDecided(updated: ReviewItem) {
     // Keep the card where it is, so the new status is visible where it was clicked.
@@ -330,7 +437,7 @@ function ReviewList({ t, lang, kind, excludeKind, hint, onChanged }: {
         : groups.map(group => (
           <div key={group.bucket ?? "all"} className="flex flex-col gap-3">
             {group.bucket && <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-3">{group.bucket === "signoff" ? t.bucketSignoff : t.bucketContext}</h3>}
-            {group.items.map(item => <ReviewCard key={`${item.id}-${item.status}`} item={item} t={t} lang={lang} onDecided={handleDecided} />)}
+            {group.items.map(item => <ReviewCard key={`${item.id}-${item.status}`} item={item} agents={agents} t={t} lang={lang} onDecided={handleDecided} />)}
           </div>
         ))}
       {hasMore && (

@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""What installing a skill from the dashboard must never do.
+
+    python python/tests/test_kb_install.py
+
+Two groups of scenarios.
+
+The first needs no database: the four conditions that decide whether the
+Install button can be pressed, how one press is named for the laptop, and that
+the route is behind `knowledge:review`. The most important of these is that a
+missing heartbeat blocks the press — that is the Run now failure mode, a button
+that queued work nobody collected, and it must be impossible here.
+
+The second group stores things, so it needs Postgres. Point KB_TEST_POSTGRES_URL
+(or POSTGRES_URL) at one and it runs inside a temporary schema that is dropped
+afterwards, so it never touches the real kb_* tables. Without a URL that group
+is skipped and the run says so.
+
+`jose` is stubbed: these tests check the permission ladder, which reads a
+payload dict, and never decode a token.
+
+Exit code: 0 everything that could run passed, 1 something failed, 2 could not
+run at all.
+
+When the laptop turns out to report something not assumed here, add the case as
+a new scenario rather than only fixing the code — that is what keeps this file
+worth having.
+"""
+from __future__ import annotations
+
+import contextlib
+import os
+import sys
+import types
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+PYTHON_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PYTHON_DIR))
+
+
+def _stub_jose() -> None:
+    """auth_middleware imports python-jose at module level; nothing here decodes
+    a token, so a stand-in is enough to reach the permission checks."""
+    if "jose" in sys.modules:
+        return
+    try:
+        import jose  # noqa: F401
+        return
+    except ImportError:
+        pass
+    module = types.ModuleType("jose")
+    module.JWTError = type("JWTError", (Exception,), {})
+    module.jwt = types.SimpleNamespace(decode=lambda *a, **k: {})
+    sys.modules["jose"] = module
+
+
+_stub_jose()
+
+try:
+    from fastapi import HTTPException
+
+    import kb_routes
+    import knowledge_base as kb
+except Exception as exc:  # pragma: no cover - nothing to test without these
+    print(f"Could not import the Knowledge base module: {exc}")
+    sys.exit(2)
+
+
+RESULTS: list[tuple[bool, str, str]] = []
+REPO = "freshportal-dashboard"
+
+
+def check(label: str, passed: bool, detail: object = "") -> None:
+    RESULTS.append((passed, label, "" if passed else str(detail)))
+
+
+def raises(fn, *args, **kwargs) -> Exception | None:
+    """The exception a call produced, or None if it did not produce one."""
+    try:
+        fn(*args, **kwargs)
+    except Exception as exc:
+        return exc
+    return None
+
+
+def heartbeat_state(minutes_ago: float = 1, present: bool = True,
+                    branch: str = kb.SKILL_BRANCH, clean: bool = True) -> dict:
+    return {
+        "repo": REPO, "present": present, "branch": branch, "clean": clean,
+        "seen_at": datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
+    }
+
+
+# ── the gate: when the button can be pressed ────────────────────────────────
+
+def test_a_press_is_impossible_without_a_fresh_heartbeat():
+    """Run now queued work nobody collected. This button must refuse instead."""
+    check("no heartbeat at all reads as the laptop being offline",
+          kb.install_block_reason(None) == kb.BLOCK_OFFLINE)
+    check("a heartbeat with no seen_at reads as offline",
+          kb.install_block_reason({"present": True, "branch": kb.SKILL_BRANCH,
+                                   "clean": True, "seen_at": None}) == kb.BLOCK_OFFLINE)
+    stale = heartbeat_state(minutes_ago=16)
+    check("a heartbeat older than 15 minutes is offline, however good it looked",
+          kb.install_block_reason(stale) == kb.BLOCK_OFFLINE, stale)
+    check("14 minutes old is still fresh",
+          kb.install_block_reason(heartbeat_state(minutes_ago=14)) is None)
+
+
+def test_each_condition_names_itself():
+    check("a repository the laptop cannot find is 'absent'",
+          kb.install_block_reason(heartbeat_state(present=False)) == kb.BLOCK_ABSENT)
+    check("another branch is 'branch'",
+          kb.install_block_reason(heartbeat_state(branch="main")) == kb.BLOCK_BRANCH)
+    check("a dirty working tree is 'dirty'",
+          kb.install_block_reason(heartbeat_state(clean=False)) == kb.BLOCK_DIRTY)
+    check("present, on test_1 and clean lets the press through",
+          kb.install_block_reason(heartbeat_state()) is None)
+
+
+def test_the_branch_reason_says_which_branch():
+    state = heartbeat_state(branch="main")
+    message = kb.install_block_message(kb.BLOCK_BRANCH, state)
+    check("the reason names the branch found and the branch wanted",
+          "main" in message and kb.SKILL_BRANCH in message, message)
+    check("a missing branch still produces a sentence",
+          "another branch" in kb.install_block_message(kb.BLOCK_BRANCH, None))
+
+
+# ── what a published item carries, and how a press is named ─────────────────
+
+def test_only_a_new_skill_item_installs_anything():
+    skill = {"kind": "new-skill", "target_repo": REPO, "target_path": ".claude/skills/ship-to-main/"}
+    check("a new-skill item installs where it says",
+          kb._install_target(skill) == (REPO, ".claude/skills/ship-to-main/"))
+    check("another kind installs nothing, whatever fields it carries",
+          kb._install_target(dict(skill, kind="wiki-proposal")) == (None, None))
+    check("a new-skill item with no target installs nothing",
+          kb._install_target({"kind": "new-skill"}) == (None, None))
+    check("the install_-prefixed spelling is accepted too",
+          kb._install_target({"kind": "new-skill", "install_target_repo": REPO,
+                              "install_target_path": "x/"}) == (REPO, "x/"))
+
+
+def test_a_press_is_named_for_the_laptop():
+    candidates = [
+        {"id": "2026-09-22-skill-ship-to-main", "name": "ship-to-main",
+         "target_repo": REPO, "target_path": ".claude/skills/ship-to-main/"},
+        {"id": "2026-09-22-skill-other", "name": "other",
+         "target_repo": REPO, "target_path": ".claude/skills/other/"},
+    ]
+    by_id = kb._install_request(
+        {"id": "2026-09-22-skill-ship-to-main", "install_target_repo": REPO,
+         "install_target_path": ".claude/skills/ship-to-main/"}, candidates)
+    check("an item named after its candidate is matched by id",
+          by_id["candidate"] == "2026-09-22-skill-ship-to-main" and by_id["name"] == "ship-to-main", by_id)
+
+    by_path = kb._install_request(
+        {"id": "some-other-id", "install_target_repo": REPO,
+         "install_target_path": ".claude/skills/other"}, candidates)
+    check("otherwise it is matched by the folder it installs into, trailing slash or not",
+          by_path["candidate"] == "2026-09-22-skill-other", by_path)
+
+    unknown = kb._install_request(
+        {"id": "x", "install_target_repo": REPO,
+         "install_target_path": ".claude/skills/ship-to-test/"}, candidates)
+    check("with no candidate to match, the name still comes from the folder",
+          unknown["candidate"] is None and unknown["name"] == "ship-to-test", unknown)
+
+
+# ── who may press it ────────────────────────────────────────────────────────
+
+def _route(path: str, method: str = "POST"):
+    return next((r for r in kb_routes.router.routes
+                 if getattr(r, "path", None) == path and method in getattr(r, "methods", set())), None)
+
+
+def _dependency_calls(route) -> list:
+    return [d.call for d in route.dependant.dependencies]
+
+
+def test_install_is_behind_knowledge_review():
+    route = _route("/kb/review/{item_id}/install")
+    check("the install route exists", route is not None)
+    if route is None:
+        return
+    check("it is guarded by the same reviewer dependency as the rest of the module",
+          kb_routes._reviewer in _dependency_calls(route), _dependency_calls(route))
+
+    refused = raises(kb_routes._reviewer, payload={"permissions": ["vbn:check"]})
+    check("a token without knowledge:review is refused with 403",
+          isinstance(refused, HTTPException) and refused.status_code == 403, refused)
+    check("knowledge:review is allowed",
+          raises(kb_routes._reviewer, payload={"permissions": ["knowledge:review"]}) is None)
+    check("admin:manage is allowed",
+          raises(kb_routes._reviewer, payload={"permissions": ["admin:manage"]}) is None)
+
+
+def test_the_laptop_routes_are_behind_the_sync_token():
+    for path in ("/kb/sync/agent/heartbeat", "/kb/sync/agent/install-result"):
+        route = _route(path)
+        check(f"{path} exists", route is not None)
+        if route is not None:
+            check(f"{path} is behind the sync token",
+                  kb_routes.require_kb_sync_token in _dependency_calls(route))
+    was = os.environ.pop("KB_SYNC_TOKEN", None)
+    try:
+        refused = raises(kb_routes.require_kb_sync_token, x_kb_token="anything")
+        check("with no KB_SYNC_TOKEN set, the sync routes are closed rather than open",
+              isinstance(refused, HTTPException) and refused.status_code == 503, refused)
+    finally:
+        if was is not None:
+            os.environ["KB_SYNC_TOKEN"] = was
+
+
+# ── storage (needs Postgres) ────────────────────────────────────────────────
+
+@contextlib.contextmanager
+def temporary_schema(url: str):
+    """A throwaway schema all the kb_* tables are created in, so a test run
+    cannot touch the real ones even when pointed at a shared database."""
+    import psycopg2
+
+    import db
+
+    schema = "kb_test_" + uuid.uuid4().hex[:12]
+    admin = psycopg2.connect(url)
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        cur.execute(f'CREATE SCHEMA "{schema}"')
+
+    @contextlib.contextmanager
+    def scoped():
+        conn = psycopg2.connect(url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f'SET search_path TO "{schema}"')
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    # knowledge_base did `from db import _conn`, so it holds its own reference.
+    originals = (db._conn, kb._conn)
+    db._conn, kb._conn, kb._tables_ready = scoped, scoped, False
+    try:
+        yield
+    finally:
+        db._conn, kb._conn = originals
+        kb._tables_ready = False
+        with admin.cursor() as cur:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+        admin.close()
+
+
+def publish(item_id: str, kind: str = "new-skill", path: str | None = None) -> None:
+    kb.upsert_review_items([{
+        "id": item_id, "bucket": "signoff", "kind": kind, "title": f"Add {item_id}",
+        "target_repo": REPO if kind == "new-skill" else None,
+        "target_path": path or f".claude/skills/{item_id}/",
+    }], run_id=None)
+
+
+def send_heartbeat(present=True, branch=kb.SKILL_BRANCH, clean=True, candidates=None) -> list[dict]:
+    return kb.record_agent_heartbeat({
+        "at": datetime.now(timezone.utc).isoformat(),
+        "candidates": candidates or [],
+        "repos": {REPO: {"present": present, "branch": branch, "clean": clean}},
+    })
+
+
+def one_item(item_id: str) -> dict:
+    items, _ = kb.list_review_items("all", None, None, 50, 0)
+    return next(i for i in items if i["id"] == item_id)
+
+
+def test_a_heartbeat_upserts_one_row_per_repository():
+    send_heartbeat()
+    send_heartbeat(clean=False)
+    rows = kb.agent_state()
+    check("two heartbeats leave one row, not two", len(rows) == 1, rows)
+    check("the row holds what the laptop last said",
+          rows[0]["repo"] == REPO and rows[0]["present"] and rows[0]["branch"] == kb.SKILL_BRANCH
+          and rows[0]["clean"] is False, rows[0])
+    check("the stored row is fresh enough to press against",
+          kb.install_block_reason(dict(rows[0], clean=True)) is None, rows[0])
+
+    send_heartbeat(candidates=[{"id": "c1", "name": "ship-to-main", "target_repo": REPO,
+                                "target_path": ".claude/skills/ship-to-main/"}])
+    check("the candidates waiting are stored with it",
+          kb.agent_state()[0]["candidates"][0]["name"] == "ship-to-main", kb.agent_state()[0])
+
+
+def test_the_heartbeat_returns_only_what_was_pressed():
+    publish("2026-09-22-skill-alpha")
+    publish("2026-09-22-skill-beta")
+    send_heartbeat()
+    check("nothing pressed means nothing to do — the normal case", send_heartbeat() == [])
+
+    kb.request_install("2026-09-22-skill-alpha", "tester")
+    requests = send_heartbeat(candidates=[
+        {"id": "2026-09-22-skill-alpha", "name": "alpha", "target_repo": REPO,
+         "target_path": ".claude/skills/alpha/"}])
+    check("one press comes back, and only that one",
+          [r["id"] for r in requests] == ["2026-09-22-skill-alpha"], requests)
+    check("it comes back named for the laptop",
+          requests[0]["name"] == "alpha" and requests[0]["target_repo"] == REPO
+          and requests[0]["candidate"] == "2026-09-22-skill-alpha", requests[0])
+
+
+def test_an_install_result_is_written_to_the_item():
+    publish("2026-09-22-skill-done")
+    publish("2026-09-22-skill-stuck")
+    publish("2026-09-22-skill-broken")
+    send_heartbeat()
+    for item_id in ("2026-09-22-skill-done", "2026-09-22-skill-stuck", "2026-09-22-skill-broken"):
+        kb.request_install(item_id, "tester")
+
+    kb.record_install_result("2026-09-22-skill-done", "installed", "a1b2c3d", None)
+    done = one_item("2026-09-22-skill-done")
+    check("an installed item keeps its state and short hash",
+          done["install_state"] == "installed" and done["install_commit"] == "a1b2c3d", done)
+
+    kb.record_install_result("2026-09-22-skill-stuck", "blocked", None, "Uncommitted changes on test_1")
+    stuck = one_item("2026-09-22-skill-stuck")
+    check("a blocked item keeps the reason it was blocked for",
+          stuck["install_state"] == "blocked" and "Uncommitted" in (stuck["install_message"] or ""), stuck)
+
+    kb.record_install_result("2026-09-22-skill-broken", "failed", "deadbee", "copy failed")
+    broken = one_item("2026-09-22-skill-broken")
+    check("a failed install never shows a commit, because it committed nothing",
+          broken["install_state"] == "failed" and broken["install_commit"] is None, broken)
+
+    check("an unknown state is refused",
+          isinstance(raises(kb.record_install_result, "2026-09-22-skill-done", "done", None, None), ValueError))
+    check("a result for an item that does not exist is refused",
+          isinstance(raises(kb.record_install_result, "nope", "installed", "abc", None), LookupError))
+
+
+def test_a_press_is_refused_when_it_would_do_nothing():
+    publish("2026-09-22-skill-guard")
+    publish("2026-09-22-note", kind="wiki-proposal")
+
+    without = raises(kb.request_install, "2026-09-22-skill-guard", "tester")
+    check("with no heartbeat at all, the press is refused rather than queued",
+          isinstance(without, ValueError) and "offline" in str(without).lower(), without)
+
+    send_heartbeat(clean=False)
+    dirty = raises(kb.request_install, "2026-09-22-skill-guard", "tester")
+    check("a dirty working tree is refused, and the refusal names it",
+          isinstance(dirty, ValueError) and "Uncommitted" in str(dirty), dirty)
+
+    send_heartbeat(branch="main")
+    branch = raises(kb.request_install, "2026-09-22-skill-guard", "tester")
+    check("the wrong branch is refused, and the refusal names both branches",
+          isinstance(branch, ValueError) and "main" in str(branch) and kb.SKILL_BRANCH in str(branch), branch)
+
+    send_heartbeat()
+    check("an item that installs nothing is refused",
+          isinstance(raises(kb.request_install, "2026-09-22-note", "tester"), ValueError))
+    check("an item that does not exist is a lookup failure",
+          isinstance(raises(kb.request_install, "nope", "tester"), LookupError))
+
+    kb.request_install("2026-09-22-skill-guard", "tester")
+    check("pressing twice is refused",
+          isinstance(raises(kb.request_install, "2026-09-22-skill-guard", "tester"), ValueError))
+    kb.record_install_result("2026-09-22-skill-guard", "installed", "a1b2c3d", None)
+    already = raises(kb.request_install, "2026-09-22-skill-guard", "tester")
+    check("installing what is already installed is refused",
+          isinstance(already, ValueError) and "already installed" in str(already), already)
+
+
+def test_the_gate_reopens_once_the_heartbeat_clears():
+    publish("2026-09-22-skill-retry")
+    send_heartbeat(clean=False)
+    check("blocked while the tree is dirty",
+          isinstance(raises(kb.request_install, "2026-09-22-skill-retry", "tester"), ValueError))
+    send_heartbeat(clean=True)
+    check("pressable again as soon as the laptop reports it clean",
+          raises(kb.request_install, "2026-09-22-skill-retry", "tester") is None)
+    item = one_item("2026-09-22-skill-retry")
+    check("and the item is waiting for the laptop",
+          item["install_state"] == "requested" and item["install_requested_at"] is not None, item)
+
+
+def test_a_retry_after_a_failure_starts_clean():
+    publish("2026-09-22-skill-again")
+    send_heartbeat()
+    kb.request_install("2026-09-22-skill-again", "tester")
+    kb.record_install_result("2026-09-22-skill-again", "failed", None, "copy failed")
+    kb.request_install("2026-09-22-skill-again", "tester")
+    item = one_item("2026-09-22-skill-again")
+    check("the old failure is not left standing as this attempt's outcome",
+          item["install_state"] == "requested" and item["install_message"] is None, item)
+
+
+def test_a_re_push_never_undoes_a_press():
+    """The laptop re-publishes its review items on every run. How far an install
+    got belongs to the dashboard, the way status already does."""
+    publish("2026-09-22-skill-repush")
+    send_heartbeat()
+    kb.request_install("2026-09-22-skill-repush", "tester")
+    publish("2026-09-22-skill-repush", path=".claude/skills/moved/")
+    item = one_item("2026-09-22-skill-repush")
+    check("a re-push leaves the press alone", item["install_state"] == "requested", item)
+    check("but it does move the target it published",
+          item["install_target_path"] == ".claude/skills/moved/", item)
+
+
+NO_DATABASE = [
+    test_a_press_is_impossible_without_a_fresh_heartbeat,
+    test_each_condition_names_itself,
+    test_the_branch_reason_says_which_branch,
+    test_only_a_new_skill_item_installs_anything,
+    test_a_press_is_named_for_the_laptop,
+    test_install_is_behind_knowledge_review,
+    test_the_laptop_routes_are_behind_the_sync_token,
+]
+
+NEEDS_DATABASE = [
+    test_a_heartbeat_upserts_one_row_per_repository,
+    test_the_heartbeat_returns_only_what_was_pressed,
+    test_an_install_result_is_written_to_the_item,
+    test_a_press_is_refused_when_it_would_do_nothing,
+    test_the_gate_reopens_once_the_heartbeat_clears,
+    test_a_retry_after_a_failure_starts_clean,
+    test_a_re_push_never_undoes_a_press,
+]
+
+
+def run(test) -> None:
+    start = len(RESULTS)
+    try:
+        test()
+    except Exception as exc:
+        check(f"{test.__name__} raised", False, f"{type(exc).__name__}: {exc}")
+    if len(RESULTS) == start:
+        check(f"{test.__name__} checked nothing", False)
+
+
+def main() -> int:
+    import logging
+    logging.disable(logging.CRITICAL)
+    for test in NO_DATABASE:
+        run(test)
+
+    url = os.getenv("KB_TEST_POSTGRES_URL") or os.getenv("POSTGRES_URL") or ""
+    skipped = ""
+    if not url:
+        skipped = (f" ({len(NEEDS_DATABASE)} storage scenarios skipped: "
+                   "set KB_TEST_POSTGRES_URL to a Postgres to run them)")
+    else:
+        try:
+            with temporary_schema(url):
+                for test in NEEDS_DATABASE:
+                    # Each scenario gets the tables to itself, so ids cannot collide.
+                    kb.ensure_kb_tables()
+                    run(test)
+                    _truncate()
+        except Exception as exc:
+            check("the storage scenarios could not reach Postgres", False, f"{type(exc).__name__}: {exc}")
+
+    failed = [r for r in RESULTS if not r[0]]
+    for passed, label, detail in RESULTS:
+        if not passed:
+            print(f"FAIL  {label}\n      {detail}")
+    print(f"{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed{skipped}")
+    return 1 if failed else 0
+
+
+def _truncate() -> None:
+    with kb._conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE kb_review_items, kb_agent_state, kb_always_rules, kb_runs")
+        conn.commit()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 
 import psycopg2.extras
 
@@ -32,6 +33,18 @@ MAX_BATCH = 200
 MAX_CONTENT_CHARS = 1_000_000
 _ITEM_ID = re.compile(r"^[\w.-]{3,160}$")
 _STATUS_FOR = {"approve": "approved", "approve_always": "approved_always", "reject": "rejected"}
+
+# Installing a skill is always a commit on test_1: .claude/skills/ exists only
+# on that branch, and a skill is live as soon as its file is there, so on the
+# laptop the copy and the commit are one step.
+INSTALL_KIND = "new-skill"
+SKILL_BRANCH = "test_1"
+HEARTBEAT_FRESH = timedelta(minutes=15)
+INSTALL_REPORTABLE = ("installed", "blocked", "failed")
+# Why an install cannot start now. The button is disabled with these same four
+# reasons, but that is a courtesy: the request arrives over HTTP, so this
+# module decides and the frontend is not a guard.
+BLOCK_OFFLINE, BLOCK_ABSENT, BLOCK_BRANCH, BLOCK_DIRTY = "offline", "absent", "branch", "dirty"
 
 _tables_ready = False
 
@@ -83,6 +96,15 @@ def ensure_kb_tables() -> None:
                         "ON kb_review_items(status, bucket)")
             cur.execute("ALTER TABLE kb_review_items ADD COLUMN IF NOT EXISTS action TEXT")
             cur.execute("ALTER TABLE kb_review_items ADD COLUMN IF NOT EXISTS verify TEXT")
+            # An install stays attached to the item that proposed the skill,
+            # rather than living in a second queue: the item carries where it
+            # goes and how far it got. Null install_state means not installable.
+            for column, column_type in (
+                ("install_state", "TEXT"), ("install_target_repo", "TEXT"),
+                ("install_target_path", "TEXT"), ("install_requested_at", "TIMESTAMPTZ"),
+                ("install_commit", "TEXT"), ("install_message", "TEXT"),
+            ):
+                cur.execute(f"ALTER TABLE kb_review_items ADD COLUMN IF NOT EXISTS {column} {column_type}")
             # Evidence sent as one string used to be stored a character per
             # element; join those back into the path they were.
             cur.execute("""
@@ -111,6 +133,20 @@ def ensure_kb_tables() -> None:
                     summary     TEXT,
                     details     JSONB NOT NULL DEFAULT '{}'::jsonb,
                     received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            # What the laptop's heartbeat last said about each repository it
+            # watches. Not a source of truth either: it only decides whether
+            # asking for an install is worthwhile, and the laptop re-checks the
+            # same conditions on the spot before it commits anything.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS kb_agent_state (
+                    repo       TEXT PRIMARY KEY,
+                    present    BOOLEAN NOT NULL DEFAULT FALSE,
+                    branch     TEXT,
+                    clean      BOOLEAN NOT NULL DEFAULT FALSE,
+                    candidates JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
             # Run now queued requests for a laptop task that was never set up;
@@ -224,20 +260,29 @@ def upsert_review_items(items: list[dict], run_id: str | None) -> tuple[int, lis
                     rejected.append(item_id or "(no id)")
                     continue
                 auto = bucket == "auto"
+                install_repo, install_path = _install_target(item)
                 cur.execute("""
                     INSERT INTO kb_review_items
-                        (id, run_id, bucket, kind, title, target, body, action, verify, evidence, why, status, applied_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() END)
+                        (id, run_id, bucket, kind, title, target, body, action, verify, evidence, why, status, applied_at,
+                         install_state, install_target_repo, install_target_path)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() END,
+                            %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         run_id = EXCLUDED.run_id, bucket = EXCLUDED.bucket, kind = EXCLUDED.kind,
                         title = EXCLUDED.title, target = EXCLUDED.target, body = EXCLUDED.body,
                         action = EXCLUDED.action, verify = EXCLUDED.verify,
-                        evidence = EXCLUDED.evidence, why = EXCLUDED.why, updated_at = NOW()
+                        evidence = EXCLUDED.evidence, why = EXCLUDED.why, updated_at = NOW(),
+                        install_target_repo = EXCLUDED.install_target_repo,
+                        install_target_path = EXCLUDED.install_target_path,
+                        -- how far an install got belongs to the dashboard, like
+                        -- status does; a re-push moves the target, never the state
+                        install_state = COALESCE(kb_review_items.install_state, EXCLUDED.install_state)
                 """, (
                     item_id, run_id or item.get("run_id"), bucket, str(item["kind"]), str(item["title"]),
                     item.get("target"), item.get("body"), item.get("action"), item.get("verify"),
                     _text_list(item.get("evidence")),
                     item.get("why"), "applied" if auto else "pending", auto,
+                    "available" if install_repo else None, install_repo, install_path,
                 ))
                 stored += 1
         conn.commit()
@@ -416,6 +461,193 @@ def delete_rule(rule_id: int) -> bool:
             deleted = cur.rowcount > 0
         conn.commit()
     return deleted
+
+
+# ── installing a skill ──────────────────────────────────────────────────────
+
+def _install_target(item: dict) -> tuple[str | None, str | None]:
+    """Where a new-skill item installs to, as the laptop published it. Any
+    other kind installs nothing, whatever fields it happens to carry."""
+    if item.get("kind") != INSTALL_KIND:
+        return None, None
+    repo = item.get("install_target_repo") or item.get("target_repo")
+    path = item.get("install_target_path") or item.get("target_path")
+    return (str(repo) if repo else None), (str(path) if path else None)
+
+
+def _norm_path(value) -> str:
+    return str(value or "").replace("\\", "/").strip("/")
+
+
+def _skill_name(path) -> str | None:
+    """`.claude/skills/<name>/` names the skill in its last segment."""
+    return _norm_path(path).rsplit("/", 1)[-1] or None
+
+
+def install_block_reason(state: dict | None, now: datetime | None = None) -> str | None:
+    """Which condition stops an install into this repository, or None when it
+    can go ahead.
+
+    The heartbeat's picture is up to five minutes old, so this only decides
+    whether asking is worthwhile; install_candidate.py re-checks the same
+    conditions on the laptop, and that check is the one that counts."""
+    if not state:
+        return BLOCK_OFFLINE
+    seen_at = state.get("seen_at")
+    if not seen_at or (now or datetime.now(timezone.utc)) - seen_at > HEARTBEAT_FRESH:
+        return BLOCK_OFFLINE
+    if not state.get("present"):
+        return BLOCK_ABSENT
+    if state.get("branch") != SKILL_BRANCH:
+        return BLOCK_BRANCH
+    if not state.get("clean"):
+        return BLOCK_DIRTY
+    return None
+
+
+def install_block_message(reason: str, state: dict | None) -> str:
+    """The same four reasons in English, for the race the button cannot catch:
+    the state changed between the page loading and the press. What people
+    normally read is the translated text on the disabled button."""
+    if reason == BLOCK_ABSENT:
+        return "The repository was not found on the laptop."
+    if reason == BLOCK_BRANCH:
+        branch = (state or {}).get("branch") or "another branch"
+        return f"The repository is on {branch}; skills live on {SKILL_BRANCH}."
+    if reason == BLOCK_DIRTY:
+        return f"Uncommitted changes on {SKILL_BRANCH} — commit or stash them first."
+    return "The laptop is offline — the install runs when it is back."
+
+
+def agent_state() -> list[dict]:
+    """What the last heartbeat said, one row per repository. The button works
+    the four conditions out from this; request_install() works them out again
+    from the same row, because only the second one is a guard."""
+    ensure_kb_tables()
+    with _conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM kb_agent_state ORDER BY repo")
+            return _rows(cur)
+
+
+def record_agent_heartbeat(payload: dict) -> list[dict]:
+    """Store what the laptop reports, and hand back what people have pressed.
+
+    Usually that is an empty list. That is the normal case, and the reason this
+    can be a scheduled script every five minutes rather than a Claude session:
+    one request, no model, no run record."""
+    ensure_kb_tables()
+    repos = payload.get("repos") or {}
+    if not isinstance(repos, dict):
+        raise ValueError("repos must be an object keyed by repository name.")
+    candidates = [c for c in (payload.get("candidates") or []) if isinstance(c, dict)]
+    seen_at = payload.get("at") or None
+    with _conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            for repo, reported in repos.items():
+                reported = reported if isinstance(reported, dict) else {}
+                cur.execute("""
+                    INSERT INTO kb_agent_state (repo, present, branch, clean, candidates, seen_at)
+                    VALUES (%s, %s, %s, %s, %s, COALESCE(%s::timestamptz, NOW()))
+                    ON CONFLICT (repo) DO UPDATE SET
+                        present = EXCLUDED.present, branch = EXCLUDED.branch,
+                        clean = EXCLUDED.clean, candidates = EXCLUDED.candidates,
+                        seen_at = EXCLUDED.seen_at
+                """, (str(repo), bool(reported.get("present")), reported.get("branch"),
+                      bool(reported.get("clean")), json.dumps(candidates), seen_at))
+            cur.execute("""
+                SELECT id, install_target_repo, install_target_path
+                FROM kb_review_items WHERE install_state = 'requested'
+                ORDER BY install_requested_at, id
+            """)
+            requested = _rows(cur)
+        conn.commit()
+    return [_install_request(item, candidates) for item in requested]
+
+
+def _install_request(item: dict, candidates: list[dict]) -> dict:
+    """One press, named the way the laptop needs it: which candidate folder to
+    copy, and under what name. Both come from the candidate list in the same
+    heartbeat, so neither can be stale."""
+    candidate = _match_candidate(item, candidates) or {}
+    path = item.get("install_target_path") or candidate.get("target_path")
+    return {
+        "id": item["id"],
+        "candidate": candidate.get("id"),
+        "name": candidate.get("name") or _skill_name(path),
+        "target_repo": item.get("install_target_repo") or candidate.get("target_repo"),
+        "target_path": path,
+    }
+
+
+def _match_candidate(item: dict, candidates: list[dict]) -> dict | None:
+    """By id where the item is named after its candidate, otherwise by the
+    folder it installs into, which is one folder per skill."""
+    for candidate in candidates:
+        if str(candidate.get("id") or "") == item["id"]:
+            return candidate
+    wanted = _norm_path(item.get("install_target_path"))
+    if not wanted:
+        return None
+    return next((c for c in candidates if _norm_path(c.get("target_path")) == wanted), None)
+
+
+def request_install(item_id: str, username: str) -> dict:
+    """Record that someone pressed Install. Nothing here reaches a repository:
+    the laptop collects this within five minutes and does the work."""
+    ensure_kb_tables()
+    with _conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM kb_review_items WHERE id = %s FOR UPDATE", (item_id,))
+            item = cur.fetchone()
+            if not item:
+                raise LookupError(item_id)
+            repo = item["install_target_repo"]
+            if item["kind"] != INSTALL_KIND or not repo:
+                raise ValueError("This item does not install anything.")
+            if item["install_state"] == "requested":
+                raise ValueError("This install is already waiting for the laptop.")
+            if item["install_state"] == "installed":
+                raise ValueError("This skill is already installed.")
+            cur.execute("SELECT * FROM kb_agent_state WHERE repo = %s", (repo,))
+            state = cur.fetchone()
+            reason = install_block_reason(state)
+            if reason:
+                raise ValueError(install_block_message(reason, state))
+            # A retry after blocked or failed starts clean, so the old reason is
+            # never read as the outcome of this attempt.
+            cur.execute("""
+                UPDATE kb_review_items
+                SET install_state = 'requested', install_requested_at = NOW(),
+                    install_commit = NULL, install_message = NULL, updated_at = NOW()
+                WHERE id = %s RETURNING *
+            """, (item_id,))
+            updated = dict(cur.fetchone())
+        conn.commit()
+    logger.info("Install of %s into %s requested by %s", item_id, repo, username)
+    return updated
+
+
+def record_install_result(item_id: str, state: str, commit: str | None, message: str | None) -> dict:
+    """What the laptop made of one request. A failed install committed nothing,
+    so it never carries a hash."""
+    ensure_kb_tables()
+    if state not in INSTALL_REPORTABLE:
+        raise ValueError(f"An install result is one of: {', '.join(INSTALL_REPORTABLE)}.")
+    with _conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                UPDATE kb_review_items
+                SET install_state = %s, install_commit = %s, install_message = %s, updated_at = NOW()
+                WHERE id = %s RETURNING *
+            """, (state, (commit or None) if state == "installed" else None,
+                  (message or None), item_id))
+            row = cur.fetchone()
+            if not row:
+                raise LookupError(item_id)
+            updated = dict(row)
+        conn.commit()
+    return updated
 
 
 # ── runs ────────────────────────────────────────────────────────────────────

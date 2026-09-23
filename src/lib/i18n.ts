@@ -858,6 +858,15 @@ const en = {
     runsHint: "Skills run on the laptop, on a schedule or started by hand in Claude Code. Each run shows up here when it finishes.",
     colSummary: "Summary",
     pendingCount: (n: string) => `${n} waiting for you`,
+    install: (repo: string) => `Install into ${repo}`,
+    installWaiting: "Waiting for the laptop, up to 5 minutes.",
+    installDone: "Installed",
+    installBlockedLabel: "Install blocked",
+    installFailedLabel: "Install failed — nothing was committed",
+    installOffline: "Laptop offline — the install runs when it is back",
+    installNotFound: "Repository not found on the laptop",
+    installWrongBranch: (branch: string) => `The repository is on ${branch}; skills live on test_1`,
+    installDirty: "Uncommitted changes on test_1 — commit or stash them first",
   },
 };
 
@@ -1697,6 +1706,15 @@ const nl: typeof en = {
     runsHint: "Skills draaien op de laptop, volgens schema of met de hand gestart in Claude Code. Elke run verschijnt hier zodra hij klaar is.",
     colSummary: "Samenvatting",
     pendingCount: (n: string) => `${n} wachten op jou`,
+    install: (repo: string) => `Installeren in ${repo}`,
+    installWaiting: "Wachten op de laptop, maximaal 5 minuten.",
+    installDone: "Geïnstalleerd",
+    installBlockedLabel: "Installatie geblokkeerd",
+    installFailedLabel: "Installatie mislukt — er is niets vastgelegd",
+    installOffline: "Laptop offline — de installatie draait zodra hij terug is",
+    installNotFound: "Repository niet gevonden op de laptop",
+    installWrongBranch: (branch: string) => `De repository staat op ${branch}; skills horen op test_1`,
+    installDirty: "Niet-vastgelegde wijzigingen op test_1 — leg ze eerst vast of stash ze",
   },
 };
 
@@ -2536,6 +2554,15 @@ const pl: typeof en = {
     runsHint: "Skille działają na laptopie, według harmonogramu albo uruchamiane ręcznie w Claude Code. Każdy przebieg pojawia się tutaj po zakończeniu.",
     colSummary: "Podsumowanie",
     pendingCount: (n: string) => `${n} czeka na Ciebie`,
+    install: (repo: string) => `Zainstaluj w ${repo}`,
+    installWaiting: "Czekamy na laptopa, do 5 minut.",
+    installDone: "Zainstalowano",
+    installBlockedLabel: "Instalacja zablokowana",
+    installFailedLabel: "Instalacja nie powiodła się — nic nie trafiło do repozytorium",
+    installOffline: "Laptop offline — instalacja ruszy, gdy wróci",
+    installNotFound: "Nie znaleziono repozytorium na laptopie",
+    installWrongBranch: (branch: string) => `Repozytorium jest na ${branch}; skille mieszkają na test_1`,
+    installDirty: "Niezacommitowane zmiany na test_1 — najpierw zrób commit albo schowaj je",
   },
 };
 
@@ -3375,6 +3402,15 @@ const es: typeof en = {
     runsHint: "Las skills se ejecutan en el portátil, según la programación o a mano desde Claude Code. Cada ejecución aparece aquí cuando termina.",
     colSummary: "Resumen",
     pendingCount: (n: string) => `${n} esperándote`,
+    install: (repo: string) => `Instalar en ${repo}`,
+    installWaiting: "Esperando al portátil, hasta 5 minutos.",
+    installDone: "Instalada",
+    installBlockedLabel: "Instalación bloqueada",
+    installFailedLabel: "La instalación falló — no se confirmó nada",
+    installOffline: "Portátil desconectado — la instalación se hará cuando vuelva",
+    installNotFound: "Repositorio no encontrado en el portátil",
+    installWrongBranch: (branch: string) => `El repositorio está en ${branch}; las skills viven en test_1`,
+    installDirty: "Cambios sin confirmar en test_1 — haz commit o guárdalos en stash primero",
   },
 };
 
