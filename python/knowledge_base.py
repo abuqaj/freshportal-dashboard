@@ -102,9 +102,21 @@ def ensure_kb_tables() -> None:
             for column, column_type in (
                 ("install_state", "TEXT"), ("install_target_repo", "TEXT"),
                 ("install_target_path", "TEXT"), ("install_requested_at", "TIMESTAMPTZ"),
+                ("install_requested_by", "TEXT"),
                 ("install_commit", "TEXT"), ("install_message", "TEXT"),
             ):
                 cur.execute(f"ALTER TABLE kb_review_items ADD COLUMN IF NOT EXISTS {column} {column_type}")
+            # Installs reported before an install closed its decision were left
+            # pending, with Approve and Reject still live on a skill already in
+            # use. Who pressed Install was not recorded then; when the result
+            # came in is the last update the laptop made.
+            cur.execute("""
+                UPDATE kb_review_items
+                SET status = 'approved', decided_by = COALESCE(install_requested_by, decided_by),
+                    decided_at = COALESCE(install_requested_at, updated_at),
+                    applied_at = COALESCE(applied_at, updated_at)
+                WHERE install_state = 'installed' AND status = 'pending'
+            """)
             # Evidence sent as one string used to be stored a character per
             # element; join those back into the path they were.
             cur.execute("""
@@ -325,16 +337,18 @@ def list_review_items(view: str, kind: str | None, exclude_kind: str | None,
 
 def list_change_log(limit: int, offset: int) -> tuple[list[dict], bool]:
     """Every change already applied on the laptop, as change-log.md records it:
-    automatic fixes, and approved items once applied. An automatic fix names
-    the run that pushed it; an approved item names the improve-system run
-    whose start and finish bracket the moment it was reported applied, since
-    the laptop does not send that run's id."""
+    automatic fixes, approved items once applied, and installed skills, which
+    are applied the moment their commit is made. An automatic fix names the
+    run that pushed it; an approved item names the improve-system run whose
+    start and finish bracket the moment it was reported applied, since the
+    laptop does not send that run's id; an installed skill names its commit."""
     ensure_kb_tables()
     with _conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT i.id, i.bucket, i.kind, i.title, i.target, i.body, i.action, i.verify,
                        i.evidence, i.why, i.decided_by, i.decided_at, i.applied_at,
+                       CASE WHEN i.install_state = 'installed' THEN i.install_commit END AS install_commit,
                        CASE WHEN i.bucket = 'auto' THEN i.run_id ELSE r.id END AS applied_by_run
                 FROM kb_review_items i
                 LEFT JOIN LATERAL (
@@ -343,7 +357,7 @@ def list_change_log(limit: int, offset: int) -> tuple[list[dict], bool]:
                       AND started_at <= i.applied_at AND finished_at >= i.applied_at
                     ORDER BY started_at DESC LIMIT 1
                 ) r ON TRUE
-                WHERE i.bucket = 'auto' OR i.status = 'applied'
+                WHERE i.bucket = 'auto' OR i.status = 'applied' OR i.install_state = 'installed'
                 ORDER BY i.applied_at DESC NULLS LAST, i.id
                 LIMIT %s OFFSET %s
             """, (limit + 1, offset))
@@ -361,6 +375,9 @@ def decide_review_item(item_id: str, decision: str, answer: str | None, username
             item = cur.fetchone()
             if not item:
                 raise LookupError(item_id)
+            refusal = decision_refusal(item, decision)
+            if refusal:
+                raise ValueError(refusal)
             if item["status"] in DONE:
                 raise ValueError("This item has already been handled on the laptop.")
             if item["bucket"] == "auto":
@@ -429,14 +446,16 @@ def pending_decisions() -> list[dict]:
 
 
 def mark_applied(ids: list[str]) -> list[str]:
-    """Approved items become applied; rejected and answered ones are closed."""
+    """Approved items become applied; rejected and answered ones are closed.
+    An installed skill already has its applied_at, the moment its commit was
+    reported; the laptop recording the decision later does not move it."""
     ensure_kb_tables()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE kb_review_items SET
                     status = CASE WHEN status IN ('approved', 'approved_always') THEN 'applied' ELSE 'closed' END,
-                    applied_at = NOW(), updated_at = NOW()
+                    applied_at = COALESCE(applied_at, NOW()), updated_at = NOW()
                 WHERE id = ANY(%s) AND status = ANY(%s)
                 RETURNING id
             """, (list(ids), list(DECIDED)))
@@ -473,6 +492,42 @@ def _install_target(item: dict) -> tuple[str | None, str | None]:
     repo = item.get("install_target_repo") or item.get("target_repo")
     path = item.get("install_target_path") or item.get("target_path")
     return (str(repo) if repo else None), (str(path) if path else None)
+
+
+def _installable(item: dict) -> bool:
+    return item.get("kind") == INSTALL_KIND and bool(item.get("install_target_repo"))
+
+
+def decision_refusal(item: dict, decision: str) -> str | None:
+    """Why a decision cannot be recorded on an item that installs a skill, or
+    None when the usual rules apply.
+
+    For such an item Install is the decision. Approve decides nothing, since
+    nothing on the laptop installs an approved candidate. Once the skill is
+    committed it is in use, and a Reject would tell the knowledge base's tally
+    that nobody wanted it."""
+    if not _installable(item):
+        return None
+    if item.get("install_state") == "installed":
+        return "This skill is installed; the install was the decision."
+    if item.get("install_state") == "requested":
+        return "This install is waiting for the laptop; decide once it has reported back."
+    if decision in ("approve", "approve_always"):
+        return "Install decides this item; approving it would install nothing."
+    return None
+
+
+def install_refusal(item: dict) -> str | None:
+    """Why this item cannot be installed whatever the laptop reports, or None."""
+    if not _installable(item):
+        return "This item does not install anything."
+    if item.get("install_state") == "requested":
+        return "This install is already waiting for the laptop."
+    if item.get("install_state") == "installed":
+        return "This skill is already installed."
+    if item.get("status") in ("rejected", "closed"):
+        return "This item was rejected; undo the rejection to install it."
+    return None
 
 
 def _norm_path(value) -> str:
@@ -602,26 +657,24 @@ def request_install(item_id: str, username: str) -> dict:
             item = cur.fetchone()
             if not item:
                 raise LookupError(item_id)
+            refusal = install_refusal(item)
+            if refusal:
+                raise ValueError(refusal)
             repo = item["install_target_repo"]
-            if item["kind"] != INSTALL_KIND or not repo:
-                raise ValueError("This item does not install anything.")
-            if item["install_state"] == "requested":
-                raise ValueError("This install is already waiting for the laptop.")
-            if item["install_state"] == "installed":
-                raise ValueError("This skill is already installed.")
             cur.execute("SELECT * FROM kb_agent_state WHERE repo = %s", (repo,))
             state = cur.fetchone()
             reason = install_block_reason(state)
             if reason:
                 raise ValueError(install_block_message(reason, state))
             # A retry after blocked or failed starts clean, so the old reason is
-            # never read as the outcome of this attempt.
+            # never read as the outcome of this attempt. Who pressed is kept for
+            # when the install succeeds: that press is the item's decision.
             cur.execute("""
                 UPDATE kb_review_items
-                SET install_state = 'requested', install_requested_at = NOW(),
+                SET install_state = 'requested', install_requested_at = NOW(), install_requested_by = %s,
                     install_commit = NULL, install_message = NULL, updated_at = NOW()
                 WHERE id = %s RETURNING *
-            """, (item_id,))
+            """, (username, item_id))
             updated = dict(cur.fetchone())
         conn.commit()
     logger.info("Install of %s into %s requested by %s", item_id, repo, username)
@@ -630,22 +683,34 @@ def request_install(item_id: str, username: str) -> dict:
 
 def record_install_result(item_id: str, state: str, commit: str | None, message: str | None) -> dict:
     """What the laptop made of one request. A failed install committed nothing,
-    so it never carries a hash."""
+    so it never carries a hash.
+
+    An installed skill closes the item's decision in the same write: approved,
+    by whoever pressed Install, when they pressed it, applied now. The laptop
+    then records it like any approved item. One it has already recorded is
+    left as it is, so it is not recorded twice."""
     ensure_kb_tables()
     if state not in INSTALL_REPORTABLE:
         raise ValueError(f"An install result is one of: {', '.join(INSTALL_REPORTABLE)}.")
     with _conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT status FROM kb_review_items WHERE id = %s FOR UPDATE", (item_id,))
+            item = cur.fetchone()
+            if not item:
+                raise LookupError(item_id)
+            closes = state == "installed" and item["status"] not in DONE
             cur.execute("""
                 UPDATE kb_review_items
-                SET install_state = %s, install_commit = %s, install_message = %s, updated_at = NOW()
-                WHERE id = %s RETURNING *
-            """, (state, (commit or None) if state == "installed" else None,
-                  (message or None), item_id))
-            row = cur.fetchone()
-            if not row:
-                raise LookupError(item_id)
-            updated = dict(row)
+                SET install_state = %(state)s, install_commit = %(commit)s, install_message = %(message)s,
+                    status     = CASE WHEN %(closes)s THEN 'approved' ELSE status END,
+                    decided_by = CASE WHEN %(closes)s THEN COALESCE(install_requested_by, decided_by) ELSE decided_by END,
+                    decided_at = CASE WHEN %(closes)s THEN COALESCE(install_requested_at, NOW()) ELSE decided_at END,
+                    applied_at = CASE WHEN %(closes)s THEN NOW() ELSE applied_at END,
+                    updated_at = NOW()
+                WHERE id = %(id)s RETURNING *
+            """, {"state": state, "commit": (commit or None) if state == "installed" else None,
+                  "message": message or None, "closes": closes, "id": item_id})
+            updated = dict(cur.fetchone())
         conn.commit()
     return updated
 

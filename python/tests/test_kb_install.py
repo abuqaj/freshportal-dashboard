@@ -6,8 +6,9 @@
 Two groups of scenarios.
 
 The first needs no database: the four conditions that decide whether the
-Install button can be pressed, how one press is named for the laptop, and that
-the route is behind `knowledge:review`. The most important of these is that a
+Install button can be pressed, how one press is named for the laptop, which
+decisions an installable item still takes, and that the route is behind
+`knowledge:review`. The most important of these is that a
 missing heartbeat blocks the press — that is the Run now failure mode, a button
 that queued work nobody collected, and it must be impossible here.
 
@@ -168,6 +169,49 @@ def test_a_press_is_named_for_the_laptop():
          "install_target_path": ".claude/skills/ship-to-test/"}, candidates)
     check("with no candidate to match, the name still comes from the folder",
           unknown["candidate"] is None and unknown["name"] == "ship-to-test", unknown)
+
+
+# ── Install is the decision ─────────────────────────────────────────────────
+
+def installable(install_state: str = "available", status: str = "pending") -> dict:
+    return {"kind": "new-skill", "install_target_repo": REPO,
+            "install_state": install_state, "status": status}
+
+
+def test_install_is_the_only_decision_on_an_installable_item():
+    """Nothing installs an approved candidate, so Approve would be a dead end."""
+    for state in ("available", "blocked", "failed"):
+        check(f"approve is refused at {state}",
+              kb.decision_refusal(installable(state), "approve") is not None)
+        check(f"reject is allowed at {state}",
+              kb.decision_refusal(installable(state), "reject") is None)
+    check("approve-always is refused as well",
+          kb.decision_refusal(installable(), "approve_always") is not None)
+    check("a rejection can still be undone",
+          kb.decision_refusal(installable(status="rejected"), "undo") is None)
+    check("an item that installs nothing keeps its Approve",
+          kb.decision_refusal({"kind": "skill-edit", "install_target_repo": None,
+                               "install_state": None, "status": "pending"}, "approve") is None)
+
+
+def test_an_installed_skill_cannot_be_decided_again():
+    """A Reject here would mark the pattern declined while the skill is in use."""
+    for decision in ("approve", "reject", "undo", "approve_always"):
+        refusal = kb.decision_refusal(installable("installed", status="approved"), decision)
+        check(f"{decision} is refused once installed", refusal is not None and "installed" in refusal, refusal)
+    check("reject is refused while the laptop is on it",
+          kb.decision_refusal(installable("requested"), "reject") is not None)
+
+
+def test_a_rejected_item_is_not_installed():
+    check("a rejected item cannot be installed",
+          kb.install_refusal(installable(status="rejected")) is not None)
+    check("nor one whose rejection the laptop already recorded",
+          kb.install_refusal(installable(status="closed")) is not None)
+    check("available, blocked and failed can be pressed",
+          all(kb.install_refusal(installable(s)) is None for s in ("available", "blocked", "failed")))
+    check("an approval from before Install decided these can still be installed",
+          kb.install_refusal(installable(status="applied")) is None)
 
 
 # ── who may press it ────────────────────────────────────────────────────────
@@ -412,12 +456,104 @@ def test_a_re_push_never_undoes_a_press():
           item["install_target_path"] == ".claude/skills/moved/", item)
 
 
+def install(item_id: str, who: str = "tester", commit: str = "8f46c09") -> dict:
+    send_heartbeat()
+    kb.request_install(item_id, who)
+    return kb.record_install_result(item_id, "installed", commit, None)
+
+
+def test_a_successful_install_closes_the_decision():
+    publish("2026-09-23-skill-ship-to-main")
+    send_heartbeat()
+    pressed = kb.request_install("2026-09-23-skill-ship-to-main", "owner")
+    done = kb.record_install_result("2026-09-23-skill-ship-to-main", "installed", "8f46c09", None)
+    check("the item is approved, by whoever pressed Install, when they pressed it",
+          done["status"] == "approved" and done["decided_by"] == "owner"
+          and done["decided_at"] == pressed["install_requested_at"], done)
+    check("and applied when the result came in", done["applied_at"] is not None, done)
+
+    entries, _ = kb.list_change_log(20, 0)
+    entry = next((e for e in entries if e["id"] == "2026-09-23-skill-ship-to-main"), None)
+    check("the change log shows it straight away, with who decided and the commit",
+          entry is not None and entry["decided_by"] == "owner" and entry["install_commit"] == "8f46c09", entry)
+    check("the laptop pulls it like any approved item, so change-log.md records it",
+          "2026-09-23-skill-ship-to-main" in [d["id"] for d in kb.pending_decisions()])
+
+    kb.mark_applied(["2026-09-23-skill-ship-to-main"])
+    recorded = one_item("2026-09-23-skill-ship-to-main")
+    check("recording it on the laptop does not move when it was applied",
+          recorded["status"] == "applied" and recorded["applied_at"] == done["applied_at"], recorded)
+
+
+def test_a_blocked_or_failed_install_decides_nothing():
+    publish("2026-09-23-skill-stuck")
+    send_heartbeat()
+    kb.request_install("2026-09-23-skill-stuck", "owner")
+    stuck = kb.record_install_result("2026-09-23-skill-stuck", "blocked", None, "Uncommitted changes on test_1")
+    check("a blocked install leaves the item waiting for a decision",
+          stuck["status"] == "pending" and stuck["decided_by"] is None and stuck["applied_at"] is None, stuck)
+    check("Reject is still there for it",
+          kb.decide_review_item("2026-09-23-skill-stuck", "reject", None, "owner")["status"] == "rejected")
+
+
+def test_the_decision_routes_refuse_an_installed_item():
+    publish("2026-09-23-skill-kept")
+    install("2026-09-23-skill-kept")
+    for decision in ("approve", "reject", "undo"):
+        refused = raises(kb_routes.kb_decide, "2026-09-23-skill-kept",
+                         kb_routes.DecisionRequest(decision=decision), payload={"username": "owner"})
+        check(f"POST {decision} on an installed item is refused with 409",
+              isinstance(refused, HTTPException) and refused.status_code == 409, refused)
+    item = one_item("2026-09-23-skill-kept")
+    check("and the item is still approved by whoever installed it",
+          item["status"] == "approved" and item["decided_by"] == "tester", item)
+
+
+def test_approve_is_refused_and_reject_blocks_install():
+    publish("2026-09-23-skill-maybe")
+    refused = raises(kb.decide_review_item, "2026-09-23-skill-maybe", "approve", None, "owner")
+    check("approving an installable item is refused",
+          isinstance(refused, ValueError) and "Install" in str(refused), refused)
+    kb.decide_review_item("2026-09-23-skill-maybe", "reject", None, "owner")
+    send_heartbeat()
+    rejected = raises(kb.request_install, "2026-09-23-skill-maybe", "owner")
+    check("a rejected item cannot be installed",
+          isinstance(rejected, ValueError) and "rejected" in str(rejected), rejected)
+    kb.decide_review_item("2026-09-23-skill-maybe", "undo", None, "owner")
+    check("until the rejection is undone",
+          raises(kb.request_install, "2026-09-23-skill-maybe", "owner") is None)
+
+
+def test_an_install_reported_before_this_rule_is_closed_on_start():
+    """8f46c09 was installed while an install still left its item pending."""
+    publish("2026-09-23-skill-earlier")
+    send_heartbeat()
+    kb.request_install("2026-09-23-skill-earlier", "owner")
+    with kb._conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE kb_review_items SET install_state = 'installed', install_commit = '8f46c09',
+                    install_requested_by = NULL, status = 'pending'
+                WHERE id = '2026-09-23-skill-earlier'
+            """)
+        conn.commit()
+    kb._tables_ready = False
+    kb.ensure_kb_tables()
+    item = one_item("2026-09-23-skill-earlier")
+    check("it is approved, with no Approve or Reject left to press",
+          item["status"] == "approved" and item["applied_at"] is not None
+          and item["decided_at"] == item["install_requested_at"], item)
+
+
 NO_DATABASE = [
     test_a_press_is_impossible_without_a_fresh_heartbeat,
     test_each_condition_names_itself,
     test_the_branch_reason_says_which_branch,
     test_only_a_new_skill_item_installs_anything,
     test_a_press_is_named_for_the_laptop,
+    test_install_is_the_only_decision_on_an_installable_item,
+    test_an_installed_skill_cannot_be_decided_again,
+    test_a_rejected_item_is_not_installed,
     test_install_is_behind_knowledge_review,
     test_the_laptop_routes_are_behind_the_sync_token,
 ]
@@ -430,6 +566,11 @@ NEEDS_DATABASE = [
     test_the_gate_reopens_once_the_heartbeat_clears,
     test_a_retry_after_a_failure_starts_clean,
     test_a_re_push_never_undoes_a_press,
+    test_a_successful_install_closes_the_decision,
+    test_a_blocked_or_failed_install_decides_nothing,
+    test_the_decision_routes_refuse_an_installed_item,
+    test_approve_is_refused_and_reject_blocks_install,
+    test_an_install_reported_before_this_rule_is_closed_on_start,
 ]
 
 

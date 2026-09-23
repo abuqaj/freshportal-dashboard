@@ -65,6 +65,8 @@ interface ChangeLogEntry {
   decided_at: string | null;
   applied_at: string | null;
   applied_by_run: string | null;
+  // An installed skill was applied by its commit, not by a run.
+  install_commit: string | null;
 }
 
 interface Rule {
@@ -222,23 +224,35 @@ function EvidenceList({ evidence, t }: { evidence: string[] | null; t: Strings }
 
 /* ─── Review ─────────────────────────────────────────────────────────────── */
 
-/** Install into the repository the item names. Pressing only records the
- *  intent; the laptop collects it within five minutes and makes the commit. */
-function InstallPanel({ item, agents, t, onChanged }: {
+/** An item that installs a skill is decided by Install, not Approve: nothing
+ *  installs an approved candidate. The backend refuses the same decisions
+ *  (_installable() and decision_refusal() in knowledge_base.py). */
+function isInstallable(item: ReviewItem): boolean {
+  return item.kind === "new-skill" && !!item.install_state && !!item.install_target_repo;
+}
+
+/** Once pressed, and once committed, there is nothing left to decide. */
+function isInstallLocked(item: ReviewItem): boolean {
+  return item.install_state === "requested" || item.install_state === "installed";
+}
+
+/** Install into the repository the item names, with Reject beside it while the
+ *  item is still open. Pressing only records the intent; the laptop collects it
+ *  within five minutes and makes the commit. */
+function InstallPanel({ item, agents, t, onChanged, children }: {
   item: ReviewItem; agents: AgentState[] | null; t: Strings; onChanged: (item: ReviewItem) => void;
+  children?: React.ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const repo = item.install_target_repo;
-  if (!item.install_state || !repo) return null;
+  if (!repo || isInstallLocked(item) || ["rejected", "closed"].includes(item.status)) return null;
 
   const state = agents?.find(a => a.repo === repo) ?? null;
   // While the state is still loading, say nothing rather than "offline".
   const reason = agents === null ? null : installBlockReason(state);
-  const waiting = item.install_state === "requested";
-  const done = item.install_state === "installed";
-  const pressable = agents !== null && reason === null && !waiting && !done;
+  const pressable = agents !== null && reason === null;
 
   async function install() {
     setBusy(true);
@@ -253,29 +267,37 @@ function InstallPanel({ item, agents, t, onChanged }: {
   }
 
   return (
-    <div className="flex flex-col gap-2 border-t border-border pt-3">
-      {!done && (
-        <button className={`${BTN} self-start bg-sky-700 text-white hover:bg-sky-700/90`}
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap gap-2">
+        <button className={`${BTN} bg-sky-700 text-white hover:bg-sky-700/90`}
           disabled={!pressable || busy} onClick={install}>
           {t.install(repo)}
         </button>
-      )}
+        {children}
+      </div>
       {item.install_state === "blocked" && (
         <p className="text-xs text-amber-700">{t.installBlockedLabel}{item.install_message ? `: ${item.install_message}` : ""}</p>
       )}
       {item.install_state === "failed" && (
         <p className="text-xs text-ember">{t.installFailedLabel}{item.install_message ? `: ${item.install_message}` : ""}</p>
       )}
-      {waiting && <p className="text-xs text-ink-3">{t.installWaiting}</p>}
-      {done && (
-        <p className="text-xs text-emerald">
-          {t.installDone}{item.install_commit && <> · <code>{item.install_commit}</code></>}
-        </p>
-      )}
-      {!waiting && !done && reason && <p className="text-xs text-ink-3">{blockText(reason, state, t)}</p>}
+      {reason && <p className="text-xs text-ink-3">{blockText(reason, state, t)}</p>}
       {error && <ErrorBox message={error} />}
     </div>
   );
+}
+
+/** The item's status, or for an install what the laptop is doing with it. */
+function StatusText({ item, t }: { item: ReviewItem; t: Strings }) {
+  if (item.install_state === "installed") {
+    return (
+      <span className="text-xs font-medium text-emerald">
+        {t.installDone}{item.install_commit && <> · <code>{item.install_commit}</code></>}
+      </span>
+    );
+  }
+  if (item.install_state === "requested") return <span className="text-xs font-medium text-sky-700">{t.installWaiting}</span>;
+  return <span className={`text-xs font-medium ${item.status === "pending" ? "text-amber-700" : "text-ink-3"}`}>{statusLabel(item.status, t)}</span>;
 }
 
 function ReviewCard({ item, agents, t, lang, onDecided }: {
@@ -300,7 +322,12 @@ function ReviewCard({ item, agents, t, lang, onDecided }: {
   }
 
   const pending = item.status === "pending";
-  const changeable = ["approved", "approved_always", "rejected", "answered"].includes(item.status);
+  const installable = isInstallable(item);
+  const locked = installable && isInstallLocked(item);
+  const changeable = !locked && ["approved", "approved_always", "rejected", "answered"].includes(item.status);
+  const rejectButton = (
+    <button className={`${BTN} border border-border text-ink-3 hover:text-ember hover:border-ember/40`} disabled={busy !== null} onClick={() => decide("reject")}>{t.reject}</button>
+  );
 
   return (
     <div className="step-enter rounded-xl border border-border bg-surface p-4 flex flex-col gap-3">
@@ -326,20 +353,25 @@ function ReviewCard({ item, agents, t, lang, onDecided }: {
       <EvidenceList evidence={item.evidence} t={t} />
 
       <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-        <span className={`text-xs font-medium ${pending ? "text-amber-700" : "text-ink-3"}`}>{statusLabel(item.status, t)}</span>
+        <StatusText item={item} t={t} />
         {item.decided_by && <span className="text-[11px] text-ink-3">· {t.decidedBy(item.decided_by, formatWhen(item.decided_at, lang))}</span>}
       </div>
       {item.status === "answered" && item.answer && (
         <p className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-xs text-sky-900 whitespace-pre-wrap">{item.answer}</p>
       )}
 
-      {pending && item.bucket === "signoff" && (
+      {installable && (
+        <InstallPanel item={item} agents={agents} t={t} onChanged={onDecided}>
+          {pending && rejectButton}
+        </InstallPanel>
+      )}
+      {!installable && pending && item.bucket === "signoff" && (
         <div className="flex flex-wrap gap-2">
           <button className={`${BTN} bg-emerald text-white hover:bg-emerald/90`} disabled={busy !== null} onClick={() => decide("approve")}>{t.approve}</button>
           {item.target && !NO_RULE_KINDS.includes(item.kind) && (
             <button className={`${BTN} border border-emerald/40 text-emerald hover:bg-emerald/5`} disabled={busy !== null} onClick={() => decide("approve_always")}>{t.approveAlways}</button>
           )}
-          <button className={`${BTN} border border-border text-ink-3 hover:text-ember hover:border-ember/40`} disabled={busy !== null} onClick={() => decide("reject")}>{t.reject}</button>
+          {rejectButton}
         </div>
       )}
       {pending && item.bucket === "context" && (
@@ -358,7 +390,6 @@ function ReviewCard({ item, agents, t, lang, onDecided }: {
         <button className={`${BTN} self-start border border-border text-ink-3 hover:text-ink`} disabled={busy !== null} onClick={() => decide("undo")}>{t.undo}</button>
       )}
       {error && <ErrorBox message={error} />}
-      <InstallPanel item={item} agents={agents} t={t} onChanged={onDecided} />
     </div>
   );
 }
@@ -540,7 +571,9 @@ function ChangeLogTab({ t, lang }: { t: Strings; lang: Lang }) {
                   <span className="text-sm font-semibold text-ink">{entry.title}</span>
                   <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-ink-3">
                     {entry.target && <span><span className="font-semibold">{t.target}:</span> <code className="text-ink break-all">{entry.target}</code></span>}
-                    <span><span className="font-semibold">{t.run}:</span> <code className="text-ink">{entry.applied_by_run ?? "—"}</code></span>
+                    {entry.install_commit
+                      ? <span className="text-emerald">{t.installDone} · <code>{entry.install_commit}</code></span>
+                      : <span><span className="font-semibold">{t.run}:</span> <code className="text-ink">{entry.applied_by_run ?? "—"}</code></span>}
                   </span>
                 </button>
                 {expanded === entry.id && (
