@@ -206,6 +206,20 @@ interface DfgOpenInvoice {
   departure_date: string;
 }
 
+// Days from the viewer's own today to a YYYY-MM-DD date — 0 today, -1
+// yesterday, 1 tomorrow — or null when the value is not such a date. The
+// backend hands invoice dates over in this form whatever DFG wrote.
+function daysFromToday(value: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return null;
+  const now = new Date();
+  return Math.round(
+    (Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+      - Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
+      / (24 * 60 * 60 * 1000),
+  );
+}
+
 // A date the way FreshPortal's own invoice picker writes it: Today /
 // Yesterday / Tomorrow when it is that close, otherwise day/month without
 // leading zeros ("21/9"). Anything that is not YYYY-MM-DD is shown as it came.
@@ -213,18 +227,13 @@ function invoiceDayLabel(
   value: string,
   words: { dayToday: string; dayYesterday: string; dayTomorrow: string },
 ): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
-  if (!m) return value;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const now = new Date();
-  const days = Math.round(
-    (Date.UTC(y, mo - 1, d) - Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
-      / (24 * 60 * 60 * 1000),
-  );
+  const days = daysFromToday(value);
+  if (days === null) return value;
   if (days === 0) return words.dayToday;
   if (days === -1) return words.dayYesterday;
   if (days === 1) return words.dayTomorrow;
-  return `${d}/${mo}`;
+  const [, month, day] = value.split("-").map(Number);
+  return `${day}/${month}`;
 }
 
 // Pinned first in the invoice picker: a customer but no invoice_id, which
@@ -301,7 +310,7 @@ const DROPDOWN_MARGIN = 8;
 // room actually available. Opening downwards regardless ran the options off
 // the bottom of the screen, where the page scroll could not reach them
 // (found 2026-09-18 on the invoice picker, which sits lowest in the card).
-function SearchableSelect({ options, value, onChange, onPreload, placeholder, noMatchLabel, className, disabled }: {
+function SearchableSelect({ options, value, onChange, onPreload, placeholder, noMatchLabel, className, disabled, firstNearInput }: {
   options: ComboOption[];
   value: string;
   onChange: (id: string) => void;
@@ -312,6 +321,10 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
   noMatchLabel: string;
   className?: string;
   disabled?: boolean;
+  // Keeps the first option next to the input even when the list opens
+  // upwards: drawn bottom-up and scrolled to the bottom, so the options that
+  // matter most are the ones in view (user, 2026-09-23, invoice picker).
+  firstNearInput?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -368,10 +381,13 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
   }, [disabled]);
 
   // Arrow keys move the highlight through a list that is taller than the box
-  // it is drawn in, so the highlight has to bring itself into view.
+  // it is drawn in, so the highlight has to bring itself into view. Also on
+  // opening, and when the list turns bottom-up: the first option, which is
+  // highlighted then, is the one that has to be in view.
+  const bottomUp = !!firstNearInput && pos.openUp;
   useEffect(() => {
     highlightedRef.current?.scrollIntoView({ block: "nearest" });
-  }, [highlighted]);
+  }, [highlighted, open, bottomUp]);
 
   useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
@@ -397,6 +413,8 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
 
   return (
     <div ref={containerRef} className="relative">
+      {/* A closed picker turns green under the pointer, so it reads as
+          something to click rather than a plain text field (user, 2026-09-23). */}
       <input
         value={open ? query : (selected?.name ?? "")}
         readOnly={!open}
@@ -405,15 +423,14 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
         onChange={e => { setQuery(e.target.value); setHighlighted(0); if (!open) setOpen(true); }}
         onFocus={() => { if (disabled) return; setOpen(true); setQuery(""); setHighlighted(0); }}
         onKeyDown={e => {
-          if (e.key === "ArrowDown") {
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
             e.preventDefault();
-            const next = Math.min(highlighted + 1, filtered.length - 1);
-            setHighlighted(next);
-            if (filtered[next]) onPreload?.(filtered[next].id);
-          }
-          else if (e.key === "ArrowUp") {
-            e.preventDefault();
-            const next = Math.max(highlighted - 1, 0);
+            // In a list drawn bottom-up, going down goes back towards the
+            // first option.
+            const towardsLast = (e.key === "ArrowDown") !== bottomUp;
+            const next = towardsLast
+              ? Math.min(highlighted + 1, filtered.length - 1)
+              : Math.max(highlighted - 1, 0);
             setHighlighted(next);
             if (filtered[next]) onPreload?.(filtered[next].id);
           }
@@ -421,9 +438,12 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
           else if (e.key === "Escape") { setOpen(false); }
         }}
         placeholder={placeholder}
-        className={`${className} ${disabled ? "opacity-60 cursor-wait" : open ? "cursor-text" : "cursor-pointer"}`}
+        className={`${className} ${disabled ? "opacity-60 cursor-wait" : open ? "cursor-text" : "cursor-pointer hover:border-emerald hover:bg-emerald-light"}`}
       />
       {open && !disabled && typeof document !== "undefined" && createPortal(
+        // Framed in the brand green of the focused input, with a heavy shadow
+        // and a rule between rows: a white list with a grey border blended
+        // into the white fields it opens over (user, 2026-09-23).
         <div
           ref={dropdownRef}
           style={{
@@ -433,7 +453,9 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
             maxHeight: pos.maxHeight,
             ...(pos.openUp ? { bottom: pos.bottom } : { top: pos.top }),
           }}
-          className="z-[500] overflow-y-auto rounded-xl border border-border bg-surface shadow-2xl"
+          className={`z-[500] overflow-y-auto rounded-xl border-2 border-emerald bg-surface
+            shadow-[0_16px_48px_rgba(17,26,20,0.35)] divide-y divide-border
+            ${bottomUp ? "flex flex-col-reverse divide-y-reverse" : ""}`}
         >
           {filtered.length === 0 ? (
             <p className="text-xs text-ink-3 px-3 py-2">{noMatchLabel}</p>
@@ -445,7 +467,7 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
               onMouseDown={e => e.preventDefault()}
               onMouseEnter={() => onPreload?.(o.id)}
               onClick={() => selectOption(o)}
-              className={`w-full text-left px-3 py-2 text-sm transition-colors
+              className={`w-full shrink-0 text-left px-3 py-2 text-sm transition-colors
                 ${o.id === value ? "bg-emerald/10 text-emerald font-medium" : "text-ink"}
                 ${i === highlighted ? "bg-muted" : "hover:bg-muted"}`}
             >
@@ -526,7 +548,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const req = fetch(`${RAILWAY}/delivery/api/open-invoices?customer_id=${encodeURIComponent(cid)}`)
       .then(async r => {
         if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-        const rows: DfgOpenInvoice[] = (await r.json()).invoices ?? [];
+        // Only invoices departing today or later: a shipment is never put on
+        // one that has already left (user, 2026-09-23). Measured from the
+        // viewer's today, the same day the Today label uses. One without a
+        // readable departure date is kept — hiding it would make a real
+        // invoice unselectable with nothing on screen to say why.
+        const all: DfgOpenInvoice[] = (await r.json()).invoices ?? [];
+        const rows = all.filter(inv => (daysFromToday(inv.departure_date) ?? 0) >= 0);
         invoiceCacheRef.current.set(cid, rows);
         return rows;
       })
@@ -1761,6 +1789,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       value={invoiceId}
                       onChange={setInvoiceId}
                       disabled={invoicesLoading}
+                      firstNearInput
                       placeholder={invoicesLoading ? td.loadingOpenInvoices : td.invoicePlaceholder}
                       noMatchLabel={td.noOpenInvoicesFound}
                       className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
