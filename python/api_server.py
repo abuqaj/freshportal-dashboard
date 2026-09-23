@@ -3149,13 +3149,13 @@ def delivery_api_open_invoices(
     customer_id: int,
     _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
-    """GET /dfg/v1/invoice_open — the customer's still-open invoices, for the
-    shipment step's invoice picker.
+    """GET /dfg/v1/invoice_open — the customer's still-open invoices from the
+    last two weeks, for the shipment step's invoice picker.
 
-    Only id / sequence / reference / invoice_date are passed on; the picker
-    shows the last three and sends the id back as invoice_id on create. An
-    empty list is a normal answer (customer has nothing open yet), so the UI
-    can fall back to letting DFG create a new invoice.
+    The picker shows sequence / reference / departure_date and sends the id
+    back as invoice_id on create. An empty list is a normal answer (customer
+    has nothing open yet), so the UI can fall back to letting DFG create a
+    new invoice.
     """
     cfg = get_ecuador_cfg()
     try:
