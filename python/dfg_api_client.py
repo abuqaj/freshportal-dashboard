@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -158,23 +158,37 @@ def get_batch(cfg: Config, supplier_id: str, batch_number: str) -> dict[str, Any
 OPEN_INVOICE_MAX_AGE_DAYS = 14
 
 
-def _iso_date(value: str) -> date | None:
-    """YYYY-MM-DD as the DFG API writes it, or None if it is anything else."""
-    try:
-        return date.fromisoformat(value[:10])
-    except ValueError:
-        return None
+def _dfg_date(value: Any) -> date | None:
+    """A date as invoice_open writes it — DD-MM-YYYY, e.g. "18-09-2026"
+    (seen live 2026-09-23) — or as YYYY-MM-DD, which the rest of the DFG API
+    uses. None for anything else, including an empty value."""
+    text = str(value or "")[:10]
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def _iso_or_raw(value: Any) -> str:
+    """YYYY-MM-DD when the date can be read, so the UI has one format to
+    parse; the value as it came otherwise."""
+    parsed = _dfg_date(value)
+    return parsed.isoformat() if parsed else str(value or "")
 
 
 def get_open_invoices(cfg: Config, customer_id: int) -> list[dict[str, Any]]:
     """GET /dfg/v1/invoice_open — the customer's invoices that are still open,
-    invoiced in the last OPEN_INVOICE_MAX_AGE_DAYS, latest departure first.
+    invoiced in the last OPEN_INVOICE_MAX_AGE_DAYS, latest departure first,
+    with both dates as YYYY-MM-DD.
 
     Offered in the UI so a shipment can be allocated to an invoice that
     already exists instead of always creating a new one (2026-09-18 API
     change). The age limit is applied by DFG itself: invoice_date is a
     required parameter and the endpoint returns the invoices from that date
-    up to today (final API shape, 2026-09-23).
+    up to today (final API shape, 2026-09-23). Which of them have already
+    departed is left to the UI, which knows the viewer's own "today".
 
     Returns [] rather than raising when the customer has none — an empty
     picker is a normal state ("this customer has no open invoice yet"), not
@@ -196,17 +210,19 @@ def get_open_invoices(cfg: Config, customer_id: int) -> list[dict[str, Any]]:
             "id": inv.get("id"),
             "sequence": str(inv.get("sequence") or ""),
             "reference": str(inv.get("reference") or ""),
-            "invoice_date": str(inv.get("invoice_date") or ""),
-            "departure_date": str(inv.get("departure_date") or ""),
+            "invoice_date": _iso_or_raw(inv.get("invoice_date")),
+            "departure_date": _iso_or_raw(inv.get("departure_date")),
         }
         for inv in (data.get("invoices") or [])
         if inv.get("id")
     ]
 
-    # Latest departure first, as the picker shows departure dates: the invoice
-    # a delivery being imported today belongs to is almost always one of the
-    # most recent ones. Rows without a readable departure date sort last.
-    rows.sort(key=lambda r: _iso_date(r["departure_date"]) or date.min, reverse=True)
+    # Latest departure first, then latest invoice date: the invoice a delivery
+    # being imported today belongs to is almost always one of the most recent
+    # ones. Rows without a readable departure date sort last.
+    rows.sort(key=lambda r: (_dfg_date(r["departure_date"]) or date.min,
+                             _dfg_date(r["invoice_date"]) or date.min),
+              reverse=True)
     return rows
 
 
