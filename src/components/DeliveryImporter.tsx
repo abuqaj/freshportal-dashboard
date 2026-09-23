@@ -194,15 +194,15 @@ interface DfgCustomer {
 // afterwards.
 const STOCK_CUSTOMER_ID = "stock";
 
-// One still-open invoice of the selected customer (GET /dfg/v1/invoice_open,
-// via /delivery/api/open-invoices). Only the id the picker sends back and the
-// three values it displays are carried — the endpoint returns each invoice's
-// full stock items and order lines, none of which this screen reads.
+// One still-open invoice of the selected customer from the last two weeks
+// (GET /dfg/v1/invoice_open, via /delivery/api/open-invoices). The picker
+// shows sequence, reference and departure date and sends the id back.
 interface DfgOpenInvoice {
   id: number;
   sequence: string;
   reference: string;
   invoice_date: string;
+  departure_date: string;
 }
 
 // Pinned first in the invoice picker: a customer but no invoice_id, which
@@ -478,11 +478,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [openInvoices, setOpenInvoices] = useState<DfgOpenInvoice[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
   const [invoicesFailed, setInvoicesFailed] = useState(false);
-  // The lookup is slow at the FreshPortal end: it builds every invoice's stock
-  // items and order lines before we keep four fields per invoice and drop the
-  // rest. Nothing here can make that call quicker, so it is started earlier
-  // (while the customer is still only highlighted) and its answer is kept, so
-  // the wait overlaps the reading and the clicking instead of following it.
+  // The lookup is a round trip to FreshPortal that has been slow for
+  // customers with many open invoices. Nothing here can make that call
+  // quicker, so it is started earlier (while the customer is still only
+  // highlighted) and its answer is kept, so the wait overlaps the reading and
+  // the clicking instead of following it.
   const invoiceCacheRef = useRef<Map<string, DfgOpenInvoice[]>>(new Map());
   const invoiceInflightRef = useRef<Map<string, Promise<DfgOpenInvoice[]>>>(new Map());
   const preloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -566,13 +566,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       .finally(() => setInvoicesLoading(false));
   }
 
-  // Values only, separated by dashes — sequence, reference, invoice date is
+  // Values only, separated by dashes — sequence, reference, departure date is
   // how the shipment step names an open invoice.
   const invoiceOptions: ComboOption[] = useMemo(() => [
     { id: NEW_INVOICE_ID, name: td.newInvoiceOptionLabel },
     ...openInvoices.map(inv => ({
       id: String(inv.id),
-      name: [inv.sequence, inv.reference, inv.invoice_date].filter(Boolean).join(" – "),
+      name: [inv.sequence, inv.reference, inv.departure_date].filter(Boolean).join(" – "),
     })),
   ], [openInvoices, td]);
   const [orderDateOverride, setOrderDateOverride] = useState("");
