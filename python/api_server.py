@@ -3152,8 +3152,8 @@ def delivery_api_open_invoices(
     """GET /dfg/v1/invoice_open — the customer's still-open invoices from the
     last two weeks, for the shipment step's invoice picker.
 
-    The picker shows sequence / reference / departure_date and sends the id
-    back as invoice_id on create. An empty list is a normal answer (customer
+    The picker shows sequence / invoice_date / departure_date / reference
+    and sends the id back as invoice_id on create. An empty list is a normal answer (customer
     has nothing open yet), so the UI can fall back to letting DFG create a
     new invoice.
     """
