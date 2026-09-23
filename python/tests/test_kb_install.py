@@ -132,14 +132,19 @@ def test_the_branch_reason_says_which_branch():
 
 # ── what a published item carries, and how a press is named ─────────────────
 
-def test_only_a_new_skill_item_installs_anything():
+def test_only_a_skill_item_naming_a_repository_installs_anything():
     skill = {"kind": "new-skill", "target_repo": REPO, "target_path": ".claude/skills/ship-to-main/"}
     check("a new-skill item installs where it says",
           kb._install_target(skill) == (REPO, ".claude/skills/ship-to-main/"))
+    check("a skill-edit naming this repository updates where it says",
+          kb._install_target(dict(skill, kind="skill-edit")) == (REPO, ".claude/skills/ship-to-main/"))
     check("another kind installs nothing, whatever fields it carries",
           kb._install_target(dict(skill, kind="wiki-proposal")) == (None, None))
     check("a new-skill item with no target installs nothing",
           kb._install_target({"kind": "new-skill"}) == (None, None))
+    check("a skill-edit for a knowledge-base skill names no repository and installs nothing",
+          kb._install_target({"kind": "skill-edit", "target_path": ".claude/skills/improve-system/"})
+          == (None, None))
     check("the install_-prefixed spelling is accepted too",
           kb._install_target({"kind": "new-skill", "install_target_repo": REPO,
                               "install_target_path": "x/"}) == (REPO, "x/"))
@@ -173,8 +178,8 @@ def test_a_press_is_named_for_the_laptop():
 
 # ── Install is the decision ─────────────────────────────────────────────────
 
-def installable(install_state: str = "available", status: str = "pending") -> dict:
-    return {"kind": "new-skill", "install_target_repo": REPO,
+def installable(install_state: str = "available", status: str = "pending", kind: str = "new-skill") -> dict:
+    return {"kind": kind, "install_target_repo": REPO,
             "install_state": install_state, "status": status}
 
 
@@ -201,6 +206,28 @@ def test_an_installed_skill_cannot_be_decided_again():
         check(f"{decision} is refused once installed", refusal is not None and "installed" in refusal, refusal)
     check("reject is refused while the laptop is on it",
           kb.decision_refusal(installable("requested"), "reject") is not None)
+
+
+def test_update_follows_the_same_rules_as_install():
+    """A skill-edit for this repository is decided by Update, exactly as a
+    new-skill is by Install; one for the knowledge base keeps Approve."""
+    for state in ("available", "blocked", "failed"):
+        refusal = kb.decision_refusal(installable(state, kind="skill-edit"), "approve")
+        check(f"approve is refused on an update at {state}, naming Update",
+              refusal is not None and "Update" in refusal, refusal)
+        check(f"reject is allowed on an update at {state}",
+              kb.decision_refusal(installable(state, kind="skill-edit"), "reject") is None)
+    for decision in ("approve", "reject", "undo"):
+        for state in ("requested", "installed"):
+            check(f"{decision} is refused on an update at {state}",
+                  kb.decision_refusal(installable(state, kind="skill-edit"), decision) is not None)
+    check("an update already committed says so in its own words",
+          "already committed" in (kb.install_refusal(installable("installed", kind="skill-edit")) or ""))
+    kb_skill = {"kind": "skill-edit", "install_target_repo": None, "install_state": None, "status": "pending"}
+    check("a knowledge-base skill-edit keeps Approve",
+          kb.decision_refusal(kb_skill, "approve") is None)
+    check("and cannot be pressed as an update",
+          kb.install_refusal(kb_skill) is not None)
 
 
 def test_a_rejected_item_is_not_installed():
@@ -302,11 +329,10 @@ def temporary_schema(url: str):
         admin.close()
 
 
-def publish(item_id: str, kind: str = "new-skill", path: str | None = None) -> None:
+def publish(item_id: str, kind: str = "new-skill", path: str | None = None, repo: str | None = REPO) -> None:
     kb.upsert_review_items([{
         "id": item_id, "bucket": "signoff", "kind": kind, "title": f"Add {item_id}",
-        "target_repo": REPO if kind == "new-skill" else None,
-        "target_path": path or f".claude/skills/{item_id}/",
+        "target_repo": repo, "target_path": path or f".claude/skills/{item_id}/",
     }], run_id=None)
 
 
@@ -545,14 +571,129 @@ def test_an_install_reported_before_this_rule_is_closed_on_start():
           and item["decided_at"] == item["install_requested_at"], item)
 
 
+def test_an_update_is_decided_by_pressing_update():
+    """The first Update item: a change to new-delivery-json-format, which lives here."""
+    item_id = "2026-09-24-skill-edit-new-delivery-json-format"
+    publish(item_id, kind="skill-edit", path=".claude/skills/new-delivery-json-format/")
+    check("a skill-edit naming this repository arrives ready to update",
+          one_item(item_id)["install_state"] == "available", one_item(item_id))
+    approve = raises(kb_routes.kb_decide, item_id, kb_routes.DecisionRequest(decision="approve"),
+                     payload={"username": "owner"})
+    check("approving it is refused with 409",
+          isinstance(approve, HTTPException) and approve.status_code == 409, approve)
+
+    send_heartbeat()
+    pressed = kb.request_install(item_id, "owner")
+    requests = send_heartbeat()
+    check("the press reaches the laptop through the same heartbeat",
+          [r["id"] for r in requests] == [item_id], requests)
+    for decision in ("approve", "reject"):
+        refused = raises(kb_routes.kb_decide, item_id, kb_routes.DecisionRequest(decision=decision),
+                         payload={"username": "owner"})
+        check(f"{decision} is refused with 409 while the laptop is on it",
+              isinstance(refused, HTTPException) and refused.status_code == 409, refused)
+
+    done = kb.record_install_result(item_id, "installed", "c0ffee1", None)
+    check("a committed update is approved, by whoever pressed Update, when they pressed it",
+          done["status"] == "approved" and done["decided_by"] == "owner"
+          and done["decided_at"] == pressed["install_requested_at"] and done["applied_at"] is not None, done)
+    for decision in ("approve", "reject", "undo"):
+        refused = raises(kb_routes.kb_decide, item_id, kb_routes.DecisionRequest(decision=decision),
+                         payload={"username": "owner"})
+        check(f"{decision} on an updated item is refused with 409",
+              isinstance(refused, HTTPException) and refused.status_code == 409, refused)
+    again = raises(kb.request_install, item_id, "owner")
+    check("updating again is refused, in the update's own words",
+          isinstance(again, ValueError) and "already committed" in str(again), again)
+
+    entries, _ = kb.list_change_log(20, 0)
+    entry = next((e for e in entries if e["id"] == item_id), None)
+    check("the change log shows it as a skill-edit, with who decided and the commit",
+          entry is not None and entry["kind"] == "skill-edit" and entry["decided_by"] == "owner"
+          and entry["install_commit"] == "c0ffee1", entry)
+
+
+def test_the_laptop_sees_an_update_was_carried_out():
+    publish("2026-09-24-skill-edit-done", kind="skill-edit")
+    publish("2026-09-24-skill-edit-kb", kind="skill-edit", repo=None)
+    kb.decide_review_item("2026-09-24-skill-edit-kb", "approve", None, "owner")
+    fields = ("install_state", "install_commit", "install_target_repo", "install_target_path")
+    decisions = kb.pending_decisions()
+    check("every decision carries the four install fields, installed or not",
+          decisions and all(all(f in d for f in fields) for d in decisions), decisions)
+
+    install("2026-09-24-skill-edit-done", who="owner", commit="c0ffee1")
+    decisions = {d["id"]: d for d in kb.pending_decisions()}
+    done = decisions.get("2026-09-24-skill-edit-done") or {}
+    check("an update already committed is handed back saying so",
+          done.get("install_state") == "installed" and done.get("install_commit") == "c0ffee1"
+          and done.get("install_target_repo") == REPO
+          and done.get("install_target_path") == ".claude/skills/2026-09-24-skill-edit-done/", done)
+    kb_edit = decisions.get("2026-09-24-skill-edit-kb") or {}
+    check("a knowledge-base skill-edit is handed back as a plain approval, for improve-system to apply",
+          kb_edit.get("status") == "approved" and kb_edit.get("install_state") is None, kb_edit)
+
+
+def test_a_knowledge_base_skill_edit_keeps_approve_and_reject():
+    """The trap: this one is applied by improve-system in the knowledge base."""
+    publish("2026-09-24-skill-edit-improve", kind="skill-edit", repo=None)
+    item = one_item("2026-09-24-skill-edit-improve")
+    check("it arrives with nothing to install",
+          item["install_state"] is None and item["install_target_repo"] is None, item)
+    send_heartbeat()
+    check("Update cannot be pressed on it",
+          isinstance(raises(kb.request_install, "2026-09-24-skill-edit-improve", "owner"), ValueError))
+    check("Approve works as it always has",
+          kb.decide_review_item("2026-09-24-skill-edit-improve", "approve", None, "owner")["status"] == "approved")
+    kb.decide_review_item("2026-09-24-skill-edit-improve", "undo", None, "owner")
+    check("and so does Reject",
+          kb.decide_review_item("2026-09-24-skill-edit-improve", "reject", None, "owner")["status"] == "rejected")
+
+
+def test_an_update_written_against_an_older_file_is_rejected_not_retried():
+    """Someone edited the skill after the update was written; the laptop will
+    not overwrite it, so the way forward is Reject."""
+    publish("2026-09-24-skill-edit-stale", kind="skill-edit")
+    send_heartbeat()
+    kb.request_install("2026-09-24-skill-edit-stale", "owner")
+    stale = kb.record_install_result("2026-09-24-skill-edit-stale", "blocked", None,
+                                     "SKILL.md has changed since this update was written")
+    check("a blocked update decides nothing and keeps its reason",
+          stale["status"] == "pending" and "has changed since" in (stale["install_message"] or ""), stale)
+    check("pressing Update again is only refused by the laptop, so it is harmless here",
+          raises(kb.request_install, "2026-09-24-skill-edit-stale", "owner") is None)
+    kb.record_install_result("2026-09-24-skill-edit-stale", "blocked", None,
+                             "SKILL.md has changed since this update was written")
+    check("and Reject is there for it",
+          kb.decide_review_item("2026-09-24-skill-edit-stale", "reject", None, "owner")["status"] == "rejected")
+
+
+def test_a_re_push_gives_an_update_published_too_early_its_button():
+    """An update published before this deployment was stored as installing
+    nothing; pushing the same item again fills the empty install_state."""
+    publish("2026-09-24-skill-edit-early", kind="skill-edit")
+    with kb._conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE kb_review_items SET install_state = NULL
+                WHERE id = '2026-09-24-skill-edit-early'
+            """)
+        conn.commit()
+    publish("2026-09-24-skill-edit-early", kind="skill-edit")
+    item = one_item("2026-09-24-skill-edit-early")
+    check("the re-push makes it updatable",
+          item["install_state"] == "available" and item["install_target_repo"] == REPO, item)
+
+
 NO_DATABASE = [
     test_a_press_is_impossible_without_a_fresh_heartbeat,
     test_each_condition_names_itself,
     test_the_branch_reason_says_which_branch,
-    test_only_a_new_skill_item_installs_anything,
+    test_only_a_skill_item_naming_a_repository_installs_anything,
     test_a_press_is_named_for_the_laptop,
     test_install_is_the_only_decision_on_an_installable_item,
     test_an_installed_skill_cannot_be_decided_again,
+    test_update_follows_the_same_rules_as_install,
     test_a_rejected_item_is_not_installed,
     test_install_is_behind_knowledge_review,
     test_the_laptop_routes_are_behind_the_sync_token,
@@ -571,6 +712,11 @@ NEEDS_DATABASE = [
     test_the_decision_routes_refuse_an_installed_item,
     test_approve_is_refused_and_reject_blocks_install,
     test_an_install_reported_before_this_rule_is_closed_on_start,
+    test_an_update_is_decided_by_pressing_update,
+    test_the_laptop_sees_an_update_was_carried_out,
+    test_a_knowledge_base_skill_edit_keeps_approve_and_reject,
+    test_an_update_written_against_an_older_file_is_rejected_not_retried,
+    test_a_re_push_gives_an_update_published_too_early_its_button,
 ]
 
 

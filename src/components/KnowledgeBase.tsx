@@ -9,9 +9,13 @@ const PROPOSAL_KIND = "wiki-proposal";
 // Kinds a don't-ask-again rule never covers; the backend refuses them too (NO_RULE_KINDS).
 const NO_RULE_KINDS = ["contradiction", "skill-edit", "new-skill"];
 // .claude/skills/ exists only on test_1, so installing a skill is always a
-// commit there. Mirrors SKILL_BRANCH and HEARTBEAT_FRESH in knowledge_base.py.
+// commit there. Mirrors INSTALL_KINDS, SKILL_BRANCH and HEARTBEAT_FRESH in
+// knowledge_base.py: new-skill is Install, skill-edit is Update.
+const INSTALL_KINDS = ["new-skill", "skill-edit"];
 const SKILL_BRANCH = "test_1";
 const HEARTBEAT_FRESH_MS = 15 * 60 * 1000;
+// How the laptop words refusing a file edited after the update was written.
+const STALE_UPDATE = "has changed since";
 
 type SubTab = "review" | "proposals" | "changelog" | "library" | "runs";
 type ReviewView = "pending" | "decided" | "done";
@@ -226,9 +230,18 @@ function EvidenceList({ evidence, t }: { evidence: string[] | null; t: Strings }
 
 /** An item that installs a skill is decided by Install, not Approve: nothing
  *  installs an approved candidate. The backend refuses the same decisions
- *  (_installable() and decision_refusal() in knowledge_base.py). */
+ *  (_installable() and decision_refusal() in knowledge_base.py). A skill-edit
+ *  naming no repository is for a knowledge-base skill and keeps Approve. */
 function isInstallable(item: ReviewItem): boolean {
-  return item.kind === "new-skill" && !!item.install_state && !!item.install_target_repo;
+  return INSTALL_KINDS.includes(item.kind) && !!item.install_state && !!item.install_target_repo;
+}
+
+/** Install adds a skill folder; Update carries a change to a skill already
+ *  there. The gate, its reasons and the states are the same for both. */
+function installWords(kind: string, t: Strings) {
+  return kind === "skill-edit"
+    ? { press: t.update, done: t.updateDone, blocked: t.updateBlockedLabel, failed: t.updateFailedLabel }
+    : { press: t.install, done: t.installDone, blocked: t.installBlockedLabel, failed: t.installFailedLabel };
 }
 
 /** Once pressed, and once committed, there is nothing left to decide. */
@@ -236,9 +249,9 @@ function isInstallLocked(item: ReviewItem): boolean {
   return item.install_state === "requested" || item.install_state === "installed";
 }
 
-/** Install into the repository the item names, with Reject beside it while the
- *  item is still open. Pressing only records the intent; the laptop collects it
- *  within five minutes and makes the commit. */
+/** Install into (or Update in) the repository the item names, with Reject
+ *  beside it while the item is still open. Pressing only records the intent;
+ *  the laptop collects it within five minutes and makes the commit. */
 function InstallPanel({ item, agents, t, onChanged, children }: {
   item: ReviewItem; agents: AgentState[] | null; t: Strings; onChanged: (item: ReviewItem) => void;
   children?: React.ReactNode;
@@ -249,10 +262,16 @@ function InstallPanel({ item, agents, t, onChanged, children }: {
   const repo = item.install_target_repo;
   if (!repo || isInstallLocked(item) || ["rejected", "closed"].includes(item.status)) return null;
 
+  const words = installWords(item.kind, t);
   const state = agents?.find(a => a.repo === repo) ?? null;
   // While the state is still loading, say nothing rather than "offline".
   const reason = agents === null ? null : installBlockReason(state);
   const pressable = agents !== null && reason === null;
+  // Someone edited the skill after this update was written. The laptop will
+  // refuse every retry the same way (harmless, so Update stays), but only a
+  // rewrite against the current file can go in: Reject asks for that.
+  const staleUpdate = item.kind === "skill-edit" && item.install_state === "blocked"
+    && !!item.install_message?.includes(STALE_UPDATE);
 
   async function install() {
     setBusy(true);
@@ -271,15 +290,16 @@ function InstallPanel({ item, agents, t, onChanged, children }: {
       <div className="flex flex-wrap gap-2">
         <button className={`${BTN} bg-sky-700 text-white hover:bg-sky-700/90`}
           disabled={!pressable || busy} onClick={install}>
-          {t.install(repo)}
+          {words.press(repo)}
         </button>
         {children}
       </div>
       {item.install_state === "blocked" && (
-        <p className="text-xs text-amber-700">{t.installBlockedLabel}{item.install_message ? `: ${item.install_message}` : ""}</p>
+        <p className="text-xs text-amber-700">{words.blocked}{item.install_message ? `: ${item.install_message}` : ""}</p>
       )}
+      {staleUpdate && <p className="text-xs text-ink">{t.updateStale}</p>}
       {item.install_state === "failed" && (
-        <p className="text-xs text-ember">{t.installFailedLabel}{item.install_message ? `: ${item.install_message}` : ""}</p>
+        <p className="text-xs text-ember">{words.failed}{item.install_message ? `: ${item.install_message}` : ""}</p>
       )}
       {reason && <p className="text-xs text-ink-3">{blockText(reason, state, t)}</p>}
       {error && <ErrorBox message={error} />}
@@ -292,7 +312,7 @@ function StatusText({ item, t }: { item: ReviewItem; t: Strings }) {
   if (item.install_state === "installed") {
     return (
       <span className="text-xs font-medium text-emerald">
-        {t.installDone}{item.install_commit && <> · <code>{item.install_commit}</code></>}
+        {installWords(item.kind, t).done}{item.install_commit && <> · <code>{item.install_commit}</code></>}
       </span>
     );
   }
@@ -572,7 +592,7 @@ function ChangeLogTab({ t, lang }: { t: Strings; lang: Lang }) {
                   <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-ink-3">
                     {entry.target && <span><span className="font-semibold">{t.target}:</span> <code className="text-ink break-all">{entry.target}</code></span>}
                     {entry.install_commit
-                      ? <span className="text-emerald">{t.installDone} · <code>{entry.install_commit}</code></span>
+                      ? <span className="text-emerald">{installWords(entry.kind, t).done} · <code>{entry.install_commit}</code></span>
                       : <span><span className="font-semibold">{t.run}:</span> <code className="text-ink">{entry.applied_by_run ?? "—"}</code></span>}
                   </span>
                 </button>

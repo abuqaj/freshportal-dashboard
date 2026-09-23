@@ -870,6 +870,11 @@ const en = {
     installNotFound: "Repository not found on the laptop",
     installWrongBranch: (branch: string) => `The repository is on ${branch}; skills live on test_1`,
     installDirty: "Uncommitted changes on test_1 — commit or stash them first",
+    update: (repo: string) => `Update in ${repo}`,
+    updateDone: "Updated",
+    updateBlockedLabel: "Update blocked",
+    updateFailedLabel: "Update failed — nothing was committed",
+    updateStale: "Someone edited this skill after the update was written, so pressing Update again is refused the same way. Reject it: the update has to be written again against the current file.",
   },
 };
 
@@ -1721,6 +1726,11 @@ const nl: typeof en = {
     installNotFound: "Repository niet gevonden op de laptop",
     installWrongBranch: (branch: string) => `De repository staat op ${branch}; skills horen op test_1`,
     installDirty: "Niet-vastgelegde wijzigingen op test_1 — leg ze eerst vast of stash ze",
+    update: (repo: string) => `Bijwerken in ${repo}`,
+    updateDone: "Bijgewerkt",
+    updateBlockedLabel: "Update geblokkeerd",
+    updateFailedLabel: "Update mislukt — er is niets vastgelegd",
+    updateStale: "Iemand heeft deze skill bewerkt nadat de update is geschreven, dus opnieuw Bijwerken wordt op dezelfde manier geweigerd. Wijs hem af: de update moet opnieuw worden geschreven tegen het huidige bestand.",
   },
 };
 
@@ -2572,6 +2582,11 @@ const pl: typeof en = {
     installNotFound: "Nie znaleziono repozytorium na laptopie",
     installWrongBranch: (branch: string) => `Repozytorium jest na ${branch}; skille mieszkają na test_1`,
     installDirty: "Niezacommitowane zmiany na test_1 — najpierw zrób commit albo schowaj je",
+    update: (repo: string) => `Zaktualizuj w ${repo}`,
+    updateDone: "Zaktualizowano",
+    updateBlockedLabel: "Aktualizacja zablokowana",
+    updateFailedLabel: "Aktualizacja nie powiodła się — nic nie trafiło do repozytorium",
+    updateStale: "Ktoś zmienił ten skill po napisaniu aktualizacji, więc ponowne Zaktualizuj zostanie odrzucone tak samo. Odrzuć ją: aktualizację trzeba napisać od nowa na aktualnym pliku.",
   },
 };
 
@@ -3423,6 +3438,11 @@ const es: typeof en = {
     installNotFound: "Repositorio no encontrado en el portátil",
     installWrongBranch: (branch: string) => `El repositorio está en ${branch}; las skills viven en test_1`,
     installDirty: "Cambios sin confirmar en test_1 — haz commit o guárdalos en stash primero",
+    update: (repo: string) => `Actualizar en ${repo}`,
+    updateDone: "Actualizada",
+    updateBlockedLabel: "Actualización bloqueada",
+    updateFailedLabel: "La actualización falló — no se confirmó nada",
+    updateStale: "Alguien editó esta skill después de escribir la actualización, así que volver a pulsar Actualizar se rechaza igual. Recházala: la actualización debe escribirse de nuevo sobre el archivo actual.",
   },
 };
 

@@ -36,8 +36,12 @@ _STATUS_FOR = {"approve": "approved", "approve_always": "approved_always", "reje
 
 # Installing a skill is always a commit on test_1: .claude/skills/ exists only
 # on that branch, and a skill is live as soon as its file is there, so on the
-# laptop the copy and the commit are one step.
-INSTALL_KIND = "new-skill"
+# laptop the copy and the commit are one step. A new-skill adds a skill folder
+# (Install); a skill-edit carries a change to one already there (Update). Only
+# an item naming the repository installs anything: a skill-edit for a skill in
+# the knowledge base itself names none, and improve-system applies it there
+# after the usual Approve.
+INSTALL_KINDS = ("new-skill", "skill-edit")
 SKILL_BRANCH = "test_1"
 HEARTBEAT_FRESH = timedelta(minutes=15)
 INSTALL_REPORTABLE = ("installed", "blocked", "failed")
@@ -433,13 +437,16 @@ def _commit_row(conn, cur) -> dict:
 
 
 def pending_decisions() -> list[dict]:
-    """Decided in the dashboard, not yet applied on the laptop."""
+    """Decided in the dashboard, not yet applied on the laptop. An item
+    approved by its install says so, with the commit, so the laptop records
+    it rather than carrying the change out a second time."""
     ensure_kb_tables()
     with _conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT id, run_id, bucket, kind, title, target, body, evidence, why,
-                       status, answer, decided_by, decided_at
+                       status, answer, decided_by, decided_at,
+                       install_state, install_commit, install_target_repo, install_target_path
                 FROM kb_review_items WHERE status = ANY(%s) ORDER BY decided_at
             """, (list(DECIDED),))
             return _rows(cur)
@@ -485,35 +492,45 @@ def delete_rule(rule_id: int) -> bool:
 # ── installing a skill ──────────────────────────────────────────────────────
 
 def _install_target(item: dict) -> tuple[str | None, str | None]:
-    """Where a new-skill item installs to, as the laptop published it. Any
-    other kind installs nothing, whatever fields it happens to carry."""
-    if item.get("kind") != INSTALL_KIND:
+    """Where a skill item installs to, as the laptop published it. Any other
+    kind installs nothing, whatever fields it happens to carry, and neither
+    does a skill item that names no repository."""
+    if item.get("kind") not in INSTALL_KINDS:
         return None, None
     repo = item.get("install_target_repo") or item.get("target_repo")
     path = item.get("install_target_path") or item.get("target_path")
-    return (str(repo) if repo else None), (str(path) if path else None)
+    if not repo:
+        return None, None
+    return str(repo), (str(path) if path else None)
 
 
 def _installable(item: dict) -> bool:
-    return item.get("kind") == INSTALL_KIND and bool(item.get("install_target_repo"))
+    return item.get("kind") in INSTALL_KINDS and bool(item.get("install_target_repo"))
+
+
+def _install_word(item: dict) -> str:
+    """What the button on this item is called, for the refusals below."""
+    return "update" if item.get("kind") == "skill-edit" else "install"
 
 
 def decision_refusal(item: dict, decision: str) -> str | None:
     """Why a decision cannot be recorded on an item that installs a skill, or
     None when the usual rules apply.
 
-    For such an item Install is the decision. Approve decides nothing, since
-    nothing on the laptop installs an approved candidate. Once the skill is
-    committed it is in use, and a Reject would tell the knowledge base's tally
-    that nobody wanted it."""
+    For such an item Install (or Update) is the decision. Approve decides
+    nothing, since nothing on the laptop installs an approved candidate. Once
+    the change is committed it is in use, and a Reject would tell the
+    knowledge base's tally that nobody wanted it."""
     if not _installable(item):
         return None
+    word = _install_word(item)
     if item.get("install_state") == "installed":
-        return "This skill is installed; the install was the decision."
+        return ("This update is committed; the update was the decision." if word == "update"
+                else "This skill is installed; the install was the decision.")
     if item.get("install_state") == "requested":
-        return "This install is waiting for the laptop; decide once it has reported back."
+        return f"This {word} is waiting for the laptop; decide once it has reported back."
     if decision in ("approve", "approve_always"):
-        return "Install decides this item; approving it would install nothing."
+        return f"{word.capitalize()} decides this item; approving it would change nothing."
     return None
 
 
@@ -521,12 +538,13 @@ def install_refusal(item: dict) -> str | None:
     """Why this item cannot be installed whatever the laptop reports, or None."""
     if not _installable(item):
         return "This item does not install anything."
+    word = _install_word(item)
     if item.get("install_state") == "requested":
-        return "This install is already waiting for the laptop."
+        return f"This {word} is already waiting for the laptop."
     if item.get("install_state") == "installed":
-        return "This skill is already installed."
+        return "This update is already committed." if word == "update" else "This skill is already installed."
     if item.get("status") in ("rejected", "closed"):
-        return "This item was rejected; undo the rejection to install it."
+        return f"This item was rejected; undo the rejection to {word} it."
     return None
 
 
