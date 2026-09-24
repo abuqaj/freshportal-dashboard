@@ -101,7 +101,13 @@ interface DeliveryOrder {
   nu_stems_total: number;
   mny_total: number;
   lines: DeliveryLine[];
+  // Set by parser_delivery.py; see DeliveryOrder.warnings there.
+  warnings?: DeliveryWarning[];
 }
+
+type DeliveryWarning =
+  | { code: "bunches_split_by_invoice_total"; variety: string; length: number; boxes: number; bunches_in_file: number; bunches_per_box: number }
+  | { code: "invoice_total_mismatch"; invoice_total: number; file_total: number };
 
 interface FPSupplier {
   fp_supplier_id: string;
@@ -2016,6 +2022,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <span className="ml-2 underline">{showOnlyUnmatched ? td.showAll : td.showOnlyUnmatched}</span>
             </button>
           )}
+
+          {/* What the parser changed or could not reconcile */}
+          {(order.warnings ?? []).map((w, i) => (
+            <div key={i} className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
+              ⚠ {w.code === "bunches_split_by_invoice_total"
+                ? td.warnBunchesSplit(w.variety, w.length, w.boxes, w.bunches_in_file, w.bunches_per_box)
+                : td.warnInvoiceTotalMismatch(w.invoice_total.toFixed(2), w.file_total.toFixed(2))}
+            </div>
+          ))}
 
           {/* Approve toolbar */}
           <div ref={refApproveToolbar} className="flex items-center gap-2 flex-wrap">

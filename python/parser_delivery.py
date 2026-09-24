@@ -1,10 +1,12 @@
 """Parse and aggregate delivery JSON (Elite/Ecoroses format) into FreshPortal delivery lines."""
 from __future__ import annotations
 
+import copy
 import difflib
 import re as _re
 import unicodedata as _ud
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Any
 
 
@@ -71,6 +73,9 @@ class DeliveryOrder:
     # FreshPortal DFG BatchV1 supplier_id, resolved against the local supplier DB
     # (matched from tx_company). Filled in after parsing, before building the API payload.
     supplier_fp_id: str = ""
+    # What the parser changed or could not reconcile, shown above the preview table.
+    # Each is {"code": ..., **numbers}; the UI turns the code into a translated text.
+    warnings: list[dict[str, Any]] = field(default_factory=list)
 
 
 _BOX_TYPE_MAP = {"QB": "QBE", "HB": "HBE"}
@@ -208,6 +213,7 @@ _SUPPLIER_GROWER_MAP: dict[str, str] = {
     "c.i. flores de aposentos sas": "42623",
     "calinama capital offshore sal": "60465",
     "cantiza flores s.a.": "57551",
+    "ceresfarms cia. ltda.": "57365",
     "colibri flowers s.a.": "57541",
     "comercializadora amn almanti": "60545",
     "d.r. ecuador roses s.a.": "25319",
@@ -532,6 +538,119 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
     return orders
 
 
+def _is_ceresfarms(data: dict[str, Any]) -> bool:
+    invoices = data.get("invoices") or []
+    return bool(invoices) and all(
+        "ceresfarms" in (inv.get("tx_company") or "").lower() for inv in invoices
+    )
+
+
+def _single_product_box(box: dict[str, Any]) -> tuple | None:
+    """What a box holds, when it holds exactly one product; None for a mix box."""
+    products = box.get("products") or []
+    if len(products) != 1:
+        return None
+    p = products[0]
+    return (
+        (box.get("tp_box") or box.get("nm_box") or "").strip().upper(),
+        (p.get("id_migros") or p.get("nm_variety") or "").strip().upper(),
+        int(p.get("nu_length") or 0),
+        int(p.get("nu_stems_bunch") or 0),
+        int(p.get("nu_bunches") or 0),
+        float(p.get("mny_rate_stem") or 0),
+    )
+
+
+# More repeated-box runs than this and the search over their combinations
+# is skipped; the order then only gets the invoice_total_mismatch warning.
+_MAX_REPEAT_RUNS = 16
+
+
+def _undo_repeated_rows(inv: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ceresfarms: find the rows whose total bunches were repeated in each of
+    their boxes, and put the per-box count back, in place. Returns warnings.
+
+    Only the invoice total tells a repeated row apart from separate rows of
+    the same product, so the fix is applied only when exactly one set of runs
+    of identical consecutive boxes explains the difference to the cent.
+    Otherwise nothing changes and the order carries invoice_total_mismatch.
+    """
+    boxes = inv.get("boxes") or []
+    invoice_total = round(float(inv.get("mny_total") or 0), 2)
+    file_total = round(sum(
+        int(p.get("nu_bunches") or 0) * float(p.get("mny_rate_stem") or 0)
+        for box in boxes for p in box.get("products") or []
+    ), 2)
+    if abs(file_total - invoice_total) < 0.01:
+        return []
+
+    # (first box index, box count, amount billed twice or more)
+    runs: list[tuple[int, int, float]] = []
+    i = 0
+    while i < len(boxes):
+        held = _single_product_box(boxes[i])
+        j = i + 1
+        while held is not None and j < len(boxes) and _single_product_box(boxes[j]) == held:
+            j += 1
+        count = j - i
+        if held is not None and count > 1 and held[4] % count == 0:
+            runs.append((i, count, round(held[4] * held[5] * (count - 1), 2)))
+        i = j
+
+    matches = []
+    if file_total > invoice_total and len(runs) <= _MAX_REPEAT_RUNS:
+        excess = file_total - invoice_total
+        matches = [
+            combo
+            for size in range(1, len(runs) + 1)
+            for combo in combinations(runs, size)
+            if abs(sum(r[2] for r in combo) - excess) < 0.01
+        ]
+    if len(matches) != 1:
+        return [{"code": "invoice_total_mismatch",
+                 "invoice_total": invoice_total, "file_total": file_total}]
+
+    warnings: list[dict[str, Any]] = []
+    for start, count, _ in matches[0]:
+        _, variety, length, _, bunches, _ = _single_product_box(boxes[start])
+        for box in boxes[start:start + count]:
+            box["products"][0]["nu_bunches"] = bunches // count
+        warnings.append({
+            "code": "bunches_split_by_invoice_total",
+            "variety": variety.title(), "length": length, "boxes": count,
+            "bunches_in_file": bunches, "bunches_per_box": bunches // count,
+        })
+    return warnings
+
+
+def _parse_ceresfarms_format(data: dict[str, Any]) -> list[DeliveryOrder]:
+    """Parse Ceresfarms: the invoices shape, with two differences.
+
+    - mny_rate_stem holds the price per bunch (6.25 for 25 stems), not per
+      stem; it is divided by nu_stems_bunch here.
+    - A row packed in several boxes can repeat the row's total bunches in each
+      of its boxes (found 2026-09-24, invoice 00020172: Magic Times 40cm, two
+      QB boxes of 10 bunches each, billed as 10 bunches in all, i.e. 2 x 125
+      stems). Pink X-Pression in the same file lists 5 bunches in each of two
+      boxes and is billed for 10, so see _undo_repeated_rows.
+
+    nm_location holds the variety name here, not a farm.
+    """
+    orders: list[DeliveryOrder] = []
+    for inv in data.get("invoices", []):
+        inv = copy.deepcopy(inv)
+        warnings = _undo_repeated_rows(inv)
+        for box in inv.get("boxes") or []:
+            for p in box.get("products") or []:
+                stems_bunch = int(p.get("nu_stems_bunch") or 0)
+                if stems_bunch:
+                    p["mny_rate_stem"] = round(float(p.get("mny_rate_stem") or 0) / stems_bunch, 4)
+        for order in _parse_invoices_format({"invoices": [inv]}):
+            order.warnings = warnings
+            orders.append(order)
+    return orders
+
+
 def _parse_factura_format(data: dict[str, Any]) -> list[DeliveryOrder]:
     """Parse Bloomingacres/FreshFromSource format: single factura object with detalles[]/productos[].
 
@@ -831,6 +950,7 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
 
     Format detection:
       single key with null value containing newlines + "INVOICE" → Fiorentina text format
+      "invoices" key present, every tx_company Ceresfarms → Ceresfarms (price per bunch, repeated rows)
       "invoices" key present → Format 1/2 (Elite/Ecoroses/Alissroses, english fields, boxes[]/products[])
       "id_factura" or "detalles" key present → Format 3 (Bloomingacres/FFS, spanish fields)
       "detalle" key present → Format 4 (per-etiqueta, one row per physical box)
@@ -839,6 +959,8 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
         _key, _val = next(iter(data.items()))
         if isinstance(_key, str) and _val is None and '\n' in _key and 'INVOICE' in _key.upper():
             return _parse_text_invoice(_key)
+    if "invoices" in data and _is_ceresfarms(data):
+        return _parse_ceresfarms_format(data)
     if "invoices" in data:
         return _parse_invoices_format(data)
     if "id_factura" in data or "detalles" in data:
@@ -1129,4 +1251,5 @@ def order_to_dict(order: DeliveryOrder) -> dict:
             }
             for l in order.lines
         ],
+        "warnings": order.warnings,
     }

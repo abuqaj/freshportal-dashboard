@@ -15,6 +15,12 @@ description: Handles a supplier delivery file (JSON or .txt) that delivery impor
 - **Packaging codes:** `QB` → `QBE`, `HB` → `HBE`.
 - **Weight:** roses, and any weight above 100, send no weight.
 - **Pomarosa's grower** comes from each product's `nm_location`.
+- **A different farm is a different grower:** boxes of the same product from
+  different `nm_location`s never merge into one line.
+- **The invoice total is the check.** A header total that disagrees with the
+  lines means the file is read wrongly, even when every box looks plausible.
+  Ceresfarms sends the price per bunch, and can write a row's total bunches
+  into each of its boxes; only the invoice total shows which row that was.
 
 ## Formats that exist today
 
@@ -23,7 +29,8 @@ description: Handles a supplier delivery file (JSON or .txt) that delivery impor
 | Detected by | Parser | Suppliers |
 |---|---|---|
 | single key holding the text of an INVOICE, value `null` | `_parse_text_invoice` | Fiorentina |
-| `invoices` | `_parse_invoices_format` | Elite, Ecoroses, Alissroses |
+| `invoices`, every `tx_company` Ceresfarms | `_parse_ceresfarms_format` | Ceresfarms |
+| `invoices` | `_parse_invoices_format` | Elite, Ecoroses, Alissroses, Pomarosa |
 | `id_factura` or `detalles` | `_parse_factura_format` | Bloomingacres, FreshFromSource |
 | `detalle` | `_parse_etiqueta_format` | one row per physical box |
 
