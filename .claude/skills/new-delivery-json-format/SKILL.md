@@ -25,6 +25,9 @@ description: Handles a supplier delivery file (JSON or .txt) that delivery impor
 - **Pomarosa's grower** comes from each product's `nm_location`.
 - **A different farm is a different grower:** boxes of the same product from
   different `nm_location`s never merge into one line.
+- **A product name that lacks its variety names another product.** Florecal
+  sends tinted `TA RAINBOW MD 60CM …` with `nm_variety` `MONDIAL`; the line
+  takes its variety from the name, so it never shares a plain Mondial's match.
 - **The invoice total is the check.** A header total that disagrees with the
   lines means the file is read wrongly, even when every box looks plausible.
   Ceresfarms sends the price per bunch, and can write a row's total bunches
