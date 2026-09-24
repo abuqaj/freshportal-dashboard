@@ -332,8 +332,9 @@ def resolve_growers(order: "DeliveryOrder", resolved_supplier_nm: str = "",
     catalogue matching during /delivery/parse.
 
     choices is {grower_location_key: manufacturer_id} the user picked for this
-    supplier in earlier deliveries (db.get_grower_choices); a remembered pick
-    wins over the maps above, the way a remembered product match does.
+    supplier in earlier deliveries (db.get_grower_choices). The maps above are
+    fixed and always win (user, 2026-09-24): a remembered pick fills in only
+    where they give no grower — picking is for the suppliers they don't cover.
 
     resolved_supplier_nm should be FreshPortal's canonical name for
     order.supplier_fp_id (get_supplier_name_by_id), when already resolved —
@@ -341,8 +342,8 @@ def resolve_growers(order: "DeliveryOrder", resolved_supplier_nm: str = "",
     field. Falls back to tx_company when not supplied.
     """
     for line in order.lines:
-        chosen = (choices or {}).get(grower_location_key(line.nm_location))
-        line.manufacturer_id = chosen or _resolve_grower_id(order.tx_company, line.nm_location, resolved_supplier_nm)
+        mapped = _resolve_grower_id(order.tx_company, line.nm_location, resolved_supplier_nm)
+        line.manufacturer_id = mapped or (choices or {}).get(grower_location_key(line.nm_location), "")
 
 
 def _normalise_label(label: str) -> str:

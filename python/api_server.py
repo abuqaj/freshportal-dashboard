@@ -3310,7 +3310,8 @@ def catalogue_save_grower_choices(
     _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
 ):
     """Remember the growers the user picked for this supplier's farms at import;
-    the next delivery from the supplier gets them from resolve_growers."""
+    the next delivery from the supplier gets them from resolve_growers wherever
+    the built-in grower maps give none."""
     fp_url = get_ecuador_cfg().freshportal_url
     return {"saved": save_grower_choices(fp_url, supplier_id, req.choices)}
 

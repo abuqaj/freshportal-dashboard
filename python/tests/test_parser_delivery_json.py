@@ -76,16 +76,21 @@ def test_same_product_from_two_farms_stays_two_lines():
     }
 
 
-def test_remembered_grower_wins_over_the_built_in_maps():
+def test_built_in_maps_win_and_a_remembered_grower_fills_the_rest():
+    # The built-in maps are fixed (user, 2026-09-24); picking is for what they don't cover.
     boxes = [
         _box("EXPLORER", 4, 0.62, location="TESSA-R1", gu="G70"),
-        _box("EXPLORER", 4, 0.62, location="TESSA-E1", gu="G70"),
+        _box("EXPLORER", 4, 0.62, location="TESSA-X9", gu="G70"),
     ]
     [order] = parse_delivery_json(_invoice("POMAROSA LIMITED PARTNERSHIP", boxes, 124))
-    resolve_growers(order, choices={"tessa-r1": "99999"})
+    resolve_growers(order, choices={"tessa-r1": "99999", "tessa-x9": "61370"})
     assert {l.nm_location: l.manufacturer_id for l in order.lines} == {
-        "TESSA-R1": "99999", "TESSA-E1": "57396",
+        "TESSA-R1": "57344", "TESSA-X9": "61370",
     }
+
+    [florecal] = parse_delivery_json(_invoice("FLORECAL SA", [_box("MONDIAL", 4, 0.30, location="FLORECAL")], 30))
+    resolve_growers(florecal, "Florecal", choices={"florecal": "99999"})
+    assert florecal.lines[0].manufacturer_id == "57346"
 
 
 def test_remembered_grower_for_a_supplier_that_sends_no_farm():

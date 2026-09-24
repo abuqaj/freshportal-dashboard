@@ -1308,7 +1308,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   }
 
   // Growers the user picked are remembered per supplier and farm, so the
-  // supplier's next delivery starts from them (parser_delivery.resolve_growers).
+  // supplier's next delivery starts from them wherever the built-in grower
+  // maps give none (parser_delivery.resolve_growers; the maps always win).
   async function handleSaveGrowerChoices(supplierId: string) {
     if (Object.keys(growerEdits).length === 0) return;
     try {
