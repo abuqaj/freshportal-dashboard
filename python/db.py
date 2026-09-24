@@ -4210,3 +4210,108 @@ def record_kenya_box_weight(entry: dict) -> None:
                 (entry.get("detail") or "")[:2000],
             ))
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Growers (FreshPortal manufacturers)  (fp_growers, delivery_grower_choice)
+# ---------------------------------------------------------------------------
+# fp_growers holds one FreshPortal system's growers — Ecuador (850255) for
+# delivery import, whose ids are what the DFG API takes as manufacturer_id —
+# from Ecuador and Colombia only, about 600 rows, copied from the hand-kept
+# data/growers_ecuador_system.csv (growers.py). delivery_grower_choice remembers the grower a user
+# picked for a supplier's farm (location_key = nm_location without spaces,
+# lower case; "" for a supplier that sends no farm).
+
+def ensure_grower_tables() -> None:
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS fp_growers (
+                    fp_url          TEXT NOT NULL,
+                    manufacturer_id TEXT NOT NULL,
+                    nm_manufacturer TEXT NOT NULL,
+                    country         TEXT,
+                    synced_at       TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (fp_url, manufacturer_id)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS delivery_grower_choice (
+                    fp_url          TEXT NOT NULL,
+                    fp_supplier_id  TEXT NOT NULL,
+                    location_key    TEXT NOT NULL,
+                    manufacturer_id TEXT NOT NULL,
+                    updated_at      TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (fp_url, fp_supplier_id, location_key)
+                )
+            """)
+
+
+def replace_growers(fp_url: str, growers: list[dict]) -> int:
+    """Full re-sync: this system's grower list becomes exactly `growers`.
+    An empty list changes nothing, so an empty or unreadable source never wipes the list."""
+    rows = [
+        (fp_url, g["manufacturer_id"], g["nm_manufacturer"], g.get("country"))
+        for g in growers
+        if g.get("manufacturer_id") and g.get("nm_manufacturer")
+    ]
+    if not rows:
+        return 0
+    ensure_grower_tables()
+    now = datetime.now(timezone.utc)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM fp_growers WHERE fp_url = %s", (fp_url,))
+            psycopg2.extras.execute_values(cur, """
+                INSERT INTO fp_growers (fp_url, manufacturer_id, nm_manufacturer, country, synced_at)
+                VALUES %s
+                ON CONFLICT (fp_url, manufacturer_id) DO NOTHING
+            """, [r + (now,) for r in rows])
+    return len(rows)
+
+
+def get_growers(fp_url: str) -> list[dict]:
+    """This system's growers, by name."""
+    ensure_grower_tables()
+    with _conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT manufacturer_id, nm_manufacturer, country, synced_at
+                FROM fp_growers WHERE fp_url = %s
+                ORDER BY LOWER(nm_manufacturer)
+            """, (fp_url,))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_grower_choices(fp_url: str, fp_supplier_id: str) -> dict[str, str]:
+    """{location_key: manufacturer_id} the user picked for this supplier before."""
+    try:
+        ensure_grower_tables()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT location_key, manufacturer_id FROM delivery_grower_choice
+                    WHERE fp_url = %s AND fp_supplier_id = %s
+                """, (fp_url, fp_supplier_id))
+                return {k: v for k, v in cur.fetchall()}
+    except Exception as exc:
+        logger.warning("get_grower_choices failed: %s", exc)
+        return {}
+
+
+def save_grower_choices(fp_url: str, fp_supplier_id: str, choices: dict[str, str]) -> int:
+    """Remember {location_key: manufacturer_id} for this supplier; a later pick replaces an earlier one."""
+    rows = [(fp_url, fp_supplier_id, k, v) for k, v in choices.items() if v]
+    if not rows:
+        return 0
+    ensure_grower_tables()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_values(cur, """
+                INSERT INTO delivery_grower_choice (fp_url, fp_supplier_id, location_key, manufacturer_id)
+                VALUES %s
+                ON CONFLICT (fp_url, fp_supplier_id, location_key) DO UPDATE SET
+                    manufacturer_id = EXCLUDED.manufacturer_id,
+                    updated_at      = NOW()
+            """, rows)
+    return len(rows)

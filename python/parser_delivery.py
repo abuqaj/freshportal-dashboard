@@ -311,7 +311,7 @@ def _resolve_grower_id(tx_company: str, nm_location: str, resolved_supplier_nm: 
     appears under different name variants across JSONs, e.g. "Quality
     Service Qualisa S.A.S" vs FreshPortal's registered "Qualisa").
     """
-    loc_key = _re.sub(r"\s+", "", nm_location or "").lower()
+    loc_key = grower_location_key(nm_location)
     if loc_key in _POMAROSA_GROWER_MAP:
         return _POMAROSA_GROWER_MAP[loc_key]
     grower_id = _lookup_company_key(resolved_supplier_nm)
@@ -320,9 +320,21 @@ def _resolve_grower_id(tx_company: str, nm_location: str, resolved_supplier_nm: 
     return _lookup_company_key(tx_company)
 
 
-def resolve_growers(order: "DeliveryOrder", resolved_supplier_nm: str = "") -> None:
+def grower_location_key(nm_location: str) -> str:
+    """The farm a grower choice is remembered for: nm_location without spaces,
+    lower case — the UI's growerLocationKey spells it the same way."""
+    return _re.sub(r"\s+", "", nm_location or "").lower()
+
+
+def resolve_growers(order: "DeliveryOrder", resolved_supplier_nm: str = "",
+                    choices: dict[str, str] | None = None) -> None:
     """Set manufacturer_id on every line of order, in place. Call once after
     catalogue matching during /delivery/parse.
+
+    choices is {grower_location_key: manufacturer_id} the user picked for this
+    supplier in earlier deliveries (db.get_grower_choices). The maps above are
+    fixed and always win (user, 2026-09-24): a remembered pick fills in only
+    where they give no grower — picking is for the suppliers they don't cover.
 
     resolved_supplier_nm should be FreshPortal's canonical name for
     order.supplier_fp_id (get_supplier_name_by_id), when already resolved —
@@ -330,7 +342,8 @@ def resolve_growers(order: "DeliveryOrder", resolved_supplier_nm: str = "") -> N
     field. Falls back to tx_company when not supplied.
     """
     for line in order.lines:
-        line.manufacturer_id = _resolve_grower_id(order.tx_company, line.nm_location, resolved_supplier_nm)
+        mapped = _resolve_grower_id(order.tx_company, line.nm_location, resolved_supplier_nm)
+        line.manufacturer_id = mapped or (choices or {}).get(grower_location_key(line.nm_location), "")
 
 
 def _normalise_label(label: str) -> str:

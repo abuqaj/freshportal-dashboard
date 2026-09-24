@@ -42,6 +42,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                set_delivery_match, delete_delivery_match, clear_delivery_matches,
                create_delivery_import_log, update_delivery_import_log, get_delivery_import_logs,
                upsert_fust_entries, get_all_fust, get_fust_count,
+               replace_growers, get_growers, get_grower_choices, save_grower_choices,
                get_user_flag, set_user_flag,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
                get_bi_sync_history, get_bi_stats,
@@ -80,6 +81,7 @@ from dfg_api_client import (
 )
 from scraper_catalogue import fetch_supplier_list
 from scraper_fust import fetch_fust_catalogue
+from growers import read_growers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -2461,6 +2463,7 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
         # same "which supplier is this really" problem a second time in
         # _resolve_grower_id() with a weaker heuristic (found 2026-08-28).
         supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
+        grower_choices = get_grower_choices(fp_url, supplier_id) if supplier_id else {}
 
         matched_count = 0
         unmatched_count = 0
@@ -2475,7 +2478,7 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
                 for line in order.lines:
                     log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
                               line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
-            resolve_growers(order, supplier_nm)
+            resolve_growers(order, supplier_nm, grower_choices)
             result_orders.append(order_to_dict(order))
 
         log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
@@ -2966,6 +2969,23 @@ class ApproveMatchesRequest(BaseModel):
     matches: list[dict]  # [{delivery_key, nm_variety, nu_length, id_floricode, fp_product_id, nm_product, match_type}]
 
 
+class GrowerChoicesRequest(BaseModel):
+    choices: dict[str, str]  # {location key (nm_location without spaces, lower case): manufacturer_id}
+
+
+@app.post("/catalogue/{supplier_id}/grower-choices")
+def catalogue_save_grower_choices(
+    supplier_id: str,
+    req: GrowerChoicesRequest,
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
+):
+    """Remember the growers the user picked for this supplier's farms at import;
+    the next delivery from the supplier gets them from resolve_growers wherever
+    the built-in grower maps give none."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    return {"saved": save_grower_choices(fp_url, supplier_id, req.choices)}
+
+
 class SupplierMapRequest(BaseModel):
     tx_company: str      # company name from delivery JSON
     fp_supplier_id: str  # confirmed FreshPortal supplier id
@@ -3072,6 +3092,47 @@ def catalogue_suppliers(
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Growers (FreshPortal manufacturers)  (/growers...)
+# ---------------------------------------------------------------------------
+# The delivery grower picker offers the Ecuador system's (850255) growers from
+# Ecuador and Colombia. They are kept by hand in data/growers_ecuador_system.csv
+# (see growers.py) and copied into fp_growers on the first request after each
+# start, so a row added to the file reaches the table with the next deploy.
+
+_growers_lock = threading.Lock()
+_growers_loaded = False
+
+
+def _load_growers_once(fp_url: str) -> None:
+    global _growers_loaded
+    with _growers_lock:
+        if not _growers_loaded:
+            saved = replace_growers(fp_url, read_growers())
+            log.info("[growers] %d growers copied from %s into fp_growers", saved, "growers_ecuador_system.csv")
+            _growers_loaded = True
+
+
+@app.get("/growers")
+def growers_list(_: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
+    """Growers for the delivery grower picker. Served from fp_growers; if the
+    database cannot be reached, from the file it is filled from."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    try:
+        _load_growers_once(fp_url)
+        growers = get_growers(fp_url)
+    except Exception:
+        log.exception("[growers] fp_growers unavailable, serving the file")
+        growers = sorted(read_growers(), key=lambda g: g["nm_manufacturer"].lower())
+    return {
+        "growers": [
+            {"manufacturer_id": g["manufacturer_id"], "nm_manufacturer": g["nm_manufacturer"],
+             "country": g["country"] or ""}
+            for g in growers
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
