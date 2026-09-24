@@ -656,6 +656,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [growersLoading, setGrowersLoading] = useState(true);
   const [growersError, setGrowersError] = useState("");
   const [growerSearch, setGrowerSearch] = useState("");
+  const [growerHighlighted, setGrowerHighlighted] = useState(0);
+  const growerHighlightedRef = useRef<HTMLButtonElement>(null);
+  // Arrow keys move the highlight through a list taller than the popup.
+  useEffect(() => {
+    growerHighlightedRef.current?.scrollIntoView({ block: "nearest" });
+  }, [growerHighlighted, editingGrowerKey]);
   const growerNames = useMemo(
     () => Object.fromEntries(growers.map(g => [g.manufacturer_id, g.nm_manufacturer])) as Record<string, string>,
     [growers],
@@ -2182,7 +2188,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                                 {growerLabel(growerId)}
                               </span>
                               <button
-                                onClick={() => { setEditingGrowerKey(locKey); setGrowerSearch(""); }}
+                                onClick={() => { setEditingGrowerKey(locKey); setGrowerSearch(""); setGrowerHighlighted(0); }}
                                 title={td.editGrowerBtn}
                                 className={`transition-opacity ${growerId ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
                               >
@@ -2376,11 +2382,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             const found = q
               ? growers.filter(g => g.nm_manufacturer.toLowerCase().includes(q) || g.manufacturer_id.includes(q))
               : growers;
+            const shown = found.slice(0, GROWER_PICKER_LIMIT);
             const close = () => { setEditingGrowerKey(null); setGrowerSearch(""); };
+            const pick = (g: Grower) => {
+              setGrowerEdits(prev => ({ ...prev, [locKey]: g.manufacturer_id }));
+              close();
+            };
             return (
               <>
                 <div className="fixed inset-0 bg-black/60 z-[200]" onClick={close} />
-                <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
+                {/* Framed and marked in brand green like the customer and invoice
+                    pickers (SearchableSelect), with the same keys (user, 2026-09-24). */}
+                <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl border-2 border-emerald bg-surface shadow-[0_16px_48px_rgba(17,26,20,0.35)] flex flex-col overflow-hidden">
                   <div className="px-4 py-3 border-b border-border shrink-0">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -2403,13 +2416,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     <input
                       autoFocus
                       value={growerSearch}
-                      onChange={e => setGrowerSearch(e.target.value)}
-                      onKeyDown={e => { if (e.key === "Escape") close(); }}
+                      onChange={e => { setGrowerSearch(e.target.value); setGrowerHighlighted(0); }}
+                      onKeyDown={e => {
+                        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                          e.preventDefault();
+                          const down = e.key === "ArrowDown";
+                          setGrowerHighlighted(h => down ? Math.min(h + 1, shown.length - 1) : Math.max(h - 1, 0));
+                        }
+                        else if (e.key === "Enter") { e.preventDefault(); if (shown[growerHighlighted]) pick(shown[growerHighlighted]); }
+                        else if (e.key === "Escape") close();
+                      }}
                       placeholder={td.growerSearchPlaceholder}
-                      className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
+                      className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
                     />
                   </div>
-                  <div className="overflow-y-auto flex-1">
+                  <div className="overflow-y-auto flex-1 divide-y divide-border">
                     {growers.length === 0 && growersLoading ? (
                       <p className="flex items-center gap-2 text-xs px-4 py-3 text-ink-3">
                         <span className="w-3.5 h-3.5 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />
@@ -2421,19 +2442,20 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       </p>
                     ) : found.length === 0 ? (
                       <p className="text-xs px-4 py-3 text-ink-3">{td.growersNone}</p>
-                    ) : found.slice(0, GROWER_PICKER_LIMIT).map(g => {
+                    ) : shown.map((g, i) => {
                       const isCurrent = currentGrowerId === g.manufacturer_id;
                       return (
                         <button
                           key={g.manufacturer_id}
-                          onClick={() => {
-                            setGrowerEdits(prev => ({ ...prev, [locKey]: g.manufacturer_id }));
-                            close();
-                          }}
-                          className={`w-full text-left px-4 py-2.5 border-b border-border/60 last:border-0 transition-colors
-                            ${isCurrent ? "bg-emerald/8" : "bg-surface hover:bg-muted"}`}
+                          ref={i === growerHighlighted ? growerHighlightedRef : undefined}
+                          type="button"
+                          onMouseEnter={() => setGrowerHighlighted(i)}
+                          onClick={() => pick(g)}
+                          className={`w-full text-left px-3 py-2 transition-colors
+                            ${isCurrent ? "bg-emerald/10" : ""}
+                            ${i === growerHighlighted ? "bg-muted" : "hover:bg-muted"}`}
                         >
-                          <div className={`text-sm font-medium leading-snug ${isCurrent ? "text-emerald" : "text-ink"}`}>{g.nm_manufacturer}</div>
+                          <div className={`text-sm leading-snug ${isCurrent ? "text-emerald font-medium" : "text-ink"}`}>{g.nm_manufacturer}</div>
                           <div className="text-[11px] text-ink-3">#{g.manufacturer_id}{g.country ? ` · ${g.country}` : ""}</div>
                         </button>
                       );
