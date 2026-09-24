@@ -89,7 +89,7 @@ from dfg_api_client import (
 )
 from scraper_catalogue import fetch_supplier_list
 from scraper_fust import fetch_fust_catalogue
-from scraper_manufacturer import fetch_manufacturers, wanted_country
+from growers import read_growers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -3427,69 +3427,41 @@ def catalogue_suppliers(
 # Growers (FreshPortal manufacturers)  (/growers...)
 # ---------------------------------------------------------------------------
 # The delivery grower picker offers the Ecuador system's (850255) growers from
-# Ecuador and Colombia, scraped from its manufacturer list. The first request
-# that finds the list empty starts the scrape; POST /growers/sync refreshes it.
+# Ecuador and Colombia. They are kept by hand in data/growers_ecuador_system.csv
+# (see growers.py) and copied into fp_growers on the first request after each
+# start, so a row added to the file reaches the table with the next deploy.
 
-_grower_sync_lock = threading.Lock()
-_grower_sync_state: dict = {"running": False, "error": "", "message": ""}
-
-
-def _run_grower_sync() -> None:
-    cfg = get_ecuador_cfg()
-    try:
-        rows, seen = fetch_manufacturers(cfg)
-        wanted = []
-        for r in rows:
-            country = wanted_country(r.get("country", ""))
-            if country:
-                wanted.append({**r, "country": country})
-        if not wanted:
-            raise RuntimeError(
-                f"No Ecuador or Colombia growers among {len(rows)} manufacturers; "
-                f"columns {seen['columns']}, countries seen {seen['countries']}"
-            )
-        saved = replace_growers(cfg.freshportal_url, wanted)
-        _grower_sync_state["message"] = f"{saved} growers from Ecuador and Colombia, of {len(rows)} manufacturers"
-        log.info("[growers] %s; countries seen %s", _grower_sync_state["message"], seen["countries"])
-    except Exception as exc:
-        log.exception("[growers] sync failed")
-        _grower_sync_state["error"] = str(exc)
-    finally:
-        _grower_sync_state["running"] = False
+_growers_lock = threading.Lock()
+_growers_loaded = False
 
 
-def _start_grower_sync() -> bool:
-    with _grower_sync_lock:
-        if _grower_sync_state["running"]:
-            return False
-        _grower_sync_state.update(running=True, error="", message="")
-    threading.Thread(target=_run_grower_sync, daemon=True).start()
-    return True
+def _load_growers_once(fp_url: str) -> None:
+    global _growers_loaded
+    with _growers_lock:
+        if not _growers_loaded:
+            saved = replace_growers(fp_url, read_growers())
+            log.info("[growers] %d growers copied from %s into fp_growers", saved, "growers_ecuador_system.csv")
+            _growers_loaded = True
 
 
 @app.get("/growers")
 def growers_list(_: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
-    """Growers for the delivery grower picker. An empty list starts a sync,
-    unless the last one failed — that one is retried only by POST /growers/sync."""
-    growers = get_growers(get_ecuador_cfg().freshportal_url)
-    if not growers and not _grower_sync_state["error"]:
-        _start_grower_sync()
+    """Growers for the delivery grower picker. Served from fp_growers; if the
+    database cannot be reached, from the file it is filled from."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    try:
+        _load_growers_once(fp_url)
+        growers = get_growers(fp_url)
+    except Exception:
+        log.exception("[growers] fp_growers unavailable, serving the file")
+        growers = sorted(read_growers(), key=lambda g: g["nm_manufacturer"].lower())
     return {
         "growers": [
             {"manufacturer_id": g["manufacturer_id"], "nm_manufacturer": g["nm_manufacturer"],
              "country": g["country"] or ""}
             for g in growers
         ],
-        "synced_at": growers[0]["synced_at"].isoformat() if growers else None,
-        "syncing": _grower_sync_state["running"],
-        "error": _grower_sync_state["error"],
     }
-
-
-@app.post("/growers/sync")
-def growers_sync(_: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
-    """Read the manufacturer list from FreshPortal again, in the background."""
-    return {"started": _start_grower_sync(), "syncing": True}
 
 
 # ---------------------------------------------------------------------------

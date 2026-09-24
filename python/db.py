@@ -4674,10 +4674,10 @@ def get_vbn_catalog_history(limit: int = 20) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Growers (FreshPortal manufacturers)  (fp_growers, delivery_grower_choice)
 # ---------------------------------------------------------------------------
-# fp_growers mirrors /manufacturer/index_v2/index/ of one FreshPortal system,
-# Ecuador (850255) for delivery import: its ids are what the DFG API takes as
-# manufacturer_id. Only growers from Ecuador and Colombia are kept, a few
-# hundred rows at most. delivery_grower_choice remembers the grower a user
+# fp_growers holds one FreshPortal system's growers — Ecuador (850255) for
+# delivery import, whose ids are what the DFG API takes as manufacturer_id —
+# from Ecuador and Colombia only, about 600 rows, copied from the hand-kept
+# data/growers_ecuador_system.csv (growers.py). delivery_grower_choice remembers the grower a user
 # picked for a supplier's farm (location_key = nm_location without spaces,
 # lower case; "" for a supplier that sends no farm).
 
@@ -4708,7 +4708,7 @@ def ensure_grower_tables() -> None:
 
 def replace_growers(fp_url: str, growers: list[dict]) -> int:
     """Full re-sync: this system's grower list becomes exactly `growers`.
-    An empty list changes nothing, so a failed scrape never wipes the list."""
+    An empty list changes nothing, so an empty or unreadable source never wipes the list."""
     rows = [
         (fp_url, g["manufacturer_id"], g["nm_manufacturer"], g.get("country"))
         for g in growers

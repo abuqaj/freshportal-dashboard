@@ -653,10 +653,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [growerEdits, setGrowerEdits] = useState<Record<string, string>>({});
   const [editingGrowerKey, setEditingGrowerKey] = useState<string | null>(null);
   const [growers, setGrowers] = useState<Grower[]>([]);
-  const [growersSyncing, setGrowersSyncing] = useState(false);
+  const [growersLoading, setGrowersLoading] = useState(true);
   const [growersError, setGrowersError] = useState("");
   const [growerSearch, setGrowerSearch] = useState("");
-  const growerPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const growerNames = useMemo(
     () => Object.fromEntries(growers.map(g => [g.manufacturer_id, g.nm_manufacturer])) as Record<string, string>,
     [growers],
@@ -771,38 +770,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jsonText, pdfFile]);
 
-  // The grower list is read once per visit. While the server is still reading
-  // it from FreshPortal (the first time, or after a refresh), ask again every 5 s.
-  async function loadGrowers() {
-    if (growerPollRef.current) clearTimeout(growerPollRef.current);
-    growerPollRef.current = null;
-    try {
-      const res = await fetch(`${RAILWAY}/growers`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
-      setGrowers(body.growers ?? []);
-      setGrowersSyncing(!!body.syncing);
-      setGrowersError(body.error ?? "");
-      if (body.syncing) growerPollRef.current = setTimeout(loadGrowers, 5000);
-    } catch (err) {
-      setGrowersSyncing(false);
-      setGrowersError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function refreshGrowers() {
-    setGrowersSyncing(true);
-    setGrowersError("");
-    try {
-      await fetch(`${RAILWAY}/growers/sync`, { method: "POST" });
-    } catch {}
-    loadGrowers();
-  }
-
+  // The grower list (Ecuador system, growers from Ecuador and Colombia) is read once per visit.
   useEffect(() => {
-    loadGrowers();
-    return () => { if (growerPollRef.current) clearTimeout(growerPollRef.current); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    fetch(`${RAILWAY}/growers`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(d => setGrowers(d.growers ?? []))
+      .catch(err => setGrowersError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setGrowersLoading(false));
   }, []);
 
   function growerLabel(manufacturerId: string): string {
@@ -2435,7 +2409,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     />
                   </div>
                   <div className="overflow-y-auto flex-1">
-                    {growers.length === 0 && growersSyncing ? (
+                    {growers.length === 0 && growersLoading ? (
                       <p className="flex items-center gap-2 text-xs px-4 py-3 text-ink-3">
                         <span className="w-3.5 h-3.5 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />
                         {td.growersLoading}
@@ -2463,19 +2437,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         </button>
                       );
                     })}
-                  </div>
-                  <div className="px-4 py-2 border-t border-border shrink-0 flex items-center justify-end gap-2">
-                    {growersError && growers.length > 0 && (
-                      <span className="mr-auto text-[11px] text-red-400 truncate" title={growersError}>{td.growersLoadFailed}</span>
-                    )}
-                    <button
-                      onClick={refreshGrowers}
-                      disabled={growersSyncing}
-                      className="flex items-center gap-1.5 text-xs text-ink-3 hover:text-ink disabled:opacity-50 transition-colors"
-                    >
-                      {growersSyncing && <span className="w-3 h-3 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />}
-                      {growersSyncing ? td.growersLoading : td.growersRefreshBtn}
-                    </button>
                   </div>
                 </div>
               </>
