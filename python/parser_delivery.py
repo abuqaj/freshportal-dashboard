@@ -546,11 +546,34 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
     return orders
 
 
-def _is_ceresfarms(data: dict[str, Any]) -> bool:
+def _all_invoices_from(data: dict[str, Any], company: str) -> bool:
     invoices = data.get("invoices") or []
     return bool(invoices) and all(
-        "ceresfarms" in (inv.get("tx_company") or "").lower() for inv in invoices
+        company in (inv.get("tx_company") or "").lower() for inv in invoices
     )
+
+
+def _is_ceresfarms(data: dict[str, Any]) -> bool:
+    return _all_invoices_from(data, "ceresfarms")
+
+
+def _is_utopia(data: dict[str, Any]) -> bool:
+    return _all_invoices_from(data, "utopia farms")
+
+
+def _totals_warnings(inv: dict[str, Any], order: DeliveryOrder) -> list[dict[str, Any]]:
+    """The invoice header's amount and box count, where the parsed lines miss them."""
+    warnings: list[dict[str, Any]] = []
+    invoice_total = round(float(inv.get("mny_total") or 0), 2)
+    if invoice_total and abs(order.mny_total - invoice_total) >= 0.01:
+        warnings.append({"code": "invoice_total_mismatch",
+                         "invoice_total": invoice_total, "file_total": order.mny_total})
+    invoice_boxes = int(float(inv.get("nu_boxes") or 0))
+    file_boxes = sum(l.nu_physical_boxes for l in order.lines)
+    if invoice_boxes and file_boxes != invoice_boxes:
+        warnings.append({"code": "box_count_mismatch",
+                         "invoice_boxes": invoice_boxes, "file_boxes": file_boxes})
+    return warnings
 
 
 def _single_product_box(box: dict[str, Any]) -> tuple | None:
@@ -655,6 +678,61 @@ def _parse_ceresfarms_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     p["mny_rate_stem"] = round(float(p.get("mny_rate_stem") or 0) / stems_bunch, 4)
         for order in _parse_invoices_format({"invoices": [inv]}):
             order.warnings = warnings
+            orders.append(order)
+    return orders
+
+
+# Utopia Farms writes the box type as one letter.
+_UTOPIA_BOX_CODES = {"Q": "QBE", "E": "1/8"}
+
+
+def _utopia_boxes(box: dict[str, Any]) -> list[dict[str, Any]]:
+    """The physical boxes behind one Utopia box row, in the invoices shape. Mutates box."""
+    tp_box = (box.get("tp_box") or "").strip().upper()
+    box["tp_box"] = _UTOPIA_BOX_CODES.get(tp_box, tp_box)
+    products = box.get("products") or []
+    for p in products:
+        if not str(p.get("nu_length") or "").strip():
+            m = _re.search(r"(\d+)\s*CM", f"{p.get('nm_product') or ''} {p.get('nm_species') or ''}",
+                           _re.IGNORECASE)
+            p["nu_length"] = m.group(1) if m else 0
+        if _re.fullmatch(r"\s*\d+\s*CM\s*", p.get("nm_species") or "", _re.IGNORECASE):
+            p["nm_species"] = ""  # holds the length, not a species
+
+    if len(products) != 1:
+        return [box]
+    p = products[0]
+    count = int(p.get("nu_bunches") or 0)
+    stems = int(p.get("nu_stems_bunch") or 0)
+    if count < 1 or stems % count:
+        return [box]
+    per_box = stems // count
+    # "RICE FLOW. VICTORIA WHITE 10ST 60CM 300ST": bunch size first, box content last.
+    sizes = [int(s) for s in _re.findall(r"(\d+)\s*ST\b", p.get("nm_product") or "", _re.IGNORECASE)]
+    stems_bunch = sizes[0] if sizes and sizes[0] and per_box % sizes[0] == 0 else per_box
+    p["nu_stems_bunch"] = stems_bunch
+    p["nu_bunches"] = per_box // stems_bunch
+    return [box] * count  # read only from here on
+
+
+def _parse_utopia_format(data: dict[str, Any]) -> list[DeliveryOrder]:
+    """Parse Utopia Farms: the invoices shape, each box entry a row of boxes.
+
+    - tp_box is a letter: Q is a quarter box (QBE), E an eighth (1/8).
+    - nu_bunches is the number of boxes in the row, and nu_stems_bunch the
+      stems of the whole row (found 2026-09-24, invoice 186970: Q, 9 and 2700
+      are 9 boxes of 300 stems). The bunch size is only in nm_product.
+    - nu_length is empty; the length is in nm_species ("60 CM") and nm_product.
+
+    A row holding more than one product, or whose stems do not divide evenly
+    over its boxes, is left as sent; the totals check then flags the order.
+    """
+    orders: list[DeliveryOrder] = []
+    for inv in data.get("invoices", []):
+        inv = copy.deepcopy(inv)
+        inv["boxes"] = [b for box in inv.get("boxes") or [] for b in _utopia_boxes(box)]
+        for order in _parse_invoices_format({"invoices": [inv]}):
+            order.warnings = _totals_warnings(inv, order)
             orders.append(order)
     return orders
 
@@ -960,6 +1038,7 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
     Format detection:
       single key with null value containing newlines + "INVOICE" → Fiorentina text format
       "invoices" key present, every tx_company Ceresfarms → Ceresfarms (price per bunch, repeated rows)
+      "invoices" key present, every tx_company Utopia Farms → Utopia (box rows, letter box codes)
       "invoices" key present → Format 1/2 (Elite/Ecoroses/Alissroses, english fields, boxes[]/products[])
       "id_factura" or "detalles" key present → Format 3 (Bloomingacres/FFS, spanish fields)
       "detalle" key present → Format 4 (per-etiqueta, one row per physical box)
@@ -970,6 +1049,8 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
             return _parse_text_invoice(_key)
     if "invoices" in data and _is_ceresfarms(data):
         return _parse_ceresfarms_format(data)
+    if "invoices" in data and _is_utopia(data):
+        return _parse_utopia_format(data)
     if "invoices" in data:
         return _parse_invoices_format(data)
     if "id_factura" in data or "detalles" in data:
