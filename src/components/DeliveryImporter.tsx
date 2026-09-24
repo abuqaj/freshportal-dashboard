@@ -107,7 +107,8 @@ interface DeliveryOrder {
 
 type DeliveryWarning =
   | { code: "bunches_split_by_invoice_total"; variety: string; length: number; boxes: number; bunches_in_file: number; bunches_per_box: number }
-  | { code: "invoice_total_mismatch"; invoice_total: number; file_total: number };
+  | { code: "invoice_total_mismatch"; invoice_total: number; file_total: number }
+  | { code: "box_count_mismatch"; invoice_boxes: number; file_boxes: number };
 
 interface FPSupplier {
   fp_supplier_id: string;
@@ -2028,6 +2029,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <div key={i} className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
               ⚠ {w.code === "bunches_split_by_invoice_total"
                 ? td.warnBunchesSplit(w.variety, w.length, w.boxes, w.bunches_in_file, w.bunches_per_box)
+                : w.code === "box_count_mismatch"
+                ? td.warnBoxCountMismatch(w.invoice_boxes, w.file_boxes)
                 : td.warnInvoiceTotalMismatch(w.invoice_total.toFixed(2), w.file_total.toFixed(2))}
             </div>
           ))}

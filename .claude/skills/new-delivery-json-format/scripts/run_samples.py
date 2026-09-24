@@ -30,6 +30,8 @@ def detect_format(data: object) -> str:
     if isinstance(data, dict):
         if "invoices" in data and parser_delivery._is_ceresfarms(data):
             return "ceresfarms"
+        if "invoices" in data and parser_delivery._is_utopia(data):
+            return "utopia"
         if "invoices" in data:
             return "invoices"
         if "id_factura" in data or "detalles" in data:

@@ -8,6 +8,11 @@ invoices below are synthetic and keep only the shape that mattered.
 - Ceresfarms sends the price per bunch, and can repeat a row's total bunches
   in each of its boxes; only the invoice total tells that apart from separate
   rows of the same product (Ceresfarms invoice 00020172, 2026-09-24).
+- Utopia Farms sends one entry per row of boxes: nu_bunches is the box count,
+  nu_stems_bunch the row's stems, tp_box a letter Q (QBE) or E (1/8)
+  (Utopia invoice 186970, 2026-09-24).
+- FreshPortal receives QBE, HBE, 1/8 or a mix box label, and the invoice
+  number exactly as sent.
 
 Run either way:
     python -m pytest python/tests/test_parser_delivery_json.py -q
@@ -138,6 +143,44 @@ def test_ceres_unexplained_total_changes_nothing_and_warns(total):
         ("Sweetness", "SWEETNESS"): (2, 10),
     }
     assert order.warnings == [{"code": "invoice_total_mismatch", "invoice_total": total, "file_total": 250.0}]
+
+
+# ── Utopia Farms ───────────────────────────────────────────────────────────
+
+UTOPIA = "UTOPIA FARMS UTF S.A.S"
+
+
+def _utopia_row(tp_box: str, boxes: int, stems: int, rate: float, length: int) -> dict:
+    """One Utopia box entry: nu_bunches = boxes in the row, nu_stems_bunch = its stems."""
+    return {"tp_box": tp_box, "nm_box": "ATC 39X10X6 ES", "tx_label": "COL", "nu_box_weight": "6.24",
+            "products": [{
+                "gu_product": "", "nm_location": "San Pablo", "id_migros": "", "id_floricode": "",
+                "nm_product": f"RICE FLOW. VICTORIA WHITE 10ST {length}CM 300ST (ST 2093759-2)",
+                "nm_species": f"{length} CM", "nm_variety": "VICTORIA WHITE", "nu_length": "",
+                "nu_weight": "", "nu_stems_bunch": str(stems), "nu_bunches": str(boxes),
+                "mny_rate_stem": str(rate),
+            }]}
+
+
+def test_utopia_rows_become_boxes_of_their_stems():
+    data = _invoice(UTOPIA, [_utopia_row("E", 1, 300, 0.40, 50), _utopia_row("Q", 9, 2700, 0.43, 60)], 1281)
+    data["invoices"][0]["nu_boxes"] = "10"
+    [order] = parse_delivery_json(data)
+    got = {(l.nm_box, l.nu_length): (l.nu_physical_boxes, l.nu_bunches // l.nu_physical_boxes,
+                                     l.nu_stems_bunch, l.nu_stems_total) for l in order.lines}
+    assert got == {("1/8", 50): (1, 30, 10, 300), ("QBE", 60): (9, 30, 10, 2700)}
+    assert order.mny_total == 1281
+    assert order.warnings == []
+    assert {l.nm_species for l in order.lines} == {""}
+
+
+def test_utopia_row_that_does_not_divide_is_left_and_flagged():
+    data = _invoice(UTOPIA, [_utopia_row("Q", 3, 1000, 0.43, 60)], 430)
+    data["invoices"][0]["nu_boxes"] = "3"
+    [order] = parse_delivery_json(data)
+    [line] = order.lines
+    assert (line.nm_box, line.nu_physical_boxes) == ("QBE", 1)
+    assert {w["code"] for w in order.warnings} == {"invoice_total_mismatch", "box_count_mismatch"}
 
 
 # ── Packaging and invoice number ───────────────────────────────────────────

@@ -12,10 +12,14 @@ description: Handles a supplier delivery file (JSON or .txt) that delivery impor
 - Suppliers send JSON inside `.txt` files too; that is accepted.
 - **Identical per-box lines** are grouped into one line with a quantity.
 - **Box content** = stems per bunch × bunches.
-- **Packaging codes:** FreshPortal receives only `QBE`, `HBE` or a mix box
-  label `MB1`, `MB2`…; any code starting with `QB` becomes `QBE` and with
-  `HB` becomes `HBE` (`QB ROSALEDA`, `QB3 ALSTRO`, `HB XL 1`). Mix box logic
-  stays as it is.
+- **Packaging codes:** FreshPortal receives only `QBE`, `HBE`, `1/8` or a
+  mix box label `MB1`, `MB2`…; any code starting with `QB` becomes `QBE` and
+  with `HB` becomes `HBE` (`QB ROSALEDA`, `QB3 ALSTRO`, `HB XL 1`). Mix box
+  logic stays as it is. Utopia Farms writes one letter: `Q` is `QBE`, `E`
+  is `1/8`.
+- **Utopia Farms** sends one box entry per row of boxes: `nu_bunches` is the
+  number of boxes and `nu_stems_bunch` the stems of the whole row (Q, 9,
+  2700 = 9 boxes of 300 stems); the bunch size is in `nm_product` (`10ST`).
 - **Batch code = invoice number, exactly.** Leading zeros are never removed.
 - **Weight:** roses, and any weight above 100, send no weight.
 - **Pomarosa's grower** comes from each product's `nm_location`.
@@ -34,6 +38,7 @@ description: Handles a supplier delivery file (JSON or .txt) that delivery impor
 |---|---|---|
 | single key holding the text of an INVOICE, value `null` | `_parse_text_invoice` | Fiorentina |
 | `invoices`, every `tx_company` Ceresfarms | `_parse_ceresfarms_format` | Ceresfarms |
+| `invoices`, every `tx_company` Utopia Farms | `_parse_utopia_format` | Utopia Farms |
 | `invoices` | `_parse_invoices_format` | Elite, Ecoroses, Alissroses, Pomarosa |
 | `id_factura` or `detalles` | `_parse_factura_format` | Bloomingacres, FreshFromSource |
 | `detalle` | `_parse_etiqueta_format` | one row per physical box |
