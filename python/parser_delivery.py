@@ -369,6 +369,21 @@ def _enrich_variety(nm_variety: str, tx_label: str) -> str:
     return nm_variety
 
 
+def _variety_from_product(nm_variety: str, nm_product: str) -> str:
+    """nm_variety, unless nm_product names a different product built on it.
+
+    Florecal sends a tinted rose as nm_variety "MONDIAL" with nm_product
+    "TA RAINBOW MD 60CM X2 25ST FL" (found 2026-09-24, invoice 1586318).
+    Read by nm_variety, it became a plain Mondial and shared the plain
+    Mondial's product match. When nm_product does not contain nm_variety,
+    its name before the length is the product's variety.
+    """
+    if not nm_product or not nm_variety or nm_variety.lower() in nm_product.lower():
+        return nm_variety
+    name = _re.split(r"\s+\d+\s*CM\b", nm_product, maxsplit=1, flags=_re.IGNORECASE)[0].strip()
+    return name or nm_variety
+
+
 def _normalise_date(raw: str) -> str:
     """MM/DD/YYYY → DD-MM-YYYY (FreshPortal date picker format)."""
     raw = raw.strip()
@@ -439,7 +454,10 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     # Include nm_variety in the key so same gu_product with different
                     # temperature qualifiers (e.g. Bicolor Cold vs Bicolor Warm) stay separate.
                     # Include nm_location: a different farm is a different grower.
-                    raw_variety = (prod.get("nm_variety") or prod.get("id_migros") or "").strip()
+                    raw_variety = _variety_from_product(
+                        (prod.get("nm_variety") or prod.get("id_migros") or "").strip(),
+                        (prod.get("nm_product") or "").strip(),
+                    )
                     nm_variety = _enrich_variety(raw_variety.title(), tx_label)
                     nm_location = (prod.get("nm_location") or "").strip()
                     key = f"{gu}|{box_code}|{nm_variety.lower()}|{nm_location.lower()}"
@@ -485,7 +503,10 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     # Include nm_location so boxes from different farms stay separate:
                     # a different farm is a different grower (found 2026-09-24, Pomarosa
                     # invoice 70159875: Explorer 60cm from TESSA-1 and TESSA-3 became one line).
-                    raw_variety = (prod.get("nm_variety") or prod.get("id_migros") or "").strip()
+                    raw_variety = _variety_from_product(
+                        (prod.get("nm_variety") or prod.get("id_migros") or "").strip(),
+                        (prod.get("nm_product") or "").strip(),
+                    )
                     nm_variety = _enrich_variety(raw_variety.title(), tx_label)
                     mny_rate = float(prod.get("mny_rate_stem") or 0)
                     nm_location = (prod.get("nm_location") or "").strip()

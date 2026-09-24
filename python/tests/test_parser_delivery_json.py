@@ -13,6 +13,9 @@ invoices below are synthetic and keep only the shape that mattered.
   (Utopia invoice 186970, 2026-09-24).
 - FreshPortal receives QBE, HBE, 1/8 or a mix box label, and the invoice
   number exactly as sent.
+- A product whose name does not contain its nm_variety is a different
+  product built on it, e.g. Florecal's tinted "TA RAINBOW MD" with
+  nm_variety MONDIAL (invoice 1586318, 2026-09-24).
 
 Run either way:
     python -m pytest python/tests/test_parser_delivery_json.py -q
@@ -82,6 +85,19 @@ def test_farm_split_gives_each_line_its_own_grower():
     resolve_growers(order)
     assert {l.nm_location: l.manufacturer_id for l in order.lines} == {
         "TESSA-R1": "57344", "TESSA-E1": "57396",
+    }
+
+
+# ── Product names ──────────────────────────────────────────────────────────
+
+def test_tinted_product_is_named_by_its_product_not_its_base_variety():
+    tinted = _box("MONDIAL", 4, 0.70, gu="TARMD60", tp_box="QB")
+    tinted["products"][0].update(nm_product="TA RAINBOW MD 60CM X2 25ST FL", nm_species="TINTED ROSES")
+    plain = _box("MONDIAL", 4, 0.30, gu="MD60", tp_box="QB")
+    plain["products"][0]["nm_product"] = "MONDIAL 60CM X2 25ST FL"
+    [order] = parse_delivery_json(_invoice("FLORECAL SA", [tinted, plain], 100))
+    assert {(l.nm_variety, l.mny_rate_stem) for l in order.lines} == {
+        ("Ta Rainbow Md", 0.70), ("Mondial", 0.30),
     }
 
 
