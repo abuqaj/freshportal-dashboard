@@ -12,7 +12,11 @@ description: Handles a supplier delivery file (JSON or .txt) that delivery impor
 - Suppliers send JSON inside `.txt` files too; that is accepted.
 - **Identical per-box lines** are grouped into one line with a quantity.
 - **Box content** = stems per bunch × bunches.
-- **Packaging codes:** `QB` → `QBE`, `HB` → `HBE`.
+- **Packaging codes:** FreshPortal receives only `QBE`, `HBE` or a mix box
+  label `MB1`, `MB2`…; any code starting with `QB` becomes `QBE` and with
+  `HB` becomes `HBE` (`QB ROSALEDA`, `QB3 ALSTRO`, `HB XL 1`). Mix box logic
+  stays as it is.
+- **Batch code = invoice number, exactly.** Leading zeros are never removed.
 - **Weight:** roses, and any weight above 100, send no weight.
 - **Pomarosa's grower** comes from each product's `nm_location`.
 - **A different farm is a different grower:** boxes of the same product from

@@ -78,8 +78,6 @@ class DeliveryOrder:
     warnings: list[dict[str, Any]] = field(default_factory=list)
 
 
-_BOX_TYPE_MAP = {"QB": "QBE", "HB": "HBE"}
-
 # Single-letter → two-letter box codes used in the Fiorentina text-invoice format
 _BOX_LETTER_MAP: dict[str, str] = {
     'F': 'FB', 'H': 'HB', 'Q': 'QB',
@@ -155,8 +153,18 @@ _LABEL_WARM_RE = _re.compile(r'\bcalido[s]?\b|\bcaliente[s]?\b|\bwarm\b', _re.IG
 
 
 def _normalise_box(tp: str) -> str:
-    """Normalise box type code: QB → QBE (FreshPortal convention)."""
-    return _BOX_TYPE_MAP.get(tp.upper(), tp)
+    """Box code as FreshPortal takes it: QBE, HBE, or a mix box label MBn.
+
+    Suppliers add their own words to the code ("QB ROSALEDA", "QB3 ALSTRO",
+    "HB XL 1"), which FreshPortal must never receive, so the prefix decides
+    (2026-09-24). Mix box labels and anything else pass through unchanged.
+    """
+    code = tp.strip().upper()
+    if code.startswith("QB"):
+        return "QBE"
+    if code.startswith("HB"):
+        return "HBE"
+    return tp
 
 
 # Per-stem weight (products[].nu_weight) isn't a thing roses are sold/
@@ -778,7 +786,8 @@ def _parse_text_invoice(text: str) -> list[DeliveryOrder]:
         m = _re.search(pattern, full, _re.IGNORECASE)
         return m.group(1).strip() if m else ''
 
-    id_invoice = _rx(r'INVOICE\s*#\s*0*(\d+)')
+    # Leading zeros stay: the batch code must equal the invoice number exactly.
+    id_invoice = _rx(r'INVOICE\s*#\s*(\d+)')
     tx_awb     = _rx(r'A\.W\.B[^:\n]*:\s*[\t ]*(\S+)')
     tx_hawb    = _rx(r'H\.A\.W\.B[^:\n]*:\s*[\t ]*(\S+)')
     nm_cargo   = _rx(r'Shipper\s*:\s*[\t ]*(.+)')

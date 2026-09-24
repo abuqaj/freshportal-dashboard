@@ -140,6 +140,39 @@ def test_ceres_unexplained_total_changes_nothing_and_warns(total):
     assert order.warnings == [{"code": "invoice_total_mismatch", "invoice_total": total, "file_total": 250.0}]
 
 
+# ── Packaging and invoice number ───────────────────────────────────────────
+
+@pytest.mark.parametrize("sent, expected", [
+    ("QB ROSALEDA", "QBE"), ("QB3 ALSTRO", "QBE"), ("QB 5", "QBE"), ("QB", "QBE"),
+    ("HB XL 1", "HBE"), ("HB", "HBE"), ("HBE", "HBE"),
+])
+def test_box_codes_reach_freshportal_as_qbe_or_hbe(sent, expected):
+    box = _box("TIBET", 4, 0.5)
+    box["tp_box"], box["nm_box"] = "", sent
+    [order] = parse_delivery_json(_invoice("FLORICOLA LA ROSALEDA S.A.", [box], 50))
+    assert order.lines[0].nm_box == expected
+
+
+def test_mix_box_keeps_its_mb_label():
+    box = _box("TIBET", 2, 0.5, gu="G1")
+    box["products"].append(_box("OHARA", 2, 0.8, gu="G2")["products"][0])
+    [order] = parse_delivery_json(_invoice("QUALISA", [box], 65))
+    assert {l.nm_box for l in order.lines} == {"MB1"}
+
+
+@pytest.mark.parametrize("number", ["00020172", "0021803", "21803"])
+def test_invoice_number_is_kept_exactly(number):
+    data = _invoice(CERES, [_box("SWAN", 5, 8.5)], 42.5)
+    data["invoices"][0]["id_invoice"] = number
+    assert parse_delivery_json(data)[0].id_invoice == number
+
+
+def test_text_invoice_keeps_leading_zeros():
+    text = "FIORENTINA FLOWERS\nINVOICE # 000123\nDate : 23/09/2026\n"
+    [order] = parse_delivery_json({text: None})
+    assert order.id_invoice == "000123"
+
+
 def test_other_suppliers_keep_price_per_stem():
     [order] = parse_delivery_json(_invoice("QUALISA", [_box("MONDIAL", 10, 0.35)], 87.5))
     assert order.lines[0].mny_rate_stem == 0.35

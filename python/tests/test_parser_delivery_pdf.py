@@ -366,8 +366,8 @@ def test_qualisa_block_merges_across_its_boxes():
     assert order.nu_stems_total == 320
     assert order.mny_total == 80.0
 
-    # One line per product, carrying the printed box type, not a per-box code.
-    assert {l.nm_box for l in order.lines} == {"QB3 ALSTRO"}
+    # One line per product, as QBE (never the printed "QB3 ALSTRO"), not a per-box code.
+    assert {l.nm_box for l in order.lines} == {"QBE"}
     assert len(order.lines) == 15
     assert sum(l.nu_bunches for l in order.lines) == 32
     assert all(l.nu_physical_boxes == 2 for l in order.lines)
@@ -397,7 +397,7 @@ def test_qualisa_counts_every_box_a_product_appears_in():
     entry = build_stock_entry(pierrot80[0])
     assert entry["quantity"] == 3
     assert entry["characteristics"]["number_of_bunches"] == "1"
-    assert entry["fust"] == "QB3 ALSTRO"
+    assert entry["fust"] == "QBE"
 
 
 def test_a_layout_that_does_not_merge_gives_each_box_its_own_code():
