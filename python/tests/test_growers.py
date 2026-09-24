@@ -40,7 +40,8 @@ def test_no_id_is_listed_twice():
 
 def test_the_list_as_given():
     by_country = {c: sum(1 for g in GROWERS if g["country"] == c) for c in ("Ecuador", "Colombia")}
-    assert by_country == {"Ecuador": 351, "Colombia": 254}
+    # 351 as given, less three Cantiza ids not needed for now (user, 2026-09-24).
+    assert by_country == {"Ecuador": 348, "Colombia": 254}
     names = {g["manufacturer_id"]: g["nm_manufacturer"] for g in GROWERS}
     assert names["57365"] == "Ceres Farms cia ltd."
     assert names["57346"] == "FLORES ECUATORIANAS DE CALIDAD FLORECAL S.A."
