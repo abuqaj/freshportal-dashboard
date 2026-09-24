@@ -2149,12 +2149,24 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         </span>
                       </td>
                       <td className="px-3 py-2">
+                        {/* The first click selects the whole value, so typing replaces it;
+                            the mouseup would otherwise drop the selection and place a caret. */}
                         <input
                           type="number"
                           step="0.01"
                           min="0"
                           ref={el => { boxWeightInputRefs.current[i] = el; }}
                           value={boxWeightValue}
+                          onMouseDown={e => {
+                            if (document.activeElement !== e.currentTarget) e.currentTarget.dataset.selectOnUp = "1";
+                          }}
+                          onFocus={e => e.currentTarget.select()}
+                          onMouseUp={e => {
+                            if (e.currentTarget.dataset.selectOnUp) {
+                              e.preventDefault();
+                              delete e.currentTarget.dataset.selectOnUp;
+                            }
+                          }}
                           onChange={e => {
                             const v = e.target.value === "" ? 0 : Number(e.target.value);
                             setBoxWeightEdits(prev => ({ ...prev, [dk]: v }));
