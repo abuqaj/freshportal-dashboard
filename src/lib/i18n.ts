@@ -451,6 +451,10 @@ const en = {
     editGrowerBtn:           "Edit grower",
     editGrowerTitle:         "Select grower",
     statusNotInCatalogue:    "not in catalogue",
+    warnBunchesSplit:        (variety: string, length: number, boxes: number, inFile: number, perBox: number) =>
+      `${variety} ${length}cm: the file lists ${inFile} bunches in each of ${boxes} boxes, but the invoice total bills ${inFile} in all — read as ${perBox} bunches per box.`,
+    warnInvoiceTotalMismatch: (invoiceTotal: string, fileTotal: string) =>
+      `The invoice total is ${invoiceTotal}, but the boxes in the file add up to ${fileTotal}. Check the bunches per box before importing.`,
   },
   login: {
     subtitle:         "Sign in to your account",
@@ -1215,6 +1219,10 @@ const nl: typeof en = {
     editGrowerBtn:           "Kweker wijzigen",
     editGrowerTitle:         "Kweker selecteren",
     statusNotInCatalogue:    "niet in catalogus",
+    warnBunchesSplit:        (variety: string, length: number, boxes: number, inFile: number, perBox: number) =>
+      `${variety} ${length}cm: het bestand vermeldt ${inFile} bossen in elk van de ${boxes} dozen, maar het factuurtotaal rekent ${inFile} in totaal — gelezen als ${perBox} bossen per doos.`,
+    warnInvoiceTotalMismatch: (invoiceTotal: string, fileTotal: string) =>
+      `Het factuurtotaal is ${invoiceTotal}, maar de dozen in het bestand komen op ${fileTotal}. Controleer de bossen per doos voor het importeren.`,
   },
   history: {
     title:         "Operatiegeschiedenis",
@@ -1939,6 +1947,10 @@ const pl: typeof en = {
     editGrowerBtn:           "Zmień growera",
     editGrowerTitle:         "Wybierz growera",
     statusNotInCatalogue:    "nie ma w katalogu",
+    warnBunchesSplit:        (variety: string, length: number, boxes: number, inFile: number, perBox: number) =>
+      `${variety} ${length}cm: plik podaje ${inFile} pęczków w każdym z ${boxes} pudeł, ale suma faktury liczy ${inFile} łącznie — przyjęto ${perBox} pęczków na pudło.`,
+    warnInvoiceTotalMismatch: (invoiceTotal: string, fileTotal: string) =>
+      `Suma faktury to ${invoiceTotal}, a pudła w pliku dają ${fileTotal}. Sprawdź liczbę pęczków w pudłach przed importem.`,
   },
   history: {
     title:         "Historia operacji",
@@ -2663,6 +2675,10 @@ const es: typeof en = {
     editGrowerBtn:           "Editar cultivador",
     editGrowerTitle:         "Seleccionar cultivador",
     statusNotInCatalogue:    "no está en catálogo",
+    warnBunchesSplit:        (variety: string, length: number, boxes: number, inFile: number, perBox: number) =>
+      `${variety} ${length}cm: el archivo indica ${inFile} ramos en cada una de las ${boxes} cajas, pero el total de la factura cobra ${inFile} en total; se leyó como ${perBox} ramos por caja.`,
+    warnInvoiceTotalMismatch: (invoiceTotal: string, fileTotal: string) =>
+      `El total de la factura es ${invoiceTotal}, pero las cajas del archivo suman ${fileTotal}. Revise los ramos por caja antes de importar.`,
   },
   history: {
     title:         "Historial de operaciones",
