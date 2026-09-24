@@ -279,6 +279,8 @@ Pełna, żywa lista jest w `python/api_server.py` (`@app.get/post/put/delete`) �
 | `/bi-sync/debug-pull` | GET | `admin:manage` | Debug: podgląd surowych tabel z eksportu BI Sync |
 | `/catalogue/suppliers` | GET | `admin:manage` | Lista dostawców FreshPortal (picker w imporcie dostaw) |
 | `/catalogue/{supplier_id}/matches` | GET/PUT/DELETE | `admin:manage` | Cache zatwierdzonych dopasowań produktów per dostawca |
+| `/catalogue/{supplier_id}/grower-choices` | POST | `admin:manage` / `delivery:import` | Zapamiętaj growerów wybranych przy imporcie (per dostawca i farma) |
+| `/growers` `/growers/sync` | GET/POST | `admin:manage` / `delivery:import` | Lista growerów systemu Ekwador (850255), tylko Ekwador i Kolumbia, z `/manufacturer/index_v2/index/`; pusta lista sama uruchamia pobranie |
 | `/fust/sync` `/list` | POST/GET | `admin:manage` | Synchronizacja i lista opakowań (fust) FreshPortal |
 | `/sync/run` | POST | `admin:manage` | Uruchom synchronizację stamgegevens |
 | `/sync/ecuador/run` `/history` | POST/GET | `admin:manage` | Synchronizacja katalogu `ecuador_products` |

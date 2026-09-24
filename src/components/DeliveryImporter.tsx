@@ -8,48 +8,25 @@ import DeliveryTour, { TourStep } from "./DeliveryTour";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
-const POMAROSA_GROWER_NAMES: Record<string, string> = {
-  "tessa-e1":  "Ecuanros",
-  "tessa-e2":  "Ecuanros",
-  "tessa-s":   "Solera",
-  "tessa-p":   "Positano",
-  "tessa-ps2": "Positano",
-  "tessa-1":   "Tessa",
-  "tessa-3":   "Tessa",
-  "tessa-d":   "Growerfarms S.A",
-  "tessa-f":   "Arcoflor Floress Arcoiris",
-  "tessa-r1":  "Inversiones Pontetresa",
-  "tessa-r2":  "Inversiones Pontetresa",
-  "tessa-r3":  "Inversiones Pontetresa",
-};
-
-function resolvePomarosaGrower(nmLocation: string): string {
-  const key = nmLocation.replace(/\s+/g, "").toLowerCase();
-  return POMAROSA_GROWER_NAMES[key] ?? nmLocation;
-}
-
 // Grower overrides are keyed by nm_location (not deliveryKey/variety) — the
 // grower is a property of the box's origin, so overriding it for one line
 // correctly applies to every line sharing that same origin in this order.
+// parser_delivery.grower_location_key spells it the same way, so a choice
+// remembered at import comes back on the supplier's next delivery.
 function growerLocationKey(nmLocation: string): string {
   return nmLocation.replace(/\s+/g, "").toLowerCase();
 }
 
-// Distinct Pomarosa growers (deduplicated from POMAROSA_GROWER_NAMES' id/name
-// pairs — mirrors parser_delivery.py's _POMAROSA_GROWER_MAP), for the grower
-// edit picker. Pomarosa is the only supplier where a line's grower can
-// legitimately differ from the auto-resolved one, hence the manual override.
-const POMAROSA_GROWERS: { id: string; name: string }[] = [
-  { id: "57396", name: "Ecuanros" },
-  { id: "61370", name: "Solera" },
-  { id: "60649", name: "Positano" },
-  { id: "57369", name: "Tessa" },
-  { id: "57366", name: "Growerfarms S.A" },
-  { id: "57426", name: "Arcoflor Floress Arcoiris" },
-  { id: "57344", name: "Inversiones Pontetresa" },
-];
-const POMAROSA_GROWER_ID_TO_NAME: Record<string, string> =
-  Object.fromEntries(POMAROSA_GROWERS.map(g => [g.id, g.name]));
+// A grower from the Ecuador system's manufacturer list (Ecuador and Colombia),
+// as GET /growers returns it; manufacturer_id is what the DFG API receives.
+interface Grower {
+  manufacturer_id: string;
+  nm_manufacturer: string;
+  country: string;
+}
+
+// Rendering thousands of buttons at once makes typing in the search lag.
+const GROWER_PICKER_LIMIT = 200;
 
 type MatchMethod =
   | "variety_length" | "variety_nolen" | "variety_anylength"
@@ -672,9 +649,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [editSearchError, setEditSearchError] = useState(false);
   const [savingApproved, setSavingApproved] = useState(false);
 
-  // ── Grower (manufacturer) override — Pomarosa only ─────────────────────────
+  // ── Grower (manufacturer) override — any supplier, keyed by farm ───────────
   const [growerEdits, setGrowerEdits] = useState<Record<string, string>>({});
   const [editingGrowerKey, setEditingGrowerKey] = useState<string | null>(null);
+  const [growers, setGrowers] = useState<Grower[]>([]);
+  const [growersSyncing, setGrowersSyncing] = useState(false);
+  const [growersError, setGrowersError] = useState("");
+  const [growerSearch, setGrowerSearch] = useState("");
+  const growerPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const growerNames = useMemo(
+    () => Object.fromEntries(growers.map(g => [g.manufacturer_id, g.nm_manufacturer])) as Record<string, string>,
+    [growers],
+  );
 
   // ── Box weight inline edit — keyed by deliveryKey, ArrowUp/Down moves focus
   // between rows within the column (ref map indexed by displayLines position) ──
@@ -784,6 +770,45 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     handleParseClick();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jsonText, pdfFile]);
+
+  // The grower list is read once per visit. While the server is still reading
+  // it from FreshPortal (the first time, or after a refresh), ask again every 5 s.
+  async function loadGrowers() {
+    if (growerPollRef.current) clearTimeout(growerPollRef.current);
+    growerPollRef.current = null;
+    try {
+      const res = await fetch(`${RAILWAY}/growers`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      setGrowers(body.growers ?? []);
+      setGrowersSyncing(!!body.syncing);
+      setGrowersError(body.error ?? "");
+      if (body.syncing) growerPollRef.current = setTimeout(loadGrowers, 5000);
+    } catch (err) {
+      setGrowersSyncing(false);
+      setGrowersError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function refreshGrowers() {
+    setGrowersSyncing(true);
+    setGrowersError("");
+    try {
+      await fetch(`${RAILWAY}/growers/sync`, { method: "POST" });
+    } catch {}
+    loadGrowers();
+  }
+
+  useEffect(() => {
+    loadGrowers();
+    return () => { if (growerPollRef.current) clearTimeout(growerPollRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function growerLabel(manufacturerId: string): string {
+    if (!manufacturerId) return "—";
+    return growerNames[manufacturerId] ?? `#${manufacturerId}`;
+  }
 
   // Live product search for the manual match-correction modal — the products
   // table is ~44k rows, too large to preload client-side like the old
@@ -1126,6 +1151,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
     // Save approved matches to cache (only the approved ones)
     await handleApproveMatches(approvedKeys);
+    await handleSaveGrowerChoices(supplierFpId);
 
     setStage("importing");
     logsRef.current = [];
@@ -1307,6 +1333,24 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     }
   }
 
+  // Growers the user picked are remembered per supplier and farm, so the
+  // supplier's next delivery starts from them (parser_delivery.resolve_growers).
+  async function handleSaveGrowerChoices(supplierId: string) {
+    if (Object.keys(growerEdits).length === 0) return;
+    try {
+      const res = await fetch(`${RAILWAY}/catalogue/${supplierId}/grower-choices`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ choices: growerEdits }),
+      });
+      if (!res.ok) {
+        console.error("[growers] saving choices failed", res.status, await res.text().catch(() => ""));
+      }
+    } catch (err) {
+      console.error("[growers] saving choices error", err);
+    }
+  }
+
   async function handleConfirmSupplier() {
     setSupplierConfirmOpen(false);
     const supplierId = resolvedSupplier?.fp_supplier_id;
@@ -1350,6 +1394,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setEditModalOpen(false);
     setGrowerEdits({});
     setEditingGrowerKey(null);
+    setGrowerSearch("");
     setPartialApproveOpen(false);
     setResolvedSupplier(null);
     setSupplierPickerOpen(false);
@@ -1382,16 +1427,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Render ──────────────────────────────────────────────────────────────
 
   const order = parseResult?.orders[activeOrderIdx];
-  const isPomarosa = !!(
-    order?.tx_company?.toLowerCase().includes("pomarosa") ||
-    resolvedSupplier?.nm_supplier?.toLowerCase().includes("pomarosa") ||
-    // Tessa/Pomarosa farm codes can appear in deliveries invoiced under a
-    // different trading company (e.g. "Supreme Ross") — show the grower
-    // column/editor whenever any line actually references one, not just
-    // when the company name says "Pomarosa" (matches the backend's
-    // location-first grower resolution, parser_delivery._resolve_grower_id).
-    order?.lines.some(l => POMAROSA_GROWER_NAMES[growerLocationKey(l.nm_location)])
-  );
 
   const displayLines = useMemo(() => {
     const o = parseResult?.orders[activeOrderIdx];
@@ -2105,7 +2140,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 <tr className="bg-muted border-b border-border">
                   <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8" title={td.colApproveTooltip}>✓</th>
                   <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  {isPomarosa && <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colGrower}</th>}
+                  <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colGrower}</th>
                   <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="boxQty"     label={td.colBoxQty}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colBoxWeight}</th>
@@ -2122,7 +2157,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <tbody>
                 {displayLines.length === 0 ? (
                   <tr>
-                    <td colSpan={isPomarosa ? 14 : 13} className="px-4 py-6 text-center text-xs text-ink-3">
+                    <td colSpan={14} className="px-4 py-6 text-center text-xs text-ink-3">
                       {showOnlyUnmatched ? td.showAll : "—"}
                     </td>
                   </tr>
@@ -2162,28 +2197,25 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           <div className="text-ink-3 font-normal">{displayCatName}</div>
                         )}
                       </td>
-                      {isPomarosa && (() => {
+                      {(() => {
                         const locKey = growerLocationKey(line.nm_location);
-                        const growerOverrideId = growerEdits[locKey];
-                        const growerName = growerOverrideId
-                          ? (POMAROSA_GROWER_ID_TO_NAME[growerOverrideId] ?? growerOverrideId)
-                          : (line.nm_location ? resolvePomarosaGrower(line.nm_location) : "—");
+                        const growerId = growerEdits[locKey] ?? line.manufacturer_id;
                         return (
                           <td className="px-3 py-2 text-ink-3 whitespace-nowrap">
                             <div className="flex items-center gap-1">
-                              <span>{growerName}</span>
-                              {line.nm_location && (
-                                <button
-                                  onClick={() => setEditingGrowerKey(locKey)}
-                                  title={td.editGrowerBtn}
-                                  className="text-ink-3 hover:text-ink opacity-50 hover:opacity-100 transition-opacity"
-                                >
-                                  <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                                  </svg>
-                                </button>
-                              )}
+                              <span className={growerId ? "" : "text-red-400"} title={growerId ? `#${growerId}` : undefined}>
+                                {growerLabel(growerId)}
+                              </span>
+                              <button
+                                onClick={() => { setEditingGrowerKey(locKey); setGrowerSearch(""); }}
+                                title={td.editGrowerBtn}
+                                className={`transition-opacity ${growerId ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
+                              >
+                                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                </svg>
+                              </button>
                             </div>
                           </td>
                         );
@@ -2360,35 +2392,90 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             );
           })()}
 
-          {/* Grower (manufacturer) edit modal — Pomarosa only */}
-          {editingGrowerKey && (() => {
+          {/* Grower (manufacturer) edit modal — any supplier; the pick applies to every line of the same farm */}
+          {editingGrowerKey !== null && (() => {
             const locKey = editingGrowerKey;
-            const currentGrowerId = growerEdits[locKey];
+            const farmLine = order.lines.find(l => growerLocationKey(l.nm_location) === locKey);
+            const currentGrowerId = growerEdits[locKey] ?? farmLine?.manufacturer_id ?? "";
+            const q = growerSearch.trim().toLowerCase();
+            const found = q
+              ? growers.filter(g => g.nm_manufacturer.toLowerCase().includes(q) || g.manufacturer_id.includes(q))
+              : growers;
+            const close = () => { setEditingGrowerKey(null); setGrowerSearch(""); };
             return (
               <>
-                <div className="fixed inset-0 bg-black/60 z-[200]" onClick={() => setEditingGrowerKey(null)} />
-                <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[201] max-w-sm mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
-                  <div className="px-4 py-3 border-b border-border shrink-0 flex items-center justify-between">
-                    <span className="text-sm font-semibold text-ink">{td.editGrowerTitle}</span>
-                    <button onClick={() => setEditingGrowerKey(null)} className="text-ink-3 hover:text-ink">✕</button>
+                <div className="fixed inset-0 bg-black/60 z-[200]" onClick={close} />
+                <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
+                  <div className="px-4 py-3 border-b border-border shrink-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-ink">{td.editGrowerTitle}</p>
+                        {farmLine?.nm_location && (
+                          <p className="mt-1 text-xs text-ink-3">
+                            {td.growerFarm}: <span className="font-medium text-ink">{farmLine.nm_location}</span>
+                          </p>
+                        )}
+                        {currentGrowerId && (
+                          <p className="mt-1 text-[11px] text-ink-3">
+                            {td.growerCurrent}: <span className="text-emerald font-medium">{growerLabel(currentGrowerId)}</span>
+                          </p>
+                        )}
+                      </div>
+                      <button onClick={close} className="text-ink-3 hover:text-ink shrink-0 mt-0.5">✕</button>
+                    </div>
                   </div>
-                  <div className="overflow-y-auto">
-                    {POMAROSA_GROWERS.map(g => {
-                      const isCurrent = currentGrowerId === g.id;
+                  <div className="px-3 py-2 border-b border-border shrink-0">
+                    <input
+                      autoFocus
+                      value={growerSearch}
+                      onChange={e => setGrowerSearch(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Escape") close(); }}
+                      placeholder={td.growerSearchPlaceholder}
+                      className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
+                    />
+                  </div>
+                  <div className="overflow-y-auto flex-1">
+                    {growers.length === 0 && growersSyncing ? (
+                      <p className="flex items-center gap-2 text-xs px-4 py-3 text-ink-3">
+                        <span className="w-3.5 h-3.5 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />
+                        {td.growersLoading}
+                      </p>
+                    ) : growers.length === 0 && growersError ? (
+                      <p className="text-xs px-4 py-3 text-red-500">
+                        {td.growersLoadFailed} <span className="block text-[11px] text-red-400 mt-1 break-words">{growersError}</span>
+                      </p>
+                    ) : found.length === 0 ? (
+                      <p className="text-xs px-4 py-3 text-ink-3">{td.growersNone}</p>
+                    ) : found.slice(0, GROWER_PICKER_LIMIT).map(g => {
+                      const isCurrent = currentGrowerId === g.manufacturer_id;
                       return (
                         <button
-                          key={g.id}
+                          key={g.manufacturer_id}
                           onClick={() => {
-                            setGrowerEdits(prev => ({ ...prev, [locKey]: g.id }));
-                            setEditingGrowerKey(null);
+                            setGrowerEdits(prev => ({ ...prev, [locKey]: g.manufacturer_id }));
+                            close();
                           }}
-                          className={`w-full text-left px-4 py-2.5 text-sm border-b border-border/60 last:border-0 transition-colors
-                            ${isCurrent ? "bg-emerald/8 text-emerald font-medium" : "bg-surface text-ink hover:bg-muted"}`}
+                          className={`w-full text-left px-4 py-2.5 border-b border-border/60 last:border-0 transition-colors
+                            ${isCurrent ? "bg-emerald/8" : "bg-surface hover:bg-muted"}`}
                         >
-                          {g.name}
+                          <div className={`text-sm font-medium leading-snug ${isCurrent ? "text-emerald" : "text-ink"}`}>{g.nm_manufacturer}</div>
+                          <div className="text-[11px] text-ink-3">#{g.manufacturer_id}{g.country ? ` · ${g.country}` : ""}</div>
                         </button>
                       );
                     })}
+                  </div>
+                  <div className="px-4 py-2 border-t border-border shrink-0 flex items-center justify-end gap-2">
+                    {growersError && growers.length > 0 && (
+                      <span className="mr-auto text-[11px] text-red-400 truncate" title={growersError}>{td.growersLoadFailed}</span>
+                    )}
+                    <button
+                      onClick={refreshGrowers}
+                      disabled={growersSyncing}
+                      className="flex items-center gap-1.5 text-xs text-ink-3 hover:text-ink disabled:opacity-50 transition-colors"
+                    >
+                      {growersSyncing && <span className="w-3 h-3 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />}
+                      {growersSyncing ? td.growersLoading : td.growersRefreshBtn}
+                    </button>
                   </div>
                 </div>
               </>

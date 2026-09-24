@@ -76,6 +76,28 @@ def test_same_product_from_two_farms_stays_two_lines():
     }
 
 
+def test_remembered_grower_wins_over_the_built_in_maps():
+    boxes = [
+        _box("EXPLORER", 4, 0.62, location="TESSA-R1", gu="G70"),
+        _box("EXPLORER", 4, 0.62, location="TESSA-E1", gu="G70"),
+    ]
+    [order] = parse_delivery_json(_invoice("POMAROSA LIMITED PARTNERSHIP", boxes, 124))
+    resolve_growers(order, choices={"tessa-r1": "99999"})
+    assert {l.nm_location: l.manufacturer_id for l in order.lines} == {
+        "TESSA-R1": "99999", "TESSA-E1": "57396",
+    }
+
+
+def test_remembered_grower_for_a_supplier_that_sends_no_farm():
+    box = _box("MONDIAL", 4, 0.30)
+    box["products"][0]["nm_location"] = ""
+    [order] = parse_delivery_json(_invoice("A FARM NOBODY MAPPED", [box], 30))
+    resolve_growers(order)
+    assert order.lines[0].manufacturer_id == ""
+    resolve_growers(order, choices={"": "12345"})
+    assert order.lines[0].manufacturer_id == "12345"
+
+
 def test_farm_split_gives_each_line_its_own_grower():
     boxes = [
         _box("EXPLORER", 4, 0.62, location="TESSA-R1", gu="G70"),

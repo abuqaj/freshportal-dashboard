@@ -45,6 +45,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                set_delivery_match, delete_delivery_match, clear_delivery_matches,
                create_delivery_import_log, update_delivery_import_log, get_delivery_import_logs,
                upsert_fust_entries, get_all_fust, get_fust_count,
+               replace_growers, get_growers, get_grower_choices, save_grower_choices,
                get_user_flag, set_user_flag,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
                get_bi_sync_history, get_bi_stats,
@@ -88,6 +89,7 @@ from dfg_api_client import (
 )
 from scraper_catalogue import fetch_supplier_list
 from scraper_fust import fetch_fust_catalogue
+from scraper_manufacturer import fetch_manufacturers, wanted_country
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -2700,6 +2702,7 @@ def _resolve_and_match(
     # same "which supplier is this really" problem a second time in
     # _resolve_grower_id() with a weaker heuristic (found 2026-08-28).
     supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
+    grower_choices = get_grower_choices(fp_url, supplier_id) if supplier_id else {}
 
     matched_count = 0
     unmatched_count = 0
@@ -2714,7 +2717,7 @@ def _resolve_and_match(
             for line in order.lines:
                 log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
                           line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
-        resolve_growers(order, supplier_nm)
+        resolve_growers(order, supplier_nm, grower_choices)
         result_orders.append(order_to_dict(order))
 
     log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
@@ -3296,6 +3299,22 @@ class ApproveMatchesRequest(BaseModel):
     matches: list[dict]  # [{delivery_key, nm_variety, nu_length, id_floricode, fp_product_id, nm_product, match_type}]
 
 
+class GrowerChoicesRequest(BaseModel):
+    choices: dict[str, str]  # {location key (nm_location without spaces, lower case): manufacturer_id}
+
+
+@app.post("/catalogue/{supplier_id}/grower-choices")
+def catalogue_save_grower_choices(
+    supplier_id: str,
+    req: GrowerChoicesRequest,
+    _: dict = Depends(require_any_permission("admin:manage", "catalogue:sync", "delivery:import")),
+):
+    """Remember the growers the user picked for this supplier's farms at import;
+    the next delivery from the supplier gets them from resolve_growers."""
+    fp_url = get_ecuador_cfg().freshportal_url
+    return {"saved": save_grower_choices(fp_url, supplier_id, req.choices)}
+
+
 class SupplierMapRequest(BaseModel):
     tx_company: str      # company name from delivery JSON
     fp_supplier_id: str  # confirmed FreshPortal supplier id
@@ -3402,6 +3421,75 @@ def catalogue_suppliers(
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Growers (FreshPortal manufacturers)  (/growers...)
+# ---------------------------------------------------------------------------
+# The delivery grower picker offers the Ecuador system's (850255) growers from
+# Ecuador and Colombia, scraped from its manufacturer list. The first request
+# that finds the list empty starts the scrape; POST /growers/sync refreshes it.
+
+_grower_sync_lock = threading.Lock()
+_grower_sync_state: dict = {"running": False, "error": "", "message": ""}
+
+
+def _run_grower_sync() -> None:
+    cfg = get_ecuador_cfg()
+    try:
+        rows, seen = fetch_manufacturers(cfg)
+        wanted = []
+        for r in rows:
+            country = wanted_country(r.get("country", ""))
+            if country:
+                wanted.append({**r, "country": country})
+        if not wanted:
+            raise RuntimeError(
+                f"No Ecuador or Colombia growers among {len(rows)} manufacturers; "
+                f"columns {seen['columns']}, countries seen {seen['countries']}"
+            )
+        saved = replace_growers(cfg.freshportal_url, wanted)
+        _grower_sync_state["message"] = f"{saved} growers from Ecuador and Colombia, of {len(rows)} manufacturers"
+        log.info("[growers] %s; countries seen %s", _grower_sync_state["message"], seen["countries"])
+    except Exception as exc:
+        log.exception("[growers] sync failed")
+        _grower_sync_state["error"] = str(exc)
+    finally:
+        _grower_sync_state["running"] = False
+
+
+def _start_grower_sync() -> bool:
+    with _grower_sync_lock:
+        if _grower_sync_state["running"]:
+            return False
+        _grower_sync_state.update(running=True, error="", message="")
+    threading.Thread(target=_run_grower_sync, daemon=True).start()
+    return True
+
+
+@app.get("/growers")
+def growers_list(_: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
+    """Growers for the delivery grower picker. An empty list starts a sync,
+    unless the last one failed — that one is retried only by POST /growers/sync."""
+    growers = get_growers(get_ecuador_cfg().freshportal_url)
+    if not growers and not _grower_sync_state["error"]:
+        _start_grower_sync()
+    return {
+        "growers": [
+            {"manufacturer_id": g["manufacturer_id"], "nm_manufacturer": g["nm_manufacturer"],
+             "country": g["country"] or ""}
+            for g in growers
+        ],
+        "synced_at": growers[0]["synced_at"].isoformat() if growers else None,
+        "syncing": _grower_sync_state["running"],
+        "error": _grower_sync_state["error"],
+    }
+
+
+@app.post("/growers/sync")
+def growers_sync(_: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
+    """Read the manufacturer list from FreshPortal again, in the background."""
+    return {"started": _start_grower_sync(), "syncing": True}
 
 
 # ---------------------------------------------------------------------------
