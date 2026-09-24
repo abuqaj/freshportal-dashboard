@@ -424,9 +424,11 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     # merge them using a key that ties the product to this exact box.
                     # Include nm_variety in the key so same gu_product with different
                     # temperature qualifiers (e.g. Bicolor Cold vs Bicolor Warm) stay separate.
+                    # Include nm_location: a different farm is a different grower.
                     raw_variety = (prod.get("nm_variety") or prod.get("id_migros") or "").strip()
                     nm_variety = _enrich_variety(raw_variety.title(), tx_label)
-                    key = f"{gu}|{box_code}|{nm_variety.lower()}"
+                    nm_location = (prod.get("nm_location") or "").strip()
+                    key = f"{gu}|{box_code}|{nm_variety.lower()}|{nm_location.lower()}"
                     nu_bunches = int(prod.get("nu_bunches") or 0)
 
                     if key in merged:
@@ -445,7 +447,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             id_floricode=(prod.get("id_floricode") or "").strip(),
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=box_code,
-                            nm_location=(prod.get("nm_location") or "").strip(),
+                            nm_location=nm_location,
                             nu_weight=_sane_stem_weight(
                                 prod.get("nm_species") or "", float(prod.get("nu_weight") or 0)
                             ),
@@ -466,10 +468,14 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     # Include nm_variety in the key so same gu_product with different
                     # temperature qualifiers (e.g. Bicolor Cold vs Bicolor Warm) stay separate.
                     # Include mny_rate_stem so boxes priced differently stay as separate lines.
+                    # Include nm_location so boxes from different farms stay separate:
+                    # a different farm is a different grower (found 2026-09-24, Pomarosa
+                    # invoice 70159875: Explorer 60cm from TESSA-1 and TESSA-3 became one line).
                     raw_variety = (prod.get("nm_variety") or prod.get("id_migros") or "").strip()
                     nm_variety = _enrich_variety(raw_variety.title(), tx_label)
                     mny_rate = float(prod.get("mny_rate_stem") or 0)
-                    key = f"{gu}|{tp_box}|{nm_variety.lower()}|{mny_rate}"
+                    nm_location = (prod.get("nm_location") or "").strip()
+                    key = f"{gu}|{tp_box}|{nm_variety.lower()}|{mny_rate}|{nm_location.lower()}"
                     nu_bunches = int(prod.get("nu_bunches") or 0)
 
                     if key in merged:
@@ -488,7 +494,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             id_floricode=(prod.get("id_floricode") or "").strip(),
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=tp_box,
-                            nm_location=(prod.get("nm_location") or "").strip(),
+                            nm_location=nm_location,
                             nu_weight=_sane_stem_weight(
                                 prod.get("nm_species") or "", float(prod.get("nu_weight") or 0)
                             ),
