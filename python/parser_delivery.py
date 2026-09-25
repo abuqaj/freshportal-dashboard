@@ -44,6 +44,13 @@ class DeliveryLine:
     # than one possible grower); every other supplier maps 1:1 so this is
     # always the same value for all lines in the order.
     manufacturer_id: str = ""
+    # The physical box's code (QBE, HBE…) of a mix box line, whose nm_box is
+    # its MBn label. A combined mix box goes to FreshPortal in this box.
+    nm_box_type: str = ""
+    # Only on a combined mix box line (mix_box_lines): the MBn labels it
+    # stands for, and the varieties inside as {nm_variety, nu_bunches}.
+    mix_boxes: list[str] = field(default_factory=list)
+    mix_content: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def nu_stems_total(self) -> int:
@@ -76,6 +83,9 @@ class DeliveryOrder:
     # What the parser changed or could not reconcile, shown above the preview table.
     # Each is {"code": ..., **numbers}; the UI turns the code into a translated text.
     warnings: list[dict[str, Any]] = field(default_factory=list)
+    # The lines that replace every MBn line when the review step sends mix
+    # boxes combined; filled by mix_box_lines() after parsing.
+    mix_lines: list[DeliveryLine] = field(default_factory=list)
 
 
 # Single-letter → two-letter box codes used in the Fiorentina text-invoice format
@@ -382,16 +392,31 @@ def _enrich_variety(nm_variety: str, tx_label: str) -> str:
     return nm_variety
 
 
-def _variety_from_product(nm_variety: str, nm_product: str) -> str:
-    """nm_variety, unless nm_product names a different product built on it.
+# A treatment makes a separate product (the same rule the duplicate check
+# and product creation follow).
+_TREATED_RE = _re.compile(
+    r"\b(?:tinted|painted|absorbed|colou?r(?:ed)?\s+treated|bleached|preserved|dried)\b",
+    _re.IGNORECASE,
+)
 
-    Florecal sends a tinted rose as nm_variety "MONDIAL" with nm_product
-    "TA RAINBOW MD 60CM X2 25ST FL" (found 2026-09-24, invoice 1586318).
-    Read by nm_variety, it became a plain Mondial and shared the plain
-    Mondial's product match. When nm_product does not contain nm_variety,
-    its name before the length is the product's variety.
+
+def _variety_from_product(nm_variety: str, nm_product: str, nm_species: str = "") -> str:
+    """nm_variety, unless nm_product names a treated product built on it.
+
+    Florecal sends a tinted rose as nm_variety "MONDIAL", nm_species "TINTED
+    ROSES" and nm_product "TA RAINBOW MD 60CM X2 25ST FL" (found 2026-09-24,
+    invoice 1586318). Read by nm_variety, it became a plain Mondial and
+    shared the plain Mondial's product match. For such a product, nm_product's
+    name before the length is the product's variety.
+
+    Only when the species or the product name says it is treated: product
+    names also abbreviate or re-spell a plain variety ("FREED 50CM" for
+    FREEDOM, "R-EXP-60" for EXPLORER), and reading those as a new variety
+    lost their matches (review 2026-09-25).
     """
     if not nm_product or not nm_variety or nm_variety.lower() in nm_product.lower():
+        return nm_variety
+    if not _TREATED_RE.search(f"{nm_species} {nm_product}"):
         return nm_variety
     name = _re.split(r"\s+\d+\s*CM\b", nm_product, maxsplit=1, flags=_re.IGNORECASE)[0].strip()
     return name or nm_variety
@@ -470,6 +495,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     raw_variety = _variety_from_product(
                         (prod.get("nm_variety") or prod.get("id_migros") or "").strip(),
                         (prod.get("nm_product") or "").strip(),
+                        (prod.get("nm_species") or "").strip(),
                     )
                     nm_variety = _enrich_variety(raw_variety.title(), tx_label)
                     nm_location = (prod.get("nm_location") or "").strip()
@@ -492,6 +518,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             id_floricode=(prod.get("id_floricode") or "").strip(),
                             nm_product=(prod.get("nm_product") or "").strip(),
                             nm_box=box_code,
+                            nm_box_type=tp_box,
                             nm_location=nm_location,
                             nu_weight=_sane_stem_weight(
                                 prod.get("nm_species") or "", float(prod.get("nu_weight") or 0)
@@ -519,6 +546,7 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     raw_variety = _variety_from_product(
                         (prod.get("nm_variety") or prod.get("id_migros") or "").strip(),
                         (prod.get("nm_product") or "").strip(),
+                        (prod.get("nm_species") or "").strip(),
                     )
                     nm_variety = _enrich_variety(raw_variety.title(), tx_label)
                     mny_rate = float(prod.get("mny_rate_stem") or 0)
@@ -828,6 +856,7 @@ def _parse_factura_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                         id_floricode="",
                         nm_product=(prod.get("variedad") or "").strip(),
                         nm_box=box_code,
+                        nm_box_type=tp_box,
                     )
                 keys_new_in_this_box.add(key)
         else:
@@ -1095,6 +1124,113 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
 
 
 # ---------------------------------------------------------------------------
+# Mix boxes sent combined
+# ---------------------------------------------------------------------------
+
+# The product a combined mix box goes to FreshPortal as, by the species it
+# holds (user, 2026-09-25), with the name its line gets. A mix of anything
+# else gets no product, and the user picks one on the screen.
+_MIX_BOX_PRODUCTS: tuple[tuple[str, str, str], ...] = (
+    # (word every species in the box contains, product number, line name)
+    ("rose", "RECMIBO", "Mix Roses"),
+    ("alstro", "ALSMIXF", "Mix Alstroemeria"),
+)
+
+_MIX_BOX_CODE_RE = _re.compile(r"MB\d+")
+
+# A box whose physical code never reached its lines goes as a quarter box,
+# the usual mix box; the user can change it on the screen.
+_MIX_BOX_DEFAULT_FUST = "QBE"
+
+
+def _mix_box_product(species: set[str]) -> tuple[str, str]:
+    """(product number, line name) for a mix box of these species; no number when no rule covers them."""
+    named = sorted(s for s in species if s)
+    for word, number, name in _MIX_BOX_PRODUCTS:
+        if named and all(word in s.lower() for s in named):
+            return number, name
+    return "", " ".join(["Mix", *named])
+
+
+def mix_box_lines(order: DeliveryOrder) -> list[DeliveryLine]:
+    """The order's mix boxes as lines of one mix product each, for sending combined.
+
+    The parsers give each variety in a mix box its own line, labelled with the
+    box's MBn. Combined, a box is one line of the product _MIX_BOX_PRODUCTS
+    names, in the box's own code (QBE, HBE), holding all its stems at their
+    average price per stem, so the amount stays what the invoice says. Boxes
+    that come out the same are one line with a box count, as identical
+    single-variety boxes are.
+
+    One FreshPortal line holds one length, one bunch size and one grower. A box
+    whose varieties differ in length or farm, or whose stems do not divide
+    evenly into its bunches, keeps its per-variety lines, MB label and all.
+
+    Returns what replaces every MBn line; the order's other lines stay as they
+    are. Call after resolve_growers, since a combined line takes its box's grower.
+    """
+    boxes: dict[str, list[DeliveryLine]] = {}
+    for line in order.lines:
+        if _MIX_BOX_CODE_RE.fullmatch(line.nm_box):
+            boxes.setdefault(line.nm_box, []).append(line)
+
+    combined: dict[tuple, DeliveryLine] = {}
+    contents: dict[tuple, dict[str, int]] = {}
+    kept: list[DeliveryLine] = []
+    for code, lines in sorted(boxes.items(), key=lambda box: int(box[0][2:])):
+        stems = sum(l.nu_stems_total for l in lines)
+        bunches = sum(l.nu_bunches for l in lines)
+        if (not stems or stems % bunches
+                or len({l.nu_length for l in lines}) > 1
+                or len({grower_location_key(l.nm_location) for l in lines}) > 1):
+            kept.extend(lines)
+            continue
+
+        first = lines[0]
+        number, name = _mix_box_product({l.nm_species for l in lines})
+        fust = first.nm_box_type or _MIX_BOX_DEFAULT_FUST
+        rate = round(sum(l.nu_stems_total * l.mny_rate_stem for l in lines) / stems, 4)
+        box_weight = max(l.nu_box_weight for l in lines)
+        key = (name, first.nu_length, stems // bunches, bunches, rate, fust,
+               grower_location_key(first.nm_location), box_weight)
+
+        if key in combined:
+            line = combined[key]
+            line.nu_bunches += bunches
+            line.nu_physical_boxes += 1
+            line.mix_boxes.append(code)
+        else:
+            species = {l.nm_species for l in lines}
+            combined[key] = DeliveryLine(
+                gu_product=f"mix|{code}",
+                nm_variety=name,
+                nm_species=species.pop() if len(species) == 1 else "",
+                nu_length=first.nu_length,
+                nu_stems_bunch=stems // bunches,
+                nu_bunches=bunches,
+                mny_rate_stem=rate,
+                id_floricode="",
+                nm_product=name,
+                nu_weight=round(sum(l.nu_stems_total * l.nu_weight for l in lines) / stems, 4),
+                nu_box_weight=box_weight,
+                nm_box=fust,
+                nm_box_type=fust,
+                nm_location=first.nm_location,
+                fp_product_id=number,
+                match_method="mix_box" if number else "none",
+                manufacturer_id=first.manufacturer_id,
+                mix_boxes=[code],
+            )
+        held = contents.setdefault(key, {})
+        for l in lines:
+            held[l.nm_variety] = held.get(l.nm_variety, 0) + l.nu_bunches
+
+    for key, line in combined.items():
+        line.mix_content = [{"nm_variety": v, "nu_bunches": b} for v, b in sorted(contents[key].items())]
+    return sorted(combined.values(), key=lambda l: (l.nm_variety, l.nu_length)) + kept
+
+
+# ---------------------------------------------------------------------------
 # Catalogue matching
 # ---------------------------------------------------------------------------
 
@@ -1335,6 +1471,35 @@ def match_order(
     return order
 
 
+def _line_to_dict(l: DeliveryLine) -> dict:
+    d = {
+        "gu_product": l.gu_product,
+        "nm_variety": l.nm_variety,
+        "nm_species": l.nm_species,
+        "nu_length": l.nu_length,
+        "nu_stems_bunch": l.nu_stems_bunch,
+        "nu_bunches": l.nu_bunches,
+        "nu_stems_total": l.nu_stems_total,
+        "mny_rate_stem": l.mny_rate_stem,
+        "mny_total": l.mny_total,
+        "id_floricode": l.id_floricode,
+        "nm_product": l.nm_product,
+        "nm_box": l.nm_box,
+        "nu_physical_boxes": l.nu_physical_boxes,
+        "fp_product_id": l.fp_product_id,
+        "match_method": l.match_method,
+        "catalogue_nm_product": l.catalogue_nm_product,
+        "nm_location": l.nm_location,
+        "nu_weight": l.nu_weight,
+        "nu_box_weight": l.nu_box_weight,
+        "manufacturer_id": l.manufacturer_id,
+    }
+    if l.mix_boxes:
+        d["mix_boxes"] = l.mix_boxes
+        d["mix_content"] = l.mix_content
+    return d
+
+
 def order_to_dict(order: DeliveryOrder) -> dict:
     return {
         "tx_company": order.tx_company,
@@ -1350,30 +1515,7 @@ def order_to_dict(order: DeliveryOrder) -> dict:
         "nu_boxes": order.nu_boxes,
         "nu_stems_total": order.nu_stems_total,
         "mny_total": order.mny_total,
-        "lines": [
-            {
-                "gu_product": l.gu_product,
-                "nm_variety": l.nm_variety,
-                "nm_species": l.nm_species,
-                "nu_length": l.nu_length,
-                "nu_stems_bunch": l.nu_stems_bunch,
-                "nu_bunches": l.nu_bunches,
-                "nu_stems_total": l.nu_stems_total,
-                "mny_rate_stem": l.mny_rate_stem,
-                "mny_total": l.mny_total,
-                "id_floricode": l.id_floricode,
-                "nm_product": l.nm_product,
-                "nm_box": l.nm_box,
-                "nu_physical_boxes": l.nu_physical_boxes,
-                "fp_product_id": l.fp_product_id,
-                "match_method": l.match_method,
-                "catalogue_nm_product": l.catalogue_nm_product,
-                "nm_location": l.nm_location,
-                "nu_weight": l.nu_weight,
-                "nu_box_weight": l.nu_box_weight,
-                "manufacturer_id": l.manufacturer_id,
-            }
-            for l in order.lines
-        ],
+        "lines": [_line_to_dict(l) for l in order.lines],
+        "mix_lines": [_line_to_dict(l) for l in order.mix_lines],
         "warnings": order.warnings,
     }

@@ -48,6 +48,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                replace_growers, get_growers, get_grower_choices, save_grower_choices,
                get_user_flag, set_user_flag,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
+               get_ecuador_product_names,
                get_bi_sync_history, get_bi_stats,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
@@ -78,7 +79,8 @@ from kenya_box_weight import (
 )
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from kb_routes import router as kb_router
-from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
+from parser_delivery import (parse_delivery_json, order_to_dict, resolve_growers, mix_box_lines,
+                             DeliveryOrder, DeliveryLine)
 from parser_delivery_pdf import parse_delivery_pdf, PdfParseError
 from delivery_product_match import match_order_to_products
 from dfg_api_client import (
@@ -1149,8 +1151,10 @@ def kenya_box_weight_set_customer(
 class KenyaRunRequest(BaseModel):
     """Which enabled customers this one run should cover.
 
-    Omitted or empty means all of them, so a caller that knows nothing about
-    the selection keeps working."""
+    Omitted means all of them, so a caller that knows nothing about the
+    selection keeps working. An empty list is refused: on the screen it means
+    nothing is ticked, and reading it here as "all" would write to the open
+    invoices of every enabled customer (review 2026-09-25)."""
     customer_ids: list[str] | None = None
 
 
@@ -1165,10 +1169,12 @@ def _kenya_run_scope(req: KenyaRunRequest | None) -> set[str]:
     enabled = [c["customer_id"] for c in get_kenya_box_weight_customers() if c["enabled"]]
     if not enabled:
         raise HTTPException(400, "No customers enabled for the Kenya box-weight module")
-    wanted = [str(c).strip() for c in (req.customer_ids if req else None) or []]
+    if req is None or req.customer_ids is None:
+        return set(enabled)
+    wanted = [str(c).strip() for c in req.customer_ids]
     wanted = [c for c in wanted if c]
     if not wanted:
-        return set(enabled)
+        raise HTTPException(400, "No customers selected for this run")
     unknown = sorted(set(wanted) - set(enabled))
     if unknown:
         raise HTTPException(400, f"Not enabled for the Kenya box-weight module: {', '.join(unknown)}")
@@ -2707,7 +2713,6 @@ def _resolve_and_match(
     matched_count = 0
     unmatched_count = 0
 
-    result_orders = []
     for order in orders:
         order.supplier_fp_id = supplier_id
         if with_matching:
@@ -2718,7 +2723,19 @@ def _resolve_and_match(
                 log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
                           line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
         resolve_growers(order, supplier_nm, grower_choices)
-        result_orders.append(order_to_dict(order))
+        # The review step can send mix boxes combined, one mix product per box;
+        # both views go to the screen so switching between them is instant.
+        order.mix_lines = mix_box_lines(order)
+
+    mix_numbers = {l.fp_product_id for o in orders for l in o.mix_lines if l.match_method == "mix_box"}
+    mix_names = get_ecuador_product_names(sorted(mix_numbers))
+    for number in mix_numbers - mix_names.keys():
+        log.warning("[delivery/parse] mix box product %s is not in ecuador_products", number)
+    for order in orders:
+        for line in order.mix_lines:
+            if line.match_method == "mix_box":
+                line.catalogue_nm_product = mix_names.get(line.fp_product_id, "")
+    result_orders = [order_to_dict(order) for order in orders]
 
     log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
     return {
@@ -2777,7 +2794,7 @@ MAX_DELIVERY_PDF_BYTES = 20 * 1024 * 1024
 
 
 @app.post("/delivery/parse-pdf")
-async def delivery_parse_pdf(
+def delivery_parse_pdf(
     pdf: UploadFile = File(...),
     supplier_id: str = Form(""),
     with_matching: bool = Form(True),
@@ -2795,11 +2812,16 @@ async def delivery_parse_pdf(
     A PDF carries less than a JSON export: no box weights, no per-stem
     weights, and a farm/location only when the invoice prints a single
     warehouse. Where a supplier offers both, the JSON is the better import.
+
+    A plain def, like /delivery/parse, so it runs in the threadpool: reading
+    the PDF and the database lookups in matching block, and on the event
+    loop they stalled every other request, progress streams included, for
+    as long as a large invoice took (review 2026-09-25).
     """
     log.info("[delivery/parse-pdf] starting — file=%r supplier=%s",
              pdf.filename, supplier_id)
     try:
-        content = await pdf.read()
+        content = pdf.file.read()
         if not content:
             raise HTTPException(400, "The uploaded file is empty")
         if len(content) > MAX_DELIVERY_PDF_BYTES:

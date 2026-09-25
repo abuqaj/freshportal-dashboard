@@ -569,6 +569,7 @@ def _build_lines(blocks: list[_Block], spec: LayoutSpec,
                 line = _line(product, spec, species, nm_location,
                              box_code=box_code, bunches=product.bunches // count,
                              physical_boxes=1)
+                line.nm_box_type = box_type
                 key = (f"{line.gu_product}|{box_code}|{line.nm_variety.lower()}"
                        f"|{line.mny_rate_stem}")
                 if key in into:

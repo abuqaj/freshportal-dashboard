@@ -13,9 +13,13 @@ invoices below are synthetic and keep only the shape that mattered.
   (Utopia invoice 186970, 2026-09-24).
 - FreshPortal receives QBE, HBE, 1/8 or a mix box label, and the invoice
   number exactly as sent.
-- A product whose name does not contain its nm_variety is a different
-  product built on it, e.g. Florecal's tinted "TA RAINBOW MD" with
-  nm_variety MONDIAL (invoice 1586318, 2026-09-24).
+- A treated product whose name does not contain its nm_variety is a
+  different product built on it, e.g. Florecal's tinted "TA RAINBOW MD" with
+  nm_variety MONDIAL (invoice 1586318, 2026-09-24). A plain product whose
+  name abbreviates its variety ("FREED 50CM" for FREEDOM) keeps the variety.
+- Mix boxes can be sent combined: one line per kind of box, RECMIBO for
+  roses and ALSMIXF for alstroemeria, in the box's own QBE or HBE, at the
+  price that keeps the invoice amount (Florecal invoice 1586318, 2026-09-25).
 
 Run either way:
     python -m pytest python/tests/test_parser_delivery_json.py -q
@@ -32,7 +36,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from parser_delivery import parse_delivery_json, resolve_growers  # noqa: E402
+from parser_delivery import mix_box_lines, parse_delivery_json, resolve_growers  # noqa: E402
 
 
 def _box(variety: str, bunches: int, rate: float, *, location: str = "", length: int = 60,
@@ -126,6 +130,20 @@ def test_tinted_product_is_named_by_its_product_not_its_base_variety():
     assert {(l.nm_variety, l.mny_rate_stem) for l in order.lines} == {
         ("Ta Rainbow Md", 0.70), ("Mondial", 0.30),
     }
+
+
+def test_abbreviated_product_name_keeps_its_variety():
+    boxes = []
+    for variety, product, gu in [
+        ("FREEDOM", "FREED 50CM", "F50"),
+        ("EXPLORER", "R-EXP-60", "E60"),
+        ("PINK FLOYD", "PINK-FLOYD 60CM", "P60"),
+    ]:
+        box = _box(variety, 4, 0.30, gu=gu)
+        box["products"][0].update(nm_product=product, nm_species="ROSES")
+        boxes.append(box)
+    [order] = parse_delivery_json(_invoice("ELITE FLOWER", boxes, 90))
+    assert sorted(l.nm_variety for l in order.lines) == ["Explorer", "Freedom", "Pink Floyd"]
 
 
 # ── Ceresfarms ─────────────────────────────────────────────────────────────
@@ -263,6 +281,72 @@ def test_other_suppliers_keep_price_per_stem():
     [order] = parse_delivery_json(_invoice("QUALISA", [_box("MONDIAL", 10, 0.35)], 87.5))
     assert order.lines[0].mny_rate_stem == 0.35
     assert order.warnings == []
+
+
+# ── Mix boxes sent combined ────────────────────────────────────────────────
+
+def _mix(tp_box: str, *products: tuple[str, int, float], length: int = 60,
+         species: str = "ROSES", location: str = "FLORECAL") -> dict:
+    """One mix box of (variety, bunches, rate) products, all from one farm."""
+    box = _box(*products[0], gu=products[0][0], tp_box=tp_box, length=length, location=location)
+    for variety, bunches, rate in products[1:]:
+        box["products"].append(_box(variety, bunches, rate, gu=variety, length=length,
+                                    location=location)["products"][0])
+    for p in box["products"]:
+        p["nm_species"] = species
+    return box
+
+
+def _combined(boxes: list[dict], total: float):
+    [order] = parse_delivery_json(_invoice("FLORECAL SA", boxes, total))
+    resolve_growers(order, "Florecal")
+    return order, mix_box_lines(order)
+
+
+def test_mix_boxes_that_come_out_the_same_are_one_line():
+    # Florecal 1586318: 60cm mix boxes of four different varieties each.
+    order, mixed = _combined([
+        _mix("QB", ("VIOLET HILL", 1, 0.30), ("MONDIAL", 1, 0.30), ("IMPACT", 1, 0.30), ("V.I.PINK", 1, 0.30)),
+        _mix("QB", ("STAR PLATINUM", 1, 0.30), ("NINA", 1, 0.30), ("MANDALA", 1, 0.30), ("MONDIAL", 1, 0.30)),
+        _mix("QB", ("ALOHA", 1, 0.20), ("HIGHLIGHT", 1, 0.20), ("SHIMMER", 1, 0.20), ("LEMONADE", 1, 0.20), length=40),
+        _box("EXPLORER", 4, 0.34, gu="E60", location="FLORECAL"),
+    ], 114)
+    got = {(l.nm_variety, l.fp_product_id, l.nm_box, l.nu_length):
+           (l.nu_physical_boxes, l.nu_bunches // l.nu_physical_boxes, l.nu_stems_bunch, l.mny_rate_stem, l.mix_boxes)
+           for l in mixed}
+    assert got == {
+        ("Mix Roses", "RECMIBO", "QBE", 40): (1, 4, 25, 0.20, ["MB3"]),
+        ("Mix Roses", "RECMIBO", "QBE", 60): (2, 4, 25, 0.30, ["MB1", "MB2"]),
+    }
+    sixty = next(l for l in mixed if l.nu_length == 60)
+    assert {c["nm_variety"]: c["nu_bunches"] for c in sixty.mix_content}["Mondial"] == 2
+    assert sixty.manufacturer_id == "57346"
+    plain = [l for l in order.lines if not l.nm_box.startswith("MB")]
+    assert round(sum(l.mny_total for l in plain + mixed), 2) == order.mny_total == 114
+
+
+def test_mix_box_goes_at_the_price_that_keeps_its_amount():
+    _, [line] = _combined([_mix("QB", ("MONDIAL", 2, 0.30), ("EXPLORER", 2, 0.34))], 32)
+    assert (line.mny_rate_stem, line.nu_stems_total, line.mny_total) == (0.32, 100, 32)
+
+
+@pytest.mark.parametrize("species, product, name", [
+    ("ROSES", "RECMIBO", "Mix Roses"),
+    ("ALSTROEMERIA", "ALSMIXF", "Mix Alstroemeria"),
+    ("CARNATION", "", "Mix Carnation"),
+])
+def test_mix_box_product_follows_what_it_holds(species, product, name):
+    _, [line] = _combined([_mix("HB XL", ("A", 2, 0.2), ("B", 2, 0.2), species=species)], 20)
+    assert (line.fp_product_id, line.nm_variety, line.nm_box) == (product, name, "HBE")
+    assert line.match_method == ("mix_box" if product else "none")
+
+
+def test_mix_box_one_line_cannot_hold_keeps_its_varieties():
+    box = _mix("QB", ("MONDIAL", 2, 0.30), ("EXPLORER", 2, 0.30))
+    box["products"][1]["nu_length"] = 50
+    order, mixed = _combined([box], 30)
+    assert mixed == [l for l in order.lines if l.nm_box == "MB1"]
+    assert len(mixed) == 2
 
 
 if __name__ == "__main__":

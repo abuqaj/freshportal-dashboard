@@ -17,6 +17,20 @@ function growerLocationKey(nmLocation: string): string {
   return nmLocation.replace(/\s+/g, "").toLowerCase();
 }
 
+// A variety's line inside a mix box, which the parser labels MB1, MB2…
+function isMbLine(line: DeliveryLine): boolean {
+  return /^MB\d+$/.test(line.nm_box ?? "");
+}
+
+// A mix box sent together: one line of a mix product standing for whole
+// boxes (parser_delivery.mix_box_lines).
+function isMixLine(line: DeliveryLine): boolean {
+  return (line.mix_boxes?.length ?? 0) > 0;
+}
+
+// The boxes a mix box can go to FreshPortal in when sent together.
+const MIX_BOX_FUSTS = ["QBE", "HBE"];
+
 // A grower from the Ecuador system's manufacturer list (Ecuador and Colombia),
 // as GET /growers returns it; manufacturer_id is what the DFG API receives.
 interface Grower {
@@ -33,6 +47,7 @@ type MatchMethod =
   | "floricode"
   | "fuzzy_variety" | "fuzzy_variety_nolen" | "fuzzy_nolen" | "fuzzy_anylength"
   | "cached"
+  | "mix_box"
   | "none";
 
 interface CatalogueProduct {
@@ -64,6 +79,10 @@ interface DeliveryLine {
   nm_location: string;
   manufacturer_id: string;
   nu_box_weight: number;
+  // Only on a mix box sent together: the MBn boxes it stands for, and the
+  // varieties inside with their bunches.
+  mix_boxes?: string[];
+  mix_content?: { nm_variety: string; nu_bunches: number }[];
 }
 
 interface DeliveryOrder {
@@ -78,6 +97,9 @@ interface DeliveryOrder {
   nu_stems_total: number;
   mny_total: number;
   lines: DeliveryLine[];
+  // What replaces every MBn line when mix boxes are sent together: one line
+  // per kind of mix box, plus the MBn lines of boxes one line cannot hold.
+  mix_lines?: DeliveryLine[];
   // Set by parser_delivery.py; see DeliveryOrder.warnings there.
   warnings?: DeliveryWarning[];
 }
@@ -241,6 +263,7 @@ const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   fuzzy_nolen:          { label: "fuzzy~",       cls: "bg-orange-500/15 text-orange-600 border-orange-500/20" },
   fuzzy_anylength:      { label: "fuzzy~len",    cls: "bg-orange-500/10 text-orange-600 border-orange-500/15" },
   cached:               { label: "cached ✓",     cls: "bg-green-500/15 text-green-700 border-green-500/25" },
+  mix_box:              { label: "mix box",      cls: "bg-purple-500/10 text-purple-600 border-purple-500/20" },
   none:                 { label: "no match",     cls: "bg-red-500/10 text-red-500 border-red-500/20" },
 };
 
@@ -506,6 +529,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [openInvoices, setOpenInvoices] = useState<DfgOpenInvoice[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
   const [invoicesFailed, setInvoicesFailed] = useState(false);
+  // Bumped by Retry so the lookup reruns through the same effect as a
+  // customer change, and with it the same guard against a late answer.
+  const [invoiceRetry, setInvoiceRetry] = useState(0);
   // The lookup is a round trip to FreshPortal that has been slow for
   // customers with many open invoices. Nothing here can make that call
   // quicker, so it is started earlier (while the customer is still only
@@ -588,16 +614,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       .catch(() => { if (!cancelled) setInvoicesFailed(true); })
       .finally(() => { if (!cancelled) setInvoicesLoading(false); });
     return () => { cancelled = true; };
-  }, [customerId, loadOpenInvoices]);
+  }, [customerId, invoiceRetry, loadOpenInvoices]);
 
+  // Not a fetch of its own: a retry that answered after the customer changed
+  // would put the previous customer's invoices in the picker (review
+  // 2026-09-25). Rerunning the effect cancels it along with any other stale
+  // lookup.
   function retryOpenInvoices() {
-    if (!customerId || customerId === STOCK_CUSTOMER_ID) return;
-    setInvoicesFailed(false);
-    setInvoicesLoading(true);
-    loadOpenInvoices(customerId)
-      .then(rows => setOpenInvoices(rows))
-      .catch(() => setInvoicesFailed(true))
-      .finally(() => setInvoicesLoading(false));
+    setInvoiceRetry(n => n + 1);
   }
 
   // Named the way FreshPortal's own invoice picker names one: sequence,
@@ -672,6 +696,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [boxWeightEdits, setBoxWeightEdits] = useState<Record<string, number>>({});
   const boxWeightInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
+  // ── Mix boxes: each variety its own line (separate), or each box one line
+  // of a mix product (together). Kept across files, so a user who works one
+  // way does not switch every time; the box a together line goes in (QBE or
+  // HBE) is editable, keyed by the line's gu_product ──
+  const [mixTogether, setMixTogether] = useState(false);
+  const [mixBoxEdits, setMixBoxEdits] = useState<Record<string, string>>({});
+
   // ── Supplier picker ───────────────────────────────────────────────────────
   const [resolvedSupplier, setResolvedSupplier] = useState<FPSupplier | null>(null);
   const [supplierPickerOpen, setSupplierPickerOpen] = useState(false);
@@ -703,6 +734,36 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // order (any length) and is cached across future deliveries for the same supplier.
   function deliveryKey(line: DeliveryLine): string {
     return (line.nm_variety ?? "").toLowerCase().trim();
+  }
+
+  // Box weight is edited per variety, but a together mix line is boxes of
+  // its own: the 40cm and 60cm mix boxes weigh what they weigh.
+  function boxEditKey(line: DeliveryLine): string {
+    return isMixLine(line) ? line.gu_product : deliveryKey(line);
+  }
+
+  // The lines the review step shows and imports. With mix boxes together,
+  // the MBn lines give way to the order's mix_lines, listed first so the
+  // switch shows at the top of the table.
+  const activeLines = useMemo((): DeliveryLine[] => {
+    const o = parseResult?.orders[activeOrderIdx];
+    if (!o) return [];
+    if (!mixTogether || !o.mix_lines?.length) return o.lines;
+    return [...o.mix_lines, ...o.lines.filter(l => !isMbLine(l))];
+  }, [parseResult, activeOrderIdx, mixTogether]);
+
+  // A line as it goes to FreshPortal: what the user set on the screen over
+  // what the file said.
+  function withEdits(line: DeliveryLine): DeliveryLine {
+    const edit = lineEdits[deliveryKey(line)];
+    return {
+      ...line,
+      fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
+      catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
+      manufacturer_id: growerEdits[growerLocationKey(line.nm_location)] ?? line.manufacturer_id,
+      nu_box_weight: boxWeightEdits[boxEditKey(line)] ?? line.nu_box_weight,
+      nm_box: (isMixLine(line) && mixBoxEdits[line.gu_product]) || line.nm_box,
+    };
   }
 
   // order.dt_fly is always normalised to "DD-MM-YYYY" by the parser; <input type="date">
@@ -975,6 +1036,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setParseResult(data);
       setActiveOrderIdx(0);
       setLineEdits({});
+      setMixBoxEdits({});
       setEditingKey(null);
       setShowOnlyUnmatched(false);
       setShowOnlyUnapproved(false);
@@ -987,9 +1049,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         setResolvedSupplier(null);
       }
       const preApproved = new Set<string>();
+      // A mix box's product comes from a fixed rule, as sure as a cached match.
       for (const order of data.orders) {
-        for (const line of order.lines) {
-          if (line.match_method === "cached") preApproved.add(deliveryKey(line));
+        for (const line of [...order.lines, ...(order.mix_lines ?? [])]) {
+          if (line.match_method === "cached" || line.match_method === "mix_box") preApproved.add(deliveryKey(line));
         }
       }
       setApprovedKeys(preApproved);
@@ -1118,8 +1181,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
     // Check if all matched lines are approved — show modal if not
     if (!skipPartialCheck) {
-      const totalMatched = order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
-      const totalApproved = order.lines.filter(l => {
+      const totalMatched = activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
+      const totalApproved = activeLines.filter(l => {
         const dk = deliveryKey(l);
         return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk);
       }).length;
@@ -1141,23 +1204,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
     const orderWithEdits: DeliveryOrder = {
       ...order,
+      // Already in `lines` when sent together; the other view is not sent.
+      mix_lines: undefined,
       dt_fly: orderDateOverride || order.dt_fly,
-      lines: order.lines
+      lines: activeLines
         .filter(line => approvedKeys.has(deliveryKey(line)))
-        .map(line => {
-          const dk = deliveryKey(line);
-          const edit = lineEdits[dk];
-          const growerOverride = growerEdits[growerLocationKey(line.nm_location)];
-          return {
-            ...line,
-            fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
-            catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
-            manufacturer_id: growerOverride ?? line.manufacturer_id,
-            nu_box_weight: boxWeightEdits[dk] ?? line.nu_box_weight,
-          };
-        }),
+        .map(withEdits),
     };
-    const skippedUnmatched = order.lines.filter(l => !l.fp_product_id).map(l => l.nm_product);
+    const skippedUnmatched = activeLines.filter(l => !l.fp_product_id).map(l => l.nm_product);
 
     try {
       const checkData = await loggedRequest(
@@ -1193,7 +1247,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           invoice_id: retryData.invoice_id, invoice_url: retryData.invoice_url,
         };
         setImportResult(result);
-        await logImportResult(orderWithEdits, order.lines, result);
+        await logImportResult(orderWithEdits, activeLines, result);
         setStage("done");
         return;
       }
@@ -1216,7 +1270,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const result: DfgCreateResult = created as DfgCreateResult;
       result.skipped_unmatched = skippedUnmatched;
       setImportResult(result);
-      await logImportResult(orderWithEdits, order.lines, result);
+      await logImportResult(orderWithEdits, activeLines, result);
       setStage("done");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1231,20 +1285,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const supplierFpId = resolvedSupplier?.fp_supplier_id || parseResult.supplier_id;
     const failedSet = new Set(importResult.errors.map(e => `${e.product_number}|${e.length}`));
 
-    const retryLines = order.lines
+    const retryLines = activeLines
       .filter(l => approvedKeys.has(deliveryKey(l)))
-      .map(line => {
-        const dk = deliveryKey(line);
-        const edit = lineEdits[dk];
-        const growerOverride = growerEdits[growerLocationKey(line.nm_location)];
-        return {
-          ...line,
-          fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
-          catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
-          manufacturer_id: growerOverride ?? line.manufacturer_id,
-          nu_box_weight: boxWeightEdits[dk] ?? line.nu_box_weight,
-        };
-      })
+      .map(withEdits)
       .filter(l => failedSet.has(`${l.fp_product_id}|${l.nu_length}`));
     if (!retryLines.length) return;
 
@@ -1252,7 +1295,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     try {
       const retryData = await loggedRequest(
         `${RAILWAY}/delivery/api/retry`,
-        { batch_id: importResult.batch_id, supplier_fp_id: supplierFpId, order: { ...order, lines: retryLines } },
+        { batch_id: importResult.batch_id, supplier_fp_id: supplierFpId, order: { ...order, mix_lines: undefined, lines: retryLines } },
         td.retryingBtn,
       );
       setImportResult(prev => prev ? {
@@ -1275,7 +1318,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!order) return;
     const keysToSave = keys ?? approvedKeys;
     const seenKeys = new Set<string>();
-    const matches = order.lines
+    // A together mix line's product comes from a fixed rule, not from a
+    // match worth remembering for the supplier's next delivery.
+    const matches = activeLines
+      .filter(line => !isMixLine(line))
       .map(line => {
         const dk = deliveryKey(line);
         const edit = lineEdits[dk];
@@ -1371,6 +1417,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setDateEditOpen(false);
     setApprovedKeys(new Set());
     setLineEdits({});
+    setMixBoxEdits({});
     setEditingKey(null);
     setEditModalOpen(false);
     setGrowerEdits({});
@@ -1410,9 +1457,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const order = parseResult?.orders[activeOrderIdx];
 
   const displayLines = useMemo(() => {
-    const o = parseResult?.orders[activeOrderIdx];
-    if (!o) return [];
-    let lines = [...o.lines];
+    let lines = [...activeLines];
 
     if (showOnlyUnmatched) {
       lines = lines.filter(l => {
@@ -1438,6 +1483,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           (l.nm_species ?? "").toLowerCase().includes(q) ||
           (l.nm_box ?? "").toLowerCase().includes(q) ||
           catName.toLowerCase().includes(q) ||
+          (l.mix_content ?? []).some(c => c.nm_variety.toLowerCase().includes(q)) ||
+          (l.mix_boxes ?? []).some(code => code.toLowerCase().includes(q)) ||
           l.match_method.toLowerCase().includes(q) ||
           (l.id_floricode ?? "").toLowerCase().includes(q) ||
           String(l.nu_length).includes(q)
@@ -1464,17 +1511,23 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     }
     return lines;
-  }, [parseResult, activeOrderIdx, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits]);
+  }, [activeLines, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits]);
+
+  // Counted over what is on screen, so they follow the mix box switch.
+  const matchedCount = activeLines.filter(l => l.fp_product_id).length;
+  const unmatchedCount = activeLines.length - matchedCount;
+  // MBn boxes in the order, and those that stay per variety when together.
+  const mixBoxCount = new Set((order?.lines ?? []).filter(isMbLine).map(l => l.nm_box)).size;
+  const mixKeptCount = new Set((order?.mix_lines ?? []).filter(isMbLine).map(l => l.nm_box)).size;
 
   // Per-line outcome for the "done" screen's expandable product list — derived
   // from the same approval/match state used to build the request, cross-
   // referenced against the result's errors/skipped_unmatched (stock_entries_ok's
   // shape isn't reliably typed, so success is inferred by elimination instead).
   const doneLineStatuses = useMemo((): { line: DeliveryLine; status: DoneLineStatus; message: string }[] => {
-    const o = parseResult?.orders[activeOrderIdx];
-    if (!o || !importResult) return [];
-    return computeLineStatuses(o.lines, importResult, lineEdits, approvedKeys);
-  }, [parseResult, activeOrderIdx, importResult, lineEdits, approvedKeys]);
+    if (!importResult) return [];
+    return computeLineStatuses(activeLines, importResult, lineEdits, approvedKeys);
+  }, [activeLines, importResult, lineEdits, approvedKeys]);
 
   type AllTourStep = TourStep & { tourStage: "idle" | "shipment" | "preview" | "done" };
 
@@ -1981,8 +2034,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* Partial approve confirmation modal */}
           {partialApproveOpen && (() => {
-            const totalMatched = order.lines.filter((l: DeliveryLine) => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
-            const totalApproved = order.lines.filter((l: DeliveryLine) => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length;
+            const totalMatched = activeLines.filter((l: DeliveryLine) => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
+            const totalApproved = activeLines.filter((l: DeliveryLine) => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length;
             return (
               <>
                 <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPartialApproveOpen(false)} />
@@ -2017,9 +2070,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Match status */}
           <div ref={refCatalogueStatus} className="flex items-center gap-3 text-sm flex-wrap">
             <span className="px-2.5 py-1 rounded-full border text-xs text-emerald bg-emerald/10 border-emerald/20">
-              {parseResult!.matched_count} {td.matched}
+              {matchedCount} {td.matched}
             </span>
-            {parseResult!.unmatched_count > 0 && (
+            {unmatchedCount > 0 && (
               <button
                 onClick={() => setShowOnlyUnmatched(p => !p)}
                 className={`px-2.5 py-1 rounded-full border text-xs font-medium transition-colors
@@ -2027,7 +2080,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     ? "bg-red-500/20 text-red-600 border-red-500/40 ring-1 ring-red-500/30"
                     : "bg-red-500/10 text-red-500 border-red-500/20 hover:bg-red-500/20"}`}
               >
-                {parseResult!.unmatched_count} {td.unmatched}
+                {unmatchedCount} {td.unmatched}
                 {showOnlyUnmatched ? " ✕" : ""}
               </button>
             )}
@@ -2043,7 +2096,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
           </div>
 
-          {parseResult!.unmatched_count > 0 && (
+          {unmatchedCount > 0 && (
             <button
               onClick={() => setShowOnlyUnmatched(p => !p)}
               className={`w-full text-left text-xs rounded-xl px-3 py-2 border transition-colors
@@ -2051,7 +2104,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   ? "text-amber-700 bg-amber-100 border-amber-300"
                   : "text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100"}`}
             >
-              ⚠ {td.unmatchedWarning(parseResult!.unmatched_count)}
+              ⚠ {td.unmatchedWarning(unmatchedCount)}
               <span className="ml-2 underline">{showOnlyUnmatched ? td.showAll : td.showOnlyUnmatched}</span>
             </button>
           )}
@@ -2067,6 +2120,41 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
           ))}
 
+          {/* Mix boxes: each variety its own line, or each box one line of a
+              mix product. Switching swaps the table's lines on the spot. */}
+          {mixBoxCount > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-xs font-semibold text-ink">{td.mixModeLabel}</span>
+                <div role="radiogroup" aria-label={td.mixModeLabel}
+                  className="inline-flex rounded-lg border border-purple-500/30 bg-purple-500/5 p-0.5">
+                  {[false, true].map(together => (
+                    <button
+                      key={String(together)}
+                      role="radio"
+                      aria-checked={mixTogether === together}
+                      onClick={() => setMixTogether(together)}
+                      className={`h-7 px-3 rounded-md text-xs font-medium transition-colors
+                        ${mixTogether === together
+                          ? "bg-purple-600 text-white shadow-sm"
+                          : "text-purple-700 hover:bg-purple-500/10"}`}
+                    >
+                      {together ? td.mixModeTogether : td.mixModeSeparate}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-[11px] text-ink-3">
+                  {mixTogether ? td.mixModeTogetherHint : td.mixModeSeparateHint}
+                </span>
+              </div>
+              {mixTogether && mixKeptCount > 0 && (
+                <div className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
+                  ⚠ {td.mixKeptSeparate(mixKeptCount)}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Approve toolbar */}
           <div ref={refApproveToolbar} className="flex items-center gap-2 flex-wrap">
             <button
@@ -2078,14 +2166,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   : "bg-emerald/8 border-emerald/30 text-emerald hover:bg-emerald/15"}`}
             >
               {td.approved(
-                order.lines.filter(l => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length,
-                order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length
+                activeLines.filter(l => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length,
+                activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length
               )}
               {showOnlyUnapproved ? " ✕" : ""}
             </button>
             <button
               onClick={() => {
-                const all = new Set(order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l)));
+                const all = new Set(activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l)));
                 setApprovedKeys(all);
               }}
               className="h-6 px-2 rounded-md text-[11px] border border-emerald/40 text-emerald hover:bg-emerald/8 transition-colors"
@@ -2118,7 +2206,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             />
             <button
               onClick={() => handleImport()}
-              disabled={approvedKeys.size === 0}
+              disabled={!activeLines.some(l => approvedKeys.has(deliveryKey(l)))}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
               {td.importBtn}
@@ -2148,7 +2236,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   <SortTh col="match"      label={td.colMatch}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                 </tr>
               </thead>
-              <tbody>
+              <tbody key={mixTogether ? "mix-together" : "mix-separate"} className="lines-swap">
                 {displayLines.length === 0 ? (
                   <tr>
                     <td colSpan={14} className="px-4 py-6 text-center text-xs text-ink-3">
@@ -2158,7 +2246,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 ) : displayLines.map((line, i) => {
                   const dk = deliveryKey(line);
                   const edit = lineEdits[dk];
-                  const boxWeightValue = boxWeightEdits[dk] ?? line.nu_box_weight ?? 0;
+                  const boxKey = boxEditKey(line);
+                  const boxWeightValue = boxWeightEdits[boxKey] ?? line.nu_box_weight ?? 0;
                   const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
                   const isApproved = approvedKeys.has(dk);
                   const hasMatch = !!(edit?.fp_product_id ?? line.fp_product_id);
@@ -2190,6 +2279,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         {displayCatName && displayCatName !== line.nm_variety && (
                           <div className="text-ink-3 font-normal">{displayCatName}</div>
                         )}
+                        {isMixLine(line) && (
+                          <div title={td.mixContentTitle} className="mt-1 max-w-[280px] text-[11px] font-normal leading-snug text-purple-600/90">
+                            {(line.mix_content ?? []).map(c => `${c.nm_variety} (${c.nu_bunches})`).join(", ")}
+                          </div>
+                        )}
                       </td>
                       {(() => {
                         const locKey = growerLocationKey(line.nm_location);
@@ -2215,7 +2309,24 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         );
                       })()}
                       <td className="px-3 py-2">
-                        {line.nm_box ? (
+                        {isMixLine(line) ? (() => {
+                          const fust = mixBoxEdits[line.gu_product] ?? line.nm_box;
+                          const fusts = MIX_BOX_FUSTS.includes(line.nm_box) ? MIX_BOX_FUSTS : [line.nm_box, ...MIX_BOX_FUSTS];
+                          return (
+                            <div className="flex flex-col items-start gap-0.5">
+                              <select
+                                value={fust}
+                                onChange={e => { const v = e.target.value; setMixBoxEdits(prev => ({ ...prev, [line.gu_product]: v })); }}
+                                title={td.mixBoxTypeTitle}
+                                className="h-6 px-1 rounded-md border text-[10px] font-medium cursor-pointer outline-none
+                                           bg-purple-500/10 text-purple-600 border-purple-500/30 hover:border-purple-500/60 focus:border-purple-500"
+                              >
+                                {fusts.map(code => <option key={code} value={code}>{code}</option>)}
+                              </select>
+                              <span className="text-[10px] text-ink-3 whitespace-nowrap">{(line.mix_boxes ?? []).join(" · ")}</span>
+                            </div>
+                          );
+                        })() : line.nm_box ? (
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium
                             ${line.nm_box.startsWith("MB")
                               ? "bg-purple-500/10 text-purple-600 border-purple-500/20"
@@ -2250,7 +2361,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           }}
                           onChange={e => {
                             const v = e.target.value === "" ? 0 : Number(e.target.value);
-                            setBoxWeightEdits(prev => ({ ...prev, [dk]: v }));
+                            setBoxWeightEdits(prev => ({ ...prev, [boxKey]: v }));
                           }}
                           onKeyDown={e => {
                             if (e.key === "ArrowDown" || e.key === "Enter") {
@@ -2314,7 +2425,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Product match modal */}
           {editModalOpen && editingKey && (() => {
             const dk = editingKey;
-            const editLine = order.lines.find(l => deliveryKey(l) === dk);
+            const editLine = activeLines.find(l => deliveryKey(l) === dk);
             const currentEdit = lineEdits[dk];
             const currentMatchName = currentEdit?.catalogue_nm_product ?? editLine?.catalogue_nm_product ?? "";
             const matchResults = editSearchResults;
@@ -2396,7 +2507,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Grower (manufacturer) edit modal — any supplier; the pick applies to every line of the same farm */}
           {editingGrowerKey !== null && (() => {
             const locKey = editingGrowerKey;
-            const farmLine = order.lines.find(l => growerLocationKey(l.nm_location) === locKey);
+            const farmLine = activeLines.find(l => growerLocationKey(l.nm_location) === locKey);
             const currentGrowerId = growerEdits[locKey] ?? farmLine?.manufacturer_id ?? "";
             const q = growerSearch.trim().toLowerCase();
             const found = q

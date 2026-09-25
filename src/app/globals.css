@@ -154,6 +154,13 @@ html, body { height: 100%; margin: 0; }
 }
 .step-enter { animation: step-enter 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
+/* ─── Delivery import wizard: product lines swapped by the mix box switch ─── */
+@keyframes lines-swap {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.lines-swap { animation: lines-swap 0.3s ease-out both; }
+
 /* ─── Delivery import wizard: stepper checkmark pop-in ─── */
 @keyframes step-dot-pop {
   0%   { transform: scale(0.3) rotate(-20deg); opacity: 0; }

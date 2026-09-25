@@ -769,6 +769,23 @@ def get_ecuador_product_count() -> int:
         return -1
 
 
+def get_ecuador_product_names(product_numbers: list[str]) -> dict[str, str]:
+    """{product_number: name} for the given numbers that exist in ecuador_products."""
+    if not product_numbers:
+        return {}
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT product_number, name FROM ecuador_products WHERE product_number = ANY(%s)",
+                    (list(product_numbers),),
+                )
+                return {number: name or "" for number, name in cur.fetchall()}
+    except Exception as exc:
+        logger.warning("get_ecuador_product_names failed: %s", exc)
+        return {}
+
+
 def log_ecuador_sync_start() -> int:
     try:
         ensure_tables()

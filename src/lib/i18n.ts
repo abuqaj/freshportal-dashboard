@@ -517,6 +517,15 @@ const en = {
       `The invoice total is ${invoiceTotal}, but the boxes in the file add up to ${fileTotal}. Check the bunches per box before importing.`,
     warnBoxCountMismatch:    (invoiceBoxes: number, fileBoxes: number) =>
       `The invoice lists ${invoiceBoxes} boxes, but the file gives ${fileBoxes}. Check the boxes before importing.`,
+    mixModeLabel:            "Mix boxes",
+    mixModeSeparate:         "Separate",
+    mixModeTogether:         "Together",
+    mixModeSeparateHint:     "Each variety in a mix box is its own line, marked MB1, MB2…",
+    mixModeTogetherHint:     "Each mix box is one line of a mix product: RECMIBO for roses, ALSMIXF for alstroemeria. Identical boxes share one line.",
+    mixKeptSeparate:         (count: number) =>
+      `Mix boxes kept per variety: ${count}. Their varieties differ in length, bunch size or farm, and one FreshPortal line holds only one of each.`,
+    mixContentTitle:         "Varieties in the box (bunches)",
+    mixBoxTypeTitle:         "Box sent to FreshPortal",
   },
   login: {
     subtitle:         "Sign in to your account",
@@ -1427,6 +1436,15 @@ const nl: typeof en = {
       `Het factuurtotaal is ${invoiceTotal}, maar de dozen in het bestand komen op ${fileTotal}. Controleer de bossen per doos voor het importeren.`,
     warnBoxCountMismatch:    (invoiceBoxes: number, fileBoxes: number) =>
       `De factuur vermeldt ${invoiceBoxes} dozen, maar het bestand geeft er ${fileBoxes}. Controleer de dozen voor het importeren.`,
+    mixModeLabel:            "Mixdozen",
+    mixModeSeparate:         "Apart",
+    mixModeTogether:         "Samen",
+    mixModeSeparateHint:     "Elke variëteit in een mixdoos is een eigen regel, gemarkeerd als MB1, MB2…",
+    mixModeTogetherHint:     "Elke mixdoos is één regel van een mixproduct: RECMIBO voor rozen, ALSMIXF voor alstroemeria. Gelijke dozen delen één regel.",
+    mixKeptSeparate:         (count: number) =>
+      `Mixdozen per variëteit gelaten: ${count}. De variëteiten verschillen in lengte, bosgrootte of farm, en één FreshPortal-regel bevat er maar één van elk.`,
+    mixContentTitle:         "Variëteiten in de doos (bossen)",
+    mixBoxTypeTitle:         "Doos die naar FreshPortal gaat",
   },
   history: {
     title:         "Operatiegeschiedenis",
@@ -2297,6 +2315,15 @@ const pl: typeof en = {
       `Suma faktury to ${invoiceTotal}, a pudła w pliku dają ${fileTotal}. Sprawdź liczbę pęczków w pudłach przed importem.`,
     warnBoxCountMismatch:    (invoiceBoxes: number, fileBoxes: number) =>
       `Faktura podaje ${invoiceBoxes} pudeł, a z pliku wychodzi ${fileBoxes}. Sprawdź pudła przed importem.`,
+    mixModeLabel:            "Mix boxy",
+    mixModeSeparate:         "Osobno",
+    mixModeTogether:         "Razem",
+    mixModeSeparateHint:     "Każda odmiana z mix boxa to osobna linia, oznaczona MB1, MB2…",
+    mixModeTogetherHint:     "Każdy mix box to jedna linia produktu mix: RECMIBO dla róż, ALSMIXF dla alstromerii. Takie same pudła dzielą jedną linię.",
+    mixKeptSeparate:         (count: number) =>
+      `Mix boxy zostawione osobno: ${count}. Odmiany w środku różnią się długością, wielkością pęczka lub farmą, a jedna linia we FreshPortalu mieści tylko jedną z każdej.`,
+    mixContentTitle:         "Odmiany w pudle (pęczki)",
+    mixBoxTypeTitle:         "Pudło wysyłane do FreshPortalu",
   },
   history: {
     title:         "Historia operacji",
@@ -3167,6 +3194,15 @@ const es: typeof en = {
       `El total de la factura es ${invoiceTotal}, pero las cajas del archivo suman ${fileTotal}. Revise los ramos por caja antes de importar.`,
     warnBoxCountMismatch:    (invoiceBoxes: number, fileBoxes: number) =>
       `La factura indica ${invoiceBoxes} cajas, pero el archivo da ${fileBoxes}. Revise las cajas antes de importar.`,
+    mixModeLabel:            "Cajas mixtas",
+    mixModeSeparate:         "Por separado",
+    mixModeTogether:         "Juntas",
+    mixModeSeparateHint:     "Cada variedad de una caja mixta es su propia línea, marcada MB1, MB2…",
+    mixModeTogetherHint:     "Cada caja mixta es una línea de un producto mixto: RECMIBO para rosas, ALSMIXF para alstroemeria. Las cajas iguales comparten una línea.",
+    mixKeptSeparate:         (count: number) =>
+      `Cajas mixtas que quedan por variedad: ${count}. Sus variedades difieren en largo, tamaño de ramo o finca, y una línea de FreshPortal admite solo uno de cada.`,
+    mixContentTitle:         "Variedades en la caja (ramos)",
+    mixBoxTypeTitle:         "Caja que se envía a FreshPortal",
   },
   history: {
     title:         "Historial de operaciones",
