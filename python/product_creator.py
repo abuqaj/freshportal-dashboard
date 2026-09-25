@@ -785,14 +785,15 @@ def _parse_product_list(html: str) -> tuple[list[FPProduct], set[str]]:
     return rows, set(col_map)
 
 
-def _load_product_list(page: Page, cfg: Config, filter_query: str, expect_rows: bool) -> tuple[list[FPProduct], set[str]]:
+def _load_product_list(page: Page, cfg: Config, filter_query: str, expect_rows: bool,
+                       page_num: int = 1) -> tuple[list[FPProduct], set[str]]:
     """Open the product list with *filter_query* and parse what it shows.
 
     expect_rows=True waits longer for a row (verifying a product just saved);
     otherwise it waits for the list's data requests to settle, so a free
     number or name doesn't cost the full row timeout.
     """
-    url = f"{cfg.freshportal_url}/product/index/index/?1=1&{filter_query}&page=1"
+    url = f"{cfg.freshportal_url}/product/index/index/?1=1&{filter_query}&page={page_num}"
     page.goto(url, wait_until="load", timeout=cfg.request_timeout)
     if "login" in page.url.lower():
         _login(page, cfg)
@@ -814,10 +815,44 @@ def _load_product_list(page: Page, cfg: Config, filter_query: str, expect_rows: 
     return _parse_product_list(page.content())
 
 
+# A "contains" filter on a whole name or number never comes near this many
+# pages; reaching it fails the check instead of passing it.
+_LIVE_CHECK_MAX_PAGES = 20
+
+
+def _live_exact_matches(page: Page, cfg: Config, filter_query: str,
+                        is_exact: Callable[[FPProduct], bool]) -> list[FPProduct]:
+    """The rows of a filtered product list that *is_exact* accepts, from the
+    first page that has any.
+
+    The name and number filters are "contains" filters, so the exact product
+    can sit past page 1 behind longer names that contain it ("Rosa Ec Pink"
+    behind "Rosa Ec Pink Floyd"); read only page 1, it passed as free
+    (review 2026-09-25). Pages are read until one is empty, as the full
+    product sync does, or repeats the one before it.
+    """
+    previous_ids: list[str] | None = None
+    for page_num in range(1, _LIVE_CHECK_MAX_PAGES + 1):
+        rows, _ = _load_product_list(page, cfg, filter_query, expect_rows=False, page_num=page_num)
+        ids = [r.product_id for r in rows]
+        if not rows or ids == previous_ids:
+            return []
+        exact = [r for r in rows if is_exact(r)]
+        if exact:
+            return exact
+        previous_ids = ids
+    raise RuntimeError(
+        f"The FreshPortal product list for {filter_query} still had rows after "
+        f"{_LIVE_CHECK_MAX_PAGES} pages, so it could not be checked for an existing product"
+    )
+
+
 def _number_taken_live(page: Page, cfg: Config, number: str) -> bool:
     # number_adjustable is a "contains" filter — compare exactly ourselves.
-    rows, _ = _load_product_list(page, cfg, f"number_adjustable={quote_plus(number)}", expect_rows=False)
-    return any(r.product_number.strip().upper() == number for r in rows)
+    return bool(_live_exact_matches(
+        page, cfg, f"number_adjustable={quote_plus(number)}",
+        lambda r: r.product_number.strip().upper() == number,
+    ))
 
 
 def _suggest_free_number(number: str, name: str, page: Page | None, cfg: Config, catalogue: Catalogue) -> str | None:
@@ -1102,8 +1137,10 @@ def _copy_and_create_locked(
 
                 if not allow_duplicate_name:
                     _s("create_checking_name")
-                    rows, _ = _load_product_list(page, cfg, f"name_adjustable={quote_plus(name)}", expect_rows=False)
-                    existing_live = [r for r in rows if normalize_name(r.name) == normalize_name(name)]
+                    existing_live = _live_exact_matches(
+                        page, cfg, f"name_adjustable={quote_plus(name)}",
+                        lambda r: normalize_name(r.name) == normalize_name(name),
+                    )
                     if existing_live:
                         return _result("blocked", reason="name_exists",
                                        existing=[_product_summary(r) for r in existing_live])

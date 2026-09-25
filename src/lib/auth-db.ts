@@ -182,11 +182,15 @@ async function runOnce(name: string, body: () => Promise<void>) {
  *  and to those only: a group that names three systems named them on purpose,
  *  and a group holding none already reaches all of them through admin:manage.
  *  Once per system, so unticking one in Admin is not undone on the next cold
- *  start — the trap the group seed above fell into. */
+ *  start — the trap the group seed above fell into.
+ *
+ *  "Every other system" leaves out the ones no group holds at all. Those are
+ *  new as well: with two systems added in one deploy, each one counted the
+ *  other against every group, neither was granted, and the markers stopped
+ *  any retry (review 2026-09-25). */
 async function grantNewSystemsToFullAccessGroups() {
+  if (SYSTEM_PERMISSIONS.length < 2) return
   for (const perm of SYSTEM_PERMISSIONS) {
-    const others = SYSTEM_PERMISSIONS.filter(p => p !== perm)
-    if (others.length === 0) continue
     // A grant that fails is a tile somebody has to tick by hand; it must not
     // be a login that fails. The claim is released, so the next cold start
     // tries again.
@@ -205,6 +209,9 @@ async function grantNewSystemsToFullAccessGroups() {
           names.add(row.name as string)
           held.set(groupId, names)
         }
+        const heldByAnyone = new Set(rows.map(row => row.name as string))
+        const others = SYSTEM_PERMISSIONS.filter(p => p !== perm && heldByAnyone.has(p))
+        if (others.length === 0) return
         for (const [groupId, names] of held) {
           if (!others.every(o => names.has(o))) continue
           await sql`

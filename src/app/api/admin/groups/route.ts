@@ -10,6 +10,23 @@ function requireAdmin(session: Session | null) {
   return null
 }
 
+// Default groups are no longer re-seeded on a cold start, so a change that
+// leaves no group with admin:manage shuts everyone out of Admin for good, with
+// no way back through the UI. Returns the refusal, or null when it is safe.
+async function refuseIfLastAdminGroup(gid: number, keepsAdmin: boolean) {
+  const groups = await listGroups()
+  const target = groups.find(g => g.id === gid)
+  if (!target) return NextResponse.json({ error: "Group not found" }, { status: 404 })
+  if (keepsAdmin) return null
+  const adminGroups = groups.filter(g => g.permissions?.includes("admin:manage"))
+  if (adminGroups.length === 1 && adminGroups[0].id === gid) {
+    return NextResponse.json({
+      error: `"${target.name}" is the only group with Admin & Management. Give another group that permission first, or nobody can reach Admin again.`,
+    }, { status: 409 })
+  }
+  return null
+}
+
 export async function GET() {
   const session = await auth()
   const deny = requireAdmin(session)
@@ -34,24 +51,19 @@ export async function POST(req: NextRequest) {
       }
       case "update": {
         if (!groupId) return NextResponse.json({ error: "groupId required" }, { status: 400 })
+        // Unticking Admin & Management on the last group that has it locks
+        // Admin just as deleting that group does (review 2026-09-25).
+        const refusal = await refuseIfLastAdminGroup(
+          Number(groupId), (permissions ?? []).includes("admin:manage"))
+        if (refusal) return refusal
         await updateGroup(groupId, description ?? "", permissions ?? [], name?.trim() || undefined)
         return NextResponse.json({ ok: true })
       }
       case "delete": {
         if (!groupId) return NextResponse.json({ error: "groupId required" }, { status: 400 })
-        // Default groups are no longer re-seeded on a cold start, so deleting
-        // the last group that carries admin:manage would shut everyone out of
-        // Admin for good, with no way back through the UI.
         const gid = Number(groupId)
-        const groups = await listGroups()
-        const target = groups.find(g => g.id === gid)
-        if (!target) return NextResponse.json({ error: "Group not found" }, { status: 404 })
-        const adminGroups = groups.filter(g => g.permissions?.includes("admin:manage"))
-        if (adminGroups.length === 1 && adminGroups[0].id === gid) {
-          return NextResponse.json({
-            error: `"${target.name}" is the only group with Admin & Management. Give another group that permission first, or nobody can reach Admin again.`,
-          }, { status: 409 })
-        }
+        const refusal = await refuseIfLastAdminGroup(gid, false)
+        if (refusal) return refusal
         await deleteGroup(gid)
         return NextResponse.json({ ok: true })
       }

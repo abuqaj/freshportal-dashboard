@@ -19,6 +19,12 @@ const STALE_UPDATE = "has changed since";
 
 type SubTab = "review" | "proposals" | "changelog" | "library" | "runs";
 type ReviewView = "pending" | "decided" | "done";
+// The statuses each view lists: DECIDED and DONE in knowledge_base.py.
+const VIEW_STATUSES: Record<ReviewView, readonly string[]> = {
+  pending: ["pending"],
+  decided: ["approved", "approved_always", "rejected", "answered"],
+  done: ["applied", "closed"],
+};
 type Decision = "approve" | "approve_always" | "reject" | "answer" | "undo";
 type Strings = (typeof translations)[Lang]["knowledgeBase"];
 
@@ -432,7 +438,8 @@ function ReviewList({ t, lang, kind, excludeKind, hint, onChanged }: {
     if (excludeKind) params.set("exclude_kind", excludeKind);
     try {
       const res = await api<{ items: ReviewItem[]; has_more: boolean }>(`/kb/review-items?${params.toString()}`);
-      setItems(prev => (offset === 0 || !prev ? res.items : [...prev, ...res.items]));
+      setItems(prev => (offset === 0 || !prev ? res.items
+        : [...prev, ...res.items.filter(item => !prev.some(p => p.id === item.id))]));
       setHasMore(res.has_more);
     } catch (e) {
       setError(errorText(e));
@@ -453,6 +460,14 @@ function ReviewList({ t, lang, kind, excludeKind, hint, onChanged }: {
       .then(res => setAgents(res.repos))
       .catch(() => setAgents([]));  // no state reads as offline, which is the safe default
   }, []);
+
+  // The server pages over the items still in this view. A card decided here
+  // stays on screen with its new status but has left the view there, so it
+  // is not counted: counting it skipped as many items as had been decided
+  // (review 2026-09-25).
+  function nextOffset(): number {
+    return (items ?? []).filter(item => VIEW_STATUSES[view].includes(item.status)).length;
+  }
 
   function handleDecided(updated: ReviewItem) {
     // Keep the card where it is, so the new status is visible where it was clicked.
@@ -492,7 +507,7 @@ function ReviewList({ t, lang, kind, excludeKind, hint, onChanged }: {
           </div>
         ))}
       {hasMore && (
-        <button className={`${BTN} self-center border border-border text-ink-3 hover:text-ink`} disabled={loading} onClick={() => load(items?.length ?? 0)}>{t.loadMore}</button>
+        <button className={`${BTN} self-center border border-border text-ink-3 hover:text-ink`} disabled={loading} onClick={() => load(nextOffset())}>{t.loadMore}</button>
       )}
     </div>
   );

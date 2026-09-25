@@ -124,6 +124,8 @@ class Portal:
     """What the fake FreshPortal contains and how its form behaves.
 
     live_numbers / live_names  what the portal already has
+    list_page_size             rows per page of the product list
+    list_clamps                a page past the last shows the last one again
     inputs / selects           the fields the copy form offers
     ignore_fill                fields that silently drop what is typed into them
     color_ok                   whether the colour dropdown accepts the choice
@@ -139,6 +141,8 @@ class Portal:
     def __init__(self, **kw):
         self.live_numbers = {n.upper() for n in kw.get("live_numbers", set())}
         self.live_names = kw.get("live_names", [])
+        self.list_page_size = kw.get("list_page_size", 20)
+        self.list_clamps = kw.get("list_clamps", False)
         self.inputs = kw.get("inputs", [
             "product_index_form_number",
             "product_index_form_name_en",
@@ -229,18 +233,25 @@ class FakePage:
         raise AssertionError(f"unexpected page.evaluate: {js[:60]}")
 
 
-def fake_load_product_list(page, cfg, filter_query, expect_rows):
+def fake_load_product_list(page, cfg, filter_query, expect_rows, page_num=1):
     """Stands in for opening the product list with a filter."""
     p = page.portal
+
+    def paged(rows):
+        pages = [rows[i:i + p.list_page_size] for i in range(0, len(rows), p.list_page_size)]
+        if page_num <= len(pages):
+            return pages[page_num - 1]
+        return pages[-1] if pages and p.list_clamps else []
+
     if filter_query.startswith("number_adjustable="):
         number = filter_query.split("=", 1)[1]
         if expect_rows:  # the check that runs after saving
             return ([p.saved] if p.saved else []), p.saved_columns
         rows = [FPProduct(product_id="1", name="Something else", short_name="",
                           vbn_number="", product_number=number)] if number.upper() in p.live_numbers else []
-        return rows, set()
+        return paged(rows), set()
     if filter_query.startswith("name_adjustable="):
-        return p.live_names, set()
+        return paged(p.live_names), set()
     raise AssertionError(f"unexpected list filter: {filter_query}")
 
 
@@ -376,6 +387,19 @@ def test_freshportal_itself_is_checked_too():
     r = create(Portal(live_names=[FPProduct(product_id="7", name="Rosa Ec Toxic Spray",
                                             short_name="", vbn_number="")], saved=saved_row()))
     check("a longer name that merely contains ours is not a duplicate",
+          r["status"] == "created", r)
+
+    # The name filter is a "contains" filter, so the exact name can sit on page
+    # 2 behind longer names that contain it (review 2026-09-25).
+    longer = [FPProduct(product_id=str(100 + i), name=f"Rosa Ec Toxic {i}",
+                        short_name="", vbn_number="") for i in range(20)]
+    exact = FPProduct(product_id="7", name="Rosa Ec Toxic", short_name="", vbn_number="")
+    r = create(Portal(live_names=longer + [exact], saved=saved_row()))
+    check("the exact name on page 2 of the portal's list blocks, nothing saved",
+          r["status"] == "blocked" and r["reason"] == "name_exists" and Portal.clicks == 0, r)
+
+    r = create(Portal(live_names=longer, list_clamps=True, saved=saved_row()))
+    check("a list that repeats its last page is read to its end, not looped",
           r["status"] == "created", r)
 
 

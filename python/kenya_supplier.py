@@ -121,6 +121,23 @@ Rules:
 - `supplier_code` is the one field you may construct: 4-7 capital letters derived from the company name, no digits or punctuation."""
 
 
+_CURRENCY_ALIASES: dict[str, tuple[str, ...]] = {
+    "1": ("eur", "euro", "euros", "€"),
+    "2": ("usd", "us dollar", "u.s. dollar", "us$", "dollar", "$"),
+    "4": ("pln", "zloty", "złoty", "polish zloty"),
+    "11": ("gbp", "pound", "british pound", "£"),
+    "21": ("kes", "ksh", "kenyan shilling", "shilling", "kenya shilling"),
+    "26": ("aed", "uae dirham", "dirham"),
+    "18": ("cny", "rmb", "yuan", "chinese yuan"),
+    "33": ("nzd", "new zealand dollar"),
+    "34": ("sgd", "singapore dollar"),
+}
+
+# Names that stand for one currency on their own but end the names of others
+# ("Hong Kong Dollar", "Tanzanian Shilling", "Egyptian Pound").
+_BARE_CURRENCY_NAMES = {"dollar", "$", "pound", "£", "shilling", "dirham"}
+
+
 def _currency_id(raw: str | None) -> str | None:
     """Map whatever the document calls a currency onto a dropdown option id.
 
@@ -135,18 +152,7 @@ def _currency_id(raw: str | None) -> str | None:
     if not text:
         return None
 
-    aliases = {
-        "1": ("eur", "euro", "euros", "€"),
-        "2": ("usd", "us dollar", "u.s. dollar", "us$", "dollar", "$"),
-        "4": ("pln", "zloty", "złoty", "polish zloty"),
-        "11": ("gbp", "pound", "british pound", "£"),
-        "21": ("kes", "ksh", "kenyan shilling", "shilling", "kenya shilling"),
-        "26": ("aed", "uae dirham", "dirham"),
-        "18": ("cny", "rmb", "yuan", "chinese yuan"),
-        "33": ("nzd", "new zealand dollar"),
-        "34": ("sgd", "singapore dollar"),
-    }
-    for option_id, names in aliases.items():
+    for option_id, names in _CURRENCY_ALIASES.items():
         if text in names:
             return option_id
     for option_id, label in CURRENCY_OPTIONS.items():
@@ -479,14 +485,24 @@ def _split_postal_city(value: str) -> tuple[str | None, str | None]:
 
 def _currency_in_text(raw: str | None) -> str | None:
     """A currency named inside a longer value - "Kenya Shillings (KES)" -
-    when exactly one currency is named. Two ("EUR or USD") is left to a human."""
+    when exactly one currency is named. Two ("EUR or USD") is left to a human.
+
+    Names are matched whole and longest first, so "New Zealand Dollars" is
+    NZD and is not read again as a plain dollar. A bare name after another
+    word ("Hong Kong Dollars", a currency with no option here) leaves the
+    whole value to a human: read word by word it became USD (review
+    2026-09-25)."""
+    text = f" {(raw or '').lower()} "
+    names = [(name, cid) for cid, aliases in _CURRENCY_ALIASES.items() for name in aliases]
+    names += [(label.lower(), cid) for cid, label in CURRENCY_OPTIONS.items()]
     found = set()
-    for word in re.findall(r"[A-Za-z]+|[€$£]", raw or ""):
-        currency_id = _currency_id(word)
-        if currency_id is None and word.lower().endswith("s"):
-            currency_id = _currency_id(word[:-1])
-        if currency_id:
+    for name, currency_id in sorted(names, key=lambda n: len(n[0]), reverse=True):
+        pattern = re.compile(rf"(?<![a-z]){re.escape(name)}s?(?![a-z])")
+        for match in pattern.finditer(text):
+            if name in _BARE_CURRENCY_NAMES and re.search(r"[a-z]\s*$", text[:match.start()]):
+                return None
             found.add(currency_id)
+        text = pattern.sub(" ", text)
     return found.pop() if len(found) == 1 else None
 
 
