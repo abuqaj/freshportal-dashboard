@@ -119,6 +119,10 @@ interface FPSupplier {
   nm_supplier: string;
 }
 
+// How a parse treated mix boxes: "together" left the varieties inside
+// combined mix boxes unmatched; "separate" matched every line.
+type MixMode = "together" | "separate";
+
 interface ParseResult {
   orders: DeliveryOrder[];
   supplier_id: string;
@@ -126,6 +130,7 @@ interface ParseResult {
   supplier_confirmed: boolean;
   matched_count: number;
   unmatched_count: number;
+  mix_mode?: MixMode;
 }
 
 type Stage = "idle" | "parsing" | "shipment" | "preview" | "importing" | "done" | "error";
@@ -760,6 +765,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // together line goes in (QBE or HBE) is editable, keyed by its gu_product ──
   const [mixTogether, setMixTogether] = useState(true);
   const [mixBoxEdits, setMixBoxEdits] = useState<Record<string, string>>({});
+  // While the separate view's parse runs (switchMixMode), and why it failed.
+  const [mixReparsing, setMixReparsing] = useState(false);
+  const [mixReparseError, setMixReparseError] = useState("");
+  // Bumped by every parse and by reset, so an answer for a file that has
+  // since been parsed again or put away is dropped rather than shown.
+  const parseSeqRef = useRef(0);
 
   // ── Supplier picker ───────────────────────────────────────────────────────
   const [resolvedSupplier, setResolvedSupplier] = useState<FPSupplier | null>(null);
@@ -803,12 +814,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // The lines the review step shows and imports. With mix boxes together,
   // the MBn lines give way to the order's mix_lines, listed first so the
   // switch shows at the top of the table.
+  // Until the separate view's parse answers, the table keeps the together
+  // lines, greyed out: the separate lines are not matched yet.
+  const showTogether = mixTogether || mixReparsing;
   const activeLines = useMemo((): DeliveryLine[] => {
     const o = parseResult?.orders[activeOrderIdx];
     if (!o) return [];
-    if (!mixTogether || !o.mix_lines?.length) return o.lines;
+    if (!showTogether || !o.mix_lines?.length) return o.lines;
     return [...o.mix_lines, ...o.lines.filter(l => !isMbLine(l))];
-  }, [parseResult, activeOrderIdx, mixTogether]);
+  }, [parseResult, activeOrderIdx, showTogether]);
 
   // A line as it goes to FreshPortal: what the user set on the screen over
   // what the file said.
@@ -1063,34 +1077,46 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Parse & match ──────────────────────────────────────────────────────
 
+  // The loaded file, parsed and matched. A together parse leaves the
+  // varieties inside combined mix boxes unmatched, which is most of the
+  // product search on a mix-heavy invoice (see _resolve_and_match).
+  async function requestParse(mixMode: MixMode, supplierIdOverride?: string): Promise<ParseResult> {
+    let res: Response;
+    if (pdfFile) {
+      // Sent as multipart: the file goes up untouched, since reading a
+      // supplier's printed layout only happens server-side.
+      const form = new FormData();
+      form.append("pdf", pdfFile);
+      form.append("with_matching", "true");
+      form.append("mix_mode", mixMode);
+      if (supplierIdOverride) form.append("supplier_id", supplierIdOverride);
+      res = await fetch(`${RAILWAY}/delivery/parse-pdf`, { method: "POST", body: form });
+    } else {
+      res = await fetch(`${RAILWAY}/delivery/parse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          raw_json: JSON.parse(jsonText),
+          with_matching: true,
+          mix_mode: mixMode,
+          ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
+        }),
+      });
+    }
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
   async function handleParse(supplierIdOverride?: string, keepStage = false) {
     if (!jsonText.trim() && !pdfFile) return;
+    parseSeqRef.current++;
+    setMixReparsing(false);
+    setMixReparseError("");
     setStage("parsing");
     setDuplicateWarning([]);
     setError("");
     try {
-      let res: Response;
-      if (pdfFile) {
-        // Sent as multipart: the file goes up untouched, since reading a
-        // supplier's printed layout only happens server-side.
-        const form = new FormData();
-        form.append("pdf", pdfFile);
-        form.append("with_matching", "true");
-        if (supplierIdOverride) form.append("supplier_id", supplierIdOverride);
-        res = await fetch(`${RAILWAY}/delivery/parse-pdf`, { method: "POST", body: form });
-      } else {
-        res = await fetch(`${RAILWAY}/delivery/parse`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            raw_json: JSON.parse(jsonText),
-            with_matching: true,
-            ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
-          }),
-        });
-      }
-      if (!res.ok) throw new Error(await res.text());
-      const data: ParseResult = await res.json();
+      const data = await requestParse(mixTogether ? "together" : "separate", supplierIdOverride);
       setParseResult(data);
       setActiveOrderIdx(0);
       setLineEdits({});
@@ -1127,6 +1153,40 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
       setStage("error");
+    }
+  }
+
+  // Switching to together never parses: every answer holds that view. The
+  // separate view needs the varieties inside combined mix boxes matched, which
+  // a together parse skipped, so the first switch to it parses the file again,
+  // with the table greyed out meanwhile (user, 2026-09-25). Everything set on
+  // the screen stays: edits are keyed by variety, farm and mix line, which the
+  // new answer shares with the old one.
+  async function switchMixMode(together: boolean) {
+    setMixTogether(together);
+    setMixReparseError("");
+    if (together || !parseResult || parseResult.mix_mode !== "together") return;
+    if (!parseResult.orders.some(o => (o.mix_lines ?? []).some(isMixLine))) return;
+    const seq = ++parseSeqRef.current;
+    setMixReparsing(true);
+    try {
+      const data = await requestParse("separate", resolvedSupplier?.fp_supplier_id || parseResult.supplier_id);
+      if (seq !== parseSeqRef.current) return;
+      setParseResult(data);
+      // Varieties matched only now may carry a cached match, approved as at parse.
+      setApprovedKeys(prev => {
+        const next = new Set(prev);
+        for (const o of data.orders) {
+          for (const line of o.lines) if (line.match_method === "cached") next.add(deliveryKey(line));
+        }
+        return next;
+      });
+    } catch (err: unknown) {
+      if (seq !== parseSeqRef.current) return;
+      setMixTogether(true);
+      setMixReparseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (seq === parseSeqRef.current) setMixReparsing(false);
     }
   }
 
@@ -1459,6 +1519,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   }
 
   function reset() {
+    parseSeqRef.current++;
+    setMixReparsing(false);
+    setMixReparseError("");
     setStage("idle");
     setJsonText("");
     setPdfFile(null);
@@ -1580,7 +1643,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const unmatchedCount = activeLines.length - matchedCount;
   // MBn boxes in the order, and those that stay per variety when together.
   const mixBoxCount = new Set((order?.lines ?? []).filter(isMbLine).map(l => l.nm_box)).size;
-  const mixKeptCount = new Set((order?.mix_lines ?? []).filter(isMbLine).map(l => l.nm_box)).size;
+  // Named, not counted: a bare number left the user looking for a difference
+  // the table did not show (2026-09-25).
+  const mixKeptBoxes = Array.from(new Set((order?.mix_lines ?? []).filter(isMbLine).map(l => l.nm_box)));
 
   // Per-line outcome for the "done" screen's expandable product list — derived
   // from the same approval/match state used to build the request, cross-
@@ -2195,8 +2260,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       key={String(together)}
                       role="radio"
                       aria-checked={mixTogether === together}
-                      onClick={() => setMixTogether(together)}
-                      className={`h-7 px-3 rounded-md text-xs font-medium transition-colors
+                      onClick={() => switchMixMode(together)}
+                      disabled={mixReparsing}
+                      className={`h-7 px-3 rounded-md text-xs font-medium transition-colors disabled:cursor-wait
                         ${mixTogether === together
                           ? "bg-emerald text-white shadow-sm"
                           : "text-emerald-dark hover:bg-[#C4DED0]"}`}
@@ -2218,9 +2284,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   ?
                 </HoverCard>
               </div>
-              {mixTogether && mixKeptCount > 0 && (
+              {mixTogether && mixKeptBoxes.length > 0 && (
                 <div className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
-                  ⚠ {td.mixKeptSeparate(mixKeptCount)}
+                  ⚠ {td.mixKeptSeparate(mixKeptBoxes.join(", "))}
+                </div>
+              )}
+              {mixReparseError && (
+                <div className="text-xs rounded-xl px-3 py-2 border text-red-600 bg-red-50 border-red-200">
+                  {td.mixSeparateFailed}
+                  <span className="block mt-0.5 text-[11px] text-red-500/80 break-words">{mixReparseError}</span>
                 </div>
               )}
             </div>
@@ -2277,7 +2349,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             />
             <button
               onClick={() => handleImport()}
-              disabled={!activeLines.some(l => approvedKeys.has(deliveryKey(l)))}
+              disabled={mixReparsing || !activeLines.some(l => approvedKeys.has(deliveryKey(l)))}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
               {td.importBtn}
@@ -2287,7 +2359,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Product lines table */}
           {(() => {
             return (
-          <div ref={refTable} className="overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border">
+          <div className="relative">
+          <div ref={refTable} aria-busy={mixReparsing}
+            className={`overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border transition-opacity
+              ${mixReparsing ? "opacity-40 pointer-events-none select-none" : ""}`}>
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
@@ -2307,7 +2382,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   <SortTh col="match"      label={td.colMatch}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                 </tr>
               </thead>
-              <tbody key={mixTogether ? "mix-together" : "mix-separate"} className="lines-swap">
+              <tbody key={showTogether ? "mix-together" : "mix-separate"} className="lines-swap">
                 {displayLines.length === 0 ? (
                   <tr>
                     <td colSpan={14} className="px-4 py-6 text-center text-xs text-ink-3">
@@ -2529,6 +2604,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 })}
               </tbody>
             </table>
+          </div>
+          {/* Over the greyed table while the separate view's parse runs. */}
+          {mixReparsing && (
+            <div role="status" className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+              <span className="w-9 h-9 border-[3px] border-emerald/25 border-t-emerald rounded-full animate-spin" />
+              <span className="text-xs font-medium text-ink-2">{td.mixSeparateLoading}</span>
+            </div>
+          )}
           </div>
           );})()}
 

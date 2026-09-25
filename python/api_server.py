@@ -2645,6 +2645,8 @@ class DeliveryParseRequest(BaseModel):
     raw_json: dict | list
     supplier_id: str = ""
     with_matching: bool = True
+    # How the review step shows mix boxes; see _resolve_and_match.
+    mix_mode: str = "together"
 
 
 
@@ -2653,6 +2655,7 @@ def _resolve_and_match(
     orders: list[DeliveryOrder],
     supplier_id_in: str,
     with_matching: bool,
+    mix_mode: str = "together",
 ) -> dict:
     """Everything that happens to a parsed delivery regardless of the file it
     came from: resolve the supplier, match every line against the products
@@ -2662,6 +2665,14 @@ def _resolve_and_match(
     behaves identically to the JSON one — including reusing the supplier's
     confirmed product matches, which are cached by variety name rather than by
     the supplier's own product id, and so carry across both file types.
+
+    mix_mode "together" (the screen's default) searches products only for the
+    lines shown with mix boxes sent together, and leaves the varieties inside
+    combined mix boxes unmatched: product search is where parsing spends its
+    time, and a mix-heavy invoice is mostly such varieties (Florecal 1586318:
+    3 searches instead of 19; user, 2026-09-25). "separate" matches every
+    line, which the screen asks for when the user switches to that view; its
+    answer holds both views.
     """
     if not orders:
         raise HTTPException(400, "No invoices found in the file")
@@ -2713,19 +2724,24 @@ def _resolve_and_match(
     matched_count = 0
     unmatched_count = 0
 
+    together = mix_mode != "separate"
     for order in orders:
         order.supplier_fp_id = supplier_id
+        # Growers before products: which mix boxes combine depends on the
+        # growers, and which lines need a product search depends on that.
+        resolve_growers(order, supplier_nm, grower_choices)
+        order.mix_lines = mix_box_lines(order)
         if with_matching:
-            m, u = match_order_to_products(order, cached_matches)
+            to_match = order.lines
+            if together:
+                combined = {code for line in order.mix_lines for code in line.mix_boxes}
+                to_match = [line for line in order.lines if line.nm_box not in combined]
+            m, u = match_order_to_products(order, cached_matches, to_match)
             matched_count += m
             unmatched_count += u
-            for line in order.lines:
+            for line in to_match:
                 log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
                           line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
-        resolve_growers(order, supplier_nm, grower_choices)
-        # The review step can send mix boxes combined, one mix product per box;
-        # both views go to the screen so switching between them is instant.
-        order.mix_lines = mix_box_lines(order)
 
     mix_numbers = {l.fp_product_id for o in orders for l in o.mix_lines if l.match_method == "mix_box"}
     mix_names = get_ecuador_product_names(sorted(mix_numbers))
@@ -2746,6 +2762,9 @@ def _resolve_and_match(
         "matched_count": matched_count,
         "unmatched_count": unmatched_count,
         "cached_matches_used": len(cached_matches),
+        # "together": the varieties inside combined mix boxes are unmatched,
+        # and the separate view needs a parse with mix_mode "separate".
+        "mix_mode": "together" if together else "separate",
     }
 
 
@@ -2760,7 +2779,8 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
 
     Returns aggregated DeliveryOrder(s) with match results per line.
     """
-    log.info("[delivery/parse] starting — supplier=%s with_matching=%s", req.supplier_id, req.with_matching)
+    log.info("[delivery/parse] starting — supplier=%s with_matching=%s mix_mode=%s",
+             req.supplier_id, req.with_matching, req.mix_mode)
     try:
         try:
             raw = req.raw_json
@@ -2780,7 +2800,7 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
             log.exception("[delivery/parse] parse_delivery_json failed")
             raise HTTPException(400, f"Invalid delivery JSON: {exc}")
 
-        return _resolve_and_match(orders, req.supplier_id, req.with_matching)
+        return _resolve_and_match(orders, req.supplier_id, req.with_matching, req.mix_mode)
     except HTTPException:
         raise
     except Exception as exc:
@@ -2798,6 +2818,7 @@ def delivery_parse_pdf(
     pdf: UploadFile = File(...),
     supplier_id: str = Form(""),
     with_matching: bool = Form(True),
+    mix_mode: str = Form("together"),
     _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """Same as /delivery/parse, for suppliers who send a printed invoice
@@ -2842,7 +2863,7 @@ def delivery_parse_pdf(
             log.exception("[delivery/parse-pdf] parse_delivery_pdf failed")
             raise HTTPException(400, f"Could not read this PDF: {exc}")
 
-        return _resolve_and_match(orders, supplier_id, with_matching)
+        return _resolve_and_match(orders, supplier_id, with_matching, mix_mode)
     except HTTPException:
         raise
     except Exception as exc:

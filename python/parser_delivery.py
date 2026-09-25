@@ -1153,6 +1153,17 @@ def _mix_box_product(species: set[str]) -> tuple[str, str]:
     return "", " ".join(["Mix", *named])
 
 
+def _mix_box_grower(line: DeliveryLine) -> str:
+    """The grower a line goes to FreshPortal with; its farm while none is known.
+
+    Not the farm alone: a supplier's nm_location can be a greenhouse or a cold
+    room of one grower. Cantiza sends C3 and C4 in one mix box, both Cantiza
+    (57551), and comparing farms kept that box apart (invoice 35057150,
+    2026-09-25). Without a grower, the farm is what the user picks one for.
+    """
+    return line.manufacturer_id or f"farm:{grower_location_key(line.nm_location)}"
+
+
 def mix_box_lines(order: DeliveryOrder) -> list[DeliveryLine]:
     """The order's mix boxes as lines of one mix product each, for sending combined.
 
@@ -1164,8 +1175,10 @@ def mix_box_lines(order: DeliveryOrder) -> list[DeliveryLine]:
     single-variety boxes are.
 
     One FreshPortal line holds one length, one bunch size and one grower. A box
-    whose varieties differ in length or farm, or whose stems do not divide
-    evenly into its bunches, keeps its per-variety lines, MB label and all.
+    whose varieties differ in length or grower (_mix_box_grower), or whose
+    stems do not divide evenly into its bunches, keeps its per-variety lines,
+    MB label and all. A combined line takes the farm most of its stems come
+    from, which is where a grower picked on the screen applies.
 
     Returns what replaces every MBn line; the order's other lines stay as they
     are. Call after resolve_growers, since a combined line takes its box's grower.
@@ -1183,7 +1196,7 @@ def mix_box_lines(order: DeliveryOrder) -> list[DeliveryLine]:
         bunches = sum(l.nu_bunches for l in lines)
         if (not stems or stems % bunches
                 or len({l.nu_length for l in lines}) > 1
-                or len({grower_location_key(l.nm_location) for l in lines}) > 1):
+                or len({_mix_box_grower(l) for l in lines}) > 1):
             kept.extend(lines)
             continue
 
@@ -1192,8 +1205,12 @@ def mix_box_lines(order: DeliveryOrder) -> list[DeliveryLine]:
         fust = first.nm_box_type or _MIX_BOX_DEFAULT_FUST
         rate = round(sum(l.nu_stems_total * l.mny_rate_stem for l in lines) / stems, 4)
         box_weight = max(l.nu_box_weight for l in lines)
+        stems_by_farm: dict[str, int] = {}
+        for l in lines:
+            stems_by_farm[l.nm_location] = stems_by_farm.get(l.nm_location, 0) + l.nu_stems_total
+        location = max(stems_by_farm, key=lambda farm: stems_by_farm[farm])
         key = (name, first.nu_length, stems // bunches, bunches, rate, fust,
-               grower_location_key(first.nm_location), box_weight)
+               _mix_box_grower(first), box_weight)
 
         if key in combined:
             line = combined[key]
@@ -1216,7 +1233,7 @@ def mix_box_lines(order: DeliveryOrder) -> list[DeliveryLine]:
                 nu_box_weight=box_weight,
                 nm_box=fust,
                 nm_box_type=fust,
-                nm_location=first.nm_location,
+                nm_location=location,
                 fp_product_id=number,
                 match_method="mix_box" if number else "none",
                 manufacturer_id=first.manufacturer_id,

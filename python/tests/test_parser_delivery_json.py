@@ -297,9 +297,9 @@ def _mix(tp_box: str, *products: tuple[str, int, float], length: int = 60,
     return box
 
 
-def _combined(boxes: list[dict], total: float):
-    [order] = parse_delivery_json(_invoice("FLORECAL SA", boxes, total))
-    resolve_growers(order, "Florecal")
+def _combined(boxes: list[dict], total: float, company: str = "FLORECAL SA", supplier: str = "Florecal"):
+    [order] = parse_delivery_json(_invoice(company, boxes, total))
+    resolve_growers(order, supplier)
     return order, mix_box_lines(order)
 
 
@@ -347,6 +347,22 @@ def test_mix_box_one_line_cannot_hold_keeps_its_varieties():
     order, mixed = _combined([box], 30)
     assert mixed == [l for l in order.lines if l.nm_box == "MB1"]
     assert len(mixed) == 2
+
+
+def test_mix_box_from_two_farms_of_one_grower_is_one_line():
+    # Cantiza 35057150: Silantoi from C4, the rest from C3, all Cantiza (57551).
+    box = _mix("HB", ("MONDIAL", 1, 0.42), ("FREEDOM", 1, 0.42), ("SILANTOI", 1, 0.42), location="C3")
+    box["products"][2]["nm_location"] = "C4"
+    _, [line] = _combined([box], 31.5, "CANTIZA GROWERS S.A.", "Cantiza Flores S.A.")
+    assert (line.fp_product_id, line.nm_box, line.manufacturer_id, line.nm_location) == ("ROEMIBO", "HBE", "57551", "C3")
+
+
+def test_mix_box_from_two_growers_keeps_its_varieties():
+    # Pomarosa's farms are growers of their own: TESSA-1 is Tessa, TESSA-S Solera.
+    box = _mix("QB", ("MONDIAL", 2, 0.30), ("EXPLORER", 2, 0.30), location="TESSA-1")
+    box["products"][1]["nm_location"] = "TESSA-S"
+    order, mixed = _combined([box], 30, "POMAROSA LIMITED PARTNERSHIP", "")
+    assert [l.nm_box for l in mixed] == ["MB1", "MB1"]
 
 
 if __name__ == "__main__":

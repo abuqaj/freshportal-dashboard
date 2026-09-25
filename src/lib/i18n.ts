@@ -522,11 +522,13 @@ const en = {
     mixModeTogether:         "Together",
     mixModeSeparateHint:     "Each variety in a mix box is its own line, marked MB1, MB2…",
     mixModeTogetherHint:     "Each mix box is one line of a mix product: ROEMIBO for roses, ALSMIXF for alstroemeria. Identical boxes share one line.",
-    mixKeptSeparate:         (count: number) =>
-      `Mix boxes kept per variety: ${count}. Their varieties differ in length, bunch size or farm, and one FreshPortal line holds only one of each.`,
+    mixKeptSeparate:         (boxes: string) =>
+      `Mix boxes kept per variety: ${boxes}. Their varieties differ in length, bunch size or grower, and one FreshPortal line holds only one of each.`,
     mixContentTitle:         "Varieties in the box (bunches)",
     mixBoxTypeTitle:         "Box sent to FreshPortal",
     mixBoxesIncluded:        "Mix boxes in this line",
+    mixSeparateLoading:      "Matching the varieties inside the mix boxes…",
+    mixSeparateFailed:       "Could not load the mix boxes' varieties, so they stay together. Try again.",
     mixProductFixed:         "A mix box goes as its mix product, which cannot be changed here",
     colBoxQtyHint:           "Number of boxes",
     colContentHint:          "Stems per box",
@@ -1448,11 +1450,13 @@ const nl: typeof en = {
     mixModeTogether:         "Samen",
     mixModeSeparateHint:     "Elke variëteit in een mixdoos is een eigen regel, gemarkeerd als MB1, MB2…",
     mixModeTogetherHint:     "Elke mixdoos is één regel van een mixproduct: ROEMIBO voor rozen, ALSMIXF voor alstroemeria. Gelijke dozen delen één regel.",
-    mixKeptSeparate:         (count: number) =>
-      `Mixdozen per variëteit gelaten: ${count}. De variëteiten verschillen in lengte, bosgrootte of farm, en één FreshPortal-regel bevat er maar één van elk.`,
+    mixKeptSeparate:         (boxes: string) =>
+      `Mixdozen per variëteit gelaten: ${boxes}. De variëteiten verschillen in lengte, bosgrootte of kweker, en één FreshPortal-regel bevat er maar één van elk.`,
     mixContentTitle:         "Variëteiten in de doos (bossen)",
     mixBoxTypeTitle:         "Doos die naar FreshPortal gaat",
     mixBoxesIncluded:        "Mixdozen in deze regel",
+    mixSeparateLoading:      "Variëteiten in de mixdozen koppelen…",
+    mixSeparateFailed:       "De variëteiten van de mixdozen konden niet worden geladen, dus ze blijven samen. Probeer het opnieuw.",
     mixProductFixed:         "Een mixdoos gaat als zijn mixproduct; dat kan hier niet worden gewijzigd",
     colBoxQtyHint:           "Aantal dozen",
     colContentHint:          "Stelen per doos",
@@ -2334,11 +2338,13 @@ const pl: typeof en = {
     mixModeTogether:         "Razem",
     mixModeSeparateHint:     "Każda odmiana z mix boxa to osobna linia, oznaczona MB1, MB2…",
     mixModeTogetherHint:     "Każdy mix box to jedna linia produktu mix: ROEMIBO dla róż, ALSMIXF dla alstromerii. Takie same pudła dzielą jedną linię.",
-    mixKeptSeparate:         (count: number) =>
-      `Mix boxy zostawione osobno: ${count}. Odmiany w środku różnią się długością, wielkością pęczka lub farmą, a jedna linia we FreshPortalu mieści tylko jedną z każdej.`,
+    mixKeptSeparate:         (boxes: string) =>
+      `Mix boxy zostawione osobno: ${boxes}. Odmiany w środku różnią się długością, wielkością pęczka lub growerem, a jedna linia we FreshPortalu mieści tylko jedną z każdej.`,
     mixContentTitle:         "Odmiany w pudle (pęczki)",
     mixBoxTypeTitle:         "Pudło wysyłane do FreshPortalu",
     mixBoxesIncluded:        "Mix boxy w tej linii",
+    mixSeparateLoading:      "Dopasowuję odmiany z mix boxów…",
+    mixSeparateFailed:       "Nie udało się wczytać odmian z mix boxów, więc zostają razem. Spróbuj ponownie.",
     mixProductFixed:         "Mix box idzie jako swój produkt mix, którego tu nie można zmienić",
     colBoxQtyHint:           "Liczba pudeł",
     colContentHint:          "Łodygi w pudle",
@@ -3220,11 +3226,13 @@ const es: typeof en = {
     mixModeTogether:         "Juntas",
     mixModeSeparateHint:     "Cada variedad de una caja mixta es su propia línea, marcada MB1, MB2…",
     mixModeTogetherHint:     "Cada caja mixta es una línea de un producto mixto: ROEMIBO para rosas, ALSMIXF para alstroemeria. Las cajas iguales comparten una línea.",
-    mixKeptSeparate:         (count: number) =>
-      `Cajas mixtas que quedan por variedad: ${count}. Sus variedades difieren en largo, tamaño de ramo o finca, y una línea de FreshPortal admite solo uno de cada.`,
+    mixKeptSeparate:         (boxes: string) =>
+      `Cajas mixtas que quedan por variedad: ${boxes}. Sus variedades difieren en largo, tamaño de ramo o cultivador, y una línea de FreshPortal admite solo uno de cada.`,
     mixContentTitle:         "Variedades en la caja (ramos)",
     mixBoxTypeTitle:         "Caja que se envía a FreshPortal",
     mixBoxesIncluded:        "Cajas mixtas en esta línea",
+    mixSeparateLoading:      "Buscando las variedades de las cajas mixtas…",
+    mixSeparateFailed:       "No se pudieron cargar las variedades de las cajas mixtas, así que siguen juntas. Inténtelo de nuevo.",
     mixProductFixed:         "Una caja mixta va como su producto mixto, que aquí no se puede cambiar",
     colBoxQtyHint:           "Número de cajas",
     colContentHint:          "Tallos por caja",
