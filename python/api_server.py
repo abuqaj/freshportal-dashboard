@@ -399,8 +399,8 @@ async def _on_startup() -> None:
         log.info("Auto VBN check scheduler restored (daily)")
 
     _scheduler.start()
-    log.info("APScheduler started — first product sync in 60 s (hourly), next BI sync at %s (daily)",
-              bi_next_run.isoformat())
+    log.info("APScheduler started — first product sync in 60 s (hourly), next scheduled BI sync at %s "
+             "(05:00 and 20:00 Amsterdam)", _scheduler.get_job("daily_bi_sync").next_run_time.isoformat())
 
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
