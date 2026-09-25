@@ -50,7 +50,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
                get_ecuador_product_names,
                get_bi_sync_history, get_bi_stats,
-               get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
+               get_bi_offers_online_daily_series, get_bi_order_lines_daily_series,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
                get_bi_customers_for_picker,
                get_kenya_box_weight_customers, set_kenya_box_weight_customer,
@@ -64,7 +64,8 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                search_vbn_catalog, get_vbn_catalog_product, get_vbn_catalog_status,
                get_vbn_catalog_history, vbn_catalog_has_rows)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
-from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
+from bi_sync import (run_bi_sync, run_bi_sync_range, is_bi_sync_running,
+                     BI_SYNC_HOURS, BI_SYNC_TIMEZONE, last_bi_sync_slot)
 from vbn_catalog import run_vbn_catalog_sync
 from kenya_supplier import (
     extract_from_document as kenya_supplier_extract_document,
@@ -163,22 +164,25 @@ _BI_AUTO_LAST_CHECK_KEY = "bi_auto_last_check"
 
 
 def _daily_bi_sync() -> None:
-    """Pull yesterday's BI Sync export — yesterday, not today, since
-    order_lines is filtered to rows created exactly on mutation_datetime
-    (bi_sync.py) and today's data isn't complete yet while today is still
-    running. Matches the manual Analysis Tool UI's default date.
+    """Pull the BI Sync export from yesterday on — yesterday, not today,
+    since order_lines is filtered to rows created exactly on
+    mutation_datetime (bi_sync.py) and today's data isn't complete yet
+    while today is still running. Matches the manual Analysis Tool UI's
+    default date. Runs at 05:00 and 20:00 Amsterdam time (BI_SYNC_HOURS);
+    the evening pull re-reads yesterday's order_lines, which the upsert
+    absorbs, and records what is online after the Ecuador team's changes.
 
     Only records bi_auto_last_check on a genuine success (result["ok"]) —
     same reasoning as _auto_vbn_check not updating its own last-check
     setting on failure: a failed run leaves the "reference" at the last
     real success, so the startup catch-up logic below correctly sees it as
-    still-overdue and retries soon instead of waiting a full day."""
+    missed and retries soon instead of waiting for the next slot."""
     import datetime
     cfg = Config()
     yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-    log.info("Daily BI sync started (mutation_datetime=%s)", yesterday)
+    log.info("Scheduled BI sync started (mutation_datetime=%s)", yesterday)
     result = run_bi_sync(cfg, yesterday)
-    log.info("Daily BI sync finished: %s", result)
+    log.info("Scheduled BI sync finished: %s", result)
     if result.get("ok"):
         set_setting(_BI_AUTO_LAST_CHECK_KEY, datetime.datetime.now(datetime.timezone.utc).isoformat())
 
@@ -302,13 +306,14 @@ async def _on_startup() -> None:
     _scheduler.add_job(_hourly_sync, "date", run_date=first_run, id="initial_sync")
     _scheduler.add_job(_hourly_sync, "interval", hours=1, id="hourly_sync")
 
-    # Daily BI sync — DB-persisted schedule (mirrors the auto VBN check
-    # below) so a redeploy doesn't reset the 24h cadence or trigger a bonus
-    # same-day sync: reference is the last recorded *successful* run, not
-    # process-start time. Staggered a bit further out than the Ecuador
-    # sync's initial run (above) so the two don't hit the DB at the same
-    # moment right after a deploy/restart. Always scheduled (no enable
-    # toggle, unlike auto VBN check) — this one's meant to just always run.
+    # BI sync at fixed Amsterdam times, 05:00 and 20:00 (BI_SYNC_HOURS in
+    # bi_sync.py, 2026-09-25). Until then it ran every 24 h from the last
+    # successful run, so its time of day drifted with every deploy. A slot
+    # missed while the process was down, or one whose run failed, is caught
+    # up 180 s after start: the reference is the last recorded *successful*
+    # run, not process-start time. 180 s staggers it after the Ecuador sync's
+    # initial run (above) so the two don't hit the DB at the same moment.
+    # Always scheduled (no enable toggle, unlike auto VBN check).
     bi_last_check_str = get_setting(_BI_AUTO_LAST_CHECK_KEY)
     bi_reference_dt = None
     if bi_last_check_str:
@@ -317,22 +322,16 @@ async def _on_startup() -> None:
         except ValueError:
             bi_reference_dt = None
 
-    if bi_reference_dt is None:
-        # Never run before (fresh DB / first deploy of this feature) — run
-        # soon rather than waiting a full day for the first data to land.
-        bi_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=180)
-        log.info("Daily BI sync: no prior successful run recorded — first run in 180 s")
-    else:
-        bi_elapsed = (datetime.datetime.now(datetime.timezone.utc) - bi_reference_dt).total_seconds()
-        if bi_elapsed >= 23 * 3600:
-            bi_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=180)
-            log.info("Daily BI sync: overdue by %.1f h — catch-up run in 180 s", bi_elapsed / 3600)
-        else:
-            bi_next_run = bi_reference_dt + datetime.timedelta(days=1)
-            log.info("Daily BI sync: %.1f h since last successful run — next run at %s",
-                      bi_elapsed / 3600, bi_next_run.isoformat())
+    bi_now = datetime.datetime.now(datetime.timezone.utc)
+    bi_missed_slot = last_bi_sync_slot(bi_now)
+    if bi_reference_dt is None or bi_reference_dt < bi_missed_slot:
+        _scheduler.add_job(_daily_bi_sync, "date", run_date=bi_now + datetime.timedelta(seconds=180),
+                           id="bi_sync_catch_up")
+        log.info("BI sync: last successful run %s is before the %s slot — catch-up run in 180 s",
+                 bi_last_check_str or "never", bi_missed_slot.isoformat())
 
-    _scheduler.add_job(_daily_bi_sync, "interval", days=1, id="daily_bi_sync", next_run_time=bi_next_run)
+    _scheduler.add_job(_daily_bi_sync, "cron", hour=",".join(str(h) for h in BI_SYNC_HOURS), minute=0,
+                       timezone=BI_SYNC_TIMEZONE, id="daily_bi_sync")
 
     # Daily Floricode catalogue refresh — same DB-persisted cadence as the BI
     # sync. Floricode changes a few thousand rows a year, so a delta is
@@ -798,8 +797,8 @@ def bi_sync_run(
     _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Manually trigger a BI Sync ingestion run (non-blocking) — for backfills
-    or ad-hoc re-runs on a specific date. Also runs automatically once a day
-    via APScheduler (_daily_bi_sync, 2026-08-31)."""
+    or ad-hoc re-runs on a specific date. Also runs automatically at 05:00
+    and 20:00 Amsterdam time via APScheduler (_daily_bi_sync)."""
     if is_bi_sync_running():
         raise HTTPException(409, "BI sync already running")
     cfg = Config()
@@ -841,10 +840,11 @@ def bi_sync_history(limit: int = 10, offset: int = 0, _: dict = Depends(require_
 
 @app.get("/bi-sync/charts")
 def bi_sync_charts(days: int = 30, _: dict = Depends(require_any_permission("admin:manage", "analysis:view"))):
-    """First aggregate series for the Analysis Tool — live stock_entry count
-    per snapshot_date, and order_lines (OZEDS) count/revenue per creation day."""
+    """First aggregate series for the Analysis Tool — offer lots online per
+    day with their average group price, and order_lines (OZEDS)
+    count/revenue per creation day."""
     return {
-        "stock_entries_daily": get_bi_stock_entries_daily_series(days),
+        "offers_online_daily": get_bi_offers_online_daily_series(days),
         "order_lines_daily": get_bi_order_lines_daily_series(days),
     }
 

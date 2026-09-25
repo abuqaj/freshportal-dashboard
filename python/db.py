@@ -1459,6 +1459,9 @@ def ensure_delivery_import_log() -> None:
 # forever even once a stock_entry stops appearing in exports — needed so old
 # order_lines can still resolve product/farm) + daily fact (one row per
 # stock_entry per sync day, only the fields that actually change day to day).
+# The daily fact stopped being written on 2026-09-25: bi_offer_states (see
+# ensure_bi_tables) replaced it as the record of what was offered and at
+# what price. Its earlier rows are kept.
 # order_lines is append-only and pre-filtered to customer_id=12 (OZ-Hami
 # Direct Sales / OZEDS) at ingest time — see bi_sync.py — since webshop sale
 # price is customer-specific and OZEDS is the agreed reference customer.
@@ -1535,6 +1538,36 @@ def ensure_bi_tables() -> None:
             """)
             cur.execute("ALTER TABLE bi_stock_entry_daily ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'EUR'")
             cur.execute("CREATE INDEX IF NOT EXISTS bi_stock_entry_daily_date_idx ON bi_stock_entry_daily(snapshot_date)")
+
+            # What was online and at what price (2026-09-25): one row each time
+            # an offer lot's listing changes — its window, its OZ-Hami Quito
+            # Amsterdam group price, or listed on/off — written by
+            # plan_offer_state_changes in bi_sync.py. A lot is online on day D
+            # when a listed state whose window covers D was in force at some
+            # point that day (_OFFERS_ONLINE_ON_DAY). Quantity,
+            # box content and purchase price change far more often than the
+            # listing, so they are updated in place on the current state, with
+            # the first quantity kept and the first time it reached zero.
+            # Times are FreshPortal's own wall-clock (TIMESTAMP, no zone), which
+            # is what the planner compares against.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bi_offer_states (
+                    stock_entry_id           TEXT NOT NULL,
+                    state_since              TIMESTAMP NOT NULL,
+                    listed                   BOOLEAN NOT NULL,
+                    available_from           DATE,
+                    available_until          DATE,
+                    group_price              NUMERIC,
+                    price                    NUMERIC,
+                    quantity_per_pack        NUMERIC,
+                    quantity_available_first NUMERIC,
+                    quantity_available_last  NUMERIC,
+                    sold_out_at              TIMESTAMP,
+                    last_mutation_time       TIMESTAMP NOT NULL,
+                    synced_at                TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (stock_entry_id, state_since)
+                )
+            """)
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bi_order_lines (
@@ -1642,12 +1675,6 @@ def _num(v: Any) -> float | None:
         return None
 
 
-def _bool01(v: Any) -> bool | None:
-    if v is None or v == "":
-        return None
-    return str(v).strip() not in ("0", "false", "False", "")
-
-
 def _int(v: Any) -> int | None:
     n = _num(v)
     return int(n) if n is not None else None
@@ -1705,50 +1732,105 @@ def upsert_bi_stock_entry_dim(rows: list[dict]) -> int:
     return len(rows)
 
 
-def upsert_bi_stock_entry_daily(rows: list[dict], snapshot_date: str) -> int:
-    """One row per stock_entry for snapshot_date (idempotent — safe to re-run
-    the same day's sync; ON CONFLICT overwrites with the latest pulled values)."""
-    if not rows:
-        return 0
+def get_bi_offer_current_states(stock_entry_ids: list[str]) -> dict[str, dict]:
+    """stock_entry_id -> that lot's latest bi_offer_states row, for the lots
+    given. Lots with no state yet are absent. Dates come back ISO so they
+    compare equal to what bi_sync parses out of the export."""
+    if not stock_entry_ids:
+        return {}
     ensure_bi_tables()
-    now = datetime.now(timezone.utc)
+    with _conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (stock_entry_id)
+                       stock_entry_id, state_since, last_mutation_time, listed,
+                       available_from, available_until, group_price
+                FROM bi_offer_states
+                WHERE stock_entry_id = ANY(%s)
+                ORDER BY stock_entry_id, state_since DESC
+            """, (list(stock_entry_ids),))
+            states = {}
+            for r in cur.fetchall():
+                state = dict(r)
+                for key in ("available_from", "available_until"):
+                    state[key] = state[key].isoformat() if state[key] else None
+                states[state["stock_entry_id"]] = state
+            return states
+
+
+def _sold_out_at(state: dict):
+    qty = state.get("quantity_available")
+    return state["mutation_time"] if state["listed"] and qty is not None and qty <= 0 else None
+
+
+def apply_bi_offer_state_changes(inserts: list[dict], updates: list[dict]) -> None:
+    """Write what bi_sync.plan_offer_state_changes decided: new states as
+    rows, continuations as in-place updates of the lot's current state."""
+    if not inserts and not updates:
+        return
+    ensure_bi_tables()
     with _conn() as conn:
         with conn.cursor() as cur:
-            for i in range(0, len(rows), _BATCH_SIZE):
-                batch = rows[i:i + _BATCH_SIZE]
-                values = [
-                    (
-                        r.get("id"), snapshot_date,
-                        _num(r.get("quantity")), _num(r.get("quantity_per_pack")),
-                        _num(r.get("quantity_available")), _num(r.get("price")),
-                        _num(r.get("price_plus")), _num(r.get("retail_price")),
-                        _num(r.get("cost")), _bool01(r.get("visible")),
-                        r.get("mutation_date_time") or None, now,
-                    )
-                    for r in batch if r.get("id")
-                ]
-                if not values:
-                    continue
+            for i in range(0, len(inserts), _BATCH_SIZE):
                 psycopg2.extras.execute_values(cur, """
-                    INSERT INTO bi_stock_entry_daily (
-                        stock_entry_id, snapshot_date, quantity, quantity_per_pack,
-                        quantity_available, price, price_plus, retail_price, cost,
-                        visible, source_mutation_time, synced_at
+                    INSERT INTO bi_offer_states (
+                        stock_entry_id, state_since, listed, available_from,
+                        available_until, group_price, price, quantity_per_pack,
+                        quantity_available_first, quantity_available_last,
+                        sold_out_at, last_mutation_time
                     ) VALUES %s
-                    ON CONFLICT (stock_entry_id, snapshot_date) DO UPDATE SET
-                        quantity             = EXCLUDED.quantity,
-                        quantity_per_pack     = EXCLUDED.quantity_per_pack,
-                        quantity_available    = EXCLUDED.quantity_available,
-                        price                = EXCLUDED.price,
-                        price_plus           = EXCLUDED.price_plus,
-                        retail_price         = EXCLUDED.retail_price,
-                        cost                 = EXCLUDED.cost,
-                        visible              = EXCLUDED.visible,
-                        source_mutation_time = EXCLUDED.source_mutation_time,
-                        synced_at            = EXCLUDED.synced_at
-                """, values)
-                conn.commit()
-    return len(rows)
+                    ON CONFLICT (stock_entry_id, state_since) DO NOTHING
+                """, [
+                    (
+                        s["stock_entry_id"], s["state_since"], s["listed"],
+                        s["available_from"], s["available_until"], s["group_price"],
+                        s["price"], s["quantity_per_pack"], s["quantity_available"],
+                        s["quantity_available"], _sold_out_at(s), s["mutation_time"],
+                    )
+                    for s in inserts[i:i + _BATCH_SIZE]
+                ])
+            for i in range(0, len(updates), _BATCH_SIZE):
+                # Explicit casts: a VALUES list whose column is all NULL in a
+                # batch has no type of its own to assign from.
+                psycopg2.extras.execute_values(cur, """
+                    UPDATE bi_offer_states AS s SET
+                        price                   = v.price,
+                        quantity_per_pack       = v.quantity_per_pack,
+                        quantity_available_last = v.quantity_available,
+                        sold_out_at             = COALESCE(s.sold_out_at, v.sold_out_at),
+                        last_mutation_time      = v.mutation_time,
+                        synced_at               = NOW()
+                    FROM (VALUES %s) AS v(stock_entry_id, state_since, price, quantity_per_pack,
+                                          quantity_available, sold_out_at, mutation_time)
+                    WHERE s.stock_entry_id = v.stock_entry_id AND s.state_since = v.state_since
+                """, [
+                    (
+                        s["stock_entry_id"], s["state_since"], s["price"], s["quantity_per_pack"],
+                        s["quantity_available"], _sold_out_at(s), s["mutation_time"],
+                    )
+                    for s in updates[i:i + _BATCH_SIZE]
+                ], template="(%s, %s::timestamp, %s::numeric, %s::numeric, %s::numeric, %s::timestamp, %s::timestamp)")
+        conn.commit()
+
+
+# Offer lots online on day %(day)s, one row per lot: a state is in force
+# from its state_since until the lot's next state begins, and a lot counts
+# when a listed state whose window covers the day was in force at any time
+# that day — a lot switched off at 08:00 was still on sale that morning.
+# Where two such states share the day (a price change), the later one wins.
+_OFFERS_ONLINE_ON_DAY = """
+    SELECT DISTINCT ON (stock_entry_id) *
+    FROM (
+        SELECT *, LEAD(state_since) OVER (PARTITION BY stock_entry_id ORDER BY state_since) AS state_until
+        FROM bi_offer_states
+    ) s
+    WHERE state_since < %(day)s::date + 1
+      AND (state_until IS NULL OR state_until > %(day)s::date)
+      AND listed
+      AND available_from <= %(day)s::date
+      AND available_until >= %(day)s::date
+    ORDER BY stock_entry_id, state_since DESC
+"""
 
 
 def upsert_bi_products(rows: list[dict]) -> int:
@@ -1949,18 +2031,19 @@ def get_bi_stats() -> dict:
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM bi_stock_entry_dim")
                 dim_count = cur.fetchone()[0]
-                cur.execute("SELECT COUNT(*) FROM bi_stock_entry_daily")
-                daily_count = cur.fetchone()[0]
-                cur.execute("SELECT COUNT(DISTINCT snapshot_date) FROM bi_stock_entry_daily")
-                snapshot_days = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM bi_offer_states")
+                offer_state_count = cur.fetchone()[0]
+                cur.execute(f"SELECT COUNT(*) FROM ({_OFFERS_ONLINE_ON_DAY}) online",
+                            {"day": date.today().isoformat()})
+                offers_online_today = cur.fetchone()[0]
                 cur.execute("SELECT COUNT(*) FROM bi_order_lines")
                 order_lines_count = cur.fetchone()[0]
                 cur.execute("SELECT COUNT(*) FROM bi_invoice_customer")
                 invoice_customer_count = cur.fetchone()[0]
                 return {
                     "stock_entry_dim_count": dim_count,
-                    "stock_entry_daily_count": daily_count,
-                    "snapshot_days": snapshot_days,
+                    "offer_state_count": offer_state_count,
+                    "offers_online_today": offers_online_today,
                     "order_lines_count": order_lines_count,
                     "invoice_customer_count": invoice_customer_count,
                 }
@@ -1969,27 +2052,26 @@ def get_bi_stats() -> dict:
         return {}
 
 
-def get_bi_stock_entries_daily_series(days: int = 30) -> list[dict]:
-    """Live (already-filtered, see bi_sync.py) stock_entry count per
-    snapshot_date, most recent `days` snapshot days — first chart data for
-    the Analysis Tool."""
+def get_bi_offers_online_daily_series(days: int = 30) -> list[dict]:
+    """Offer lots online per day and their average OZ-Hami Quito Amsterdam
+    group price, for the last `days` days up to today (read from
+    bi_offer_states, see _OFFERS_ONLINE_ON_DAY). Replaced the per-snapshot
+    count of bi_stock_entry_daily on 2026-09-25."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT snapshot_date::text AS day, COUNT(*) AS count,
-                           AVG(price) AS avg_price
-                    FROM bi_stock_entry_daily
-                    GROUP BY snapshot_date
-                    ORDER BY snapshot_date DESC
-                    LIMIT %s
-                """, (days,))
-                rows = [dict(r) for r in cur.fetchall()]
-                rows.reverse()
-                return rows
+                result = []
+                for offset in range(days - 1, -1, -1):
+                    day = (date.today() - timedelta(days=offset)).isoformat()
+                    cur.execute(f"""
+                        SELECT COUNT(*) AS count, AVG(group_price) AS avg_price
+                        FROM ({_OFFERS_ONLINE_ON_DAY}) online
+                    """, {"day": day})
+                    result.append({"day": day, **dict(cur.fetchone())})
+                return result
     except Exception as exc:
-        logger.warning("get_bi_stock_entries_daily_series: %s", exc)
+        logger.warning("get_bi_offers_online_daily_series: %s", exc)
         return []
 
 
