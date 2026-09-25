@@ -31,6 +31,11 @@ function isMixLine(line: DeliveryLine): boolean {
 // The boxes a mix box can go to FreshPortal in when sent together.
 const MIX_BOX_FUSTS = ["QBE", "HBE"];
 
+// Mix boxes are marked in the system palette, the one the Analysis Tool's
+// charts use (analysis/charts.tsx LINE_COLORS): its pale green #C4DED0 with
+// emerald, not a colour of their own (user, 2026-09-25).
+const MIX_ACCENT = "bg-[#C4DED0] text-emerald-dark border-emerald/25";
+
 // A grower from the Ecuador system's manufacturer list (Ecuador and Colombia),
 // as GET /growers returns it; manufacturer_id is what the DFG API receives.
 interface Grower {
@@ -263,7 +268,7 @@ const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   fuzzy_nolen:          { label: "fuzzy~",       cls: "bg-orange-500/15 text-orange-600 border-orange-500/20" },
   fuzzy_anylength:      { label: "fuzzy~len",    cls: "bg-orange-500/10 text-orange-600 border-orange-500/15" },
   cached:               { label: "cached ✓",     cls: "bg-green-500/15 text-green-700 border-green-500/25" },
-  mix_box:              { label: "mix box",      cls: "bg-purple-500/10 text-purple-600 border-purple-500/20" },
+  mix_box:              { label: "mix box",      cls: MIX_ACCENT },
   none:                 { label: "no match",     cls: "bg-red-500/10 text-red-500 border-red-500/20" },
 };
 
@@ -750,10 +755,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const boxWeightInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
   // ── Mix boxes: each variety its own line (separate), or each box one line
-  // of a mix product (together). Kept across files, so a user who works one
-  // way does not switch every time; the box a together line goes in (QBE or
-  // HBE) is editable, keyed by the line's gu_product ──
-  const [mixTogether, setMixTogether] = useState(false);
+  // of a mix product (together, the default: user, 2026-09-25). Kept across
+  // files, so a user who works one way does not switch every time; the box a
+  // together line goes in (QBE or HBE) is editable, keyed by its gu_product ──
+  const [mixTogether, setMixTogether] = useState(true);
   const [mixBoxEdits, setMixBoxEdits] = useState<Record<string, string>>({});
 
   // ── Supplier picker ───────────────────────────────────────────────────────
@@ -1554,6 +1559,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         let av: string | number = 0, bv: string | number = 0;
         if (sortCol === "variety")    { av = a.nm_variety;       bv = b.nm_variety; }
         else if (sortCol === "box")   { av = a.nm_box || "";     bv = b.nm_box || ""; }
+        else if (sortCol === "boxQty") { av = a.nu_physical_boxes; bv = b.nu_physical_boxes; }
         else if (sortCol === "length") { av = a.nu_length;       bv = b.nu_length; }
         else if (sortCol === "stemsBunch") { av = a.nu_stems_bunch; bv = b.nu_stems_bunch; }
         else if (sortCol === "bunches") { av = a.nu_bunches;     bv = b.nu_bunches; }
@@ -2183,7 +2189,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-xs font-semibold text-ink">{td.mixModeLabel}</span>
                 <div role="radiogroup" aria-label={td.mixModeLabel}
-                  className="inline-flex rounded-lg border border-purple-500/30 bg-purple-500/5 p-0.5">
+                  className="inline-flex rounded-lg border border-[#C4DED0] bg-[#C4DED0]/40 p-0.5">
                   {[false, true].map(together => (
                     <button
                       key={String(together)}
@@ -2192,16 +2198,25 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       onClick={() => setMixTogether(together)}
                       className={`h-7 px-3 rounded-md text-xs font-medium transition-colors
                         ${mixTogether === together
-                          ? "bg-purple-600 text-white shadow-sm"
-                          : "text-purple-700 hover:bg-purple-500/10"}`}
+                          ? "bg-emerald text-white shadow-sm"
+                          : "text-emerald-dark hover:bg-[#C4DED0]"}`}
                     >
                       {together ? td.mixModeTogether : td.mixModeSeparate}
                     </button>
                   ))}
                 </div>
-                <span className="text-[11px] text-ink-3">
-                  {mixTogether ? td.mixModeTogetherHint : td.mixModeSeparateHint}
-                </span>
+                {/* What the two ways do, on hover only (user, 2026-09-25). */}
+                <HoverCard
+                  className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-emerald/40 text-emerald text-[10px] font-semibold leading-none cursor-help shrink-0"
+                  content={
+                    <div className="flex flex-col gap-1.5">
+                      <p><span className="font-semibold">{td.mixModeTogether}:</span> {td.mixModeTogetherHint}</p>
+                      <p><span className="font-semibold">{td.mixModeSeparate}:</span> {td.mixModeSeparateHint}</p>
+                    </div>
+                  }
+                >
+                  ?
+                </HoverCard>
               </div>
               {mixTogether && mixKeptCount > 0 && (
                 <div className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
@@ -2277,16 +2292,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
                   <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8" title={td.colApproveTooltip}>✓</th>
-                  <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} className="min-w-[100px]" />
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colGrower}</th>
-                  <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  <SortTh col="boxQty"     label={td.colBoxQty}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact className="w-[50px] max-w-[50px]" />
+                  <SortTh col="boxQty"     label={<ColumnIcon icon="boxes" hint={td.colBoxQtyHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact className="w-[30px] max-w-[30px]" />
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colBoxWeight}</th>
-                  <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colContent}</th>
+                  <th className="px-1.5 py-2 text-center font-semibold text-ink-3 whitespace-nowrap"><ColumnIcon icon="box" hint={td.colContentHint} /></th>
                   <SortTh col="length"     label={td.colLength}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  <SortTh col="stemsBunch" label={td.colStemsBunch} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  <SortTh col="bunches"    label={td.colBunches}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  <SortTh col="stemsTotal" label={td.colStemsTotal} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="stemsBunch" label={<ColumnIcon icon="bunch" hint={td.colStemsBunchHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
+                  <SortTh col="bunches"    label={<ColumnIcon icon="bunches" hint={td.colBunchesHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
+                  <SortTh col="stemsTotal" label={<ColumnIcon icon="stem" hint={td.colStemsTotalHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
                   <SortTh col="price"      label={td.colPrice}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="total"      label={td.colTotal}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="match"      label={td.colMatch}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
@@ -2330,12 +2345,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           />
                         )}
                       </td>
-                      <td className="px-3 py-2 font-medium text-ink">
+                      <td className="px-3 py-2 font-medium text-ink min-w-[100px]">
                         {/* What a mix box holds shows on hover only, so a long
                             mix does not stretch the row (user, 2026-09-25). */}
                         {isMixLine(line) ? (
                           <HoverCard
-                            className="cursor-help underline decoration-dotted decoration-purple-500/60 underline-offset-2"
+                            className="cursor-help underline decoration-dotted decoration-emerald/60 underline-offset-2"
                             content={
                               <>
                                 <p className="font-semibold text-ink mb-1">{td.mixContentTitle}</p>
@@ -2395,35 +2410,42 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           </td>
                         );
                       })()}
-                      <td className="px-3 py-2">
+                      <td className="px-1.5 py-2 w-[50px] max-w-[50px]">
                         {isMixLine(line) ? (() => {
                           const fust = mixBoxEdits[line.gu_product] ?? line.nm_box;
                           const fusts = MIX_BOX_FUSTS.includes(line.nm_box) ? MIX_BOX_FUSTS : [line.nm_box, ...MIX_BOX_FUSTS];
+                          // The MBn boxes the line stands for show on hover only.
                           return (
-                            <div className="flex flex-col items-start gap-0.5">
+                            <HoverCard
+                              className="relative inline-flex"
+                              content={
+                                <>
+                                  <p className="font-semibold mb-0.5">{td.mixBoxesIncluded}</p>
+                                  <p className="text-ink-2">{(line.mix_boxes ?? []).join(" · ")}</p>
+                                </>
+                              }
+                            >
                               <select
                                 value={fust}
                                 onChange={e => { const v = e.target.value; setMixBoxEdits(prev => ({ ...prev, [line.gu_product]: v })); }}
-                                title={td.mixBoxTypeTitle}
-                                className="h-6 px-1 rounded-md border text-[10px] font-medium cursor-pointer outline-none
-                                           bg-purple-500/10 text-purple-600 border-purple-500/30 hover:border-purple-500/60 focus:border-purple-500"
+                                aria-label={td.mixBoxTypeTitle}
+                                className={`appearance-none h-6 pl-1 pr-3 rounded-md border text-[10px] font-medium cursor-pointer outline-none
+                                           hover:border-emerald focus:border-emerald ${MIX_ACCENT}`}
                               >
                                 {fusts.map(code => <option key={code} value={code}>{code}</option>)}
                               </select>
-                              <span className="text-[10px] text-ink-3 whitespace-nowrap">{(line.mix_boxes ?? []).join(" · ")}</span>
-                            </div>
+                              <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[7px] text-emerald-dark">▼</span>
+                            </HoverCard>
                           );
                         })() : line.nm_box ? (
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium
-                            ${line.nm_box.startsWith("MB")
-                              ? "bg-purple-500/10 text-purple-600 border-purple-500/20"
-                              : "bg-muted text-ink-3 border-border"}`}>
+                          <span className={`inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-medium
+                            ${isMbLine(line) ? MIX_ACCENT : "bg-muted text-ink-3 border-border"}`}>
                             {line.nm_box}
                           </span>
                         ) : "—"}
                       </td>
-                      <td className="px-3 py-2 text-center">
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-semibold bg-blue-500/10 text-blue-600 border-blue-500/20">
+                      <td className="px-1.5 py-2 text-center w-[30px] max-w-[30px]">
+                        <span className="inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-semibold bg-blue-500/10 text-blue-600 border-blue-500/20">
                           ×{line.nu_physical_boxes ?? 1}
                         </span>
                       </td>
@@ -2467,13 +2489,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                                      hover:border-border focus:border-emerald/50 focus:bg-surface outline-none transition-colors"
                         />
                       </td>
-                      <td className="px-3 py-2 text-ink-3 text-center">
+                      <td className="px-1.5 py-2 text-ink-3 text-center">
                         {Math.floor(line.nu_bunches / Math.max(1, line.nu_physical_boxes ?? 1)) * line.nu_stems_bunch}
                       </td>
                       <td className="px-3 py-2 text-ink-3">{line.nu_length > 0 ? `${line.nu_length}cm` : "—"}</td>
-                      <td className="px-3 py-2 text-ink-3">{line.nu_stems_bunch || "—"}</td>
-                      <td className="px-3 py-2 font-semibold text-ink">{line.nu_bunches}</td>
-                      <td className="px-3 py-2 text-ink-3">{line.nu_stems_total > 0 ? line.nu_stems_total.toLocaleString() : "—"}</td>
+                      <td className="px-1.5 py-2 text-ink-3">{line.nu_stems_bunch || "—"}</td>
+                      <td className="px-1.5 py-2 font-semibold text-ink">{line.nu_bunches}</td>
+                      <td className="px-1.5 py-2 text-ink-3">{line.nu_stems_total > 0 ? line.nu_stems_total.toLocaleString() : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.mny_rate_stem > 0 ? `$${line.mny_rate_stem.toFixed(4)}` : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.mny_total > 0 ? `$${line.mny_total.toFixed(2)}` : "—"}</td>
                       {/* Match badge + edit button */}
@@ -2482,10 +2504,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium ${badge.cls}`}>
                             {badge.label}
                           </span>
+                          {/* A mix box's product comes from the fixed rule, so it
+                              cannot be changed (user, 2026-09-25). A mix of a
+                              species no rule covers has no product, and keeps
+                              the button: nothing else could give it one. */}
                           <button
                             onClick={() => { setEditingKey(dk); setEditSearch(""); setEditModalOpen(true); }}
-                            title={hasMatch ? td.changeMatch : td.assignFromCatalogue}
-                            className={`transition-opacity ${hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
+                            disabled={line.match_method === "mix_box"}
+                            title={line.match_method === "mix_box" ? td.mixProductFixed : hasMatch ? td.changeMatch : td.assignFromCatalogue}
+                            className={`transition-opacity
+                              ${line.match_method === "mix_box" ? "text-ink-3 opacity-25 cursor-not-allowed"
+                                : hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100"
+                                : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
                           >
                             <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -2954,24 +2984,55 @@ function EditIconButton({ title, onClick, active = false }: { title: string; onC
   );
 }
 
+// `compact` is for narrow columns: less padding, and the sort arrows only
+// while the column is the one sorted by.
 function SortTh({
-  col, label, sortCol, sortDir, onSort,
+  col, label, sortCol, sortDir, onSort, compact, className = "",
 }: {
-  col: string; label: string; sortCol: string | null; sortDir: "asc" | "desc"; onSort: (col: string) => void;
+  col: string; label: React.ReactNode; sortCol: string | null; sortDir: "asc" | "desc"; onSort: (col: string) => void;
+  compact?: boolean; className?: string;
 }) {
   const active = sortCol === col;
   return (
     <th
-      className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap cursor-pointer select-none hover:text-ink transition-colors"
+      className={`${compact ? "px-1.5" : "px-3"} py-2 text-left font-semibold text-ink-3 whitespace-nowrap cursor-pointer select-none hover:text-ink transition-colors ${className}`}
       onClick={() => onSort(col)}
     >
       <span className="inline-flex items-center gap-1">
         {label}
-        <span className={`text-[9px] ${active ? "text-emerald" : "opacity-30"}`}>
-          {active ? (sortDir === "asc" ? "▲" : "▼") : "▲▼"}
-        </span>
+        {(!compact || active) && (
+          <span className={`text-[9px] ${active ? "text-emerald" : "opacity-30"}`}>
+            {active ? (sortDir === "asc" ? "▲" : "▼") : "▲▼"}
+          </span>
+        )}
       </span>
     </th>
+  );
+}
+
+// Column headers too wide for their numbers are drawn as icons, and say what
+// they are on hover (user, 2026-09-25).
+const COLUMN_ICONS = {
+  // one box
+  box: <><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></>,
+  // boxes stacked
+  boxes: <><rect x="3" y="12" width="8" height="8" rx="1"/><rect x="13" y="12" width="8" height="8" rx="1"/><rect x="8" y="3" width="8" height="8" rx="1"/></>,
+  // one bunch: stems tied together
+  bunch: <><path d="M12 21v-8M12 13L7 4M12 13V3M12 13l5-9"/><path d="M10 16.5h4"/></>,
+  // two bunches
+  bunches: <><path d="M7 21v-7M7 14L4 7M7 14l3-7"/><path d="M17 21v-7M17 14l-3-7M17 14l3-7"/><path d="M5.5 17.5h3M15.5 17.5h3"/></>,
+  // a single stem with its flower
+  stem: <><circle cx="12" cy="6" r="3"/><path d="M12 9v12"/><path d="M12 17c-3 0-5-2-5-4.5 3 0 5 2 5 4.5z"/></>,
+};
+
+function ColumnIcon({ icon, hint }: { icon: keyof typeof COLUMN_ICONS; hint: string }) {
+  return (
+    <HoverCard content={hint} className="inline-flex">
+      <svg role="img" aria-label={hint} className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {COLUMN_ICONS[icon]}
+      </svg>
+    </HoverCard>
   );
 }
 
