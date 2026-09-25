@@ -31,10 +31,11 @@ function isMixLine(line: DeliveryLine): boolean {
 // The boxes a mix box can go to FreshPortal in when sent together.
 const MIX_BOX_FUSTS = ["QBE", "HBE"];
 
-// Mix boxes are marked in the system palette, the one the Analysis Tool's
-// charts use (analysis/charts.tsx LINE_COLORS): its pale green #C4DED0 with
-// emerald, not a colour of their own (user, 2026-09-25).
-const MIX_ACCENT = "bg-[#C4DED0] text-emerald-dark border-emerald/25";
+// The whole module draws only on the system palette, the Analysis Tool's
+// chart colours, named in globals.css (user, 2026-09-25): brick and blush
+// for errors and warnings, emerald and sage for what is sure, sand and
+// taupe for what is neutral. Mix boxes are marked in sage with emerald.
+const MIX_ACCENT = "bg-sage text-emerald-dark border-emerald/25";
 
 // A grower from the Ecuador system's manufacturer list (Ecuador and Colombia),
 // as GET /growers returns it; manufacturer_id is what the DFG API receives.
@@ -264,17 +265,17 @@ const NEW_INVOICE_ID = "new";
 const INVOICE_PRELOAD_DWELL_MS = 180;
 
 const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
-  variety_length:       { label: "exact",        cls: "bg-emerald/15 text-emerald border-emerald/20" },
-  variety_nolen:        { label: "exact~len",    cls: "bg-emerald/10 text-emerald border-emerald/15" },
-  variety_anylength:    { label: "exact~len",    cls: "bg-emerald/10 text-emerald border-emerald/15" },
-  floricode:            { label: "VBN",          cls: "bg-blue-500/15 text-blue-600 border-blue-500/20" },
-  fuzzy_variety:        { label: "fuzzy",        cls: "bg-amber-500/15 text-amber-600 border-amber-500/20" },
-  fuzzy_variety_nolen:  { label: "fuzzy~len",    cls: "bg-amber-500/10 text-amber-600 border-amber-500/15" },
-  fuzzy_nolen:          { label: "fuzzy~",       cls: "bg-orange-500/15 text-orange-600 border-orange-500/20" },
-  fuzzy_anylength:      { label: "fuzzy~len",    cls: "bg-orange-500/10 text-orange-600 border-orange-500/15" },
-  cached:               { label: "cached ✓",     cls: "bg-green-500/15 text-green-700 border-green-500/25" },
+  variety_length:       { label: "exact",        cls: "bg-sage text-emerald-dark border-emerald/25" },
+  variety_nolen:        { label: "exact~len",    cls: "bg-sage/50 text-emerald-dark border-sage" },
+  variety_anylength:    { label: "exact~len",    cls: "bg-sage/50 text-emerald-dark border-sage" },
+  floricode:            { label: "VBN",          cls: "bg-sand text-ink border-taupe/40" },
+  fuzzy_variety:        { label: "fuzzy",        cls: "bg-blush/60 text-brick border-blush" },
+  fuzzy_variety_nolen:  { label: "fuzzy~len",    cls: "bg-blush/35 text-brick border-blush/70" },
+  fuzzy_nolen:          { label: "fuzzy~",       cls: "bg-blush/60 text-brick border-blush" },
+  fuzzy_anylength:      { label: "fuzzy~len",    cls: "bg-blush/35 text-brick border-blush/70" },
+  cached:               { label: "cached ✓",     cls: "bg-emerald text-white border-emerald" },
   mix_box:              { label: "mix box",      cls: MIX_ACCENT },
-  none:                 { label: "no match",     cls: "bg-red-500/10 text-red-500 border-red-500/20" },
+  none:                 { label: "no match",     cls: "bg-blush/60 text-brick border-brick/30" },
 };
 
 type DoneLineStatus = "added" | "failed" | "skipped" | "notApproved";
@@ -1746,7 +1747,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       )}
 
       {isTourMode && (
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blush/30 border border-blush text-xs text-brick">
           <span>🎯</span>
           <span>{td.tourDemoMode}</span>
         </div>
@@ -1781,13 +1782,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {duplicateWarning.length > 0 && (
         <>
           <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setDuplicateWarning([])} />
-          <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-amber-500/40 bg-surface shadow-2xl p-6 flex flex-col gap-4">
+          <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-blush bg-surface shadow-2xl p-6 flex flex-col gap-4">
             <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xl">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-xl">
                 ⚠
               </div>
               <div>
-                <p className="text-sm font-bold text-amber-700">{td.duplicateWarningTitle}</p>
+                <p className="text-sm font-bold text-brick">{td.duplicateWarningTitle}</p>
                 <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.duplicateWarningMsg(duplicateWarning.join(", "))}</p>
               </div>
             </div>
@@ -1800,7 +1801,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </button>
               <button
                 onClick={() => { setDuplicateWarning([]); if (!pdfFile) handleParse(); }}
-                className="h-9 px-5 rounded-xl text-sm font-semibold bg-amber-500 text-white hover:bg-amber-500/90 transition-colors"
+                className="h-9 px-5 rounded-xl text-sm font-semibold bg-brick text-white hover:bg-brick/90 transition-colors"
               >
                 {pdfFile ? t.common.continueBtn : td.parseBtn}
               </button>
@@ -1814,9 +1815,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         <div key="idle" className="step-enter flex flex-col gap-4">
           {/* Multi-file error */}
           {multiFileError && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600">
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-blush/30 border border-blush text-xs text-brick">
               <span>⚠ {td.onlyOneFile}</span>
-              <button onClick={() => setMultiFileError(false)} className="ml-auto text-amber-400 hover:text-amber-600 transition-colors">✕</button>
+              <button onClick={() => setMultiFileError(false)} className="ml-auto text-brick/60 hover:text-brick transition-colors">✕</button>
             </div>
           )}
 
@@ -1849,7 +1850,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 {(jsonText || pdfFile) && (
                   <button
                     onClick={() => { setJsonText(""); setPdfFile(null); setDuplicateWarning([]); setMultiFileError(false); setFileLoaded(false); }}
-                    className="h-7 px-3 rounded-lg text-xs font-medium text-red-500 border border-red-400/30 hover:bg-red-500/10 transition-colors"
+                    className="h-7 px-3 rounded-lg text-xs font-medium text-brick border border-brick/30 hover:bg-blush/40 transition-colors"
                   >
                     {td.clearJson}
                   </button>
@@ -1889,7 +1890,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <div className="fixed inset-0 bg-black/60 z-[300]" />
               <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-sm mx-auto rounded-2xl border-2 border-border bg-surface shadow-2xl p-6 flex flex-col gap-5">
                 <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-xl">🏭</div>
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-sand border border-taupe/40 flex items-center justify-center text-xl">🏭</div>
                   <div>
                     <p className="text-sm font-bold text-ink">{td.supplierConfirmTitle}</p>
                     <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.supplierConfirmBody(order.tx_company)}</p>
@@ -1937,7 +1938,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           <div
             ref={refShipmentPill}
             className={`card-enter rounded-2xl bg-muted p-4 relative
-              ${resolvedSupplier ? "border border-border" : "border-2 border-red-500"}`}
+              ${resolvedSupplier ? "border border-border" : "border-2 border-brick"}`}
           >
             {/* Supplier as the file names it, and who that is in FreshPortal */}
             <div className="flex flex-col gap-2 text-sm">
@@ -1957,14 +1958,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 <button
                   onClick={openSupplierPicker}
                   title={td.selectSupplierBtn}
-                  className="w-full flex items-center gap-3 rounded-xl border-2 border-red-500 bg-red-50 px-3 py-2.5 text-left hover:bg-red-100 transition-colors"
+                  className="w-full flex items-center gap-3 rounded-xl border-2 border-brick bg-blush/40 px-3 py-2.5 text-left hover:bg-blush/70 transition-colors"
                 >
-                  <span className="shrink-0 w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center text-base font-bold">!</span>
+                  <span className="shrink-0 w-8 h-8 rounded-full bg-brick text-white flex items-center justify-center text-base font-bold">!</span>
                   <span className="flex-1 min-w-0">
-                    <span className="block text-sm font-bold text-red-700">{td.supplierNoMatch}</span>
-                    <span className="block text-xs text-red-700/80 mt-0.5">{td.supplierNoMatchHint}</span>
+                    <span className="block text-sm font-bold text-brick">{td.supplierNoMatch}</span>
+                    <span className="block text-xs text-brick/80 mt-0.5">{td.supplierNoMatchHint}</span>
                   </span>
-                  <span className="shrink-0 w-8 h-8 rounded-full border-2 border-red-500 text-red-600 flex items-center justify-center">
+                  <span className="shrink-0 w-8 h-8 rounded-full border-2 border-brick text-brick flex items-center justify-center">
                     <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                       <circle cx="11" cy="11" r="7"/>
                       <path d="M20 20l-3.5-3.5"/>
@@ -2039,11 +2040,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 {invoicesFailed ? (
                   /* The lookup failed — say so, rather than letting an empty
                      list pass for "this customer has none". */
-                  <div className="rounded-xl border-2 border-dashed border-ember/40 bg-ember/5 px-3 py-2 flex items-center justify-between gap-3">
-                    <span className="text-xs text-ember">{td.openInvoicesFailed}</span>
+                  <div className="rounded-xl border-2 border-dashed border-brick/40 bg-blush/25 px-3 py-2 flex items-center justify-between gap-3">
+                    <span className="text-xs text-brick">{td.openInvoicesFailed}</span>
                     <button
                       onClick={retryOpenInvoices}
-                      className="h-7 px-3 shrink-0 rounded-lg text-xs font-medium border border-ember/40 text-ember hover:bg-ember/10 transition-colors"
+                      className="h-7 px-3 shrink-0 rounded-lg text-xs font-medium border border-brick/40 text-brick hover:bg-blush/40 transition-colors"
                     >
                       {td.retryBtn}
                     </button>
@@ -2082,9 +2083,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </button>
             <div className="flex flex-col items-end gap-1">
               {!resolvedSupplier ? (
-                <span className="text-[11px] font-semibold text-red-600">{td.supplierRequiredHint}</span>
+                <span className="text-[11px] font-semibold text-brick">{td.supplierRequiredHint}</span>
               ) : !customerId && (
-                <span className="text-[11px] text-ember">{td.customerRequiredHint}</span>
+                <span className="text-[11px] text-brick">{td.customerRequiredHint}</span>
               )}
               <button
                 onClick={() => setStage("preview")}
@@ -2166,11 +2167,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             return (
               <>
                 <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPartialApproveOpen(false)} />
-                <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-amber-500/40 bg-surface shadow-2xl p-6 flex flex-col gap-4">
+                <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-blush bg-surface shadow-2xl p-6 flex flex-col gap-4">
                   <div className="flex items-start gap-3">
-                    <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xl">⚠</div>
+                    <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-xl">⚠</div>
                     <div>
-                      <p className="text-sm font-bold text-amber-700">{td.partialApproveTitle}</p>
+                      <p className="text-sm font-bold text-brick">{td.partialApproveTitle}</p>
                       <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.partialApproveBody(totalApproved, totalMatched)}</p>
                     </div>
                   </div>
@@ -2204,8 +2205,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 onClick={() => setShowOnlyUnmatched(p => !p)}
                 className={`px-2.5 py-1 rounded-full border text-xs font-medium transition-colors
                   ${showOnlyUnmatched
-                    ? "bg-red-500/20 text-red-600 border-red-500/40 ring-1 ring-red-500/30"
-                    : "bg-red-500/10 text-red-500 border-red-500/20 hover:bg-red-500/20"}`}
+                    ? "bg-blush text-brick border-brick/40 ring-1 ring-brick/30"
+                    : "bg-blush/50 text-brick border-brick/25 hover:bg-blush"}`}
               >
                 {unmatchedCount} {td.unmatched}
                 {showOnlyUnmatched ? " ✕" : ""}
@@ -2216,7 +2217,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 onClick={handleClearCache}
                 disabled={clearingCache}
                 title={td.clearCacheTitle}
-                className="h-7 px-3 rounded-lg text-xs font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+                className="h-7 px-3 rounded-lg text-xs font-medium border border-brick/40 text-brick hover:bg-blush/40 disabled:opacity-40 transition-colors"
               >
                 {clearingCache ? td.clearingCache : td.clearCache}
               </button>
@@ -2228,8 +2229,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               onClick={() => setShowOnlyUnmatched(p => !p)}
               className={`w-full text-left text-xs rounded-xl px-3 py-2 border transition-colors
                 ${showOnlyUnmatched
-                  ? "text-amber-700 bg-amber-100 border-amber-300"
-                  : "text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100"}`}
+                  ? "text-brick bg-blush/60 border-brick/30"
+                  : "text-brick bg-blush/30 border-blush hover:bg-blush/60"}`}
             >
               ⚠ {td.unmatchedWarning(unmatchedCount)}
               <span className="ml-2 underline">{showOnlyUnmatched ? td.showAll : td.showOnlyUnmatched}</span>
@@ -2238,7 +2239,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* What the parser changed or could not reconcile */}
           {(order.warnings ?? []).map((w, i) => (
-            <div key={i} className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
+            <div key={i} className="text-xs rounded-xl px-3 py-2 border text-brick bg-blush/30 border-blush">
               ⚠ {w.code === "bunches_split_by_invoice_total"
                 ? td.warnBunchesSplit(w.variety, w.length, w.boxes, w.bunches_in_file, w.bunches_per_box)
                 : w.code === "box_count_mismatch"
@@ -2254,7 +2255,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-xs font-semibold text-ink">{td.mixModeLabel}</span>
                 <div role="radiogroup" aria-label={td.mixModeLabel}
-                  className="inline-flex rounded-lg border border-[#C4DED0] bg-[#C4DED0]/40 p-0.5">
+                  className="inline-flex rounded-lg border border-sage bg-sage/40 p-0.5">
                   {[false, true].map(together => (
                     <button
                       key={String(together)}
@@ -2265,7 +2266,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       className={`h-7 px-3 rounded-md text-xs font-medium transition-colors disabled:cursor-wait
                         ${mixTogether === together
                           ? "bg-emerald text-white shadow-sm"
-                          : "text-emerald-dark hover:bg-[#C4DED0]"}`}
+                          : "text-emerald-dark hover:bg-sage"}`}
                     >
                       {together ? td.mixModeTogether : td.mixModeSeparate}
                     </button>
@@ -2285,14 +2286,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 </HoverCard>
               </div>
               {mixTogether && mixKeptBoxes.length > 0 && (
-                <div className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
+                <div className="text-xs rounded-xl px-3 py-2 border text-brick bg-blush/30 border-blush">
                   ⚠ {td.mixKeptSeparate(mixKeptBoxes.join(", "))}
                 </div>
               )}
               {mixReparseError && (
-                <div className="text-xs rounded-xl px-3 py-2 border text-red-600 bg-red-50 border-red-200">
+                <div className="text-xs rounded-xl px-3 py-2 border text-brick bg-blush/60 border-brick/40">
                   {td.mixSeparateFailed}
-                  <span className="block mt-0.5 text-[11px] text-red-500/80 break-words">{mixReparseError}</span>
+                  <span className="block mt-0.5 text-[11px] text-brick/80 break-words">{mixReparseError}</span>
                 </div>
               )}
             </div>
@@ -2305,7 +2306,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               title={showOnlyUnapproved ? td.showAll : td.showOnlyUnmatched}
               className={`h-7 px-3 rounded-lg text-xs font-semibold border transition-colors
                 ${showOnlyUnapproved
-                  ? "bg-amber-500/15 border-amber-500/30 text-amber-700"
+                  ? "bg-blush/50 border-blush text-brick"
                   : "bg-emerald/8 border-emerald/30 text-emerald hover:bg-emerald/15"}`}
             >
               {td.approved(
@@ -2402,7 +2403,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   return (
                     <tr key={i} className={`border-b border-border/60 transition-colors hover:bg-muted/50
                       ${line.match_method === "none" && !edit ? "opacity-60" : ""}
-                      ${isApproved ? "bg-green-500/5" : ""}`}>
+                      ${isApproved ? "bg-sage/25" : ""}`}>
                       {/* Approve checkbox */}
                       <td className="px-2 py-2 text-center">
                         {hasMatch && (
@@ -2469,12 +2470,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                                   {growerLabel(growerId)}
                                 </HoverCard>
                               ) : (
-                                <span className="text-red-400">{growerLabel(growerId)}</span>
+                                <span className="text-brick/80">{growerLabel(growerId)}</span>
                               )}
                               <button
                                 onClick={() => { setEditingGrowerKey(locKey); setGrowerSearch(""); setGrowerHighlighted(0); }}
                                 title={td.editGrowerBtn}
-                                className={`transition-opacity ${growerId ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
+                                className={`transition-opacity ${growerId ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-brick opacity-70 hover:opacity-100"}`}
                               >
                                 <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -2520,7 +2521,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         ) : "—"}
                       </td>
                       <td className="px-1.5 py-2 text-center w-[30px] max-w-[30px]">
-                        <span className="inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-semibold bg-blue-500/10 text-blue-600 border-blue-500/20">
+                        <span className="inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-semibold bg-sand text-ink border-taupe/40">
                           ×{line.nu_physical_boxes ?? 1}
                         </span>
                       </td>
@@ -2590,7 +2591,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             className={`transition-opacity
                               ${line.match_method === "mix_box" ? "text-ink-3 opacity-25 cursor-not-allowed"
                                 : hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100"
-                                : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
+                                : "text-brick opacity-70 hover:opacity-100"}`}
                           >
                             <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -2670,7 +2671,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   </div>
                   <div className="overflow-y-auto flex-1">
                     {matchResults.length === 0 ? (
-                      <p className={`text-xs px-4 py-3 ${editSearchError ? "text-red-500" : "text-ink-3"}`}>
+                      <p className={`text-xs px-4 py-3 ${editSearchError ? "text-brick" : "text-ink-3"}`}>
                         {editSearch.trim().length < 2
                           ? td.editSearchTypeToSearch
                           : editSearchError
@@ -2768,8 +2769,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         {td.growersLoading}
                       </p>
                     ) : growers.length === 0 && growersError ? (
-                      <p className="text-xs px-4 py-3 text-red-500">
-                        {td.growersLoadFailed} <span className="block text-[11px] text-red-400 mt-1 break-words">{growersError}</span>
+                      <p className="text-xs px-4 py-3 text-brick">
+                        {td.growersLoadFailed} <span className="block text-[11px] text-brick/80 mt-1 break-words">{growersError}</span>
                       </p>
                     ) : found.length === 0 ? (
                       <p className="text-xs px-4 py-3 text-ink-3">{td.growersNone}</p>
@@ -2824,12 +2825,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           <div className="card-enter w-full max-w-lg bg-surface rounded-3xl border border-border shadow-lg overflow-hidden">
 
             {/* Hero band */}
-            <div className={`px-6 pt-8 pb-6 flex flex-col items-center text-center ${importResult.errors.length === 0 ? "bg-emerald/6" : "bg-amber-500/6"}`}>
+            <div className={`px-6 pt-8 pb-6 flex flex-col items-center text-center ${importResult.errors.length === 0 ? "bg-emerald/6" : "bg-blush/20"}`}>
               {/* Animated icon */}
-              <div className={`done-icon w-16 h-16 rounded-full flex items-center justify-center text-3xl mb-4 ${importResult.errors.length === 0 ? "bg-emerald text-white shadow-[0_0_24px_rgba(26,125,69,0.4)]" : "bg-amber-500 text-white shadow-[0_0_24px_rgba(245,158,11,0.4)]"}`}>
+              <div className={`done-icon w-16 h-16 rounded-full flex items-center justify-center text-3xl mb-4 ${importResult.errors.length === 0 ? "bg-emerald text-white shadow-[0_0_24px_rgba(26,125,69,0.4)]" : "bg-brick text-white shadow-[0_0_24px_rgba(176,58,43,0.35)]"}`}>
                 {importResult.errors.length === 0 ? "✓" : "!"}
               </div>
-              <h2 className={`text-lg font-bold mb-1 ${importResult.errors.length === 0 ? "text-emerald" : "text-amber-600"}`}>
+              <h2 className={`text-lg font-bold mb-1 ${importResult.errors.length === 0 ? "text-emerald" : "text-brick"}`}>
                 {importResult.errors.length === 0 ? td.batchCreated : td.importPartial}
               </h2>
               {importResult.batch_id && (
@@ -2861,7 +2862,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       href={importResult.invoice_url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-blue-500/30 text-blue-600 bg-blue-500/8 hover:bg-blue-500/15 transition-colors"
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-taupe/40 text-ink bg-sand/60 hover:bg-sand transition-colors"
                     >
                       {td.viewInvoice}
                       <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2874,7 +2875,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 </div>
               )}
               {existingBatch && (
-                <p className="text-xs text-blue-500 mt-1">{td.addedToExistingBatch(existingBatch.number)}</p>
+                <p className="text-xs text-ink-2 mt-1">{td.addedToExistingBatch(existingBatch.number)}</p>
               )}
 
               {/* Stat chips */}
@@ -2907,13 +2908,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             {/* Failed lines + retry */}
             {importResult.errors.length > 0 && (
               <div className="px-6 py-4 border-t border-border">
-                <p className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">{td.statFailedN(importResult.errors.length)}</p>
+                <p className="text-xs font-semibold text-brick uppercase tracking-wide mb-2">{td.statFailedN(importResult.errors.length)}</p>
                 <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
                   {importResult.errors.map((e, i) => (
-                    <div key={i} className="text-xs font-mono text-red-500">
+                    <div key={i} className="text-xs font-mono text-brick">
                       <span className="font-semibold">{e.product_number}</span>
                       {e.length ? <span className="text-ink-3"> ({e.length}cm)</span> : null}
-                      <span className="block text-red-400">{e.message}</span>
+                      <span className="block text-brick/80">{e.message}</span>
                     </div>
                   ))}
                 </div>
@@ -2930,10 +2931,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             {/* Skipped (unmatched) lines */}
             {importResult.skipped_unmatched.length > 0 && (
               <div className="px-6 py-4 border-t border-border">
-                <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">{td.statSkippedN(importResult.skipped_unmatched.length)}</p>
+                <p className="text-xs font-semibold text-brick uppercase tracking-wide mb-2">{td.statSkippedN(importResult.skipped_unmatched.length)}</p>
                 <div className="max-h-32 overflow-y-auto space-y-0.5 pr-1">
                   {importResult.skipped_unmatched.map((p, i) => (
-                    <div key={i} className="text-xs font-mono text-amber-600 truncate">{p}</div>
+                    <div key={i} className="text-xs font-mono text-brick/80 truncate">{p}</div>
                   ))}
                 </div>
               </div>
@@ -2946,9 +2947,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 <div className="mt-2 max-h-64 overflow-y-auto space-y-1 pr-1">
                   {doneLineStatuses.map(({ line, status, message }, i) => {
                     const badge = {
-                      added:        { label: td.lineStatusAdded,        cls: "bg-emerald/10 text-emerald border-emerald/20" },
-                      failed:       { label: td.lineStatusFailed,       cls: "bg-red-500/10 text-red-500 border-red-500/20" },
-                      skipped:      { label: td.lineStatusSkipped,      cls: "bg-amber-500/10 text-amber-600 border-amber-500/20" },
+                      added:        { label: td.lineStatusAdded,        cls: "bg-sage/60 text-emerald-dark border-emerald/25" },
+                      failed:       { label: td.lineStatusFailed,       cls: "bg-blush/60 text-brick border-brick/30" },
+                      skipped:      { label: td.lineStatusSkipped,      cls: "bg-blush/30 text-brick border-blush" },
                       notApproved:  { label: td.lineStatusNotApproved,  cls: "bg-muted text-ink-3 border-border" },
                     }[status];
                     return (
@@ -2958,7 +2959,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             {line.nm_variety}
                             {line.nu_length > 0 && <span className="text-ink-3 font-normal"> · {line.nu_length}cm</span>}
                           </p>
-                          {message && <p className="text-red-400 font-mono text-[11px] truncate">{message}</p>}
+                          {message && <p className="text-brick/80 font-mono text-[11px] truncate">{message}</p>}
                         </div>
                         <span className={`shrink-0 px-2 py-0.5 rounded-full border text-[11px] font-medium whitespace-nowrap ${badge.cls}`}>
                           {badge.label}
@@ -2979,7 +2980,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     <div
                       key={i}
                       className={`whitespace-pre-wrap break-all py-1.5 border-b border-border/40 last:border-0
-                        ${l.startsWith("  ⚠") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
+                        ${l.startsWith("  ⚠") ? "text-brick" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
                     >
                       {l}
                     </div>
@@ -3003,9 +3004,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── ERROR ── */}
       {stage === "error" && (
         <div key="error" className="step-enter flex flex-col gap-3">
-          <div className="p-4 rounded-2xl bg-red-500/8 border border-red-500/20">
-            <p className="text-sm font-semibold text-red-500">{t.common.error}</p>
-            <p className="text-xs text-red-400 mt-1 font-mono">{error}</p>
+          <div className="p-4 rounded-2xl bg-blush/40 border border-brick/30">
+            <p className="text-sm font-semibold text-brick">{t.common.error}</p>
+            <p className="text-xs text-brick/80 mt-1 font-mono">{error}</p>
           </div>
           <button onClick={reset} className="self-end h-9 px-5 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors">
             {t.common.retry}
@@ -3018,9 +3019,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
 function StatChip({ value, label, color, delay }: { value: number; label: string; color: "emerald" | "red" | "amber"; delay: string }) {
   const colours = {
-    emerald: "bg-emerald/10 text-emerald border-emerald/20",
-    red:     "bg-red-500/10 text-red-500 border-red-500/20",
-    amber:   "bg-amber-500/10 text-amber-600 border-amber-500/20",
+    emerald: "bg-sage/60 text-emerald-dark border-emerald/25",
+    red:     "bg-blush/60 text-brick border-brick/30",
+    amber:   "bg-blush/30 text-brick border-blush",
   };
   return (
     <div
@@ -3197,7 +3198,7 @@ function ProgressLog({ title, logs }: { title: string; logs: string[] }) {
           <div
             key={i}
             className={`whitespace-pre-wrap break-all py-1.5 border-b border-border/40 last:border-0
-              ${l.startsWith("  ⚠") || l.startsWith("Error") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
+              ${l.startsWith("  ⚠") || l.startsWith("Error") ? "text-brick" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
           >
             {l}
           </div>

@@ -20,6 +20,16 @@
   --color-ink-2:         #3D4D42;
   --color-ink-3:         #728070;
 
+  /* System palette: the Analysis Tool's chart colours (analysis/charts.tsx
+     LINE_COLORS), with emerald and black above. Named so screens use them by
+     name: brick and blush for errors and warnings, sage for what is sure,
+     sand and taupe for what is neutral (user, 2026-09-25). */
+  --color-brick:         #B03A2B;
+  --color-blush:         #F7C4BC;
+  --color-sage:          #C4DED0;
+  --color-sand:          #E4E1D8;
+  --color-taupe:         #8E8B81;
+
   /* Legacy tile gradients (used as bg in tiles) */
   --color-tile-a-from:   #1A7D45;
   --color-tile-a-to:     #0D5430;
