@@ -521,7 +521,7 @@ const en = {
     mixModeSeparate:         "Separate",
     mixModeTogether:         "Together",
     mixModeSeparateHint:     "Each variety in a mix box is its own line, marked MB1, MB2…",
-    mixModeTogetherHint:     "Each mix box is one line of a mix product: RECMIBO for roses, ALSMIXF for alstroemeria. Identical boxes share one line.",
+    mixModeTogetherHint:     "Each mix box is one line of a mix product: ROEMIBO for roses, ALSMIXF for alstroemeria. Identical boxes share one line.",
     mixKeptSeparate:         (count: number) =>
       `Mix boxes kept per variety: ${count}. Their varieties differ in length, bunch size or farm, and one FreshPortal line holds only one of each.`,
     mixContentTitle:         "Varieties in the box (bunches)",
@@ -1440,7 +1440,7 @@ const nl: typeof en = {
     mixModeSeparate:         "Apart",
     mixModeTogether:         "Samen",
     mixModeSeparateHint:     "Elke variëteit in een mixdoos is een eigen regel, gemarkeerd als MB1, MB2…",
-    mixModeTogetherHint:     "Elke mixdoos is één regel van een mixproduct: RECMIBO voor rozen, ALSMIXF voor alstroemeria. Gelijke dozen delen één regel.",
+    mixModeTogetherHint:     "Elke mixdoos is één regel van een mixproduct: ROEMIBO voor rozen, ALSMIXF voor alstroemeria. Gelijke dozen delen één regel.",
     mixKeptSeparate:         (count: number) =>
       `Mixdozen per variëteit gelaten: ${count}. De variëteiten verschillen in lengte, bosgrootte of farm, en één FreshPortal-regel bevat er maar één van elk.`,
     mixContentTitle:         "Variëteiten in de doos (bossen)",
@@ -2319,7 +2319,7 @@ const pl: typeof en = {
     mixModeSeparate:         "Osobno",
     mixModeTogether:         "Razem",
     mixModeSeparateHint:     "Każda odmiana z mix boxa to osobna linia, oznaczona MB1, MB2…",
-    mixModeTogetherHint:     "Każdy mix box to jedna linia produktu mix: RECMIBO dla róż, ALSMIXF dla alstromerii. Takie same pudła dzielą jedną linię.",
+    mixModeTogetherHint:     "Każdy mix box to jedna linia produktu mix: ROEMIBO dla róż, ALSMIXF dla alstromerii. Takie same pudła dzielą jedną linię.",
     mixKeptSeparate:         (count: number) =>
       `Mix boxy zostawione osobno: ${count}. Odmiany w środku różnią się długością, wielkością pęczka lub farmą, a jedna linia we FreshPortalu mieści tylko jedną z każdej.`,
     mixContentTitle:         "Odmiany w pudle (pęczki)",
@@ -3198,7 +3198,7 @@ const es: typeof en = {
     mixModeSeparate:         "Por separado",
     mixModeTogether:         "Juntas",
     mixModeSeparateHint:     "Cada variedad de una caja mixta es su propia línea, marcada MB1, MB2…",
-    mixModeTogetherHint:     "Cada caja mixta es una línea de un producto mixto: RECMIBO para rosas, ALSMIXF para alstroemeria. Las cajas iguales comparten una línea.",
+    mixModeTogetherHint:     "Cada caja mixta es una línea de un producto mixto: ROEMIBO para rosas, ALSMIXF para alstroemeria. Las cajas iguales comparten una línea.",
     mixKeptSeparate:         (count: number) =>
       `Cajas mixtas que quedan por variedad: ${count}. Sus variedades difieren en largo, tamaño de ramo o finca, y una línea de FreshPortal admite solo uno de cada.`,
     mixContentTitle:         "Variedades en la caja (ramos)",

@@ -17,7 +17,7 @@ invoices below are synthetic and keep only the shape that mattered.
   different product built on it, e.g. Florecal's tinted "TA RAINBOW MD" with
   nm_variety MONDIAL (invoice 1586318, 2026-09-24). A plain product whose
   name abbreviates its variety ("FREED 50CM" for FREEDOM) keeps the variety.
-- Mix boxes can be sent combined: one line per kind of box, RECMIBO for
+- Mix boxes can be sent combined: one line per kind of box, ROEMIBO for
   roses and ALSMIXF for alstroemeria, in the box's own QBE or HBE, at the
   price that keeps the invoice amount (Florecal invoice 1586318, 2026-09-25).
 
@@ -315,8 +315,8 @@ def test_mix_boxes_that_come_out_the_same_are_one_line():
            (l.nu_physical_boxes, l.nu_bunches // l.nu_physical_boxes, l.nu_stems_bunch, l.mny_rate_stem, l.mix_boxes)
            for l in mixed}
     assert got == {
-        ("Mix Roses", "RECMIBO", "QBE", 40): (1, 4, 25, 0.20, ["MB3"]),
-        ("Mix Roses", "RECMIBO", "QBE", 60): (2, 4, 25, 0.30, ["MB1", "MB2"]),
+        ("Mix Roses", "ROEMIBO", "QBE", 40): (1, 4, 25, 0.20, ["MB3"]),
+        ("Mix Roses", "ROEMIBO", "QBE", 60): (2, 4, 25, 0.30, ["MB1", "MB2"]),
     }
     sixty = next(l for l in mixed if l.nu_length == 60)
     assert {c["nm_variety"]: c["nu_bunches"] for c in sixty.mix_content}["Mondial"] == 2
@@ -331,7 +331,7 @@ def test_mix_box_goes_at_the_price_that_keeps_its_amount():
 
 
 @pytest.mark.parametrize("species, product, name", [
-    ("ROSES", "RECMIBO", "Mix Roses"),
+    ("ROSES", "ROEMIBO", "Mix Roses"),
     ("ALSTROEMERIA", "ALSMIXF", "Mix Alstroemeria"),
     ("CARNATION", "", "Mix Carnation"),
 ])

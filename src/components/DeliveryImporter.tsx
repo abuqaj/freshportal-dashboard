@@ -488,6 +488,59 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
   );
 }
 
+// Room a hover card keeps from the viewport's edges, and how tall and wide it
+// is assumed to get when deciding which side of its text it opens on.
+const HOVER_CARD_MARGIN = 8;
+const HOVER_CARD_ROOM = { width: 320, height: 240 };
+
+// Shows `content` in a card next to its children while the pointer is on
+// them, at once rather than after the browser's title delay. Drawn through a
+// portal with fixed coordinates: the product table scrolls, and would clip a
+// card positioned inside it, as it clipped the pickers (see SearchableSelect).
+function HoverCard({ content, children, className }: {
+  content: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  // Scrolling moves the text from under a card that stays put, so it closes.
+  useEffect(() => {
+    if (!pos) return;
+    const hide = () => setPos(null);
+    window.addEventListener("scroll", hide, true);
+    return () => window.removeEventListener("scroll", hide, true);
+  }, [pos]);
+
+  function show() {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    const left = Math.max(HOVER_CARD_MARGIN,
+      Math.min(rect.left, window.innerWidth - HOVER_CARD_ROOM.width - HOVER_CARD_MARGIN));
+    const roomBelow = window.innerHeight - rect.bottom - HOVER_CARD_MARGIN;
+    setPos(roomBelow < HOVER_CARD_ROOM.height && rect.top > roomBelow
+      ? { left, bottom: window.innerHeight - rect.top + 4 }
+      : { left, top: rect.bottom + 4 });
+  }
+
+  return (
+    <span ref={ref} onMouseEnter={show} onMouseLeave={() => setPos(null)} className={className}>
+      {children}
+      {pos && typeof document !== "undefined" && createPortal(
+        <div
+          style={{ position: "fixed", ...pos, maxWidth: HOVER_CARD_ROOM.width }}
+          className="z-[500] pointer-events-none rounded-xl border border-border bg-surface px-3 py-2
+                     text-xs font-normal text-ink whitespace-normal shadow-[0_8px_24px_rgba(17,26,20,0.2)]"
+        >
+          {content}
+        </div>,
+        document.body,
+      )}
+    </span>
+  );
+}
+
 export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const t = translations[lang];
   const td = t.delivery;
@@ -1133,7 +1186,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           nu_stems_total: order.nu_stems_total,
           mny_total: order.mny_total,
           nu_lines_total: fullLines.length,
-          nu_lines_matched: fullLines.filter((l: DeliveryLine) => l.fp_product_id).length,
+          nu_lines_matched: fullLines.filter((l: DeliveryLine) => lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id).length,
           batch_id: String(result.batch_id),
           batch_url: result.batch_url || "",
           batch_status: result.errors.length > 0 ? "partial" : "ok",
@@ -1211,7 +1264,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         .filter(line => approvedKeys.has(deliveryKey(line)))
         .map(withEdits),
     };
-    const skippedUnmatched = activeLines.filter(l => !l.fp_product_id).map(l => l.nm_product);
+    // Skipped means no product even after the user's own pick: read from the
+    // parse alone, a line matched by hand was listed as skipped although it
+    // went in (user, 2026-09-25, Florecal's Ta Rainbow Md).
+    const skippedUnmatched = activeLines.map(withEdits).filter(l => !l.fp_product_id).map(l => l.nm_product);
 
     try {
       const checkData = await loggedRequest(
@@ -2275,14 +2331,30 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         )}
                       </td>
                       <td className="px-3 py-2 font-medium text-ink">
-                        {line.nm_variety}
+                        {/* What a mix box holds shows on hover only, so a long
+                            mix does not stretch the row (user, 2026-09-25). */}
+                        {isMixLine(line) ? (
+                          <HoverCard
+                            className="cursor-help underline decoration-dotted decoration-purple-500/60 underline-offset-2"
+                            content={
+                              <>
+                                <p className="font-semibold text-ink mb-1">{td.mixContentTitle}</p>
+                                <ul className="flex flex-col gap-0.5">
+                                  {(line.mix_content ?? []).map(c => (
+                                    <li key={c.nm_variety} className="flex justify-between gap-4">
+                                      <span>{c.nm_variety}</span>
+                                      <span className="text-ink-3 tabular-nums">{c.nu_bunches}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </>
+                            }
+                          >
+                            {line.nm_variety}
+                          </HoverCard>
+                        ) : line.nm_variety}
                         {displayCatName && displayCatName !== line.nm_variety && (
                           <div className="text-ink-3 font-normal">{displayCatName}</div>
-                        )}
-                        {isMixLine(line) && (
-                          <div title={td.mixContentTitle} className="mt-1 max-w-[280px] text-[11px] font-normal leading-snug text-purple-600/90">
-                            {(line.mix_content ?? []).map(c => `${c.nm_variety} (${c.nu_bunches})`).join(", ")}
-                          </div>
                         )}
                       </td>
                       {(() => {
@@ -2291,9 +2363,24 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         return (
                           <td className="px-3 py-2 text-ink-3 whitespace-nowrap">
                             <div className="flex items-center gap-1">
-                              <span className={growerId ? "" : "text-red-400"} title={growerId ? `#${growerId}` : undefined}>
-                                {growerLabel(growerId)}
-                              </span>
+                              {/* Cut short so a long grower name does not widen
+                                  the table; the whole name shows on hover
+                                  (user, 2026-09-25). */}
+                              {growerId ? (
+                                <HoverCard
+                                  className="block max-w-[75px] truncate"
+                                  content={
+                                    <>
+                                      <p className="text-ink">{growerLabel(growerId)}</p>
+                                      <p className="text-[11px] text-ink-3">#{growerId}</p>
+                                    </>
+                                  }
+                                >
+                                  {growerLabel(growerId)}
+                                </HoverCard>
+                              ) : (
+                                <span className="text-red-400">{growerLabel(growerId)}</span>
+                              )}
                               <button
                                 onClick={() => { setEditingGrowerKey(locKey); setGrowerSearch(""); setGrowerHighlighted(0); }}
                                 title={td.editGrowerBtn}

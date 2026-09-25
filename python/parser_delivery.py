@@ -1128,11 +1128,12 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
 # ---------------------------------------------------------------------------
 
 # The product a combined mix box goes to FreshPortal as, by the species it
-# holds (user, 2026-09-25), with the name its line gets. A mix of anything
+# holds (user, 2026-09-25; roses ROEMIBO, not RECMIBO, after the first test
+# import), with the name its line gets. A mix of anything
 # else gets no product, and the user picks one on the screen.
 _MIX_BOX_PRODUCTS: tuple[tuple[str, str, str], ...] = (
     # (word every species in the box contains, product number, line name)
-    ("rose", "RECMIBO", "Mix Roses"),
+    ("rose", "ROEMIBO", "Mix Roses"),
     ("alstro", "ALSMIXF", "Mix Alstroemeria"),
 )
 
