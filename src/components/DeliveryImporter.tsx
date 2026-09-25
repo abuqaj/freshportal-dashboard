@@ -616,7 +616,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     })),
   ], [openInvoices, td]);
   const [orderDateOverride, setOrderDateOverride] = useState("");
-  const [shipmentEditOpen, setShipmentEditOpen] = useState(false);
+  const [dateEditOpen, setDateEditOpen] = useState(false);
   // Set when /delivery/api/check finds the shipment already exists — blocks
   // create until the user explicitly chooses to add the missing lines instead.
   const [existingBatch, setExistingBatch] = useState<{ id: number; number: string } | null>(null);
@@ -1368,7 +1368,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     // describes the customer.
     invoiceCacheRef.current.clear();
     setOrderDateOverride("");
-    setShipmentEditOpen(false);
+    setDateEditOpen(false);
     setApprovedKeys(new Set());
     setLineEdits({});
     setEditingKey(null);
@@ -1520,6 +1520,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setTourStep(nextIdx);
   }
 
+  // What clicking each step of the stepper does from the current stage; null
+  // leaves that step inert. Going back to Upload discards the parse, so it goes
+  // through the same confirm as Start over. Import only ever starts from its
+  // own button, and the tour drives the stages itself.
+  const stepActions: ((() => void) | null)[] = tourOpen ? [null, null, null, null] : [
+    stage === "shipment" || stage === "preview" ? handleStartOver : stage === "done" ? reset : null,
+    stage === "preview" ? () => setStage("shipment") : null,
+    stage === "shipment" && resolvedSupplier && customerId ? () => setStage("preview") : null,
+    null,
+  ];
+
   return (
     <div data-di className="flex flex-col gap-5 sm:gap-6">
       <div className="flex items-start justify-between gap-3">
@@ -1566,6 +1577,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         stage={stage}
         allDone={stage === "done" && (importResult?.errors.length ?? 0) === 0}
         steps={[td.stepUpload, td.stepReviewShipment, td.stepReviewProducts, td.stepImport]}
+        actions={stepActions}
       />
 
       {/* ── PARSING ── */}
@@ -1742,69 +1754,71 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           )}
 
           {/* Shipment details pill */}
-          <div ref={refShipmentPill} className="card-enter rounded-2xl border border-border bg-muted p-4 relative">
-            <div className="flex items-start justify-between gap-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm flex-1">
-                <Row label={td.supplier} value={order.tx_company} />
-                <Row label={td.invoiceNr} value={order.id_invoice} />
-                {shipmentEditOpen ? (
-                  <div className="flex gap-2 items-center">
-                    <span className="text-ink-3 shrink-0 w-28">{td.deliveryDate}</span>
-                    <input
-                      type="date"
-                      value={ddmmyyyyToIso(orderDateOverride || order.dt_fly)}
-                      onChange={e => setOrderDateOverride(isoToDdmmyyyy(e.target.value))}
-                      className="h-8 px-2 rounded-lg text-sm border border-emerald/40 bg-surface outline-none focus:border-emerald transition-colors"
-                    />
-                  </div>
-                ) : (
-                  <Row label={td.deliveryDate} value={orderDateOverride || order.dt_fly} />
-                )}
-                <Row label={td.awb} value={order.tx_awb} />
-                <Row label={td.boxes} value={String(order.nu_boxes)} />
-                <Row label={td.stemsTotal} value={order.nu_stems_total.toLocaleString()} />
-                <Row label={td.valueTotal} value={`$${order.mny_total.toFixed(2)}`} />
+          <div
+            ref={refShipmentPill}
+            className={`card-enter rounded-2xl bg-muted p-4 relative
+              ${resolvedSupplier ? "border border-border" : "border-2 border-red-500"}`}
+          >
+            {/* Supplier as the file names it, and who that is in FreshPortal */}
+            <div className="flex flex-col gap-2 text-sm">
+              <div className="flex gap-2">
+                <span className="text-ink-3 shrink-0 w-28 sm:w-48">{td.fileSupplierLabel}</span>
+                <span className="font-medium text-ink">{order.tx_company || "—"}</span>
               </div>
-              <button
-                onClick={() => setShipmentEditOpen(v => !v)}
-                title={td.editShipmentBtn}
-                className={`shrink-0 w-7 h-7 rounded-full border flex items-center justify-center transition-colors
-                  ${shipmentEditOpen ? "border-emerald bg-emerald/10 text-emerald" : "border-border text-ink-3 hover:text-ink hover:border-emerald/40"}`}
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                </svg>
-              </button>
+              {resolvedSupplier ? (
+                <div className="flex gap-2 items-center">
+                  <span className="text-ink-3 shrink-0 w-28 sm:w-48">{td.fpSupplierLabel}</span>
+                  <span className="font-medium text-ink">{resolvedSupplier.nm_supplier}</span>
+                  <EditIconButton title={td.changeSupplierBtn} onClick={openSupplierPicker} />
+                </div>
+              ) : (
+                /* Nothing can be imported without a FreshPortal supplier, so
+                   the whole warning is the button that fixes it. */
+                <button
+                  onClick={openSupplierPicker}
+                  title={td.selectSupplierBtn}
+                  className="w-full flex items-center gap-3 rounded-xl border-2 border-red-500 bg-red-50 px-3 py-2.5 text-left hover:bg-red-100 transition-colors"
+                >
+                  <span className="shrink-0 w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center text-base font-bold">!</span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm font-bold text-red-700">{td.supplierNoMatch}</span>
+                    <span className="block text-xs text-red-700/80 mt-0.5">{td.supplierNoMatchHint}</span>
+                  </span>
+                  <span className="shrink-0 w-8 h-8 rounded-full border-2 border-red-500 text-red-600 flex items-center justify-center">
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                      <circle cx="11" cy="11" r="7"/>
+                      <path d="M20 20l-3.5-3.5"/>
+                    </svg>
+                  </span>
+                </button>
+              )}
             </div>
 
-            {/* FreshPortal supplier resolution row */}
-            <div className="flex items-center gap-2 text-sm mt-3 pt-3 border-t border-border/60">
-              <span className="text-ink-3 shrink-0">{td.fpSupplierLabel}</span>
-              {resolvedSupplier ? (
-                <>
-                  <span className="font-medium text-ink">{resolvedSupplier.nm_supplier}</span>
-                  <span className="text-ink-3/50 text-xs">#{resolvedSupplier.fp_supplier_id}</span>
-                  {shipmentEditOpen && (
-                    <button
-                      onClick={openSupplierPicker}
-                      className="ml-1 h-6 px-2.5 rounded-lg text-xs font-medium border border-emerald/40 text-emerald hover:bg-emerald/8 transition-colors"
-                    >
-                      {td.changeSupplierBtn}
-                    </button>
-                  )}
-                </>
-              ) : (
-                <>
-                  <span className="text-amber-600 text-xs">{td.supplierNoMatch}</span>
-                  <button
-                    onClick={openSupplierPicker}
-                    className="h-6 px-2.5 rounded-lg text-xs font-medium border border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors"
-                  >
-                    {td.selectSupplierBtn}
-                  </button>
-                </>
-              )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm mt-3 pt-3 border-t border-border/60">
+              <Row label={td.invoiceNr} value={order.id_invoice} />
+              <div className="flex gap-2 items-center">
+                <span className="text-ink-3 shrink-0 w-28">{td.deliveryDate}</span>
+                {dateEditOpen ? (
+                  <input
+                    type="date"
+                    autoFocus
+                    value={ddmmyyyyToIso(orderDateOverride || order.dt_fly)}
+                    onChange={e => setOrderDateOverride(isoToDdmmyyyy(e.target.value))}
+                    className="h-8 px-2 rounded-lg text-sm border border-emerald/40 bg-surface outline-none focus:border-emerald transition-colors"
+                  />
+                ) : (
+                  <span className="font-medium text-ink">{orderDateOverride || order.dt_fly || "—"}</span>
+                )}
+                <EditIconButton
+                  title={dateEditOpen ? td.doneEditingBtn : td.editDateBtn}
+                  active={dateEditOpen}
+                  onClick={() => setDateEditOpen(v => !v)}
+                />
+              </div>
+              <Row label={td.awb} value={order.tx_awb} />
+              <Row label={td.boxes} value={String(order.nu_boxes)} />
+              <Row label={td.stemsTotal} value={order.nu_stems_total.toLocaleString()} />
+              <Row label={td.valueTotal} value={`$${order.mny_total.toFixed(2)}`} />
             </div>
           </div>
 
@@ -1887,7 +1901,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               {td.startOver}
             </button>
             <div className="flex flex-col items-end gap-1">
-              {!customerId && (
+              {!resolvedSupplier ? (
+                <span className="text-[11px] font-semibold text-red-600">{td.supplierRequiredHint}</span>
+              ) : !customerId && (
                 <span className="text-[11px] text-ember">{td.customerRequiredHint}</span>
               )}
               <button
@@ -2100,9 +2116,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               placeholder={td.tableSearchPlaceholder}
               className="flex-1 h-9 px-3 rounded-xl text-sm border border-border bg-surface outline-none focus:border-emerald/50 placeholder:text-ink-3/50 transition-colors"
             />
-            <button onClick={handleStartOver} className="h-9 px-4 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors bg-surface whitespace-nowrap">
-              {td.startOver}
-            </button>
             <button
               onClick={() => handleImport()}
               disabled={approvedKeys.size === 0}
@@ -2290,6 +2303,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </table>
           </div>
           );})()}
+
+          {/* Start over — bottom left, where the shipment step has it too */}
+          <div className="flex items-center justify-between gap-3">
+            <button onClick={handleStartOver} className="text-xs text-ink-3 hover:text-ink transition-colors">
+              {td.startOver}
+            </button>
+          </div>
 
           {/* Product match modal */}
           {editModalOpen && editingKey && (() => {
@@ -2711,6 +2731,31 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
+// A pencil that edits the field next to it; while that field is open it turns
+// into a tick that closes it again.
+function EditIconButton({ title, onClick, active = false }: { title: string; onClick: () => void; active?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className={`shrink-0 w-7 h-7 rounded-full border flex items-center justify-center transition-colors
+        ${active ? "border-emerald bg-emerald/10 text-emerald" : "border-border text-ink-3 hover:text-ink hover:border-emerald/40"}`}
+    >
+      {active ? (
+        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5 12l5 5L19 7"/>
+        </svg>
+      ) : (
+        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function SortTh({
   col, label, sortCol, sortDir, onSort,
 }: {
@@ -2733,9 +2778,9 @@ function SortTh({
 }
 
 function DeliveryStepBar({
-  stage, steps, allDone,
+  stage, steps, allDone, actions,
 }: {
-  stage: Stage; steps: string[]; allDone: boolean;
+  stage: Stage; steps: string[]; allDone: boolean; actions: ((() => void) | null)[];
 }) {
   const current = allDone ? steps.length
     : stage === "idle" || stage === "parsing" || stage === "error" ? 0
@@ -2748,13 +2793,20 @@ function DeliveryStepBar({
       {steps.map((label, i) => {
         const done = i < current;
         const active = i === current;
+        const action = active ? null : actions[i];
         return (
           <React.Fragment key={i}>
-            <div className="flex flex-col items-center gap-2 flex-shrink-0">
+            <button
+              type="button"
+              onClick={action ?? undefined}
+              disabled={!action}
+              className="group flex flex-col items-center gap-2 flex-shrink-0 enabled:cursor-pointer disabled:cursor-default"
+            >
               <div className={`relative w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ring-2 transition-all duration-300
                 ${done    ? "bg-emerald ring-emerald text-white"
                 : active  ? "bg-surface ring-emerald text-emerald scale-110"
-                :           "bg-surface ring-border text-ink-3"}`}>
+                :           "bg-surface ring-border text-ink-3"}
+                ${action ? "group-hover:scale-110 group-hover:ring-4 group-hover:ring-emerald/40" : ""}`}>
                 {active && <span className="absolute inset-0 rounded-full ring-2 ring-emerald/40 animate-ping" />}
                 {done ? (
                   <svg key={`done-${i}`} className="w-4 h-4 step-dot-pop" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -2763,10 +2815,11 @@ function DeliveryStepBar({
                 ) : i + 1}
               </div>
               <span className={`text-[11px] font-medium text-center whitespace-nowrap transition-colors duration-300
-                ${active ? "text-emerald" : done ? "text-ink-3" : "text-ink-3/50"}`}>
+                ${active ? "text-emerald" : done ? "text-ink-3" : "text-ink-3/50"}
+                ${action ? "group-hover:text-emerald group-hover:underline" : ""}`}>
                 {label}
               </span>
-            </div>
+            </button>
             {i < steps.length - 1 && (
               <div className="flex-1 mt-[18px] mx-2 rounded-full bg-border overflow-hidden">
                 <div className={`h-0.5 bg-emerald rounded-full transition-transform duration-500 ease-out origin-left
