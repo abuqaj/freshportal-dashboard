@@ -17,6 +17,25 @@ function growerLocationKey(nmLocation: string): string {
   return nmLocation.replace(/\s+/g, "").toLowerCase();
 }
 
+// A variety's line inside a mix box, which the parser labels MB1, MB2…
+function isMbLine(line: DeliveryLine): boolean {
+  return /^MB\d+$/.test(line.nm_box ?? "");
+}
+
+// A mix box sent together: one line of a mix product standing for whole
+// boxes (parser_delivery.mix_box_lines).
+function isMixLine(line: DeliveryLine): boolean {
+  return (line.mix_boxes?.length ?? 0) > 0;
+}
+
+// The boxes a mix box can go to FreshPortal in when sent together.
+const MIX_BOX_FUSTS = ["QBE", "HBE"];
+
+// Mix boxes are marked in the system palette, the one the Analysis Tool's
+// charts use (analysis/charts.tsx LINE_COLORS): its pale green #C4DED0 with
+// emerald, not a colour of their own (user, 2026-09-25).
+const MIX_ACCENT = "bg-[#C4DED0] text-emerald-dark border-emerald/25";
+
 // A grower from the Ecuador system's manufacturer list (Ecuador and Colombia),
 // as GET /growers returns it; manufacturer_id is what the DFG API receives.
 interface Grower {
@@ -33,6 +52,7 @@ type MatchMethod =
   | "floricode"
   | "fuzzy_variety" | "fuzzy_variety_nolen" | "fuzzy_nolen" | "fuzzy_anylength"
   | "cached"
+  | "mix_box"
   | "none";
 
 interface CatalogueProduct {
@@ -64,6 +84,10 @@ interface DeliveryLine {
   nm_location: string;
   manufacturer_id: string;
   nu_box_weight: number;
+  // Only on a mix box sent together: the MBn boxes it stands for, and the
+  // varieties inside with their bunches.
+  mix_boxes?: string[];
+  mix_content?: { nm_variety: string; nu_bunches: number }[];
 }
 
 interface DeliveryOrder {
@@ -78,6 +102,9 @@ interface DeliveryOrder {
   nu_stems_total: number;
   mny_total: number;
   lines: DeliveryLine[];
+  // What replaces every MBn line when mix boxes are sent together: one line
+  // per kind of mix box, plus the MBn lines of boxes one line cannot hold.
+  mix_lines?: DeliveryLine[];
   // Set by parser_delivery.py; see DeliveryOrder.warnings there.
   warnings?: DeliveryWarning[];
 }
@@ -92,6 +119,10 @@ interface FPSupplier {
   nm_supplier: string;
 }
 
+// How a parse treated mix boxes: "together" left the varieties inside
+// combined mix boxes unmatched; "separate" matched every line.
+type MixMode = "together" | "separate";
+
 interface ParseResult {
   orders: DeliveryOrder[];
   supplier_id: string;
@@ -99,6 +130,7 @@ interface ParseResult {
   supplier_confirmed: boolean;
   matched_count: number;
   unmatched_count: number;
+  mix_mode?: MixMode;
 }
 
 type Stage = "idle" | "parsing" | "shipment" | "preview" | "importing" | "done" | "error";
@@ -241,6 +273,7 @@ const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   fuzzy_nolen:          { label: "fuzzy~",       cls: "bg-orange-500/15 text-orange-600 border-orange-500/20" },
   fuzzy_anylength:      { label: "fuzzy~len",    cls: "bg-orange-500/10 text-orange-600 border-orange-500/15" },
   cached:               { label: "cached ✓",     cls: "bg-green-500/15 text-green-700 border-green-500/25" },
+  mix_box:              { label: "mix box",      cls: MIX_ACCENT },
   none:                 { label: "no match",     cls: "bg-red-500/10 text-red-500 border-red-500/20" },
 };
 
@@ -465,6 +498,59 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
   );
 }
 
+// Room a hover card keeps from the viewport's edges, and how tall and wide it
+// is assumed to get when deciding which side of its text it opens on.
+const HOVER_CARD_MARGIN = 8;
+const HOVER_CARD_ROOM = { width: 320, height: 240 };
+
+// Shows `content` in a card next to its children while the pointer is on
+// them, at once rather than after the browser's title delay. Drawn through a
+// portal with fixed coordinates: the product table scrolls, and would clip a
+// card positioned inside it, as it clipped the pickers (see SearchableSelect).
+function HoverCard({ content, children, className }: {
+  content: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  // Scrolling moves the text from under a card that stays put, so it closes.
+  useEffect(() => {
+    if (!pos) return;
+    const hide = () => setPos(null);
+    window.addEventListener("scroll", hide, true);
+    return () => window.removeEventListener("scroll", hide, true);
+  }, [pos]);
+
+  function show() {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    const left = Math.max(HOVER_CARD_MARGIN,
+      Math.min(rect.left, window.innerWidth - HOVER_CARD_ROOM.width - HOVER_CARD_MARGIN));
+    const roomBelow = window.innerHeight - rect.bottom - HOVER_CARD_MARGIN;
+    setPos(roomBelow < HOVER_CARD_ROOM.height && rect.top > roomBelow
+      ? { left, bottom: window.innerHeight - rect.top + 4 }
+      : { left, top: rect.bottom + 4 });
+  }
+
+  return (
+    <span ref={ref} onMouseEnter={show} onMouseLeave={() => setPos(null)} className={className}>
+      {children}
+      {pos && typeof document !== "undefined" && createPortal(
+        <div
+          style={{ position: "fixed", ...pos, maxWidth: HOVER_CARD_ROOM.width }}
+          className="z-[500] pointer-events-none rounded-xl border border-border bg-surface px-3 py-2
+                     text-xs font-normal text-ink whitespace-normal shadow-[0_8px_24px_rgba(17,26,20,0.2)]"
+        >
+          {content}
+        </div>,
+        document.body,
+      )}
+    </span>
+  );
+}
+
 export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const t = translations[lang];
   const td = t.delivery;
@@ -506,6 +592,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [openInvoices, setOpenInvoices] = useState<DfgOpenInvoice[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
   const [invoicesFailed, setInvoicesFailed] = useState(false);
+  // Bumped by Retry so the lookup reruns through the same effect as a
+  // customer change, and with it the same guard against a late answer.
+  const [invoiceRetry, setInvoiceRetry] = useState(0);
   // The lookup is a round trip to FreshPortal that has been slow for
   // customers with many open invoices. Nothing here can make that call
   // quicker, so it is started earlier (while the customer is still only
@@ -588,16 +677,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       .catch(() => { if (!cancelled) setInvoicesFailed(true); })
       .finally(() => { if (!cancelled) setInvoicesLoading(false); });
     return () => { cancelled = true; };
-  }, [customerId, loadOpenInvoices]);
+  }, [customerId, invoiceRetry, loadOpenInvoices]);
 
+  // Not a fetch of its own: a retry that answered after the customer changed
+  // would put the previous customer's invoices in the picker (review
+  // 2026-09-25). Rerunning the effect cancels it along with any other stale
+  // lookup.
   function retryOpenInvoices() {
-    if (!customerId || customerId === STOCK_CUSTOMER_ID) return;
-    setInvoicesFailed(false);
-    setInvoicesLoading(true);
-    loadOpenInvoices(customerId)
-      .then(rows => setOpenInvoices(rows))
-      .catch(() => setInvoicesFailed(true))
-      .finally(() => setInvoicesLoading(false));
+    setInvoiceRetry(n => n + 1);
   }
 
   // Named the way FreshPortal's own invoice picker names one: sequence,
@@ -672,6 +759,19 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [boxWeightEdits, setBoxWeightEdits] = useState<Record<string, number>>({});
   const boxWeightInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
+  // ── Mix boxes: each variety its own line (separate), or each box one line
+  // of a mix product (together, the default: user, 2026-09-25). Kept across
+  // files, so a user who works one way does not switch every time; the box a
+  // together line goes in (QBE or HBE) is editable, keyed by its gu_product ──
+  const [mixTogether, setMixTogether] = useState(true);
+  const [mixBoxEdits, setMixBoxEdits] = useState<Record<string, string>>({});
+  // While the separate view's parse runs (switchMixMode), and why it failed.
+  const [mixReparsing, setMixReparsing] = useState(false);
+  const [mixReparseError, setMixReparseError] = useState("");
+  // Bumped by every parse and by reset, so an answer for a file that has
+  // since been parsed again or put away is dropped rather than shown.
+  const parseSeqRef = useRef(0);
+
   // ── Supplier picker ───────────────────────────────────────────────────────
   const [resolvedSupplier, setResolvedSupplier] = useState<FPSupplier | null>(null);
   const [supplierPickerOpen, setSupplierPickerOpen] = useState(false);
@@ -699,6 +799,39 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // order (any length) and is cached across future deliveries for the same supplier.
   function deliveryKey(line: DeliveryLine): string {
     return (line.nm_variety ?? "").toLowerCase().trim();
+  }
+
+  // Box weight is edited per variety, but a together mix line is boxes of
+  // its own: the 40cm and 60cm mix boxes weigh what they weigh.
+  function boxEditKey(line: DeliveryLine): string {
+    return isMixLine(line) ? line.gu_product : deliveryKey(line);
+  }
+
+  // The lines the review step shows and imports. With mix boxes together,
+  // the MBn lines give way to the order's mix_lines, listed first so the
+  // switch shows at the top of the table.
+  // Until the separate view's parse answers, the table keeps the together
+  // lines, greyed out: the separate lines are not matched yet.
+  const showTogether = mixTogether || mixReparsing;
+  const activeLines = useMemo((): DeliveryLine[] => {
+    const o = parseResult?.orders[activeOrderIdx];
+    if (!o) return [];
+    if (!showTogether || !o.mix_lines?.length) return o.lines;
+    return [...o.mix_lines, ...o.lines.filter(l => !isMbLine(l))];
+  }, [parseResult, activeOrderIdx, showTogether]);
+
+  // A line as it goes to FreshPortal: what the user set on the screen over
+  // what the file said.
+  function withEdits(line: DeliveryLine): DeliveryLine {
+    const edit = lineEdits[deliveryKey(line)];
+    return {
+      ...line,
+      fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
+      catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
+      manufacturer_id: growerEdits[growerLocationKey(line.nm_location)] ?? line.manufacturer_id,
+      nu_box_weight: boxWeightEdits[boxEditKey(line)] ?? line.nu_box_weight,
+      nm_box: (isMixLine(line) && mixBoxEdits[line.gu_product]) || line.nm_box,
+    };
   }
 
   // order.dt_fly is always normalised to "DD-MM-YYYY" by the parser; <input type="date">
@@ -921,27 +1054,38 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   // ── Parse & match ──────────────────────────────────────────────────────
 
+  // The loaded file, parsed and matched. A together parse leaves the
+  // varieties inside combined mix boxes unmatched, which is most of the
+  // product search on a mix-heavy invoice (see delivery_parse).
+  async function requestParse(mixMode: MixMode, supplierIdOverride?: string): Promise<ParseResult> {
+    const res = await fetch(`${RAILWAY}/delivery/parse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        raw_json: JSON.parse(jsonText),
+        with_matching: true,
+        mix_mode: mixMode,
+        ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
   async function handleParse(supplierIdOverride?: string, keepStage = false) {
     if (!jsonText.trim()) return;
+    parseSeqRef.current++;
+    setMixReparsing(false);
+    setMixReparseError("");
     setStage("parsing");
     setDuplicateWarning([]);
     setError("");
     try {
-      const body = JSON.parse(jsonText);
-      const res = await fetch(`${RAILWAY}/delivery/parse`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          raw_json: body,
-          with_matching: true,
-          ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data: ParseResult = await res.json();
+      const data = await requestParse(mixTogether ? "together" : "separate", supplierIdOverride);
       setParseResult(data);
       setActiveOrderIdx(0);
       setLineEdits({});
+      setMixBoxEdits({});
       setEditingKey(null);
       setShowOnlyUnmatched(false);
       setShowOnlyUnapproved(false);
@@ -954,9 +1098,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         setResolvedSupplier(null);
       }
       const preApproved = new Set<string>();
+      // A mix box's product comes from a fixed rule, as sure as a cached match.
       for (const order of data.orders) {
-        for (const line of order.lines) {
-          if (line.match_method === "cached") preApproved.add(deliveryKey(line));
+        for (const line of [...order.lines, ...(order.mix_lines ?? [])]) {
+          if (line.match_method === "cached" || line.match_method === "mix_box") preApproved.add(deliveryKey(line));
         }
       }
       setApprovedKeys(preApproved);
@@ -964,6 +1109,40 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
       setStage("error");
+    }
+  }
+
+  // Switching to together never parses: every answer holds that view. The
+  // separate view needs the varieties inside combined mix boxes matched, which
+  // a together parse skipped, so the first switch to it parses the file again,
+  // with the table greyed out meanwhile (user, 2026-09-25). Everything set on
+  // the screen stays: edits are keyed by variety, farm and mix line, which the
+  // new answer shares with the old one.
+  async function switchMixMode(together: boolean) {
+    setMixTogether(together);
+    setMixReparseError("");
+    if (together || !parseResult || parseResult.mix_mode !== "together") return;
+    if (!parseResult.orders.some(o => (o.mix_lines ?? []).some(isMixLine))) return;
+    const seq = ++parseSeqRef.current;
+    setMixReparsing(true);
+    try {
+      const data = await requestParse("separate", resolvedSupplier?.fp_supplier_id || parseResult.supplier_id);
+      if (seq !== parseSeqRef.current) return;
+      setParseResult(data);
+      // Varieties matched only now may carry a cached match, approved as at parse.
+      setApprovedKeys(prev => {
+        const next = new Set(prev);
+        for (const o of data.orders) {
+          for (const line of o.lines) if (line.match_method === "cached") next.add(deliveryKey(line));
+        }
+        return next;
+      });
+    } catch (err: unknown) {
+      if (seq !== parseSeqRef.current) return;
+      setMixTogether(true);
+      setMixReparseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (seq === parseSeqRef.current) setMixReparsing(false);
     }
   }
 
@@ -1028,7 +1207,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           nu_stems_total: order.nu_stems_total,
           mny_total: order.mny_total,
           nu_lines_total: fullLines.length,
-          nu_lines_matched: fullLines.filter((l: DeliveryLine) => l.fp_product_id).length,
+          nu_lines_matched: fullLines.filter((l: DeliveryLine) => lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id).length,
           batch_id: String(result.batch_id),
           batch_url: result.batch_url || "",
           batch_status: result.errors.length > 0 ? "partial" : "ok",
@@ -1076,8 +1255,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
     // Check if all matched lines are approved — show modal if not
     if (!skipPartialCheck) {
-      const totalMatched = order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
-      const totalApproved = order.lines.filter(l => {
+      const totalMatched = activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
+      const totalApproved = activeLines.filter(l => {
         const dk = deliveryKey(l);
         return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk);
       }).length;
@@ -1099,23 +1278,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
     const orderWithEdits: DeliveryOrder = {
       ...order,
+      // Already in `lines` when sent together; the other view is not sent.
+      mix_lines: undefined,
       dt_fly: orderDateOverride || order.dt_fly,
-      lines: order.lines
+      lines: activeLines
         .filter(line => approvedKeys.has(deliveryKey(line)))
-        .map(line => {
-          const dk = deliveryKey(line);
-          const edit = lineEdits[dk];
-          const growerOverride = growerEdits[growerLocationKey(line.nm_location)];
-          return {
-            ...line,
-            fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
-            catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
-            manufacturer_id: growerOverride ?? line.manufacturer_id,
-            nu_box_weight: boxWeightEdits[dk] ?? line.nu_box_weight,
-          };
-        }),
+        .map(withEdits),
     };
-    const skippedUnmatched = order.lines.filter(l => !l.fp_product_id).map(l => l.nm_product);
+    // Skipped means no product even after the user's own pick: read from the
+    // parse alone, a line matched by hand was listed as skipped although it
+    // went in (user, 2026-09-25, Florecal's Ta Rainbow Md).
+    const skippedUnmatched = activeLines.map(withEdits).filter(l => !l.fp_product_id).map(l => l.nm_product);
 
     try {
       const checkData = await loggedRequest(
@@ -1151,7 +1324,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           invoice_id: retryData.invoice_id, invoice_url: retryData.invoice_url,
         };
         setImportResult(result);
-        await logImportResult(orderWithEdits, order.lines, result);
+        await logImportResult(orderWithEdits, activeLines, result);
         setStage("done");
         return;
       }
@@ -1174,7 +1347,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const result: DfgCreateResult = created as DfgCreateResult;
       result.skipped_unmatched = skippedUnmatched;
       setImportResult(result);
-      await logImportResult(orderWithEdits, order.lines, result);
+      await logImportResult(orderWithEdits, activeLines, result);
       setStage("done");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1189,20 +1362,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const supplierFpId = resolvedSupplier?.fp_supplier_id || parseResult.supplier_id;
     const failedSet = new Set(importResult.errors.map(e => `${e.product_number}|${e.length}`));
 
-    const retryLines = order.lines
+    const retryLines = activeLines
       .filter(l => approvedKeys.has(deliveryKey(l)))
-      .map(line => {
-        const dk = deliveryKey(line);
-        const edit = lineEdits[dk];
-        const growerOverride = growerEdits[growerLocationKey(line.nm_location)];
-        return {
-          ...line,
-          fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
-          catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
-          manufacturer_id: growerOverride ?? line.manufacturer_id,
-          nu_box_weight: boxWeightEdits[dk] ?? line.nu_box_weight,
-        };
-      })
+      .map(withEdits)
       .filter(l => failedSet.has(`${l.fp_product_id}|${l.nu_length}`));
     if (!retryLines.length) return;
 
@@ -1210,7 +1372,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     try {
       const retryData = await loggedRequest(
         `${RAILWAY}/delivery/api/retry`,
-        { batch_id: importResult.batch_id, supplier_fp_id: supplierFpId, order: { ...order, lines: retryLines } },
+        { batch_id: importResult.batch_id, supplier_fp_id: supplierFpId, order: { ...order, mix_lines: undefined, lines: retryLines } },
         td.retryingBtn,
       );
       setImportResult(prev => prev ? {
@@ -1233,7 +1395,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!order) return;
     const keysToSave = keys ?? approvedKeys;
     const seenKeys = new Set<string>();
-    const matches = order.lines
+    // A together mix line's product comes from a fixed rule, not from a
+    // match worth remembering for the supplier's next delivery.
+    const matches = activeLines
+      .filter(line => !isMixLine(line))
       .map(line => {
         const dk = deliveryKey(line);
         const edit = lineEdits[dk];
@@ -1310,6 +1475,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   }
 
   function reset() {
+    parseSeqRef.current++;
+    setMixReparsing(false);
+    setMixReparseError("");
     setStage("idle");
     setJsonText("");
     setParseResult(null);
@@ -1326,6 +1494,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setDateEditOpen(false);
     setApprovedKeys(new Set());
     setLineEdits({});
+    setMixBoxEdits({});
     setEditingKey(null);
     setEditModalOpen(false);
     setGrowerEdits({});
@@ -1365,9 +1534,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const order = parseResult?.orders[activeOrderIdx];
 
   const displayLines = useMemo(() => {
-    const o = parseResult?.orders[activeOrderIdx];
-    if (!o) return [];
-    let lines = [...o.lines];
+    let lines = [...activeLines];
 
     if (showOnlyUnmatched) {
       lines = lines.filter(l => {
@@ -1393,6 +1560,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           (l.nm_species ?? "").toLowerCase().includes(q) ||
           (l.nm_box ?? "").toLowerCase().includes(q) ||
           catName.toLowerCase().includes(q) ||
+          (l.mix_content ?? []).some(c => c.nm_variety.toLowerCase().includes(q)) ||
+          (l.mix_boxes ?? []).some(code => code.toLowerCase().includes(q)) ||
           l.match_method.toLowerCase().includes(q) ||
           (l.id_floricode ?? "").toLowerCase().includes(q) ||
           String(l.nu_length).includes(q)
@@ -1406,6 +1575,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         let av: string | number = 0, bv: string | number = 0;
         if (sortCol === "variety")    { av = a.nm_variety;       bv = b.nm_variety; }
         else if (sortCol === "box")   { av = a.nm_box || "";     bv = b.nm_box || ""; }
+        else if (sortCol === "boxQty") { av = a.nu_physical_boxes; bv = b.nu_physical_boxes; }
         else if (sortCol === "length") { av = a.nu_length;       bv = b.nu_length; }
         else if (sortCol === "stemsBunch") { av = a.nu_stems_bunch; bv = b.nu_stems_bunch; }
         else if (sortCol === "bunches") { av = a.nu_bunches;     bv = b.nu_bunches; }
@@ -1419,17 +1589,25 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     }
     return lines;
-  }, [parseResult, activeOrderIdx, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits]);
+  }, [activeLines, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits]);
+
+  // Counted over what is on screen, so they follow the mix box switch.
+  const matchedCount = activeLines.filter(l => l.fp_product_id).length;
+  const unmatchedCount = activeLines.length - matchedCount;
+  // MBn boxes in the order, and those that stay per variety when together.
+  const mixBoxCount = new Set((order?.lines ?? []).filter(isMbLine).map(l => l.nm_box)).size;
+  // Named, not counted: a bare number left the user looking for a difference
+  // the table did not show (2026-09-25).
+  const mixKeptBoxes = Array.from(new Set((order?.mix_lines ?? []).filter(isMbLine).map(l => l.nm_box)));
 
   // Per-line outcome for the "done" screen's expandable product list — derived
   // from the same approval/match state used to build the request, cross-
   // referenced against the result's errors/skipped_unmatched (stock_entries_ok's
   // shape isn't reliably typed, so success is inferred by elimination instead).
   const doneLineStatuses = useMemo((): { line: DeliveryLine; status: DoneLineStatus; message: string }[] => {
-    const o = parseResult?.orders[activeOrderIdx];
-    if (!o || !importResult) return [];
-    return computeLineStatuses(o.lines, importResult, lineEdits, approvedKeys);
-  }, [parseResult, activeOrderIdx, importResult, lineEdits, approvedKeys]);
+    if (!importResult) return [];
+    return computeLineStatuses(activeLines, importResult, lineEdits, approvedKeys);
+  }, [activeLines, importResult, lineEdits, approvedKeys]);
 
   type AllTourStep = TourStep & { tourStage: "idle" | "shipment" | "preview" | "done" };
 
@@ -1926,8 +2104,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* Partial approve confirmation modal */}
           {partialApproveOpen && (() => {
-            const totalMatched = order.lines.filter((l: DeliveryLine) => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
-            const totalApproved = order.lines.filter((l: DeliveryLine) => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length;
+            const totalMatched = activeLines.filter((l: DeliveryLine) => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
+            const totalApproved = activeLines.filter((l: DeliveryLine) => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length;
             return (
               <>
                 <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPartialApproveOpen(false)} />
@@ -1962,9 +2140,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Match status */}
           <div ref={refCatalogueStatus} className="flex items-center gap-3 text-sm flex-wrap">
             <span className="px-2.5 py-1 rounded-full border text-xs text-emerald bg-emerald/10 border-emerald/20">
-              {parseResult!.matched_count} {td.matched}
+              {matchedCount} {td.matched}
             </span>
-            {parseResult!.unmatched_count > 0 && (
+            {unmatchedCount > 0 && (
               <button
                 onClick={() => setShowOnlyUnmatched(p => !p)}
                 className={`px-2.5 py-1 rounded-full border text-xs font-medium transition-colors
@@ -1972,7 +2150,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     ? "bg-red-500/20 text-red-600 border-red-500/40 ring-1 ring-red-500/30"
                     : "bg-red-500/10 text-red-500 border-red-500/20 hover:bg-red-500/20"}`}
               >
-                {parseResult!.unmatched_count} {td.unmatched}
+                {unmatchedCount} {td.unmatched}
                 {showOnlyUnmatched ? " ✕" : ""}
               </button>
             )}
@@ -1988,7 +2166,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
           </div>
 
-          {parseResult!.unmatched_count > 0 && (
+          {unmatchedCount > 0 && (
             <button
               onClick={() => setShowOnlyUnmatched(p => !p)}
               className={`w-full text-left text-xs rounded-xl px-3 py-2 border transition-colors
@@ -1996,7 +2174,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   ? "text-amber-700 bg-amber-100 border-amber-300"
                   : "text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100"}`}
             >
-              ⚠ {td.unmatchedWarning(parseResult!.unmatched_count)}
+              ⚠ {td.unmatchedWarning(unmatchedCount)}
               <span className="ml-2 underline">{showOnlyUnmatched ? td.showAll : td.showOnlyUnmatched}</span>
             </button>
           )}
@@ -2012,6 +2190,57 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
           ))}
 
+          {/* Mix boxes: each variety its own line, or each box one line of a
+              mix product. Switching swaps the table's lines on the spot. */}
+          {mixBoxCount > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-xs font-semibold text-ink">{td.mixModeLabel}</span>
+                <div role="radiogroup" aria-label={td.mixModeLabel}
+                  className="inline-flex rounded-lg border border-[#C4DED0] bg-[#C4DED0]/40 p-0.5">
+                  {[false, true].map(together => (
+                    <button
+                      key={String(together)}
+                      role="radio"
+                      aria-checked={mixTogether === together}
+                      onClick={() => switchMixMode(together)}
+                      disabled={mixReparsing}
+                      className={`h-7 px-3 rounded-md text-xs font-medium transition-colors disabled:cursor-wait
+                        ${mixTogether === together
+                          ? "bg-emerald text-white shadow-sm"
+                          : "text-emerald-dark hover:bg-[#C4DED0]"}`}
+                    >
+                      {together ? td.mixModeTogether : td.mixModeSeparate}
+                    </button>
+                  ))}
+                </div>
+                {/* What the two ways do, on hover only (user, 2026-09-25). */}
+                <HoverCard
+                  className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-emerald/40 text-emerald text-[10px] font-semibold leading-none cursor-help shrink-0"
+                  content={
+                    <div className="flex flex-col gap-1.5">
+                      <p><span className="font-semibold">{td.mixModeTogether}:</span> {td.mixModeTogetherHint}</p>
+                      <p><span className="font-semibold">{td.mixModeSeparate}:</span> {td.mixModeSeparateHint}</p>
+                    </div>
+                  }
+                >
+                  ?
+                </HoverCard>
+              </div>
+              {mixTogether && mixKeptBoxes.length > 0 && (
+                <div className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
+                  ⚠ {td.mixKeptSeparate(mixKeptBoxes.join(", "))}
+                </div>
+              )}
+              {mixReparseError && (
+                <div className="text-xs rounded-xl px-3 py-2 border text-red-600 bg-red-50 border-red-200">
+                  {td.mixSeparateFailed}
+                  <span className="block mt-0.5 text-[11px] text-red-500/80 break-words">{mixReparseError}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Approve toolbar */}
           <div ref={refApproveToolbar} className="flex items-center gap-2 flex-wrap">
             <button
@@ -2023,14 +2252,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   : "bg-emerald/8 border-emerald/30 text-emerald hover:bg-emerald/15"}`}
             >
               {td.approved(
-                order.lines.filter(l => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length,
-                order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length
+                activeLines.filter(l => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length,
+                activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length
               )}
               {showOnlyUnapproved ? " ✕" : ""}
             </button>
             <button
               onClick={() => {
-                const all = new Set(order.lines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l)));
+                const all = new Set(activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l)));
                 setApprovedKeys(all);
               }}
               className="h-6 px-2 rounded-md text-[11px] border border-emerald/40 text-emerald hover:bg-emerald/8 transition-colors"
@@ -2063,7 +2292,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             />
             <button
               onClick={() => handleImport()}
-              disabled={approvedKeys.size === 0}
+              disabled={mixReparsing || !activeLines.some(l => approvedKeys.has(deliveryKey(l)))}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
               {td.importBtn}
@@ -2073,27 +2302,30 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Product lines table */}
           {(() => {
             return (
-          <div ref={refTable} className="overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border">
+          <div className="relative">
+          <div ref={refTable} aria-busy={mixReparsing}
+            className={`overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border transition-opacity
+              ${mixReparsing ? "opacity-40 pointer-events-none select-none" : ""}`}>
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
                   <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8" title={td.colApproveTooltip}>✓</th>
-                  <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} className="min-w-[100px]" />
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colGrower}</th>
-                  <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  <SortTh col="boxQty"     label={td.colBoxQty}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact className="w-[50px] max-w-[50px]" />
+                  <SortTh col="boxQty"     label={<ColumnIcon icon="boxes" hint={td.colBoxQtyHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact className="w-[30px] max-w-[30px]" />
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colBoxWeight}</th>
-                  <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colContent}</th>
+                  <th className="px-1.5 py-2 text-center font-semibold text-ink-3 whitespace-nowrap"><ColumnIcon icon="box" hint={td.colContentHint} /></th>
                   <SortTh col="length"     label={td.colLength}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  <SortTh col="stemsBunch" label={td.colStemsBunch} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  <SortTh col="bunches"    label={td.colBunches}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  <SortTh col="stemsTotal" label={td.colStemsTotal} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="stemsBunch" label={<ColumnIcon icon="bunch" hint={td.colStemsBunchHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
+                  <SortTh col="bunches"    label={<ColumnIcon icon="bunches" hint={td.colBunchesHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
+                  <SortTh col="stemsTotal" label={<ColumnIcon icon="stem" hint={td.colStemsTotalHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
                   <SortTh col="price"      label={td.colPrice}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="total"      label={td.colTotal}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="match"      label={td.colMatch}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                 </tr>
               </thead>
-              <tbody>
+              <tbody key={showTogether ? "mix-together" : "mix-separate"} className="lines-swap">
                 {displayLines.length === 0 ? (
                   <tr>
                     <td colSpan={14} className="px-4 py-6 text-center text-xs text-ink-3">
@@ -2103,7 +2335,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 ) : displayLines.map((line, i) => {
                   const dk = deliveryKey(line);
                   const edit = lineEdits[dk];
-                  const boxWeightValue = boxWeightEdits[dk] ?? line.nu_box_weight ?? 0;
+                  const boxKey = boxEditKey(line);
+                  const boxWeightValue = boxWeightEdits[boxKey] ?? line.nu_box_weight ?? 0;
                   const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
                   const isApproved = approvedKeys.has(dk);
                   const hasMatch = !!(edit?.fp_product_id ?? line.fp_product_id);
@@ -2130,8 +2363,29 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           />
                         )}
                       </td>
-                      <td className="px-3 py-2 font-medium text-ink">
-                        {line.nm_variety}
+                      <td className="px-3 py-2 font-medium text-ink min-w-[100px]">
+                        {/* What a mix box holds shows on hover only, so a long
+                            mix does not stretch the row (user, 2026-09-25). */}
+                        {isMixLine(line) ? (
+                          <HoverCard
+                            className="cursor-help underline decoration-dotted decoration-emerald/60 underline-offset-2"
+                            content={
+                              <>
+                                <p className="font-semibold text-ink mb-1">{td.mixContentTitle}</p>
+                                <ul className="flex flex-col gap-0.5">
+                                  {(line.mix_content ?? []).map(c => (
+                                    <li key={c.nm_variety} className="flex justify-between gap-4">
+                                      <span>{c.nm_variety}</span>
+                                      <span className="text-ink-3 tabular-nums">{c.nu_bunches}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </>
+                            }
+                          >
+                            {line.nm_variety}
+                          </HoverCard>
+                        ) : line.nm_variety}
                         {displayCatName && displayCatName !== line.nm_variety && (
                           <div className="text-ink-3 font-normal">{displayCatName}</div>
                         )}
@@ -2142,9 +2396,24 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         return (
                           <td className="px-3 py-2 text-ink-3 whitespace-nowrap">
                             <div className="flex items-center gap-1">
-                              <span className={growerId ? "" : "text-red-400"} title={growerId ? `#${growerId}` : undefined}>
-                                {growerLabel(growerId)}
-                              </span>
+                              {/* Cut short so a long grower name does not widen
+                                  the table; the whole name shows on hover
+                                  (user, 2026-09-25). */}
+                              {growerId ? (
+                                <HoverCard
+                                  className="block max-w-[75px] truncate"
+                                  content={
+                                    <>
+                                      <p className="text-ink">{growerLabel(growerId)}</p>
+                                      <p className="text-[11px] text-ink-3">#{growerId}</p>
+                                    </>
+                                  }
+                                >
+                                  {growerLabel(growerId)}
+                                </HoverCard>
+                              ) : (
+                                <span className="text-red-400">{growerLabel(growerId)}</span>
+                              )}
                               <button
                                 onClick={() => { setEditingGrowerKey(locKey); setGrowerSearch(""); setGrowerHighlighted(0); }}
                                 title={td.editGrowerBtn}
@@ -2159,18 +2428,42 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           </td>
                         );
                       })()}
-                      <td className="px-3 py-2">
-                        {line.nm_box ? (
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium
-                            ${line.nm_box.startsWith("MB")
-                              ? "bg-purple-500/10 text-purple-600 border-purple-500/20"
-                              : "bg-muted text-ink-3 border-border"}`}>
+                      <td className="px-1.5 py-2 w-[50px] max-w-[50px]">
+                        {isMixLine(line) ? (() => {
+                          const fust = mixBoxEdits[line.gu_product] ?? line.nm_box;
+                          const fusts = MIX_BOX_FUSTS.includes(line.nm_box) ? MIX_BOX_FUSTS : [line.nm_box, ...MIX_BOX_FUSTS];
+                          // The MBn boxes the line stands for show on hover only.
+                          return (
+                            <HoverCard
+                              className="relative inline-flex"
+                              content={
+                                <>
+                                  <p className="font-semibold mb-0.5">{td.mixBoxesIncluded}</p>
+                                  <p className="text-ink-2">{(line.mix_boxes ?? []).join(" · ")}</p>
+                                </>
+                              }
+                            >
+                              <select
+                                value={fust}
+                                onChange={e => { const v = e.target.value; setMixBoxEdits(prev => ({ ...prev, [line.gu_product]: v })); }}
+                                aria-label={td.mixBoxTypeTitle}
+                                className={`appearance-none h-6 pl-1 pr-3 rounded-md border text-[10px] font-medium cursor-pointer outline-none
+                                           hover:border-emerald focus:border-emerald ${MIX_ACCENT}`}
+                              >
+                                {fusts.map(code => <option key={code} value={code}>{code}</option>)}
+                              </select>
+                              <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[7px] text-emerald-dark">▼</span>
+                            </HoverCard>
+                          );
+                        })() : line.nm_box ? (
+                          <span className={`inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-medium
+                            ${isMbLine(line) ? MIX_ACCENT : "bg-muted text-ink-3 border-border"}`}>
                             {line.nm_box}
                           </span>
                         ) : "—"}
                       </td>
-                      <td className="px-3 py-2 text-center">
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-semibold bg-blue-500/10 text-blue-600 border-blue-500/20">
+                      <td className="px-1.5 py-2 text-center w-[30px] max-w-[30px]">
+                        <span className="inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-semibold bg-blue-500/10 text-blue-600 border-blue-500/20">
                           ×{line.nu_physical_boxes ?? 1}
                         </span>
                       </td>
@@ -2195,7 +2488,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           }}
                           onChange={e => {
                             const v = e.target.value === "" ? 0 : Number(e.target.value);
-                            setBoxWeightEdits(prev => ({ ...prev, [dk]: v }));
+                            setBoxWeightEdits(prev => ({ ...prev, [boxKey]: v }));
                           }}
                           onKeyDown={e => {
                             if (e.key === "ArrowDown" || e.key === "Enter") {
@@ -2214,13 +2507,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                                      hover:border-border focus:border-emerald/50 focus:bg-surface outline-none transition-colors"
                         />
                       </td>
-                      <td className="px-3 py-2 text-ink-3 text-center">
+                      <td className="px-1.5 py-2 text-ink-3 text-center">
                         {Math.floor(line.nu_bunches / Math.max(1, line.nu_physical_boxes ?? 1)) * line.nu_stems_bunch}
                       </td>
                       <td className="px-3 py-2 text-ink-3">{line.nu_length > 0 ? `${line.nu_length}cm` : "—"}</td>
-                      <td className="px-3 py-2 text-ink-3">{line.nu_stems_bunch || "—"}</td>
-                      <td className="px-3 py-2 font-semibold text-ink">{line.nu_bunches}</td>
-                      <td className="px-3 py-2 text-ink-3">{line.nu_stems_total > 0 ? line.nu_stems_total.toLocaleString() : "—"}</td>
+                      <td className="px-1.5 py-2 text-ink-3">{line.nu_stems_bunch || "—"}</td>
+                      <td className="px-1.5 py-2 font-semibold text-ink">{line.nu_bunches}</td>
+                      <td className="px-1.5 py-2 text-ink-3">{line.nu_stems_total > 0 ? line.nu_stems_total.toLocaleString() : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.mny_rate_stem > 0 ? `$${line.mny_rate_stem.toFixed(4)}` : "—"}</td>
                       <td className="px-3 py-2 text-ink-3">{line.mny_total > 0 ? `$${line.mny_total.toFixed(2)}` : "—"}</td>
                       {/* Match badge + edit button */}
@@ -2229,10 +2522,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium ${badge.cls}`}>
                             {badge.label}
                           </span>
+                          {/* A mix box's product comes from the fixed rule, so it
+                              cannot be changed (user, 2026-09-25). A mix of a
+                              species no rule covers has no product, and keeps
+                              the button: nothing else could give it one. */}
                           <button
                             onClick={() => { setEditingKey(dk); setEditSearch(""); setEditModalOpen(true); }}
-                            title={hasMatch ? td.changeMatch : td.assignFromCatalogue}
-                            className={`transition-opacity ${hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
+                            disabled={line.match_method === "mix_box"}
+                            title={line.match_method === "mix_box" ? td.mixProductFixed : hasMatch ? td.changeMatch : td.assignFromCatalogue}
+                            className={`transition-opacity
+                              ${line.match_method === "mix_box" ? "text-ink-3 opacity-25 cursor-not-allowed"
+                                : hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100"
+                                : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
                           >
                             <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -2247,6 +2548,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </tbody>
             </table>
           </div>
+          {/* Over the greyed table while the separate view's parse runs. */}
+          {mixReparsing && (
+            <div role="status" className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+              <span className="w-9 h-9 border-[3px] border-emerald/25 border-t-emerald rounded-full animate-spin" />
+              <span className="text-xs font-medium text-ink-2">{td.mixSeparateLoading}</span>
+            </div>
+          )}
+          </div>
           );})()}
 
           {/* Start over — bottom left, where the shipment step has it too */}
@@ -2259,7 +2568,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Product match modal */}
           {editModalOpen && editingKey && (() => {
             const dk = editingKey;
-            const editLine = order.lines.find(l => deliveryKey(l) === dk);
+            const editLine = activeLines.find(l => deliveryKey(l) === dk);
             const currentEdit = lineEdits[dk];
             const currentMatchName = currentEdit?.catalogue_nm_product ?? editLine?.catalogue_nm_product ?? "";
             const matchResults = editSearchResults;
@@ -2341,7 +2650,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {/* Grower (manufacturer) edit modal — any supplier; the pick applies to every line of the same farm */}
           {editingGrowerKey !== null && (() => {
             const locKey = editingGrowerKey;
-            const farmLine = order.lines.find(l => growerLocationKey(l.nm_location) === locKey);
+            const farmLine = activeLines.find(l => growerLocationKey(l.nm_location) === locKey);
             const currentGrowerId = growerEdits[locKey] ?? farmLine?.manufacturer_id ?? "";
             const q = growerSearch.trim().toLowerCase();
             const found = q
@@ -2701,24 +3010,55 @@ function EditIconButton({ title, onClick, active = false }: { title: string; onC
   );
 }
 
+// `compact` is for narrow columns: less padding, and the sort arrows only
+// while the column is the one sorted by.
 function SortTh({
-  col, label, sortCol, sortDir, onSort,
+  col, label, sortCol, sortDir, onSort, compact, className = "",
 }: {
-  col: string; label: string; sortCol: string | null; sortDir: "asc" | "desc"; onSort: (col: string) => void;
+  col: string; label: React.ReactNode; sortCol: string | null; sortDir: "asc" | "desc"; onSort: (col: string) => void;
+  compact?: boolean; className?: string;
 }) {
   const active = sortCol === col;
   return (
     <th
-      className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap cursor-pointer select-none hover:text-ink transition-colors"
+      className={`${compact ? "px-1.5" : "px-3"} py-2 text-left font-semibold text-ink-3 whitespace-nowrap cursor-pointer select-none hover:text-ink transition-colors ${className}`}
       onClick={() => onSort(col)}
     >
       <span className="inline-flex items-center gap-1">
         {label}
-        <span className={`text-[9px] ${active ? "text-emerald" : "opacity-30"}`}>
-          {active ? (sortDir === "asc" ? "▲" : "▼") : "▲▼"}
-        </span>
+        {(!compact || active) && (
+          <span className={`text-[9px] ${active ? "text-emerald" : "opacity-30"}`}>
+            {active ? (sortDir === "asc" ? "▲" : "▼") : "▲▼"}
+          </span>
+        )}
       </span>
     </th>
+  );
+}
+
+// Column headers too wide for their numbers are drawn as icons, and say what
+// they are on hover (user, 2026-09-25).
+const COLUMN_ICONS = {
+  // one box
+  box: <><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></>,
+  // boxes stacked
+  boxes: <><rect x="3" y="12" width="8" height="8" rx="1"/><rect x="13" y="12" width="8" height="8" rx="1"/><rect x="8" y="3" width="8" height="8" rx="1"/></>,
+  // one bunch: stems tied together
+  bunch: <><path d="M12 21v-8M12 13L7 4M12 13V3M12 13l5-9"/><path d="M10 16.5h4"/></>,
+  // two bunches
+  bunches: <><path d="M7 21v-7M7 14L4 7M7 14l3-7"/><path d="M17 21v-7M17 14l-3-7M17 14l3-7"/><path d="M5.5 17.5h3M15.5 17.5h3"/></>,
+  // a single stem with its flower
+  stem: <><circle cx="12" cy="6" r="3"/><path d="M12 9v12"/><path d="M12 17c-3 0-5-2-5-4.5 3 0 5 2 5 4.5z"/></>,
+};
+
+function ColumnIcon({ icon, hint }: { icon: keyof typeof COLUMN_ICONS; hint: string }) {
+  return (
+    <HoverCard content={hint} className="inline-flex">
+      <svg role="img" aria-label={hint} className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {COLUMN_ICONS[icon]}
+      </svg>
+    </HoverCard>
   );
 }
 

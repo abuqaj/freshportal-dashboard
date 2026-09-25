@@ -194,13 +194,19 @@ def get_open_invoices(cfg: Config, customer_id: int) -> list[dict[str, Any]]:
     picker is a normal state ("this customer has no open invoice yet"), not
     an error. A 204 is treated the same way as the empty list, matching
     get_batch()'s handling of the same convention.
+
+    A 404 is not: for a batch it means "no such shipment", but nothing says
+    invoice_open uses it for "no open invoices", and a wrong path or base URL
+    answers 404 too. Read as an empty list, a failed lookup would again pass
+    for "this customer has none" (the 500 case, 2026-09-21; review
+    2026-09-25), so it is raised and the screen offers a retry.
     """
     since = date.today() - timedelta(days=OPEN_INVOICE_MAX_AGE_DAYS)
     resp = _request(cfg, "GET", "/dfg/v1/invoice_open", params={
         "customer_id": int(customer_id),
         "invoice_date": since.isoformat(),
     })
-    if resp.status_code in (204, 404):
+    if resp.status_code == 204:
         return []
     _raise_for_status_with_body(resp)
     data = resp.json() or {}

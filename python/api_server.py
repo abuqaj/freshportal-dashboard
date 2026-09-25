@@ -45,6 +45,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                replace_growers, get_growers, get_grower_choices, save_grower_choices,
                get_user_flag, set_user_flag,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
+               get_ecuador_product_names,
                get_bi_sync_history, get_bi_stats,
                get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
@@ -71,7 +72,8 @@ from kenya_box_weight import (
     invoice_details_url as kenya_invoice_details_url,
 )
 from auth_middleware import require_permission, require_any_permission, get_token_payload
-from parser_delivery import parse_delivery_json, order_to_dict, resolve_growers, DeliveryOrder, DeliveryLine
+from parser_delivery import (parse_delivery_json, order_to_dict, resolve_growers, mix_box_lines,
+                             DeliveryOrder, DeliveryLine)
 from delivery_product_match import match_order_to_products
 from dfg_api_client import (
     DfgApiError, resolve_supplier, get_batch as dfg_get_batch,
@@ -2383,6 +2385,8 @@ class DeliveryParseRequest(BaseModel):
     raw_json: dict | list
     supplier_id: str = ""
     with_matching: bool = True
+    # How the review step shows mix boxes; see delivery_parse.
+    mix_mode: str = "together"
 
 
 
@@ -2394,11 +2398,21 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
     product_number for the DFG BatchV1 API.
 
     Request body:
-      { raw_json: <the full delivery JSON>, supplier_id: "27", with_matching: true }
+      { raw_json: <the full delivery JSON>, supplier_id: "27", with_matching: true,
+        mix_mode: "together" }
 
     Returns aggregated DeliveryOrder(s) with match results per line.
+
+    mix_mode "together" (the screen's default) searches products only for the
+    lines shown with mix boxes sent together, and leaves the varieties inside
+    combined mix boxes unmatched: product search is where parsing spends its
+    time, and a mix-heavy invoice is mostly such varieties (Florecal 1586318:
+    3 searches instead of 19; user, 2026-09-25). "separate" matches every
+    line, which the screen asks for when the user switches to that view; its
+    answer holds both views.
     """
-    log.info("[delivery/parse] starting — supplier=%s with_matching=%s", req.supplier_id, req.with_matching)
+    log.info("[delivery/parse] starting — supplier=%s with_matching=%s mix_mode=%s",
+             req.supplier_id, req.with_matching, req.mix_mode)
     try:
         try:
             raw = req.raw_json
@@ -2468,18 +2482,34 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
         matched_count = 0
         unmatched_count = 0
 
-        result_orders = []
+        together = req.mix_mode != "separate"
         for order in orders:
             order.supplier_fp_id = supplier_id
+            # Growers before products: which mix boxes combine depends on the
+            # growers, and which lines need a product search depends on that.
+            resolve_growers(order, supplier_nm, grower_choices)
+            order.mix_lines = mix_box_lines(order)
             if req.with_matching:
-                m, u = match_order_to_products(order, cached_matches)
+                to_match = order.lines
+                if together:
+                    combined = {code for line in order.mix_lines for code in line.mix_boxes}
+                    to_match = [line for line in order.lines if line.nm_box not in combined]
+                m, u = match_order_to_products(order, cached_matches, to_match)
                 matched_count += m
                 unmatched_count += u
-                for line in order.lines:
+                for line in to_match:
                     log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
                               line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
-            resolve_growers(order, supplier_nm, grower_choices)
-            result_orders.append(order_to_dict(order))
+
+        mix_numbers = {l.fp_product_id for o in orders for l in o.mix_lines if l.match_method == "mix_box"}
+        mix_names = get_ecuador_product_names(sorted(mix_numbers))
+        for number in mix_numbers - mix_names.keys():
+            log.warning("[delivery/parse] mix box product %s is not in ecuador_products", number)
+        for order in orders:
+            for line in order.mix_lines:
+                if line.match_method == "mix_box":
+                    line.catalogue_nm_product = mix_names.get(line.fp_product_id, "")
+        result_orders = [order_to_dict(order) for order in orders]
 
         log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
         return {
@@ -2490,6 +2520,9 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
             "matched_count": matched_count,
             "unmatched_count": unmatched_count,
             "cached_matches_used": len(cached_matches),
+            # "together": the varieties inside combined mix boxes are unmatched,
+            # and the separate view needs a parse with mix_mode "separate".
+            "mix_mode": "together" if together else "separate",
         }
     except HTTPException:
         raise
