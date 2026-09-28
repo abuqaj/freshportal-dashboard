@@ -328,6 +328,13 @@ const DROPDOWN_MARGIN = 8;
 // room actually available. Opening downwards regardless ran the options off
 // the bottom of the screen, where the page scroll could not reach them
 // (found 2026-09-18 on the invoice picker, which sits lowest in the card).
+//
+// It opens on a click or a key, never on focus alone, and closes when the
+// window loses focus. The browser hands focus back to the field when the user
+// returns from another tab or window, and a list opened that way (or left
+// open) had its second row lying exactly over "Continue to products": the
+// click meant for Continue picked that customer instead, so Stock turned into
+// A. Heemskerk and the step did not advance (found 2026-09-28).
 function SearchableSelect({ options, value, onChange, onPreload, placeholder, noMatchLabel, className, disabled, firstNearInput }: {
   options: ComboOption[];
   value: string;
@@ -414,14 +421,25 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
       if (dropdownRef.current?.contains(target)) return;
       setOpen(false);
     }
+    function onWindowBlur() { setOpen(false); }
     document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
+    window.addEventListener("blur", onWindowBlur);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      window.removeEventListener("blur", onWindowBlur);
+    };
   }, []);
 
   const q = query.trim().toLowerCase();
   const filtered = q
     ? options.filter(o => o.name.toLowerCase().includes(q) || o.id.toLowerCase().includes(q))
     : options;
+
+  function openList(initialQuery: string) {
+    setOpen(true);
+    setQuery(initialQuery);
+    setHighlighted(0);
+  }
 
   function selectOption(o: ComboOption) {
     onChange(o.id);
@@ -437,10 +455,22 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
         value={open ? query : (selected?.name ?? "")}
         readOnly={!open}
         disabled={disabled}
-        onClick={() => { if (!open && !disabled) { setOpen(true); setQuery(""); setHighlighted(0); } }}
+        onClick={() => { if (!open && !disabled) openList(""); }}
         onChange={e => { setQuery(e.target.value); setHighlighted(0); if (!open) setOpen(true); }}
-        onFocus={() => { if (disabled) return; setOpen(true); setQuery(""); setHighlighted(0); }}
         onKeyDown={e => {
+          // Closed, a key only opens the list (a typed character starts the
+          // search): choosing needs the list in view, so Enter cannot pick an
+          // option the user is not looking at.
+          if (!open) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              openList("");
+            } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+              e.preventDefault();
+              openList(e.key);
+            }
+            return;
+          }
           if (e.key === "ArrowDown" || e.key === "ArrowUp") {
             e.preventDefault();
             // In a list drawn bottom-up, going down goes back towards the
