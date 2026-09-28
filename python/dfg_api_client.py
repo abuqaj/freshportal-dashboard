@@ -28,6 +28,26 @@ log = logging.getLogger(__name__)
 # explicit decision (2026-08-12), not derived from any field in the source JSON.
 _COUNTRY = "EC"
 
+# Floricode S20, "Minimum length of flower stem": the only lengths a line may
+# go to FreshPortal with (user, 2026-09-28). From Floricode's "E-Kenmerkcodes
+# snij.pdf" (2017-03-21), pages 49-51: every centimetre from 5 to 70, then the
+# steps below; each code is its length in cm. 999 "other" is left out, being
+# no length. The delivery screen checks the same list (S20_LENGTHS in
+# DeliveryImporter.tsx) before it lets a shipment be created.
+S20_LENGTHS = frozenset([
+    *range(5, 71), 72, 75, 80, 82, 85, 90, 95, 100, 105, 110, 115, 120, 125, 128, 130,
+    135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200, 205, 210, 215,
+    220, 225, 230, 240, 250, 300, 350, 400, 450, 500, 550, 600, 700, 800, 900,
+])
+
+
+def lines_without_s20_length(lines: list[DeliveryLine]) -> list[str]:
+    """The lines FreshPortal may not receive yet, for want of a length: the
+    invoice printed none and none was set on the screen, or it is not an S20
+    length. Named for the refusal message."""
+    return [f"{l.nm_variety} ({f'{l.nu_length} cm' if l.nu_length else 'no length'})"
+            for l in lines if l.nu_length not in S20_LENGTHS]
+
 
 class DfgApiError(Exception):
     """Non-recoverable DFG API failure (auth, network, unexpected HTTP status,

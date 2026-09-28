@@ -89,6 +89,7 @@ from dfg_api_client import (
     build_batch_payload, create_batch as dfg_create_batch,
     add_stock_entries as dfg_add_stock_entries,
     get_open_invoices as dfg_get_open_invoices,
+    lines_without_s20_length,
 )
 from scraper_catalogue import fetch_supplier_list
 from scraper_fust import fetch_fust_catalogue
@@ -3179,6 +3180,18 @@ def delivery_api_check(
     return {"exists": batch is not None, "batch": batch_summary(cfg, batch) if batch else None}
 
 
+def _require_s20_lengths(lines: list) -> None:
+    """Nothing goes to FreshPortal while a line lacks a Floricode S20 length
+    (user, 2026-09-28): some invoices print none, and the screen asks for one
+    before it lets the shipment be created. Checked here too, so no other
+    caller can send a line without it."""
+    missing = lines_without_s20_length(lines)
+    if missing:
+        raise HTTPException(
+            400, "Every line needs a Floricode S20 length before it goes to FreshPortal; "
+                 "missing or not an S20 length: " + ", ".join(missing))
+
+
 class DfgCreateRequest(BaseModel):
     order: dict
     supplier_fp_id: str = ""
@@ -3232,6 +3245,7 @@ def delivery_api_create(
     order.lines = [l for l in order.lines if l.fp_product_id]
     if not order.lines:
         raise HTTPException(400, "No matched products to send — confirm product matches first")
+    _require_s20_lengths(order.lines)
 
     try:
         payload = build_batch_payload(
@@ -3315,6 +3329,7 @@ def delivery_api_retry(
     matched_lines = [l for l in order.lines if l.fp_product_id]
     if not matched_lines:
         raise HTTPException(400, "No matched products to retry")
+    _require_s20_lengths(matched_lines)
 
     try:
         result = dfg_add_stock_entries(cfg, req.batch_id, req.supplier_fp_id, matched_lines, req.invoice_id)

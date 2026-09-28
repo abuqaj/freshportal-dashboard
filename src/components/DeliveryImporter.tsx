@@ -36,6 +36,20 @@ const INVOICE_REQUIRED = /Invoice is required/i;
 // The boxes a mix box can go to FreshPortal in when sent together.
 const MIX_BOX_FUSTS = ["QBE", "HBE"];
 
+// Floricode S20, "Minimum length of flower stem": the only lengths a line may
+// go to FreshPortal with (user, 2026-09-28). Some invoices print none, so the
+// length is edited on the screen, and the shipment waits until every line it
+// sends has one of these. From Floricode's "E-Kenmerkcodes snij.pdf"
+// (2017-03-21), pages 49-51: every cm from 5 to 70, then the steps below; 999
+// "other" is left out, being no length. The backend checks the same list
+// (S20_LENGTHS in dfg_api_client.py; test_s20_lengths.py keeps them equal).
+const S20_LENGTHS: ReadonlySet<number> = new Set([
+  ...Array.from({ length: 66 }, (_, i) => i + 5),
+  72, 75, 80, 82, 85, 90, 95, 100, 105, 110, 115, 120, 125, 128, 130, 135, 140, 145, 150,
+  155, 160, 165, 170, 175, 180, 185, 190, 195, 200, 205, 210, 215, 220, 225, 230, 240,
+  250, 300, 350, 400, 450, 500, 550, 600, 700, 800, 900,
+]);
+
 // The whole module draws only on the system palette, the Analysis Tool's
 // chart colours, named in globals.css (user, 2026-09-25): brick and blush
 // for errors and warnings, emerald and sage for what is sure, sand and
@@ -376,6 +390,8 @@ function computeLineStatuses(
   lineEdits: Record<string, { fp_product_id?: string; catalogue_nm_product?: string; manufacturer_id?: string }>,
   approvedKeys: Set<string>,
   inPortal?: Set<DeliveryLine>,
+  // The length the line went with: the one set on the screen, if any.
+  lengthOf: (line: DeliveryLine) => number = line => line.nu_length,
 ): { line: DeliveryLine; status: DoneLineStatus; message: string }[] {
   const failedMsg = new Map(importResult.errors.map(e => [`${e.product_number}|${e.length}`, e.message]));
   return lines.map(line => {
@@ -385,7 +401,7 @@ function computeLineStatuses(
     if (!fpId) return { line, status: "skipped" as const, message: "" };
     if (inPortal?.has(line)) return { line, status: "inPortal" as const, message: "" };
     if (!approvedKeys.has(dk)) return { line, status: "notApproved" as const, message: "" };
-    const key = `${fpId}|${line.nu_length}`;
+    const key = `${fpId}|${lengthOf(line)}`;
     if (failedMsg.has(key)) return { line, status: "failed" as const, message: failedMsg.get(key) ?? "" };
     return { line, status: "added" as const, message: "" };
   });
@@ -880,6 +896,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [boxWeightEdits, setBoxWeightEdits] = useState<Record<string, number>>({});
   const boxWeightInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
+  // ── Length inline edit — some invoices print none, and only a Floricode S20
+  // length goes to FreshPortal (user, 2026-09-28). Keyed like box weight plus
+  // the length the file gave, so a variety at two lengths keeps them apart;
+  // cleared with each new file, since a length is this invoice's, not the
+  // variety's. ArrowUp/Down moves between rows as in the box weight column ──
+  const [lengthEdits, setLengthEdits] = useState<Record<string, number>>({});
+  const lengthInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+
   // ── Mix boxes: each variety its own line (separate), or each box one line
   // of a mix product (together, the default: user, 2026-09-25). Kept across
   // files, so a user who works one way does not switch every time; the box a
@@ -931,6 +955,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     return isMixLine(line) ? line.gu_product : deliveryKey(line);
   }
 
+  function lengthEditKey(line: DeliveryLine): string {
+    return `${boxEditKey(line)}|${line.nu_length ?? 0}`;
+  }
+
+  // The length a line goes to FreshPortal with; 0 when it has none yet.
+  function lineLength(line: DeliveryLine): number {
+    return lengthEdits[lengthEditKey(line)] ?? line.nu_length ?? 0;
+  }
+
   // The lines the review step shows and imports. With mix boxes together,
   // the MBn lines give way to the order's mix_lines, listed first so the
   // switch shows at the top of the table.
@@ -954,6 +987,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
       manufacturer_id: growerEdits[growerLocationKey(line.nm_location)] ?? line.manufacturer_id,
       nu_box_weight: boxWeightEdits[boxEditKey(line)] ?? line.nu_box_weight,
+      nu_length: lineLength(line),
       nm_box: (isMixLine(line) && mixBoxEdits[line.gu_product]) || line.nm_box,
     };
   }
@@ -967,7 +1001,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // The lines an import can still send: all of them, or those the shipment lacks.
   const candidateLines = portal ? activeLines.filter(l => !portal.inPortal.has(l)) : activeLines;
   // Of those, the ones the import button will send: approved, with a product.
-  const sendCount = candidateLines.filter(l => approvedKeys.has(deliveryKey(l)) && !!withEdits(l).fp_product_id).length;
+  const sendLines = candidateLines.filter(l => approvedKeys.has(deliveryKey(l)) && !!withEdits(l).fp_product_id);
+  const sendCount = sendLines.length;
+  // Of those, the ones still without a Floricode S20 length: until there are
+  // none, no shipment is created (user, 2026-09-28).
+  const lengthMissing = sendLines.filter(l => !S20_LENGTHS.has(lineLength(l))).length;
 
   function setOrderExistingBatch(idx: number, batch: ExistingBatch | null) {
     setParseResult(prev => prev && {
@@ -1241,6 +1279,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setActiveOrderIdx(0);
       setLineEdits({});
       setMixBoxEdits({});
+      setLengthEdits({});
       setEditingKey(null);
       setShowOnlyUnmatched(false);
       setShowOnlyUnapproved(false);
@@ -1368,9 +1407,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   async function logImportResult(order: DeliveryOrder, fullLines: DeliveryLine[], result: DfgCreateResult, inPortal?: Set<DeliveryLine>) {
     if (!result.batch_id) return;
     try {
-      const productLines = computeLineStatuses(fullLines, result, lineEdits, approvedKeys, inPortal).map(({ line, status, message }) => ({
+      const productLines = computeLineStatuses(fullLines, result, lineEdits, approvedKeys, inPortal, lineLength).map(({ line, status, message }) => ({
         nm_variety: line.nm_variety,
-        nu_length: line.nu_length,
+        nu_length: lineLength(line),
         nu_bunches: line.nu_bunches,
         match_method: line.match_method,
         catalogue_nm_product: line.catalogue_nm_product,
@@ -1436,6 +1475,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setStage("shipment");
       return;
     }
+    // The import button waits for every line it sends to have a Floricode S20
+    // length; checked here too, since the partial-approval dialog calls in.
+    if (lengthMissing > 0) return;
 
     // Check if all matched lines are approved — show modal if not
     if (!skipPartialCheck) {
@@ -1702,6 +1744,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setApprovedKeys(new Set());
     setLineEdits({});
     setMixBoxEdits({});
+    setLengthEdits({});
     setEditingKey(null);
     setEditModalOpen(false);
     setGrowerEdits({});
@@ -1772,7 +1815,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           (l.mix_boxes ?? []).some(code => code.toLowerCase().includes(q)) ||
           l.match_method.toLowerCase().includes(q) ||
           (l.id_floricode ?? "").toLowerCase().includes(q) ||
-          String(l.nu_length).includes(q)
+          String(lineLength(l)).includes(q)
         );
       });
     }
@@ -1784,6 +1827,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         if (sortCol === "variety")    { av = a.nm_variety;       bv = b.nm_variety; }
         else if (sortCol === "box")   { av = a.nm_box || "";     bv = b.nm_box || ""; }
         else if (sortCol === "boxQty") { av = a.nu_physical_boxes; bv = b.nu_physical_boxes; }
+        // By the file's length: sorted by the edited one, a row would move
+        // away while its length is being typed in.
         else if (sortCol === "length") { av = a.nu_length;       bv = b.nu_length; }
         else if (sortCol === "stemsBunch") { av = a.nu_stems_bunch; bv = b.nu_stems_bunch; }
         else if (sortCol === "bunches") { av = a.nu_bunches;     bv = b.nu_bunches; }
@@ -1797,7 +1842,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     }
     return lines;
-  }, [activeLines, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits]);
+  }, [activeLines, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits, lengthEdits]);
 
   // Counted over what is on screen, so they follow the mix box switch.
   const matchedCount = activeLines.filter(l => l.fp_product_id).length;
@@ -1814,7 +1859,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // shape isn't reliably typed, so success is inferred by elimination instead).
   // Not memoised: `portal` is worked out afresh on every render anyway.
   const doneLineStatuses = importResult
-    ? computeLineStatuses(activeLines, importResult, lineEdits, approvedKeys, portal?.inPortal)
+    ? computeLineStatuses(activeLines, importResult, lineEdits, approvedKeys, portal?.inPortal, lineLength)
     : [];
 
   type AllTourStep = TourStep & { tourStage: "idle" | "shipment" | "preview" | "done" };
@@ -2573,9 +2618,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               placeholder={td.tableSearchPlaceholder}
               className="flex-1 h-9 px-3 rounded-xl text-sm border border-border bg-surface outline-none focus:border-emerald/50 placeholder:text-ink-3/50 transition-colors"
             />
+            {lengthMissing > 0 && (
+              <span className="text-[11px] text-brick max-w-[220px] leading-tight">{td.lengthMissing(lengthMissing)}</span>
+            )}
             <button
               onClick={() => handleImport()}
-              disabled={mixReparsing || sendCount === 0}
+              disabled={mixReparsing || sendCount === 0 || lengthMissing > 0}
+              title={lengthMissing > 0 ? td.lengthMissing(lengthMissing) : undefined}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
               {topUpBatch ? td.addMissingBtn(sendCount) : td.importBtn}
@@ -2586,6 +2635,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {(() => {
             return (
           <div className="relative">
+          {/* The lengths the Length inputs suggest: Floricode S20. */}
+          <datalist id="s20-lengths">
+            {Array.from(S20_LENGTHS).map(n => <option key={n} value={n} />)}
+          </datalist>
           <div ref={refTable} aria-busy={mixReparsing}
             className={`overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border transition-opacity
               ${mixReparsing ? "opacity-40 pointer-events-none select-none" : ""}`}>
@@ -2620,6 +2673,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   const edit = lineEdits[dk];
                   const boxKey = boxEditKey(line);
                   const boxWeightValue = boxWeightEdits[boxKey] ?? line.nu_box_weight ?? 0;
+                  const lengthKey = lengthEditKey(line);
+                  const lengthValue = lineLength(line);
+                  const lengthOk = S20_LENGTHS.has(lengthValue);
                   const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
                   const isApproved = approvedKeys.has(dk);
                   const hasMatch = !!(edit?.fp_product_id ?? line.fp_product_id);
@@ -2803,7 +2859,56 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       <td className="px-1.5 py-2 text-ink-3 text-center">
                         {Math.floor(line.nu_bunches / Math.max(1, line.nu_physical_boxes ?? 1)) * line.nu_stems_bunch}
                       </td>
-                      <td className="px-3 py-2 text-ink-3">{line.nu_length > 0 ? `${line.nu_length}cm` : "—"}</td>
+                      <td className="px-3 py-2">
+                        {/* Edited as box weight is. Only a Floricode S20 length
+                            is taken: one the invoice left out, or one S20 does
+                            not have, stays marked until it is set, and the
+                            shipment waits for it (user, 2026-09-28). */}
+                        <input
+                          type="number"
+                          step="1"
+                          min="5"
+                          max="900"
+                          inputMode="numeric"
+                          list="s20-lengths"
+                          ref={el => { lengthInputRefs.current[i] = el; }}
+                          value={lengthValue > 0 ? lengthValue : ""}
+                          placeholder="—"
+                          title={lengthOk ? undefined : td.lengthNotS20}
+                          aria-invalid={!lengthOk}
+                          onMouseDown={e => {
+                            if (document.activeElement !== e.currentTarget) e.currentTarget.dataset.selectOnUp = "1";
+                          }}
+                          onFocus={e => e.currentTarget.select()}
+                          onMouseUp={e => {
+                            if (e.currentTarget.dataset.selectOnUp) {
+                              e.preventDefault();
+                              delete e.currentTarget.dataset.selectOnUp;
+                            }
+                          }}
+                          onChange={e => {
+                            const v = e.target.value === "" ? 0 : Math.round(Number(e.target.value));
+                            setLengthEdits(prev => ({ ...prev, [lengthKey]: v }));
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === "ArrowDown" || e.key === "Enter") {
+                              e.preventDefault();
+                              const next = lengthInputRefs.current[i + 1];
+                              next?.focus();
+                              next?.select();
+                            } else if (e.key === "ArrowUp") {
+                              e.preventDefault();
+                              const prevInput = lengthInputRefs.current[i - 1];
+                              prevInput?.focus();
+                              prevInput?.select();
+                            }
+                          }}
+                          className={`w-14 px-1.5 py-1 text-xs text-right border rounded-md outline-none transition-colors
+                            ${lengthOk
+                              ? "border-transparent bg-transparent text-ink-3 hover:border-border focus:border-emerald/50 focus:bg-surface"
+                              : "border-brick/50 bg-blush/30 text-brick placeholder:text-brick/60 focus:border-brick"}`}
+                        />
+                      </td>
                       <td className="px-1.5 py-2 text-ink-3">{line.nu_stems_bunch || "—"}</td>
                       <td className="px-1.5 py-2 font-semibold text-ink">{line.nu_bunches}</td>
                       <td className="px-1.5 py-2 text-ink-3">{line.nu_stems_total > 0 ? line.nu_stems_total.toLocaleString() : "—"}</td>
@@ -3191,7 +3296,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         <div className="min-w-0">
                           <p className="font-medium text-ink truncate">
                             {line.nm_variety}
-                            {line.nu_length > 0 && <span className="text-ink-3 font-normal"> · {line.nu_length}cm</span>}
+                            {lineLength(line) > 0 && <span className="text-ink-3 font-normal"> · {lineLength(line)}cm</span>}
                           </p>
                           {message && <p className="text-brick/80 font-mono text-[11px] truncate">{message}</p>}
                         </div>
