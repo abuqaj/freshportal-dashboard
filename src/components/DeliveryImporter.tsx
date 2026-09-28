@@ -37,6 +37,14 @@ const MIX_BOX_FUSTS = ["QBE", "HBE"];
 // taupe for what is neutral. Mix boxes are marked in sage with emerald.
 const MIX_ACCENT = "bg-sage text-emerald-dark border-emerald/25";
 
+// Every popup of the module wears the customer picker's frame: brand green
+// with a heavy shadow, so it stands off the white page it opens over. A
+// warning wears the same frame in brick (user, 2026-09-28). A popup's search
+// field is the customer field itself.
+const POPUP_FRAME = "border-2 border-emerald bg-surface shadow-[0_16px_48px_rgba(17,26,20,0.35)]";
+const POPUP_WARNING_FRAME = "border-2 border-brick bg-surface shadow-[0_16px_48px_rgba(17,26,20,0.35)]";
+const POPUP_SEARCH_INPUT = "h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full";
+
 // A grower from the Ecuador system's manufacturer list (Ecuador and Colombia),
 // as GET /growers returns it; manufacturer_id is what the DFG API receives.
 interface Grower {
@@ -63,6 +71,8 @@ interface CatalogueProduct {
   nu_stems_bunch?: number | null;
   nu_stems_pack?: number | null;
   nm_packaging?: string;
+  // Only on /delivery/product-search results; empty when the product has none.
+  gtin?: string;
 }
 
 interface DeliveryLine {
@@ -501,8 +511,7 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
             maxHeight: pos.maxHeight,
             ...(pos.openUp ? { bottom: pos.bottom } : { top: pos.top }),
           }}
-          className={`z-[500] overflow-y-auto rounded-xl border-2 border-emerald bg-surface
-            shadow-[0_16px_48px_rgba(17,26,20,0.35)] divide-y divide-border
+          className={`z-[500] overflow-y-auto rounded-xl ${POPUP_FRAME} divide-y divide-border
             ${bottomUp ? "flex flex-col-reverse divide-y-reverse" : ""}`}
         >
           {filtered.length === 0 ? (
@@ -571,8 +580,8 @@ function HoverCard({ content, children, className }: {
       {pos && typeof document !== "undefined" && createPortal(
         <div
           style={{ position: "fixed", ...pos, maxWidth: HOVER_CARD_ROOM.width }}
-          className="z-[500] pointer-events-none rounded-xl border border-border bg-surface px-3 py-2
-                     text-xs font-normal text-ink whitespace-normal shadow-[0_8px_24px_rgba(17,26,20,0.2)]"
+          className={`z-[500] pointer-events-none rounded-xl ${POPUP_FRAME} px-3 py-2
+                     text-xs font-normal text-ink whitespace-normal`}
         >
           {content}
         </div>,
@@ -1812,7 +1821,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {duplicateWarning.length > 0 && (
         <>
           <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setDuplicateWarning([])} />
-          <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-blush bg-surface shadow-2xl p-6 flex flex-col gap-4">
+          <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}>
             <div className="flex items-start gap-3">
               <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-xl">
                 ⚠
@@ -1918,7 +1927,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {supplierConfirmOpen && resolvedSupplier && (
             <>
               <div className="fixed inset-0 bg-black/60 z-[300]" />
-              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-sm mx-auto rounded-2xl border-2 border-border bg-surface shadow-2xl p-6 flex flex-col gap-5">
+              <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-sm mx-auto rounded-2xl ${POPUP_FRAME} p-6 flex flex-col gap-5`}>
                 <div className="flex items-start gap-3">
                   <div className="flex-shrink-0 w-10 h-10 rounded-full bg-sand border border-taupe/40 flex items-center justify-center text-xl">🏭</div>
                   <div>
@@ -2134,7 +2143,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 className="fixed inset-0 bg-black/60 z-[200]"
                 onClick={() => setSupplierPickerOpen(false)}
               />
-              <div className="fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
+              <div className={`fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}>
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
                   <div>
                     <span className="text-sm font-semibold text-ink">{td.selectSupplierTitle}</span>
@@ -2148,10 +2157,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     value={supplierSearch}
                     onChange={e => setSupplierSearch(e.target.value)}
                     placeholder={td.searchSupplierPlaceholder}
-                    className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
+                    className={POPUP_SEARCH_INPUT}
                   />
                 </div>
-                <div className="overflow-y-auto flex-1 bg-surface">
+                <div className="overflow-y-auto flex-1 bg-surface divide-y divide-border">
                   {supplierList.length === 0 ? (
                     <p className="text-xs text-ink-3 px-4 py-3">{td.loadingSuppliers}</p>
                   ) : (
@@ -2161,7 +2170,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         <button
                           key={s.fp_supplier_id}
                           onClick={() => handleSelectSupplier(s)}
-                          className={`w-full text-left px-4 py-2.5 text-sm border-b border-border/60 last:border-0 transition-colors
+                          className={`w-full text-left px-4 py-2.5 text-sm transition-colors
                             ${resolvedSupplier?.fp_supplier_id === s.fp_supplier_id
                               ? "bg-emerald/10 text-emerald font-medium"
                               : "bg-surface text-ink hover:bg-muted"}`}
@@ -2197,7 +2206,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             return (
               <>
                 <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPartialApproveOpen(false)} />
-                <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-blush bg-surface shadow-2xl p-6 flex flex-col gap-4">
+                <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}>
                   <div className="flex items-start gap-3">
                     <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-xl">⚠</div>
                     <div>
@@ -2663,7 +2672,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             return (
               <>
                 <div className="fixed inset-0 bg-black/60 z-[200]" onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} />
-                <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
+                <div className={`fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}>
                   <div className="px-4 py-3 border-b border-border shrink-0">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -2692,14 +2701,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         onChange={e => setEditSearch(e.target.value)}
                         onKeyDown={e => { if (e.key === "Escape") { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); } }}
                         placeholder={td.editSearchPlaceholder}
-                        className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
+                        className={`${POPUP_SEARCH_INPUT} pr-8`}
                       />
                       {editSearchLoading && (
-                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />
                       )}
                     </div>
                   </div>
-                  <div className="overflow-y-auto flex-1">
+                  <div className="overflow-y-auto flex-1 divide-y divide-border">
                     {matchResults.length === 0 ? (
                       <p className={`text-xs px-4 py-3 ${editSearchError ? "text-brick" : "text-ink-3"}`}>
                         {editSearch.trim().length < 2
@@ -2722,10 +2731,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             setEditingKey(null);
                             setEditSearch("");
                           }}
-                          className={`w-full text-left px-4 py-2.5 border-b border-border/60 last:border-0 transition-colors
+                          className={`w-full text-left px-4 py-2.5 flex items-baseline justify-between gap-3 transition-colors
                             ${isCurrentMatch ? "bg-emerald/8" : "bg-surface hover:bg-muted"}`}
                         >
-                          <div className={`text-sm font-medium leading-snug ${isCurrentMatch ? "text-emerald" : "text-ink"}`}>{p.nm_product}</div>
+                          <span className={`text-sm font-medium leading-snug ${isCurrentMatch ? "text-emerald" : "text-ink"}`}>{p.nm_product}</span>
+                          {/* The server lists products with a GTIN first, then
+                              the rest, each part alphabetically. */}
+                          {p.gtin && (
+                            <span className="shrink-0 text-[11px] tabular-nums text-ink-3">
+                              {td.gtinLabel} {p.gtin}
+                            </span>
+                          )}
                         </button>
                       );
                     })}
@@ -2755,7 +2771,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 <div className="fixed inset-0 bg-black/60 z-[200]" onClick={close} />
                 {/* Framed and marked in brand green like the customer and invoice
                     pickers (SearchableSelect), with the same keys (user, 2026-09-24). */}
-                <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl border-2 border-emerald bg-surface shadow-[0_16px_48px_rgba(17,26,20,0.35)] flex flex-col overflow-hidden">
+                <div className={`fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}>
                   <div className="px-4 py-3 border-b border-border shrink-0">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -2789,7 +2805,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         else if (e.key === "Escape") close();
                       }}
                       placeholder={td.growerSearchPlaceholder}
-                      className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
+                      className={POPUP_SEARCH_INPUT}
                     />
                   </div>
                   <div className="overflow-y-auto flex-1 divide-y divide-border">

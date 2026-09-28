@@ -363,6 +363,7 @@ const en = {
     editMatchTitle:     "Edit product match",
     editNoMatchTitle:   "Assign product",
     editSearchPlaceholder: "Search products…",
+    gtinLabel:          "GTIN",
     currentMatch:       "Current match",
     noProductsFound:    "No products found",
     // Progress stepper
@@ -1295,6 +1296,7 @@ const nl: typeof en = {
     editMatchTitle:     "Productkoppeling bewerken",
     editNoMatchTitle:   "Product toewijzen",
     editSearchPlaceholder: "Producten zoeken…",
+    gtinLabel:          "GTIN",
     currentMatch:       "Huidige koppeling",
     noProductsFound:    "Geen producten gevonden",
     // Progress stepper
@@ -2183,6 +2185,7 @@ const pl: typeof en = {
     editMatchTitle:     "Edytuj dopasowanie produktu",
     editNoMatchTitle:   "Przypisz produkt",
     editSearchPlaceholder: "Szukaj produktów…",
+    gtinLabel:          "GTIN",
     currentMatch:       "Aktualne dopasowanie",
     noProductsFound:    "Nie znaleziono produktów",
     // Progress stepper
@@ -3071,6 +3074,7 @@ const es: typeof en = {
     editMatchTitle:     "Editar coincidencia de producto",
     editNoMatchTitle:   "Asignar producto",
     editSearchPlaceholder: "Buscar productos…",
+    gtinLabel:          "GTIN",
     currentMatch:       "Coincidencia actual",
     noProductsFound:    "No se encontraron productos",
     // Progress stepper

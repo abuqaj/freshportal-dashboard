@@ -2884,21 +2884,25 @@ def delivery_product_search(
     """Live search against ecuador_products (not the Stamgegevens `products` table)
     for the manual match-correction modal in DeliveryImporter — a manual override
     must only ever offer products actually provisioned in Ecuador, otherwise it
-    can reproduce the exact "not usable" failure it's meant to fix."""
+    can reproduce the exact "not usable" failure it's meant to fix.
+
+    Relevance picks which products come back; the list itself reads
+    alphabetically, products with a GTIN first (user, 2026-09-28)."""
     if len(req.query.strip()) < 2:
         return {"results": []}
     rows = search_ecuador_products_db(req.query.strip(), limit=req.limit)
-    return {
-        "results": [
-            {
-                "fp_product_id": r.get("product_number") or "",
-                "nm_product": r.get("name") or "",
-                "id_floricode": r.get("vbn_number") or "",
-            }
-            for r in rows
-            if r.get("product_number")
-        ]
-    }
+    results = [
+        {
+            "fp_product_id": r.get("product_number") or "",
+            "nm_product": r.get("name") or "",
+            "id_floricode": r.get("vbn_number") or "",
+            "gtin": (r.get("product_gtin") or "").strip(),
+        }
+        for r in rows
+        if r.get("product_number")
+    ]
+    results.sort(key=lambda p: (not p["gtin"], p["nm_product"].casefold(), p["fp_product_id"]))
+    return {"results": results}
 
 
 @app.get("/delivery/debug-match")
