@@ -85,7 +85,7 @@ from parser_delivery import (parse_delivery_json, order_to_dict, resolve_growers
 from parser_delivery_pdf import parse_delivery_pdf, PdfParseError
 from delivery_product_match import match_order_to_products
 from dfg_api_client import (
-    DfgApiError, resolve_supplier, get_batch as dfg_get_batch,
+    DfgApiError, resolve_supplier, get_batch as dfg_get_batch, batch_summary,
     build_batch_payload, create_batch as dfg_create_batch,
     add_stock_entries as dfg_add_stock_entries,
     get_open_invoices as dfg_get_open_invoices,
@@ -2647,8 +2647,32 @@ class DeliveryParseRequest(BaseModel):
     with_matching: bool = True
     # How the review step shows mix boxes; see _resolve_and_match.
     mix_mode: str = "together"
+    # What to do when FreshPortal already holds the shipment; see _resolve_and_match.
+    existing: str = "check"
 
 
+def _existing_batches(orders: list[DeliveryOrder], supplier_id: str) -> list[dict | None]:
+    """The shipment FreshPortal already holds for each order (batch_summary),
+    None where it holds none.
+
+    A lookup that fails is logged and read as none: it must not stop the
+    parse, and the import asks FreshPortal again before it writes anything.
+    """
+    if not supplier_id:
+        return [None] * len(orders)
+    cfg = get_ecuador_cfg()
+    found: list[dict | None] = []
+    for order in orders:
+        summary = None
+        if order.id_invoice:
+            try:
+                batch = dfg_get_batch(cfg, supplier_id, order.id_invoice)
+                summary = batch_summary(cfg, batch) if batch else None
+            except Exception:
+                log.warning("[delivery/parse] could not check FreshPortal for shipment %r of supplier %s",
+                            order.id_invoice, supplier_id, exc_info=True)
+        found.append(summary)
+    return found
 
 
 def _resolve_and_match(
@@ -2656,6 +2680,7 @@ def _resolve_and_match(
     supplier_id_in: str,
     with_matching: bool,
     mix_mode: str = "together",
+    existing: str = "check",
 ) -> dict:
     """Everything that happens to a parsed delivery regardless of the file it
     came from: resolve the supplier, match every line against the products
@@ -2673,6 +2698,15 @@ def _resolve_and_match(
     3 searches instead of 19; user, 2026-09-25). "separate" matches every
     line, which the screen asks for when the user switches to that view; its
     answer holds both views.
+
+    Before any of the matching, FreshPortal is asked whether it already holds
+    each invoice's shipment. With existing "check" (a first parse) a hit ends
+    the parse there, with `existing` listing the shipments found and no
+    orders: the user learns at once, not after the product search and the
+    whole review (user, 2026-09-28). "compare" is the user's choice to go on
+    anyway: every order is matched as usual and carries the shipment it
+    already has, if any, as `existing_batch`, for the screen to add only the
+    lines the shipment is missing.
     """
     if not orders:
         raise HTTPException(400, "No invoices found in the file")
@@ -2704,11 +2738,6 @@ def _resolve_and_match(
             elif not supplier_id:
                 log.warning("[delivery/parse] could not resolve supplier from tx_company=%r", orders[0].tx_company)
 
-    cached_matches: dict = {}
-    if with_matching and supplier_id:
-        cached_matches = get_delivery_matches(fp_url, supplier_id)
-        log.info("[delivery/parse] supplier=%s cached_matches=%d", supplier_id, len(cached_matches))
-
     # Resolved once, ahead of the loop, so grower resolution can match
     # against FreshPortal's own canonical supplier name instead of the
     # raw tx_company text from the JSON — the same delivery's tx_company
@@ -2718,7 +2747,33 @@ def _resolve_and_match(
     # word-based matching; reusing that result avoids re-solving the
     # same "which supplier is this really" problem a second time in
     # _resolve_grower_id() with a weaker heuristic (found 2026-08-28).
+    # The already-in-FreshPortal answer names the supplier with it too.
     supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
+
+    existing_batches = _existing_batches(orders, supplier_id)
+    if existing != "compare" and any(existing_batches):
+        log.info("[delivery/parse] already in FreshPortal: %s — stopping before matching",
+                 [b["number"] for b in existing_batches if b])
+        return {
+            "existing": [
+                {**batch, "id_invoice": order.id_invoice}
+                for order, batch in zip(orders, existing_batches) if batch
+            ],
+            "invoices_in_file": len(orders),
+            "orders": [],
+            "supplier_id": supplier_id,
+            "supplier_nm": supplier_nm,
+            "supplier_confirmed": supplier_confirmed,
+            "matched_count": 0,
+            "unmatched_count": 0,
+            "cached_matches_used": 0,
+        }
+
+    cached_matches: dict = {}
+    if with_matching and supplier_id:
+        cached_matches = get_delivery_matches(fp_url, supplier_id)
+        log.info("[delivery/parse] supplier=%s cached_matches=%d", supplier_id, len(cached_matches))
+
     grower_choices = get_grower_choices(fp_url, supplier_id) if supplier_id else {}
 
     matched_count = 0
@@ -2751,7 +2806,10 @@ def _resolve_and_match(
         for line in order.mix_lines:
             if line.match_method == "mix_box":
                 line.catalogue_nm_product = mix_names.get(line.fp_product_id, "")
-    result_orders = [order_to_dict(order) for order in orders]
+    result_orders = [
+        {**order_to_dict(order), "existing_batch": batch}
+        for order, batch in zip(orders, existing_batches)
+    ]
 
     log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
     return {
@@ -2779,8 +2837,8 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
 
     Returns aggregated DeliveryOrder(s) with match results per line.
     """
-    log.info("[delivery/parse] starting — supplier=%s with_matching=%s mix_mode=%s",
-             req.supplier_id, req.with_matching, req.mix_mode)
+    log.info("[delivery/parse] starting — supplier=%s with_matching=%s mix_mode=%s existing=%s",
+             req.supplier_id, req.with_matching, req.mix_mode, req.existing)
     try:
         try:
             raw = req.raw_json
@@ -2800,7 +2858,7 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
             log.exception("[delivery/parse] parse_delivery_json failed")
             raise HTTPException(400, f"Invalid delivery JSON: {exc}")
 
-        return _resolve_and_match(orders, req.supplier_id, req.with_matching, req.mix_mode)
+        return _resolve_and_match(orders, req.supplier_id, req.with_matching, req.mix_mode, req.existing)
     except HTTPException:
         raise
     except Exception as exc:
@@ -2819,6 +2877,7 @@ def delivery_parse_pdf(
     supplier_id: str = Form(""),
     with_matching: bool = Form(True),
     mix_mode: str = Form("together"),
+    existing: str = Form("check"),
     _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """Same as /delivery/parse, for suppliers who send a printed invoice
@@ -2863,7 +2922,7 @@ def delivery_parse_pdf(
             log.exception("[delivery/parse-pdf] parse_delivery_pdf failed")
             raise HTTPException(400, f"Could not read this PDF: {exc}")
 
-        return _resolve_and_match(orders, supplier_id, with_matching, mix_mode)
+        return _resolve_and_match(orders, supplier_id, with_matching, mix_mode, existing)
     except HTTPException:
         raise
     except Exception as exc:
@@ -3106,6 +3165,10 @@ def delivery_api_check(
     Mandatory pre-flight step: the DFG API does not dedupe on
     (supplier_id, number) itself — a duplicate POST creates a second, separate
     batch instead of being rejected or upserted (confirmed 2026-08-12).
+
+    The batch comes back as batch_summary shapes it, the same shape a parse
+    attaches as an order's existing_batch, so the screen compares a file
+    against either one the same way.
     """
     cfg = get_ecuador_cfg()
     try:
@@ -3113,7 +3176,7 @@ def delivery_api_check(
     except Exception as exc:
         log.exception("[delivery/api/check] failed")
         raise HTTPException(502, f"DFG API error: {exc}")
-    return {"exists": batch is not None, "batch": batch}
+    return {"exists": batch is not None, "batch": batch_summary(cfg, batch) if batch else None}
 
 
 class DfgCreateRequest(BaseModel):
@@ -3224,6 +3287,8 @@ class DfgRetryRequest(BaseModel):
     batch_id: int
     supplier_fp_id: str
     order: dict  # only the lines to retry/add
+    # The invoice the batch is on, as its check or its create reported it.
+    invoice_id: int | None = None
 
 
 @app.post("/delivery/api/retry")
@@ -3243,8 +3308,8 @@ def delivery_api_retry(
     except Exception as exc:
         raise HTTPException(400, f"Invalid order payload: {exc}")
 
-    log.info("[delivery/api/retry] received from client: batch_id=%s supplier_fp_id=%s lines=%s",
-              req.batch_id, req.supplier_fp_id,
+    log.info("[delivery/api/retry] received from client: batch_id=%s supplier_fp_id=%s invoice_id=%s lines=%s",
+              req.batch_id, req.supplier_fp_id, req.invoice_id,
               [(l.nm_variety, l.nu_length, l.fp_product_id) for l in order.lines])
 
     matched_lines = [l for l in order.lines if l.fp_product_id]
@@ -3252,7 +3317,7 @@ def delivery_api_retry(
         raise HTTPException(400, "No matched products to retry")
 
     try:
-        result = dfg_add_stock_entries(cfg, req.batch_id, req.supplier_fp_id, matched_lines)
+        result = dfg_add_stock_entries(cfg, req.batch_id, req.supplier_fp_id, matched_lines, req.invoice_id)
     except DfgApiError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:

@@ -150,6 +150,44 @@ def get_batch(cfg: Config, supplier_id: str, batch_number: str) -> dict[str, Any
     return resp.json()
 
 
+def batch_summary(cfg: Config, batch: dict[str, Any]) -> dict[str, Any]:
+    """A shipment get_batch() found, as delivery import shows it and compares
+    a file against it: where it went, links to it in FreshPortal, and one
+    entry per stock line with what identifies the line.
+
+    The GET answers the batch flat, not wrapped in "batch" as the POSTs are,
+    with the length inside `characteristics` and `invoice_id` next to
+    `customer` since 2026-08-26. An `invoice_id` of 0 is read as none, as the
+    API's own examples write 0 for an empty id.
+    """
+    customer = batch.get("customer") or {}
+    invoice_id = batch.get("invoice_id") or None
+    entries = []
+    for entry in batch.get("stock_entries") or []:
+        characteristics = entry.get("characteristics") or {}
+        try:
+            length = int(characteristics.get("length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        entries.append({
+            "product_number": str(entry.get("product_number") or "").strip(),
+            "length": length,
+            "manufacturer_id": str(entry.get("manufacturer_id") or ""),
+            "fust": str(entry.get("fust") or ""),
+            "quantity": entry.get("quantity") or 0,
+        })
+    return {
+        "id": batch.get("id"),
+        "number": str(batch.get("number") or ""),
+        "created_at": str(batch.get("created_at") or ""),
+        "customer_name": str(customer.get("name") or ""),
+        "invoice_id": invoice_id,
+        "batch_url": _batch_url(cfg, batch.get("id")),
+        "invoice_url": _invoice_url(cfg, invoice_id),
+        "stock_entries": entries,
+    }
+
+
 # How far back the invoice picker looks. "Open" at FreshPortal reaches years
 # back — a test customer came back with invoices from 2024-07 — and a delivery
 # is never allocated to one of those, so they are noise in a picker that has
@@ -393,23 +431,38 @@ def create_batch(cfg: Config, payload: dict[str, Any]) -> BatchResult:
     return result
 
 
-def add_stock_entries(cfg: Config, batch_id: int, supplier_id: str, lines: list[DeliveryLine]) -> BatchResult:
+def add_stock_entries(
+    cfg: Config,
+    batch_id: int,
+    supplier_id: str,
+    lines: list[DeliveryLine],
+    invoice_id: int | None = None,
+) -> BatchResult:
     """POST /dfg/v1/batch_stock_entry — add stock entries to an already-existing batch.
 
     Two use cases from the workflow:
     1. Retrying lines that came back in create_batch()'s `.errors` (e.g. after
        the product_number has been fixed via user confirmation).
     2. A GET showed the shipment already exists but is missing some products
-       that are present in the source JSON — add just the missing ones.
+       that are present in the source file — add just the missing ones.
+
+    `invoice_id` is the invoice the batch is on, as its GET or its create
+    reported it. FreshPortal described the field as optional, filled from the
+    batch's own invoice when empty (2026-08-26), yet a request without it
+    answered 422 "Invoice is required for batch_id: 116972" (2026-09-28). So
+    it is always sent as a key, like the ids in build_batch_payload(), and
+    with the batch's invoice whenever one is known.
     """
     payload = {
         "batch_id": batch_id,
         "supplier_id": int(supplier_id),
+        "invoice_id": invoice_id,
         "stock_entries": [build_stock_entry(line) for line in lines],
     }
     resp = _request(cfg, "POST", "/dfg/v1/batch_stock_entry", json=payload)
     _raise_for_status_with_body(resp)
     result = _parse_batch_response(resp.json())
+    result.invoice_id = result.invoice_id or invoice_id
     result.batch_url = _batch_url(cfg, result.batch_id or batch_id)
     result.invoice_url = _invoice_url(cfg, result.invoice_id)
     return result

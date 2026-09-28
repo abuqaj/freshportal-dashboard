@@ -28,6 +28,11 @@ function isMixLine(line: DeliveryLine): boolean {
   return (line.mix_boxes?.length ?? 0) > 0;
 }
 
+// FreshPortal's answer to adding lines to a shipment it finds no invoice for
+// (POST /dfg/v1/batch_stock_entry: 422 "Invoice is required for batch_id: …",
+// 2026-09-28).
+const INVOICE_REQUIRED = /Invoice is required/i;
+
 // The boxes a mix box can go to FreshPortal in when sent together.
 const MIX_BOX_FUSTS = ["QBE", "HBE"];
 
@@ -118,6 +123,32 @@ interface DeliveryOrder {
   mix_lines?: DeliveryLine[];
   // Set by parser_delivery.py; see DeliveryOrder.warnings there.
   warnings?: DeliveryWarning[];
+  // The shipment FreshPortal already holds for this invoice, once the user
+  // chose to add to it; the import then sends only what it is missing.
+  existing_batch?: ExistingBatch | null;
+}
+
+// One stock line of a shipment already in FreshPortal, as
+// dfg_api_client.batch_summary passes it on.
+interface PortalStockEntry {
+  product_number: string;
+  length: number;
+  manufacturer_id: string;
+  fust: string;
+  quantity: number;
+}
+
+// A shipment FreshPortal already holds (dfg_api_client.batch_summary), from
+// a parse or from /delivery/api/check.
+interface ExistingBatch {
+  id: number;
+  number: string;
+  created_at: string;
+  customer_name: string;
+  invoice_id: number | null;
+  batch_url: string;
+  invoice_url: string;
+  stock_entries: PortalStockEntry[];
 }
 
 type DeliveryWarning =
@@ -142,6 +173,50 @@ interface ParseResult {
   matched_count: number;
   unmatched_count: number;
   mix_mode?: MixMode;
+  // Only when a first parse stopped because FreshPortal already holds some
+  // of the file's shipments: those shipments, and no orders.
+  existing?: (ExistingBatch & { id_invoice: string })[];
+  invoices_in_file?: number;
+}
+
+// What a first parse asks the server to do about a shipment FreshPortal
+// already holds: stop before matching and say so, or go on and attach it to
+// its order for the import to add only what it is missing.
+type ExistingMode = "check" | "compare";
+
+// Which of `lines` the shipment already in FreshPortal holds, and how many of
+// its entries no line accounts for. A line is there when an entry has its
+// product and length. Each entry accounts for one line only, so two lines of
+// the same product and length need two entries; an entry from the line's own
+// grower is taken first, then any. `asSent` gives a line as it would go to
+// FreshPortal, with what the user changed on the screen.
+function compareWithPortal(
+  lines: DeliveryLine[],
+  entries: PortalStockEntry[],
+  asSent: (line: DeliveryLine) => DeliveryLine,
+): { inPortal: Set<DeliveryLine>; portalOnly: number } {
+  const key = (product: string, length: number) => `${product.trim().toUpperCase()}|${Number(length) || 0}`;
+  const left = new Map<string, PortalStockEntry[]>();
+  for (const e of entries) {
+    const k = key(e.product_number, e.length);
+    left.set(k, [...(left.get(k) ?? []), e]);
+  }
+  const sent = lines.map(asSent);
+  const inPortal = new Set<DeliveryLine>();
+  for (const sameGrower of [true, false]) {
+    lines.forEach((line, i) => {
+      const s = sent[i];
+      if (inPortal.has(line) || !s.fp_product_id) return;
+      const bucket = left.get(key(s.fp_product_id, s.nu_length));
+      const at = bucket?.findIndex(e => !sameGrower || e.manufacturer_id === String(s.manufacturer_id || "")) ?? -1;
+      if (!bucket || at < 0) return;
+      bucket.splice(at, 1);
+      inPortal.add(line);
+    });
+  }
+  let portalOnly = 0;
+  left.forEach(bucket => { portalOnly += bucket.length; });
+  return { inPortal, portalOnly };
 }
 
 type Stage = "idle" | "parsing" | "shipment" | "preview" | "importing" | "done" | "error";
@@ -288,17 +363,19 @@ const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
   none:                 { label: "no match",     cls: "bg-blush/60 text-brick border-brick/30" },
 };
 
-type DoneLineStatus = "added" | "failed" | "skipped" | "notApproved";
+type DoneLineStatus = "added" | "failed" | "skipped" | "notApproved" | "inPortal";
 
-// Shared by the "done" screen's live doneLineStatuses memo and by
+// Shared by the "done" screen's live doneLineStatuses and by
 // logImportResult() (which persists the same breakdown into the delivery
 // import log so it's still visible later from History) — one source of
-// truth for "what actually happened to this line."
+// truth for "what actually happened to this line." `inPortal` holds the lines
+// a shipment already in FreshPortal had, which the import did not send.
 function computeLineStatuses(
   lines: DeliveryLine[],
   importResult: DfgCreateResult,
   lineEdits: Record<string, { fp_product_id?: string; catalogue_nm_product?: string; manufacturer_id?: string }>,
   approvedKeys: Set<string>,
+  inPortal?: Set<DeliveryLine>,
 ): { line: DeliveryLine; status: DoneLineStatus; message: string }[] {
   const failedMsg = new Map(importResult.errors.map(e => [`${e.product_number}|${e.length}`, e.message]));
   return lines.map(line => {
@@ -306,6 +383,7 @@ function computeLineStatuses(
     const edit = lineEdits[dk];
     const fpId = edit?.fp_product_id ?? line.fp_product_id;
     if (!fpId) return { line, status: "skipped" as const, message: "" };
+    if (inPortal?.has(line)) return { line, status: "inPortal" as const, message: "" };
     if (!approvedKeys.has(dk)) return { line, status: "notApproved" as const, message: "" };
     const key = `${fpId}|${line.nu_length}`;
     if (failedMsg.has(key)) return { line, status: "failed" as const, message: failedMsg.get(key) ?? "" };
@@ -744,9 +822,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   ], [openInvoices, td]);
   const [orderDateOverride, setOrderDateOverride] = useState("");
   const [dateEditOpen, setDateEditOpen] = useState(false);
-  // Set when /delivery/api/check finds the shipment already exists — blocks
-  // create until the user explicitly chooses to add the missing lines instead.
-  const [existingBatch, setExistingBatch] = useState<{ id: number; number: string } | null>(null);
+  // A first parse that stopped because FreshPortal already holds the
+  // shipment: shown until the user opens it, edits it or lets the file go.
+  const [existingFound, setExistingFound] = useState<ParseResult | null>(null);
+  // Why the import brought the user back a step instead of writing anything:
+  // FreshPortal's answer at import time differed from the one at parse.
+  const [notice, setNotice] = useState("");
   const [retrying, setRetrying] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoParseRef = useRef(false);
@@ -830,7 +911,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
   const [tableSearch, setTableSearch] = useState("");
-  const [duplicateWarning, setDuplicateWarning] = useState<string[]>([]);
   const [multiFileError, setMultiFileError] = useState(false);
   const [fileLoaded, setFileLoaded] = useState(false);
   // A PDF is sent to the server as-is: only the parser knows how to read a
@@ -876,6 +956,24 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       nu_box_weight: boxWeightEdits[boxEditKey(line)] ?? line.nu_box_weight,
       nm_box: (isMixLine(line) && mixBoxEdits[line.gu_product]) || line.nm_box,
     };
+  }
+
+  // The shipment FreshPortal already holds for this invoice, when the user
+  // chose to add to it or the import found it; null for a new shipment.
+  const topUpBatch = parseResult?.orders[activeOrderIdx]?.existing_batch ?? null;
+  // Which lines of the table that shipment already has. Worked out from the
+  // lines as they would be sent, so a match changed on the screen counts.
+  const portal = topUpBatch ? compareWithPortal(activeLines, topUpBatch.stock_entries, withEdits) : null;
+  // The lines an import can still send: all of them, or those the shipment lacks.
+  const candidateLines = portal ? activeLines.filter(l => !portal.inPortal.has(l)) : activeLines;
+  // Of those, the ones the import button will send: approved, with a product.
+  const sendCount = candidateLines.filter(l => approvedKeys.has(deliveryKey(l)) && !!withEdits(l).fp_product_id).length;
+
+  function setOrderExistingBatch(idx: number, batch: ExistingBatch | null) {
+    setParseResult(prev => prev && {
+      ...prev,
+      orders: prev.orders.map((o, i) => i === idx ? { ...o, existing_batch: batch } : o),
+    });
   }
 
   // order.dt_fly is always normalised to "DD-MM-YYYY" by the parser; <input type="date">
@@ -1072,55 +1170,26 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const res = await fetch(`${RAILWAY}/catalogue/${supplierId}/matches`, { method: "DELETE" });
       if (!res.ok) throw new Error(await res.text());
       // Re-parse the currently loaded JSON so the table reflects fresh matching.
-      await handleParse(supplierId, true);
+      await handleParse(supplierId, true, "compare");
     } catch { alert(td.clearCacheError); }
     finally { setClearingCache(false); }
   }
 
-  // ── Duplicate detection ────────────────────────────────────────────────
+  // ── Parse & match ──────────────────────────────────────────────────────
 
-  async function checkDuplicate(text: string): Promise<string[]> {
-    try {
-      const body = JSON.parse(text);
-      const rawInvoices: { id_invoice?: string }[] = body.invoices ?? (Array.isArray(body) ? body : [body]);
-      return await knownInvoices(rawInvoices.map(i => i.id_invoice).filter(Boolean) as string[]);
-    } catch { return []; }
-  }
-
-  /** Invoice numbers in `ids` that a previous import already logged. */
-  async function knownInvoices(ids: string[]): Promise<string[]> {
-    if (!ids.length) return [];
-    try {
-      const res = await fetch(`${RAILWAY}/delivery/import-log?limit=500`);
-      if (!res.ok) return [];
-      const data = await res.json();
-      const entries: { id_invoice?: string }[] =
-        data.history ?? data.logs ?? (Array.isArray(data) ? data : []);
-      const existing = new Set<string>(entries.map(l => l.id_invoice).filter(Boolean) as string[]);
-      return ids.filter(id => existing.has(id));
-    } catch { return []; }
-  }
-
+  // Whether FreshPortal already holds the shipment is asked by the parse
+  // itself, before any product search, for a JSON and a PDF alike: the
+  // import log this used to be checked against knew only imports made here,
+  // by invoice number alone, and a PDF's number only after the whole parse.
   async function handleParseClick() {
     if (!jsonText.trim() && !pdfFile) return;
-    // Only the server can read an invoice number out of a PDF, so a PDF is
-    // parsed first and checked for a duplicate against the result. A JSON is
-    // still checked up front, where the answer costs nothing.
-    if (pdfFile) { await handleParse(); return; }
-    const dupes = await checkDuplicate(jsonText);
-    if (dupes.length > 0) {
-      setDuplicateWarning(dupes);
-      return;
-    }
     await handleParse();
   }
-
-  // ── Parse & match ──────────────────────────────────────────────────────
 
   // The loaded file, parsed and matched. A together parse leaves the
   // varieties inside combined mix boxes unmatched, which is most of the
   // product search on a mix-heavy invoice (see _resolve_and_match).
-  async function requestParse(mixMode: MixMode, supplierIdOverride?: string): Promise<ParseResult> {
+  async function requestParse(mixMode: MixMode, supplierIdOverride?: string, existing: ExistingMode = "compare"): Promise<ParseResult> {
     let res: Response;
     if (pdfFile) {
       // Sent as multipart: the file goes up untouched, since reading a
@@ -1129,6 +1198,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       form.append("pdf", pdfFile);
       form.append("with_matching", "true");
       form.append("mix_mode", mixMode);
+      form.append("existing", existing);
       if (supplierIdOverride) form.append("supplier_id", supplierIdOverride);
       res = await fetch(`${RAILWAY}/delivery/parse-pdf`, { method: "POST", body: form });
     } else {
@@ -1139,6 +1209,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           raw_json: JSON.parse(jsonText),
           with_matching: true,
           mix_mode: mixMode,
+          existing,
           ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
         }),
       });
@@ -1147,16 +1218,25 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     return res.json();
   }
 
-  async function handleParse(supplierIdOverride?: string, keepStage = false) {
+  // `existing` "check" for a file's first parse, which stops as soon as
+  // FreshPortal turns out to hold the shipment; "compare" once the user chose
+  // to go on, and for every parse after the first.
+  async function handleParse(supplierIdOverride?: string, keepStage = false, existing: ExistingMode = "check") {
     if (!jsonText.trim() && !pdfFile) return;
     parseSeqRef.current++;
     setMixReparsing(false);
     setMixReparseError("");
     setStage("parsing");
-    setDuplicateWarning([]);
+    setExistingFound(null);
+    setNotice("");
     setError("");
     try {
-      const data = await requestParse(mixTogether ? "together" : "separate", supplierIdOverride);
+      const data = await requestParse(mixTogether ? "together" : "separate", supplierIdOverride, existing);
+      if (data.existing?.length) {
+        setExistingFound(data);
+        setStage("idle");
+        return;
+      }
       setParseResult(data);
       setActiveOrderIdx(0);
       setLineEdits({});
@@ -1180,15 +1260,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         }
       }
       setApprovedKeys(preApproved);
-      if (pdfFile) {
-        // The invoice number was only readable once the server had parsed the
-        // PDF, so the duplicate warning arrives with the result rather than
-        // before it.
-        const dupes = await knownInvoices(
-          data.orders.map(o => o.id_invoice).filter(Boolean) as string[],
-        );
-        if (dupes.length > 0) setDuplicateWarning(dupes);
-      }
       if (!keepStage) setStage("shipment");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1249,27 +1320,55 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   async function handleSelectSupplier(supplier: FPSupplier) {
     setSupplierPickerOpen(false);
     setResolvedSupplier(supplier);
-    setExistingBatch(null);
 
     // Changing supplier only changes which fp_supplier_id is sent when the
     // shipment is created — product matches are not supplier-scoped, so there
     // is no need to re-parse the JSON or re-run matching here.
     const txCompany = parseResult?.orders[activeOrderIdx]?.tx_company ?? "";
-    try {
-      await fetch(`${RAILWAY}/catalogue/supplier-map`, {
+    await Promise.all([
+      recheckExisting(supplier.fp_supplier_id),
+      fetch(`${RAILWAY}/catalogue/supplier-map`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tx_company: txCompany, fp_supplier_id: supplier.fp_supplier_id }),
-      });
-    } catch {}
+      }).catch(() => {}),
+    ]);
+  }
+
+  // A supplier picked by hand is the first chance to ask FreshPortal whether
+  // it already holds these shipments: a supplier the parse could not resolve
+  // was never asked about, and a changed one was asked about the wrong
+  // supplier. A lookup that fails reads as none, since the import asks again
+  // before it writes anything.
+  async function recheckExisting(supplierId: string) {
+    if (!parseResult) return;
+    const seq = parseSeqRef.current;
+    const found = await Promise.all(parseResult.orders.map(async (o): Promise<ExistingBatch | null> => {
+      if (!o.id_invoice) return null;
+      try {
+        const res = await fetch(`${RAILWAY}/delivery/api/check`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ supplier_fp_id: supplierId, batch_number: o.id_invoice }),
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.exists ? data.batch : null;
+      } catch { return null; }
+    }));
+    if (seq !== parseSeqRef.current) return;
+    setParseResult(prev => prev && {
+      ...prev,
+      orders: prev.orders.map((o, i) => ({ ...o, existing_batch: found[i] ?? null })),
+    });
   }
 
   // ── Import to FreshPortal ───────────────────────────────────────────────
 
-  async function logImportResult(order: DeliveryOrder, fullLines: DeliveryLine[], result: DfgCreateResult) {
+  async function logImportResult(order: DeliveryOrder, fullLines: DeliveryLine[], result: DfgCreateResult, inPortal?: Set<DeliveryLine>) {
     if (!result.batch_id) return;
     try {
-      const productLines = computeLineStatuses(fullLines, result, lineEdits, approvedKeys).map(({ line, status, message }) => ({
+      const productLines = computeLineStatuses(fullLines, result, lineEdits, approvedKeys, inPortal).map(({ line, status, message }) => ({
         nm_variety: line.nm_variety,
         nu_length: line.nu_length,
         nu_bunches: line.nu_bunches,
@@ -1330,17 +1429,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setStage("error");
       return;
     }
-    if (!customerId) {
+    if (!customerId && !topUpBatch) {
       // Shouldn't be reachable via the UI — the shipment step gates on this —
       // but guard defensively since this function can also run on retry paths.
+      // A shipment already in FreshPortal needs no customer: it has its own.
       setStage("shipment");
       return;
     }
 
     // Check if all matched lines are approved — show modal if not
     if (!skipPartialCheck) {
-      const totalMatched = activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
-      const totalApproved = activeLines.filter(l => {
+      const totalMatched = candidateLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
+      const totalApproved = candidateLines.filter(l => {
         const dk = deliveryKey(l);
         return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk);
       }).length;
@@ -1359,15 +1459,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLogs([]);
     setImportResult(null);
     setError("");
+    setNotice("");
 
+    const approvedLines = activeLines.filter(line => approvedKeys.has(deliveryKey(line)));
     const orderWithEdits: DeliveryOrder = {
       ...order,
       // Already in `lines` when sent together; the other view is not sent.
       mix_lines: undefined,
+      existing_batch: undefined,
       dt_fly: orderDateOverride || order.dt_fly,
-      lines: activeLines
-        .filter(line => approvedKeys.has(deliveryKey(line)))
-        .map(withEdits),
+      lines: approvedLines.map(withEdits),
     };
     // Skipped means no product even after the user's own pick: read from the
     // parse alone, a line matched by hand was listed as skipped although it
@@ -1375,40 +1476,53 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const skippedUnmatched = activeLines.map(withEdits).filter(l => !l.fp_product_id).map(l => l.nm_product);
 
     try {
+      // Asked again right before writing, whatever the parse found: the DFG
+      // API does not stop a second shipment of the same number itself.
       const checkData = await loggedRequest(
         `${RAILWAY}/delivery/api/check`,
         { supplier_fp_id: supplierFpId, batch_number: order.id_invoice },
         td.checkingExisting,
       );
+      const found: ExistingBatch | null = checkData.exists ? checkData.batch : null;
 
-      if (checkData.exists) {
-        const batch = checkData.batch;
-        setExistingBatch({ id: batch.id, number: batch.number });
-        const existingKeys = new Set(
-          (batch.stock_entries ?? []).map((se: { product_number: string; characteristics?: { length?: number } }) =>
-            `${se.product_number}|${se.characteristics?.length ?? 0}`)
-        );
-        const missingLines = orderWithEdits.lines.filter(l => !existingKeys.has(`${l.fp_product_id}|${l.nu_length}`));
+      // FreshPortal has changed since the screen asked: the shipment turned up
+      // (created meanwhile, or under a supplier picked since), or it is gone.
+      // Nothing is written; the user is taken back to see what that means.
+      // Before, a shipment found here was topped up without asking, and a
+      // failure there was the first the user heard of it (2026-09-28).
+      if (!found !== !topUpBatch) {
+        setOrderExistingBatch(activeOrderIdx, found);
+        setNotice(found ? td.foundAtImport(found.number) : td.goneAtImport(topUpBatch?.number ?? order.id_invoice));
+        setStage(found ? "preview" : "shipment");
+        return;
+      }
 
+      if (found) {
+        // Compared against what FreshPortal holds now, which the screen then
+        // shows too, so what was sent and what the result says agree.
+        setOrderExistingBatch(activeOrderIdx, found);
+        const { inPortal } = compareWithPortal(activeLines, found.stock_entries, withEdits);
+        const missingLines = approvedLines.filter(l => !inPortal.has(l)).map(withEdits);
         if (missingLines.length === 0) {
-          setError(td.batchAlreadyExistsComplete(batch.number));
-          setStage("error");
+          setNotice(td.batchAlreadyExistsComplete(found.number));
+          setStage("preview");
           return;
         }
 
+        const topUpOrder: DeliveryOrder = { ...orderWithEdits, lines: missingLines };
         const retryData = await loggedRequest(
           `${RAILWAY}/delivery/api/retry`,
-          { batch_id: batch.id, supplier_fp_id: supplierFpId, order: { ...orderWithEdits, lines: missingLines } },
-          td.addingMissingToExisting(batch.number, missingLines.length),
+          { batch_id: found.id, supplier_fp_id: supplierFpId, invoice_id: found.invoice_id, order: topUpOrder },
+          td.addingMissingToExisting(found.number, missingLines.length),
         );
         const result: DfgCreateResult = {
-          batch_id: retryData.batch_id, number: retryData.number, created: false,
-          stock_entries_ok: retryData.stock_entries_ok, errors: retryData.errors,
-          skipped_unmatched: skippedUnmatched, batch_url: retryData.batch_url,
-          invoice_id: retryData.invoice_id, invoice_url: retryData.invoice_url,
+          batch_id: retryData.batch_id ?? found.id, number: retryData.number || found.number, created: false,
+          stock_entries_ok: retryData.stock_entries_ok ?? [], errors: retryData.errors ?? [],
+          skipped_unmatched: skippedUnmatched, batch_url: retryData.batch_url || found.batch_url,
+          invoice_id: retryData.invoice_id ?? found.invoice_id, invoice_url: retryData.invoice_url || found.invoice_url,
         };
         setImportResult(result);
-        await logImportResult(orderWithEdits, activeLines, result);
+        await logImportResult(topUpOrder, activeLines, result, inPortal);
         setStage("done");
         return;
       }
@@ -1453,10 +1567,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!retryLines.length) return;
 
     setRetrying(true);
+    setError("");
     try {
       const retryData = await loggedRequest(
         `${RAILWAY}/delivery/api/retry`,
-        { batch_id: importResult.batch_id, supplier_fp_id: supplierFpId, order: { ...order, mix_lines: undefined, lines: retryLines } },
+        {
+          batch_id: importResult.batch_id,
+          supplier_fp_id: supplierFpId,
+          invoice_id: importResult.invoice_id ?? null,
+          order: { ...order, mix_lines: undefined, existing_batch: undefined, lines: retryLines },
+        },
         td.retryingBtn,
       );
       setImportResult(prev => prev ? {
@@ -1566,13 +1686,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setJsonText("");
     setPdfFile(null);
     setFileLoaded(false);
-    setDuplicateWarning([]);
+    setExistingFound(null);
+    setNotice("");
     setParseResult(null);
     logsRef.current = [];
     setLogs([]);
     setError("");
     setImportResult(null);
-    setExistingBatch(null);
     setCustomerId("");
     // An import can create an invoice, so what was cached before it no longer
     // describes the customer.
@@ -1597,7 +1717,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setSortDir("asc");
     setColFilters({});
     setTableSearch("");
-    setDuplicateWarning([]);
     setMultiFileError(false);
     setFileLoaded(false);
   }
@@ -1619,6 +1738,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Render ──────────────────────────────────────────────────────────────
 
   const order = parseResult?.orders[activeOrderIdx];
+  // The shipments a first parse found already in FreshPortal, if it stopped.
+  const existingHits = existingFound?.existing ?? [];
 
   const displayLines = useMemo(() => {
     let lines = [...activeLines];
@@ -1691,10 +1812,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // from the same approval/match state used to build the request, cross-
   // referenced against the result's errors/skipped_unmatched (stock_entries_ok's
   // shape isn't reliably typed, so success is inferred by elimination instead).
-  const doneLineStatuses = useMemo((): { line: DeliveryLine; status: DoneLineStatus; message: string }[] => {
-    if (!importResult) return [];
-    return computeLineStatuses(activeLines, importResult, lineEdits, approvedKeys);
-  }, [activeLines, importResult, lineEdits, approvedKeys]);
+  // Not memoised: `portal` is worked out afresh on every render anyway.
+  const doneLineStatuses = importResult
+    ? computeLineStatuses(activeLines, importResult, lineEdits, approvedKeys, portal?.inPortal)
+    : [];
 
   type AllTourStep = TourStep & { tourStage: "idle" | "shipment" | "preview" | "done" };
 
@@ -1747,7 +1868,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const stepActions: ((() => void) | null)[] = tourOpen ? [null, null, null, null] : [
     stage === "shipment" || stage === "preview" ? handleStartOver : stage === "done" ? reset : null,
     stage === "preview" ? () => setStage("shipment") : null,
-    stage === "shipment" && resolvedSupplier && customerId ? () => setStage("preview") : null,
+    stage === "shipment" && resolvedSupplier && (customerId || topUpBatch) ? () => setStage("preview") : null,
     null,
   ];
 
@@ -1815,38 +1936,73 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         </div>
       )}
 
-      {/* Duplicate invoice — rendered at any stage, not just idle: a PDF's
-          invoice number is only known once the server has parsed it, so the
-          warning arrives after the result rather than before it. */}
-      {duplicateWarning.length > 0 && (
-        <>
-          <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setDuplicateWarning([])} />
-          <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}>
-            <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-xl">
-                ⚠
+      {/* Already in FreshPortal. The file's first parse stopped before any
+          product search, so the user hears it at once instead of after the
+          whole review (user, 2026-09-28). Edit parses the file after all and
+          compares it with the shipment; Cancel lets the file go. */}
+      {existingFound && existingHits.length > 0 && (() => {
+        const hits = existingHits;
+        const total = existingFound.invoices_in_file ?? hits.length;
+        return (
+          <>
+            <div className="fixed inset-0 bg-black/60 z-[300]" />
+            <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}>
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-xl">
+                  ⚠
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-brick">{td.existsTitle}</p>
+                  <p className="text-xs text-ink-3 mt-1 leading-relaxed">
+                    {total > 1
+                      ? td.existsSomeInFile(hits.length, total)
+                      : td.existsBody(hits[0].id_invoice, existingFound.supplier_nm || existingFound.supplier_id)}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-sm font-bold text-brick">{td.duplicateWarningTitle}</p>
-                <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.duplicateWarningMsg(duplicateWarning.join(", "))}</p>
+              {hits.map(b => (
+                <div key={b.id} className="rounded-xl border border-border bg-muted p-3 flex flex-col gap-2 text-xs">
+                  <p className="text-sm font-semibold text-ink">{td.existsShipment(b.number)}</p>
+                  <div className="flex flex-col gap-0.5 text-ink-2">
+                    {b.created_at && (
+                      <span>{td.existsCreated}: <span className="font-medium text-ink">{invoiceDayLabel(b.created_at.slice(0, 10), td)}</span></span>
+                    )}
+                    <span>{td.existsAllocatedTo}: <span className="font-medium text-ink">{b.customer_name || td.existsOnStock}</span></span>
+                    <span>{td.existsLines(b.stock_entries.length)}</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {b.batch_url && <FpLink href={b.batch_url}>{td.viewBatch}</FpLink>}
+                    {b.invoice_url && <FpLink href={b.invoice_url} tone="sand">{td.viewInvoice}</FpLink>}
+                  </div>
+                </div>
+              ))}
+              <p className="text-[11px] text-ink-3 leading-relaxed">{td.existsEditHint}</p>
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={reset}
+                  className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
+                >
+                  {t.common.cancel}
+                </button>
+                <button
+                  autoFocus
+                  onClick={() => handleParse(undefined, false, "compare")}
+                  className="h-9 px-5 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 transition-colors"
+                >
+                  {td.existsEditBtn}
+                </button>
               </div>
             </div>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => { setDuplicateWarning([]); if (pdfFile) reset(); }}
-                className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
-              >
-                {t.common.cancel}
-              </button>
-              <button
-                onClick={() => { setDuplicateWarning([]); if (!pdfFile) handleParse(); }}
-                className="h-9 px-5 rounded-xl text-sm font-semibold bg-brick text-white hover:bg-brick/90 transition-colors"
-              >
-                {pdfFile ? t.common.continueBtn : td.parseBtn}
-              </button>
-            </div>
-          </div>
-        </>
+          </>
+        );
+      })()}
+
+      {/* Why the import brought the user back here instead of writing anything. */}
+      {notice && (stage === "shipment" || stage === "preview") && (
+        <div role="status" className="flex items-start gap-2 text-xs rounded-xl px-3 py-2 border text-ink bg-sand/60 border-taupe/40">
+          <span className="flex-1 leading-relaxed">{notice}</span>
+          <button onClick={() => setNotice("")} className="text-ink-3 hover:text-ink transition-colors">✕</button>
+        </div>
       )}
 
       {/* ── IDLE / INPUT ── */}
@@ -1888,7 +2044,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <div className="flex items-center gap-2">
                 {(jsonText || pdfFile) && (
                   <button
-                    onClick={() => { setJsonText(""); setPdfFile(null); setDuplicateWarning([]); setMultiFileError(false); setFileLoaded(false); }}
+                    onClick={() => { setJsonText(""); setPdfFile(null); setExistingFound(null); setMultiFileError(false); setFileLoaded(false); }}
                     className="h-7 px-3 rounded-lg text-xs font-medium text-brick border border-brick/30 hover:bg-blush/40 transition-colors"
                   >
                     {td.clearJson}
@@ -1910,7 +2066,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <button
               ref={refParseBtn}
               onClick={handleParseClick}
-              disabled={(!jsonText.trim() && !pdfFile) || duplicateWarning.length > 0}
+              disabled={(!jsonText.trim() && !pdfFile) || !!existingFound}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
             >
               {td.parseBtn}
@@ -2042,7 +2198,22 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
           </div>
 
-          {/* Assign to customer — required before continuing */}
+          {/* A shipment already in FreshPortal keeps where it went: the
+              missing products follow it, so there is no customer to pick. */}
+          {topUpBatch ? (
+          <div ref={refCustomerCard} className="card-enter rounded-2xl border-2 border-taupe/40 bg-sand/40 p-4 flex flex-col gap-2">
+            <p className="text-sm font-semibold text-ink">{td.topUpCardTitle(topUpBatch.number)}</p>
+            <div className="flex flex-col gap-0.5 text-xs text-ink-2">
+              <span>{td.existsAllocatedTo}: <span className="font-medium text-ink">{topUpBatch.customer_name || td.existsOnStock}</span></span>
+              <span>{topUpBatch.invoice_id ? td.topUpCardInvoice : td.topUpCardStock}</span>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {topUpBatch.batch_url && <FpLink href={topUpBatch.batch_url}>{td.viewBatch}</FpLink>}
+              {topUpBatch.invoice_url && <FpLink href={topUpBatch.invoice_url} tone="sand">{td.viewInvoice}</FpLink>}
+            </div>
+          </div>
+          ) : (
+          /* Assign to customer — required before continuing */
           <div ref={refCustomerCard} className="card-enter rounded-2xl border-2 border-emerald/25 bg-emerald-light p-4 flex flex-col gap-2">
             <label className="text-sm font-semibold text-emerald-dark flex items-center gap-1.5">
               {td.customerIdLabel}
@@ -2114,6 +2285,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </div>
             )}
           </div>
+          )}
 
           {/* Continue to products */}
           <div className="flex items-center justify-between gap-3">
@@ -2123,12 +2295,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <div className="flex flex-col items-end gap-1">
               {!resolvedSupplier ? (
                 <span className="text-[11px] font-semibold text-brick">{td.supplierRequiredHint}</span>
-              ) : !customerId && (
+              ) : !customerId && !topUpBatch && (
                 <span className="text-[11px] text-brick">{td.customerRequiredHint}</span>
               )}
               <button
                 onClick={() => setStage("preview")}
-                disabled={!resolvedSupplier || !customerId}
+                disabled={!resolvedSupplier || (!customerId && !topUpBatch)}
                 className="h-10 px-6 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
               >
                 {td.continueToProductsBtn} →
@@ -2201,8 +2373,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* Partial approve confirmation modal */}
           {partialApproveOpen && (() => {
-            const totalMatched = activeLines.filter((l: DeliveryLine) => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
-            const totalApproved = activeLines.filter((l: DeliveryLine) => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length;
+            const totalMatched = candidateLines.filter((l: DeliveryLine) => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
+            const totalApproved = candidateLines.filter((l: DeliveryLine) => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length;
             return (
               <>
                 <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPartialApproveOpen(false)} />
@@ -2262,6 +2434,20 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </button>
             </div>
           </div>
+
+          {/* What the shipment already in FreshPortal has of this file: those
+              lines are marked in the table and left out of the import. */}
+          {portal && topUpBatch && (
+            <div className="rounded-xl px-3 py-2.5 border text-xs text-ink bg-sand/60 border-taupe/40 flex flex-col gap-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold">{td.topUpCardTitle(topUpBatch.number)}</span>
+                {topUpBatch.batch_url && <FpLink href={topUpBatch.batch_url} tone="sand">{td.viewBatch}</FpLink>}
+              </div>
+              <span>{td.topUpSummary(portal.inPortal.size, activeLines.length, candidateLines.length)}</span>
+              {portal.portalOnly > 0 && <span className="text-ink-3">{td.topUpPortalOnly(portal.portalOnly)}</span>}
+              {candidateLines.length === 0 && <span className="font-semibold text-emerald-dark">{td.topUpNothingMissing}</span>}
+            </div>
+          )}
 
           {unmatchedCount > 0 && (
             <button
@@ -2349,14 +2535,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   : "bg-emerald/8 border-emerald/30 text-emerald hover:bg-emerald/15"}`}
             >
               {td.approved(
-                activeLines.filter(l => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length,
-                activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length
+                candidateLines.filter(l => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length,
+                candidateLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length
               )}
               {showOnlyUnapproved ? " ✕" : ""}
             </button>
             <button
               onClick={() => {
-                const all = new Set(activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l)));
+                const all = new Set(candidateLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l)));
                 setApprovedKeys(all);
               }}
               className="h-6 px-2 rounded-md text-[11px] border border-emerald/40 text-emerald hover:bg-emerald/8 transition-colors"
@@ -2389,10 +2575,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             />
             <button
               onClick={() => handleImport()}
-              disabled={mixReparsing || !activeLines.some(l => approvedKeys.has(deliveryKey(l)))}
+              disabled={mixReparsing || sendCount === 0}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
-              {td.importBtn}
+              {topUpBatch ? td.addMissingBtn(sendCount) : td.importBtn}
             </button>
           </div>
 
@@ -2438,14 +2624,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   const isApproved = approvedKeys.has(dk);
                   const hasMatch = !!(edit?.fp_product_id ?? line.fp_product_id);
                   const badge = MATCH_BADGE[edit ? "cached" : line.match_method] ?? MATCH_BADGE.none;
+                  // Already in the shipment in FreshPortal: shown, not sent.
+                  const inPortal = !!portal?.inPortal.has(line);
 
                   return (
                     <tr key={i} className={`border-b border-border/60 transition-colors hover:bg-muted/50
-                      ${line.match_method === "none" && !edit ? "opacity-60" : ""}
-                      ${isApproved ? "bg-sage/25" : ""}`}>
+                      ${inPortal ? "opacity-50" : line.match_method === "none" && !edit ? "opacity-60" : ""}
+                      ${isApproved && !inPortal ? "bg-sage/25" : ""}`}>
                       {/* Approve checkbox */}
                       <td className="px-2 py-2 text-center">
-                        {hasMatch && (
+                        {hasMatch && !inPortal && (
                           <input
                             type="checkbox"
                             checked={isApproved}
@@ -2483,6 +2671,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             {line.nm_variety}
                           </HoverCard>
                         ) : line.nm_variety}
+                        {inPortal && (
+                          <span
+                            title={td.inPortalTooltip}
+                            className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium bg-sand text-ink border-taupe/40"
+                          >
+                            {td.inPortalTag}
+                          </span>
+                        )}
                         {displayCatName && displayCatName !== line.nm_variety && (
                           <div className="text-ink-3 font-normal">{displayCatName}</div>
                         )}
@@ -2877,7 +3073,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 {importResult.errors.length === 0 ? "✓" : "!"}
               </div>
               <h2 className={`text-lg font-bold mb-1 ${importResult.errors.length === 0 ? "text-emerald" : "text-brick"}`}>
-                {importResult.errors.length === 0 ? td.batchCreated : td.importPartial}
+                {topUpBatch
+                  ? (importResult.errors.length === 0 ? td.topUpDone : td.topUpPartial)
+                  : (importResult.errors.length === 0 ? td.batchCreated : td.importPartial)}
               </h2>
               {importResult.batch_id && (
                 <p className="text-xs text-ink-3 font-mono">{td.batchId}: <span className="font-semibold text-ink-2">{importResult.number || importResult.batch_id}</span></p>
@@ -2888,40 +3086,15 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               {(importResult.batch_url || importResult.invoice_url) && (
                 <div className="mt-2 flex items-center gap-2 flex-wrap justify-center">
                   {importResult.batch_url && (
-                    <a
-                      href={importResult.batch_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={td.batchUrl}
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
-                    >
-                      {td.viewBatch}
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                        <path d="M15 3h6v6"/>
-                        <path d="M10 14 21 3"/>
-                      </svg>
-                    </a>
+                    <FpLink href={importResult.batch_url} title={td.batchUrl}>{td.viewBatch}</FpLink>
                   )}
                   {importResult.invoice_url && (
-                    <a
-                      href={importResult.invoice_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-taupe/40 text-ink bg-sand/60 hover:bg-sand transition-colors"
-                    >
-                      {td.viewInvoice}
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                        <path d="M15 3h6v6"/>
-                        <path d="M10 14 21 3"/>
-                      </svg>
-                    </a>
+                    <FpLink href={importResult.invoice_url} tone="sand">{td.viewInvoice}</FpLink>
                   )}
                 </div>
               )}
-              {existingBatch && (
-                <p className="text-xs text-ink-2 mt-1">{td.addedToExistingBatch(existingBatch.number)}</p>
+              {topUpBatch && (
+                <p className="text-xs text-ink-2 mt-1">{td.addedToExistingBatch(topUpBatch.number)}</p>
               )}
 
               {/* Stat chips */}
@@ -2948,6 +3121,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     delay="120ms"
                   />
                 )}
+                {portal && portal.inPortal.size > 0 && (
+                  <StatChip
+                    value={portal.inPortal.size}
+                    label={td.statInPortalN(portal.inPortal.size)}
+                    color="neutral"
+                    delay="180ms"
+                  />
+                )}
               </div>
             </div>
 
@@ -2971,6 +3152,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 >
                   {retrying ? td.retryingBtn : td.retryBtn}
                 </button>
+                {/* A retry that failed as a whole stays on this screen. */}
+                {error && (
+                  <p className="mt-1 text-[11px] text-brick break-words">
+                    {INVOICE_REQUIRED.test(error) ? td.topUpNeedsInvoice : error}
+                  </p>
+                )}
               </div>
             )}
 
@@ -2997,6 +3184,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       failed:       { label: td.lineStatusFailed,       cls: "bg-blush/60 text-brick border-brick/30" },
                       skipped:      { label: td.lineStatusSkipped,      cls: "bg-blush/30 text-brick border-blush" },
                       notApproved:  { label: td.lineStatusNotApproved,  cls: "bg-muted text-ink-3 border-border" },
+                      inPortal:     { label: td.lineStatusInPortal,     cls: "bg-sand/60 text-ink border-taupe/40" },
                     }[status];
                     return (
                       <div key={i} className="flex items-start justify-between gap-2 py-1 border-b border-border/40 last:border-0">
@@ -3052,6 +3240,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         <div key="error" className="step-enter flex flex-col gap-3">
           <div className="p-4 rounded-2xl bg-blush/40 border border-brick/30">
             <p className="text-sm font-semibold text-brick">{t.common.error}</p>
+            {/* FreshPortal's refusal to top up a shipment, said in words the
+                user can act on; its own text stays below for whoever reports it. */}
+            {INVOICE_REQUIRED.test(error) && (
+              <div className="mt-1 flex flex-col gap-2">
+                <p className="text-sm text-ink leading-relaxed">{td.topUpNeedsInvoice}</p>
+                {topUpBatch?.batch_url && (
+                  <div><FpLink href={topUpBatch.batch_url}>{td.viewBatch}</FpLink></div>
+                )}
+              </div>
+            )}
             <p className="text-xs text-brick/80 mt-1 font-mono">{error}</p>
           </div>
           <button onClick={reset} className="self-end h-9 px-5 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors">
@@ -3063,9 +3261,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   );
 }
 
-function StatChip({ value, label, color, delay }: { value: number; label: string; color: "emerald" | "red" | "amber"; delay: string }) {
+function StatChip({ value, label, color, delay }: { value: number; label: string; color: "emerald" | "red" | "amber" | "neutral"; delay: string }) {
   const colours = {
     emerald: "bg-sage/60 text-emerald-dark border-emerald/25",
+    neutral: "bg-sand/60 text-ink border-taupe/40",
     red:     "bg-blush/60 text-brick border-brick/30",
     amber:   "bg-blush/30 text-brick border-blush",
   };
@@ -3077,6 +3276,34 @@ function StatChip({ value, label, color, delay }: { value: number; label: string
       <span className="text-base font-bold">{value}</span>
       <span className="text-xs font-normal opacity-80">{label.replace(/^\d+\s*/, "")}</span>
     </div>
+  );
+}
+
+// Opens a shipment or an invoice in FreshPortal, in a new tab.
+function FpLink({ href, children, title, tone = "emerald" }: {
+  href: string;
+  children: React.ReactNode;
+  title?: string;
+  tone?: "emerald" | "sand";
+}) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={title}
+      className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border transition-colors
+        ${tone === "emerald"
+          ? "border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15"
+          : "border-taupe/40 text-ink bg-sand/60 hover:bg-sand"}`}
+    >
+      {children}
+      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+        <path d="M15 3h6v6"/>
+        <path d="M10 14 21 3"/>
+      </svg>
+    </a>
   );
 }
 
