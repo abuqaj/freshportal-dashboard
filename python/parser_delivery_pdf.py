@@ -1553,7 +1553,7 @@ def parse_delivery_pdf(pdf_bytes: bytes) -> list[DeliveryOrder]:
     doc = extract_pdf(pdf_bytes)
     spec = detect_pdf_layout(doc.text)
     if not spec:
-        known = ", ".join(s.name for s in _specs())
+        known = ", ".join(sorted(s.name for s in _specs()))
         raise PdfParseError(
             f"this PDF is not in a supported supplier layout ({known}). Every supplier "
             f"prints a different invoice, so each template needs to be described once "
