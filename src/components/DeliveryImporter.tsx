@@ -168,7 +168,32 @@ interface ExistingBatch {
 type DeliveryWarning =
   | { code: "bunches_split_by_invoice_total"; variety: string; length: number; boxes: number; bunches_in_file: number; bunches_per_box: number }
   | { code: "invoice_total_mismatch"; invoice_total: number; file_total: number }
-  | { code: "box_count_mismatch"; invoice_boxes: number; file_boxes: number };
+  | { code: "box_count_mismatch"; invoice_boxes: number; file_boxes: number }
+  // Read with a layout drafted automatically, which IT has not checked yet.
+  | { code: "provisional_pdf_layout"; layout_id: number; supplier: string; assumptions: string[] };
+
+// A PDF no layout reads: saved on the server for IT, and offered for a
+// temporary layout (python/pdf_layout_store.py).
+interface UnknownLayoutInfo {
+  code: "unknown_pdf_layout";
+  message: string;
+  invoice_id: number | null;
+  status?: string;
+  drafts_left_today?: number;
+  drafts_per_day?: number;
+  drafting_available?: boolean;
+}
+
+class UnknownLayoutError extends Error {
+  info: UnknownLayoutInfo;
+  constructor(info: UnknownLayoutInfo) {
+    super(info.message);
+    this.info = info;
+  }
+}
+
+// How often a running draft is asked how it is going.
+const LAYOUT_DRAFT_POLL_MS = 4000;
 
 interface FPSupplier {
   fp_supplier_id: string;
@@ -941,6 +966,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // supplier's printed layout, so there is nothing useful to show in the
   // textarea and nothing the browser can check before parsing.
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  // A PDF no layout reads: what the server said (the dialog is open while
+  // set), the saved invoice a temporary layout is being drafted for, and
+  // how that ended when it did not end in a layout.
+  const [unknownLayout, setUnknownLayout] = useState<UnknownLayoutInfo | null>(null);
+  const [layoutDraftId, setLayoutDraftId] = useState<number | null>(null);
+  const [layoutNote, setLayoutNote] = useState<
+    { kind: "cancelled" } | { kind: "failed"; detail: string } | { kind: "limit"; perDay: number } | null
+  >(null);
 
   // Keyed by variety name only (length excluded) — a confirmed product match is a
   // variety-identity decision, so it applies to every line sharing the name in this
@@ -1252,7 +1285,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         }),
       });
     }
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      const body = await res.text();
+      if (pdfFile && res.status === 422) {
+        try {
+          const detail = JSON.parse(body).detail;
+          if (detail?.code === "unknown_pdf_layout") throw new UnknownLayoutError(detail as UnknownLayoutInfo);
+        } catch (e) {
+          if (e instanceof UnknownLayoutError) throw e;
+        }
+      }
+      throw new Error(body);
+    }
     return res.json();
   }
 
@@ -1268,6 +1312,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setExistingFound(null);
     setNotice("");
     setError("");
+    setLayoutNote(null);
     try {
       const data = await requestParse(mixTogether ? "together" : "separate", supplierIdOverride, existing);
       if (data.existing?.length) {
@@ -1301,10 +1346,82 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setApprovedKeys(preApproved);
       if (!keepStage) setStage("shipment");
     } catch (err: unknown) {
+      if (err instanceof UnknownLayoutError) {
+        // Someone is already drafting for this very file: follow that draft.
+        if (err.info.status === "drafting" && err.info.invoice_id != null) {
+          setLayoutDraftId(err.info.invoice_id);
+          return;
+        }
+        setUnknownLayout(err.info);
+        setStage("idle");
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
       setStage("error");
     }
   }
+
+  // ── A PDF no layout reads (user, 2026-09-28): the server has saved it for
+  // IT; the user may ask for a temporary layout, within a daily limit, and
+  // cancel it while it is being drafted. The draft runs on the server; this
+  // screen follows it, and parses the file again once it has a layout. ──
+  async function startLayoutDraft(invoiceId: number) {
+    setUnknownLayout(null);
+    setLayoutNote(null);
+    try {
+      const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${invoiceId}/draft`, { method: "POST" });
+      if (!res.ok) {
+        const detail = await res.json().then(b => b.detail).catch(() => null);
+        if (detail?.code === "not_waiting") { setLayoutDraftId(invoiceId); return; }
+        setLayoutNote(detail?.code === "draft_limit"
+          ? { kind: "limit", perDay: detail.drafts_per_day }
+          : { kind: "failed", detail: typeof detail === "string" ? detail : detail?.message ?? "" });
+        setStage("idle");
+        return;
+      }
+      setLayoutDraftId(invoiceId);
+    } catch (err) {
+      setLayoutNote({ kind: "failed", detail: err instanceof Error ? err.message : String(err) });
+      setStage("idle");
+    }
+  }
+
+  async function cancelLayoutDraft() {
+    const id = layoutDraftId;
+    if (id == null) return;
+    setLayoutDraftId(null);
+    setStage("idle");
+    setLayoutNote({ kind: "cancelled" });
+    try {
+      await fetch(`${RAILWAY}/delivery/pdf-layouts/${id}/cancel`, { method: "POST" });
+    } catch {}
+  }
+
+  useEffect(() => {
+    if (layoutDraftId == null) return;
+    setStage("parsing");
+    let stopped = false;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${layoutDraftId}`);
+        if (!res.ok || stopped) return;
+        const row: { status: string; error?: string | null } = await res.json();
+        if (stopped || row.status === "drafting") return;
+        stopped = true;
+        setLayoutDraftId(null);
+        if (row.status === "provisional" || row.status === "verified") {
+          handleParse();
+        } else {
+          setLayoutNote(row.status === "failed"
+            ? { kind: "failed", detail: row.error ?? "" }
+            : { kind: "cancelled" });
+          setStage("idle");
+        }
+      } catch {}
+    }, LAYOUT_DRAFT_POLL_MS);
+    return () => { stopped = true; clearInterval(timer); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutDraftId]);
 
   // Switching to together never parses: every answer holds that view. The
   // separate view needs the varieties inside combined mix boxes matched, which
@@ -1727,6 +1844,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setStage("idle");
     setJsonText("");
     setPdfFile(null);
+    setUnknownLayout(null);
+    setLayoutDraftId(null);
+    setLayoutNote(null);
     setFileLoaded(false);
     setExistingFound(null);
     setNotice("");
@@ -1977,9 +2097,85 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
             </svg>
           </div>
-          <p className="text-sm font-semibold text-ink">{td.parsing}</p>
+          {layoutDraftId == null ? (
+            <p className="text-sm font-semibold text-ink">{td.parsing}</p>
+          ) : (
+            <>
+              <p className="text-sm font-semibold text-ink text-center max-w-sm">{td.layoutDrafting}</p>
+              {/* Stops the model on the server and clears what it made; the
+                  invoice stays saved for IT (user, 2026-09-28). */}
+              <button
+                onClick={cancelLayoutDraft}
+                className="h-9 px-5 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
+              >
+                {td.layoutDraftCancel}
+              </button>
+            </>
+          )}
         </div>
       )}
+
+      {/* How a temporary layout ended when it did not end in one. */}
+      {stage === "idle" && layoutNote && (
+        <div className={`text-xs rounded-xl px-3 py-2 border leading-relaxed ${layoutNote.kind === "cancelled"
+          ? "text-ink bg-sand/60 border-taupe/40" : "text-brick bg-blush/30 border-blush"}`}>
+          {layoutNote.kind === "cancelled" ? td.layoutDraftCancelled
+            : layoutNote.kind === "limit" ? td.unknownLayoutNoneLeft(layoutNote.perDay)
+            : td.layoutDraftFailed}
+          {layoutNote.kind === "failed" && layoutNote.detail && (
+            <p className="mt-1 font-mono text-[11px] text-brick/80">{layoutNote.detail}</p>
+          )}
+        </div>
+      )}
+
+      {/* A PDF no layout reads: it is saved for IT, and a temporary layout
+          may be drafted now, within a daily limit — waiting for IT is what
+          the dialog recommends (user, 2026-09-28). */}
+      {unknownLayout && (() => {
+        const left = unknownLayout.drafts_left_today ?? 0;
+        const perDay = unknownLayout.drafts_per_day ?? 0;
+        const saved = unknownLayout.invoice_id != null;
+        const available = saved && unknownLayout.drafting_available !== false;
+        const canTry = available && left > 0;
+        return (
+          <>
+            <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setUnknownLayout(null)} />
+            <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}>
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-xl">⚠</div>
+                <div className="flex flex-col gap-2">
+                  <p className="text-sm font-bold text-brick">{td.unknownLayoutTitle}</p>
+                  <p className="text-xs text-ink-3 leading-relaxed">{saved ? td.unknownLayoutBody : td.unknownLayoutNotSaved}</p>
+                  {saved && (
+                    <p className="text-xs font-medium text-ink leading-relaxed">
+                      {!available ? td.unknownLayoutUnavailable
+                        : left > 0 ? td.unknownLayoutLeft(left, perDay)
+                        : td.unknownLayoutNoneLeft(perDay)}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2 justify-end flex-wrap">
+                <button
+                  autoFocus
+                  onClick={() => setUnknownLayout(null)}
+                  className="h-9 px-5 rounded-xl text-sm font-semibold border-2 border-emerald text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
+                >
+                  {td.unknownLayoutWait}
+                </button>
+                {canTry && (
+                  <button
+                    onClick={() => startLayoutDraft(unknownLayout.invoice_id as number)}
+                    className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
+                  >
+                    {td.unknownLayoutTry}
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {/* Already in FreshPortal. The file's first parse stopped before any
           product search, so the user hears it at once instead of after the
@@ -2508,7 +2704,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           )}
 
           {/* What the parser changed or could not reconcile */}
-          {(order.warnings ?? []).map((w, i) => (
+          {(order.warnings ?? []).map((w, i) => w.code === "provisional_pdf_layout" ? (
+            // Read with a layout drafted automatically: say so, with what it
+            // assumed, until IT has checked it.
+            <div key={i} className="text-xs rounded-xl px-3 py-2 border text-brick bg-blush/30 border-blush leading-relaxed">
+              ⚠ {td.warnProvisionalLayout(w.supplier)}
+              {w.assumptions.length > 0 && (
+                <div className="mt-1">
+                  <span className="font-medium">{td.provisionalAssumptions}</span>
+                  <ul className="list-disc ml-5">
+                    {w.assumptions.map((a, j) => <li key={j}>{a}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ) : (
             <div key={i} className="text-xs rounded-xl px-3 py-2 border text-brick bg-blush/30 border-blush">
               ⚠ {w.code === "bunches_split_by_invoice_total"
                 ? td.warnBunchesSplit(w.variety, w.length, w.boxes, w.bunches_in_file, w.bunches_per_box)

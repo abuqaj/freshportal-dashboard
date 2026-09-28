@@ -20,7 +20,7 @@ import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -82,7 +82,9 @@ from auth_middleware import require_permission, require_any_permission, get_toke
 from kb_routes import router as kb_router
 from parser_delivery import (parse_delivery_json, order_to_dict, resolve_growers, mix_box_lines,
                              DeliveryOrder, DeliveryLine)
-from parser_delivery_pdf import parse_delivery_pdf, PdfParseError
+from parser_delivery_pdf import parse_delivery_pdf, PdfParseError, PdfUnknownLayoutError
+import pdf_layout_ai
+import pdf_layout_store
 from delivery_product_match import match_order_to_products
 from dfg_api_client import (
     DfgApiError, resolve_supplier, get_batch as dfg_get_batch, batch_summary,
@@ -2879,7 +2881,7 @@ def delivery_parse_pdf(
     with_matching: bool = Form(True),
     mix_mode: str = Form("together"),
     existing: str = Form("check"),
-    _: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
+    user: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
 ):
     """Same as /delivery/parse, for suppliers who send a printed invoice
     instead of a data feed.
@@ -2914,6 +2916,12 @@ def delivery_parse_pdf(
 
         try:
             orders = parse_delivery_pdf(content)
+        except PdfUnknownLayoutError as exc:
+            # Saved for IT, and offered for a temporary layout: the screen
+            # asks the user first (pdf_layout_store).
+            log.warning("[delivery/parse-pdf] %s: no layout reads it", pdf.filename)
+            raise HTTPException(422, _unknown_layout_detail(pdf.filename or "invoice.pdf",
+                                                            content, user, str(exc)))
         except PdfParseError as exc:
             # Both an unknown layout and a failed checksum are the user's to
             # act on, not a server fault — the message says what to do next.
@@ -2929,6 +2937,146 @@ def delivery_parse_pdf(
     except Exception as exc:
         log.exception("[delivery/parse-pdf] unexpected error")
         raise HTTPException(500, f"Internal error: {exc}")
+
+
+def _username(payload: dict) -> str:
+    return str(payload.get("username") or payload.get("sub") or "unknown")
+
+
+def _unknown_layout_detail(file_name: str, content: bytes, user: dict, message: str) -> dict:
+    """What the delivery screen needs to offer a temporary layout: the saved
+    invoice, and how many drafts today still allows."""
+    detail: dict = {"code": "unknown_pdf_layout", "message": message}
+    try:
+        row = pdf_layout_store.save_unknown(file_name, content, _username(user))
+        detail.update({
+            "invoice_id": row["id"], "status": row["status"],
+            "drafts_left_today": pdf_layout_store.drafts_left_today(),
+            "drafts_per_day": pdf_layout_store.MAX_DRAFTS_PER_DAY,
+            "drafting_available": bool(Config().anthropic_api_key),
+        })
+    except Exception as exc:
+        log.exception("[delivery/parse-pdf] could not save the unknown invoice")
+        detail.update({"invoice_id": None, "save_error": str(exc)})
+    return detail
+
+
+def _layout_for_screen(row: dict) -> dict:
+    """A saved invoice as the delivery screen follows it: not the layout
+    itself, which is Admin's."""
+    return {k: v for k, v in row.items() if k != "spec"}
+
+
+_delivery_or_admin = require_any_permission("admin:manage", "delivery:import")
+_admin = require_any_permission("admin:manage")
+
+
+@app.get("/delivery/pdf-layouts/pending-count")
+def pdf_layouts_pending_count(_: dict = Depends(_admin)):
+    """What IT still has to look at: invoices no layout reads, and drafted
+    layouts not yet checked. Shown on the Admin tile."""
+    try:
+        return {"count": pdf_layout_store.pending_count()}
+    except Exception as exc:
+        log.warning("[pdf-layouts] pending count unavailable: %s", exc)
+        return {"count": 0}
+
+
+@app.get("/delivery/pdf-layouts")
+def pdf_layouts_list(view: str = "open", _: dict = Depends(_admin)):
+    """Saved invoices and drafted layouts, for Admin: open (what IT still has
+    to act on, and drafts under way) or all."""
+    statuses = None if view == "all" else [*pdf_layout_store.FOR_IT, pdf_layout_store.DRAFTING]
+    return {
+        "layouts": pdf_layout_store.list_layouts(statuses),
+        "drafts_left_today": pdf_layout_store.drafts_left_today(),
+        "drafts_per_day": pdf_layout_store.MAX_DRAFTS_PER_DAY,
+        "drafting_available": bool(Config().anthropic_api_key),
+    }
+
+
+@app.get("/delivery/pdf-layouts/{layout_id}")
+def pdf_layout_get(layout_id: int, payload: dict = Depends(_delivery_or_admin)):
+    row = pdf_layout_store.get_layout(layout_id)
+    if row is None:
+        raise HTTPException(404, "No such invoice")
+    return row if "admin:manage" in (payload.get("permissions") or []) else _layout_for_screen(row)
+
+
+@app.get("/delivery/pdf-layouts/{layout_id}/pdf")
+def pdf_layout_file(layout_id: int, _: dict = Depends(_admin)):
+    found = pdf_layout_store.get_pdf(layout_id)
+    if found is None:
+        raise HTTPException(404, "No such invoice")
+    name, content = found
+    safe = "".join(c if c.isalnum() or c in " ._-#" else "_" for c in name)
+    return Response(content, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{safe}"'})
+
+
+@app.post("/delivery/pdf-layouts/{layout_id}/draft")
+def pdf_layout_draft(layout_id: int, payload: dict = Depends(_delivery_or_admin)):
+    """Start drafting a temporary layout for a saved invoice, within today's
+    limit. It runs in the background; GET the invoice to follow it."""
+    if not Config().anthropic_api_key:
+        raise HTTPException(503, {"code": "drafting_unavailable",
+                                  "message": "ANTHROPIC_API_KEY is not configured"})
+    try:
+        row = pdf_layout_store.begin_draft(layout_id, _username(payload))
+    except pdf_layout_store.DraftLimitReached as exc:
+        raise HTTPException(429, {"code": "draft_limit", "message": str(exc),
+                                  "drafts_per_day": pdf_layout_store.MAX_DRAFTS_PER_DAY})
+    except LookupError:
+        raise HTTPException(404, "No such invoice")
+    except ValueError as exc:
+        raise HTTPException(409, {"code": "not_waiting", "message": str(exc)})
+    found = pdf_layout_store.get_pdf(layout_id)
+    if found is None:
+        pdf_layout_store.fail_draft(layout_id, "The saved invoice file is missing.")
+        raise HTTPException(404, "The saved invoice file is missing")
+    name, content = found
+    pdf_layout_ai.start(layout_id, name, content)
+    return _layout_for_screen(row)
+
+
+@app.post("/delivery/pdf-layouts/{layout_id}/cancel")
+def pdf_layout_cancel(layout_id: int, payload: dict = Depends(_delivery_or_admin)):
+    """Stop a draft: the connection to the model closes, whatever it made is
+    cleared, and the invoice waits in Admin again."""
+    try:
+        return _layout_for_screen(pdf_layout_store.cancel_draft(layout_id, _username(payload)))
+    except LookupError:
+        raise HTTPException(409, {"code": "not_drafting",
+                                  "message": "This invoice is not being drafted for."})
+
+
+class PdfLayoutReviewRequest(BaseModel):
+    decision: str
+    note: str | None = None
+
+
+@app.post("/delivery/pdf-layouts/{layout_id}/review")
+def pdf_layout_review(layout_id: int, req: PdfLayoutReviewRequest, payload: dict = Depends(_admin)):
+    """IT verifies or rejects a drafted layout."""
+    try:
+        return pdf_layout_store.review(layout_id, req.decision, _username(payload), req.note)
+    except LookupError:
+        raise HTTPException(404, "No drafted layout with that id")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class PdfLayoutCloseRequest(BaseModel):
+    note: str | None = None
+
+
+@app.post("/delivery/pdf-layouts/{layout_id}/close")
+def pdf_layout_close(layout_id: int, req: PdfLayoutCloseRequest, payload: dict = Depends(_admin)):
+    """IT has added this invoice's layout in code, or sets the invoice aside."""
+    try:
+        return pdf_layout_store.close(layout_id, _username(payload), req.note)
+    except LookupError:
+        raise HTTPException(409, "This invoice cannot be closed now; is it being drafted for?")
 
 
 class DeliveryProductSearchRequest(BaseModel):

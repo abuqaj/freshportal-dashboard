@@ -73,6 +73,11 @@ class PdfChecksumError(PdfParseError):
     """Parsed lines do not add up to the totals the invoice prints."""
 
 
+class PdfUnknownLayoutError(PdfParseError):
+    """No layout, in code or drafted and stored, reads this supplier's invoice.
+    The delivery screen answers it by having one drafted (pdf_layout_ai)."""
+
+
 # A PDF with no text layer is a scan. Nothing can be parsed out of it without
 # OCR, so it is refused with an explanation instead of yielding an empty order.
 _MIN_TEXT_CHARS = 40
@@ -315,16 +320,38 @@ def last_word(v: str) -> str:
     return parts[-1] if parts else ""
 
 
+def _described(read: Reader, **description: Any) -> Reader:
+    """Attach to a reader what it does, as data: pdf_layout_json writes a
+    layout out from it, so the layouts in code can be shown to the model that
+    drafts a new one, and a drafted layout, which is data, can be read back
+    into the same readers."""
+    read.description = {k: v for k, v in description.items() if v not in (None, "", (), [])}  # type: ignore[attr-defined]
+    return read
+
+
 def rx(pattern: str, transform: Callable[[str], str] | None = None,
-       flags: int = re.IGNORECASE) -> Reader:
-    """Read a header field with a regex over the page text (group 1)."""
+       flags: int = re.IGNORECASE, cases: tuple[tuple[str, str], ...] = (),
+       default: str = "") -> Reader:
+    """Read a header field with a regex over the page text (group 1).
+
+    With `cases`, the value is a choice rather than the text: the first
+    (word, value) whose word the text contains, or `default` — Rosaprima's
+    purchase order says which of two FreshPortal suppliers it is.
+    """
     compiled = re.compile(pattern, flags)
 
     def read(doc: PdfDoc, _kv: dict[str, str]) -> str:
         m = compiled.search(doc.text)
         value = m.group(1).strip() if m else ""
+        if cases:
+            if not m:
+                return ""
+            return next((v for word, v in cases if word.lower() in value.lower()), default)
         return transform(value) if (transform and value) else value
-    return read
+    return _described(read, regex=pattern, transform=getattr(transform, "__name__", None),
+                      multiline=bool(flags & re.MULTILINE) or None,
+                      cases=[list(c) for c in cases], default=default,
+                      _flags=flags)
 
 
 def kv(label: str, transform: Callable[[str], str] | None = None) -> Reader:
@@ -338,7 +365,7 @@ def kv(label: str, transform: Callable[[str], str] | None = None) -> Reader:
     def read(_doc: PdfDoc, table_kv: dict[str, str]) -> str:
         value = table_kv.get(key, "")
         return transform(value) if (transform and value) else value
-    return read
+    return _described(read, kv=label, transform=getattr(transform, "__name__", None))
 
 
 def first_line() -> Reader:
@@ -346,7 +373,7 @@ def first_line() -> Reader:
     the issuing company."""
     def read(doc: PdfDoc, _kv: dict[str, str]) -> str:
         return next((l.strip() for l in doc.text.split("\n") if l.strip()), "")
-    return read
+    return _described(read, first_line=True)
 
 
 def any_of(*readers: Reader) -> Reader:
@@ -357,13 +384,13 @@ def any_of(*readers: Reader) -> Reader:
             if value:
                 return value
         return ""
-    return read
+    return _described(read, any_of=list(readers))
 
 
 def const(value: str) -> Reader:
     def read(_doc: PdfDoc, _kv: dict[str, str]) -> str:
         return value
-    return read
+    return _described(read, const=value)
 
 
 # ---------------------------------------------------------------------------
@@ -1536,6 +1563,14 @@ def _specs() -> list[LayoutSpec]:
     return LAYOUTS
 
 
+def _parse_with_stored(pdf_bytes: bytes) -> list[DeliveryOrder] | None:
+    try:
+        from pdf_layout_store import parse_with_stored
+    except ImportError:  # pragma: no cover - the module ships with this one
+        return None
+    return parse_with_stored(pdf_bytes)
+
+
 def detect_pdf_layout(text: str) -> LayoutSpec | None:
     for spec in _specs():
         if re.search(spec.detect, text, re.IGNORECASE):
@@ -1553,8 +1588,13 @@ def parse_delivery_pdf(pdf_bytes: bytes) -> list[DeliveryOrder]:
     doc = extract_pdf(pdf_bytes)
     spec = detect_pdf_layout(doc.text)
     if not spec:
+        # A layout drafted for a new supplier, while IT has not yet added one
+        # in code (pdf_layout_store). Tried only after every layout in code.
+        stored = _parse_with_stored(pdf_bytes)
+        if stored is not None:
+            return stored
         known = ", ".join(sorted(s.name for s in _specs()))
-        raise PdfParseError(
+        raise PdfUnknownLayoutError(
             f"this PDF is not in a supported supplier layout ({known}). Every supplier "
             f"prints a different invoice, so each template needs to be described once "
             f"before its PDFs can be imported — send this file in to have it added."

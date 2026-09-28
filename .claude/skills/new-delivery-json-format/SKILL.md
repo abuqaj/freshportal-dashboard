@@ -130,6 +130,23 @@ chat text and could not be added. For many files at once, ask for a folder.
    delivery import on the test environment. The API and matching steps cannot
    be run locally.
 
+## PDF invoices saved in Admin, and temporary layouts
+
+Since 2026-09-28 a PDF no layout reads is saved in the database, not only
+refused (`python/pdf_layout_store.py`), and shows in Admin → PDF formats.
+The person importing it may ask for a *temporary* layout, drafted by the
+model there and then (`python/pdf_layout_ai.py`), at most two a day; it is
+data, reads that supplier's invoices while provisional, and every import
+made with it carries a warning. The user's rule: formats are added by IT
+with this skill; the temporary one only bridges a night.
+
+So an invoice may reach you from Admin rather than the chat: download it
+there ("Open PDF") and add it to the collection like any other. A temporary
+layout's JSON (Admin shows it) is a draft to start from, not a spec to copy:
+check it against the steps below like your own. Once the supplier's layout
+is in `pdf_layouts.py` and shipped, **Close** the invoice in Admin; its
+temporary layout then stops reading, and the one in code reads first anyway.
+
 ## Steps for a PDF invoice
 
 1. **Baseline first**, exactly as step 1 for JSON, and run the two test files

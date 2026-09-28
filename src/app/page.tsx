@@ -510,6 +510,17 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
   const isAdmin = permissions.includes("admin:manage");
   const { system } = useSystem();
 
+  // PDF invoices no layout reads, and temporary layouts nobody has checked:
+  // IT hears of them on its own tile (user, 2026-09-28).
+  const [pdfForIt, setPdfForIt] = useState(0);
+  useEffect(() => {
+    if (!isAdmin || !RAILWAY) return;
+    fetch(`${RAILWAY}/delivery/pdf-layouts/pending-count`)
+      .then(r => (r.ok ? r.json() : { count: 0 }))
+      .then(d => setPdfForIt(Number(d.count) || 0))
+      .catch(() => {});
+  }, [isAdmin]);
+
   const allTiles: { id: Tab; perm: string; label: string; desc: string; gradient: string; stat?: string; statColor?: string; icon: React.ReactNode }[] = [
     {
       id: "vbn",
@@ -584,8 +595,8 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
       label: t.hub.adminLabel,
       desc: t.hub.adminDesc,
       gradient: "bg-gradient-to-br from-[#374151] to-[#111827]",
-      stat: t.hub.adminStat,
-      statColor: "text-white/60",
+      stat: pdfForIt > 0 ? t.hub.adminPdfPending(pdfForIt) : t.hub.adminStat,
+      statColor: pdfForIt > 0 ? "text-white font-semibold" : "text-white/60",
       icon: (
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
           <circle cx="12" cy="8" r="4" stroke="white" strokeWidth="1.8"/>

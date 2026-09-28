@@ -1142,8 +1142,7 @@ ROSAPRIMA = LayoutSpec(
         # Two FreshPortal suppliers: Rosaprima for Parfum Flower Company, and
         # for Coloriginz.
         "tx_company": rx(r"^PO\s*#\s*(.+?)\s*$",
-                         lambda po: "ROSAPRIMA PFC" if "parfum" in po.lower()
-                         else "ROSAPRIMA COLORIGINZ",
+                         cases=(("parfum", "ROSAPRIMA PFC"),), default="ROSAPRIMA COLORIGINZ",
                          flags=re.IGNORECASE | re.MULTILINE),
     },
     # 8 JB are 4.00 full boxes, and 11 QB with 3 QL are 3.50.

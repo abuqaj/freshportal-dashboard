@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from "react"
+import { Fragment, useState, useEffect, useCallback, useRef } from "react"
 import { createPortal } from "react-dom"
 import { FP_SYSTEMS } from "@/lib/systems"
 
@@ -1326,15 +1326,282 @@ function CustomersTable() {
   )
 }
 
+/* ─── PDF formats ─── */
+/** PDF invoices delivery import could not read, and the temporary layouts
+ *  drafted for them (python/pdf_layout_store.py). IT adds a supplier's
+ *  layout with the new-delivery-json-format skill and closes the invoice
+ *  here; a temporary layout is verified or rejected. "Create format" drafts
+ *  one, within the same daily limit the delivery screen has. */
+interface PdfLayoutRow {
+  id: number
+  status: "waiting" | "drafting" | "provisional" | "verified" | "rejected" | "failed" | "closed"
+  supplier: string | null
+  spec: Record<string, unknown> | null
+  assumptions: string[]
+  sample: {
+    header?: Record<string, string>
+    boxes?: number; stems?: number; bunches?: number; amount?: number
+    printed_totals_checked?: Record<string, number>
+    lines?: string[]; line_count?: number
+  } | null
+  error: string | null
+  file_name: string | null
+  model: string | null
+  turns: number | null
+  cost_usd: number | null
+  created_by: string | null
+  created_at: string
+  draft_started_at: string | null
+  drafted_by: string | null
+  reviewed_by: string | null
+  reviewed_at: string | null
+  review_note: string | null
+}
+
+const PDF_STATUS: Record<PdfLayoutRow["status"], { label: string; variant: "green" | "red" | "neutral" | "blue" | "amber" }> = {
+  waiting:     { label: "No format yet",       variant: "amber" },
+  drafting:    { label: "Creating format…",    variant: "blue" },
+  provisional: { label: "Temporary · check it", variant: "amber" },
+  verified:    { label: "Verified",            variant: "green" },
+  rejected:    { label: "Rejected",            variant: "red" },
+  failed:      { label: "Could not create",    variant: "red" },
+  closed:      { label: "Closed",              variant: "neutral" },
+}
+
+function PdfFormatsPanel() {
+  const [view, setView] = useState<"open" | "all">("open")
+  const [rows, setRows] = useState<PdfLayoutRow[]>([])
+  const [left, setLeft] = useState(0)
+  const [perDay, setPerDay] = useState(0)
+  const [available, setAvailable] = useState(true)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState<number | null>(null)
+  const [open, setOpen] = useState<number | null>(null)
+  const [message, setMessage] = useState("")
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch(`${RAILWAY}/delivery/pdf-layouts?view=${view}`).then(r => r.json())
+      setRows(r.layouts ?? [])
+      setLeft(r.drafts_left_today ?? 0)
+      setPerDay(r.drafts_per_day ?? 0)
+      setAvailable(r.drafting_available !== false)
+    } finally {
+      setLoading(false)
+    }
+  }, [view])
+
+  useEffect(() => { setLoading(true); load() }, [load])
+
+  // A draft runs on the server for a few minutes: follow it while one does.
+  const drafting = rows.some(r => r.status === "drafting")
+  useEffect(() => {
+    if (!drafting) return
+    const timer = setInterval(load, 5000)
+    return () => clearInterval(timer)
+  }, [drafting, load])
+
+  async function act(row: PdfLayoutRow, path: string, body?: unknown) {
+    setBusy(row.id)
+    setMessage("")
+    try {
+      const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${row.id}/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body ?? {}),
+      })
+      if (!res.ok) {
+        const detail = await res.json().then(b => b.detail).catch(() => null)
+        setMessage(typeof detail === "string" ? detail : detail?.message ?? `Failed (${res.status})`)
+      }
+      await load()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function openPdf(row: PdfLayoutRow) {
+    const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${row.id}/pdf`)
+    if (!res.ok) { setMessage(`Could not open the PDF (${res.status})`); return }
+    const url = URL.createObjectURL(await res.blob())
+    window.open(url, "_blank")
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  }
+
+  function close(row: PdfLayoutRow) {
+    const note = window.prompt(
+      "Close this invoice: its format has been added to pdf_layouts.py, or it is set aside. Note (optional):", "")
+    if (note === null) return
+    act(row, "close", { note })
+  }
+
+  function review(row: PdfLayoutRow, decision: "verify" | "reject") {
+    const note = window.prompt(decision === "verify" ? "Verify this temporary format. Note (optional):"
+                                                     : "Reject this temporary format; it stops reading invoices. Note (optional):", "")
+    if (note === null) return
+    act(row, "review", { decision, note })
+  }
+
+  const btn = "h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors disabled:opacity-40"
+
+  return (
+    <div>
+      <div className="px-5 py-3 border-b border-border flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
+          {(["open", "all"] as const).map(v => (
+            <button key={v} onClick={() => setView(v)}
+              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                view === v ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink"
+              }`}>
+              {v === "open" ? "For IT" : "All"}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-ink-3">
+          {available ? `Temporary formats left today: ${left} of ${perDay}` : "Temporary formats are not available on this server (ANTHROPIC_API_KEY)"}
+        </span>
+        {message && <span className="text-xs text-ember">{message}</span>}
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-border bg-ground/60">
+              <Th>Invoice</Th>
+              <Th>Status</Th>
+              <Th>Saved</Th>
+              <Th>Format</Th>
+              <Th right>Actions</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-ink-3">
+                {view === "open" ? "Nothing waiting for IT" : "No saved invoices"}
+              </td></tr>
+            ) : rows.map(row => {
+              const status = PDF_STATUS[row.status]
+              const canDraft = (row.status === "waiting" || row.status === "failed") && available && left > 0
+              return (
+                <Fragment key={row.id}>
+                  <tr className="border-b border-border hover:bg-ground/40 transition-colors align-top">
+                    <td className="px-4 py-3">
+                      <button onClick={() => openPdf(row)} className="text-sm font-medium text-ink hover:text-emerald underline decoration-dotted text-left">
+                        {row.file_name || `Invoice #${row.id}`}
+                      </button>
+                      {row.supplier && <div className="text-xs text-ink-3">{row.supplier}</div>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge variant={status.variant}>{status.label}</Badge>
+                      {row.error && <div className="text-[11px] text-ember mt-1 max-w-xs">{row.error}</div>}
+                      {row.review_note && <div className="text-[11px] text-ink-3 mt-1 max-w-xs">{row.review_note}</div>}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-ink-3 whitespace-nowrap">
+                      {formatRelative(row.created_at)}{row.created_by ? ` · ${row.created_by}` : ""}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-ink-3">
+                      {row.sample ? (
+                        <button onClick={() => setOpen(open === row.id ? null : row.id)} className="underline decoration-dotted hover:text-ink">
+                          {row.sample.line_count ?? 0} lines · {row.sample.boxes ?? 0} boxes · ${row.sample.amount?.toFixed(2)}
+                        </button>
+                      ) : "—"}
+                      {row.cost_usd != null && <div>{row.turns} turns · ${row.cost_usd.toFixed(2)}</div>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-1.5 justify-end flex-wrap">
+                        {(row.status === "waiting" || row.status === "failed") && (
+                          <button disabled={!canDraft || busy === row.id} onClick={() => act(row, "draft")}
+                            title={!available ? "Not available on this server" : left > 0 ? "" : "Today's limit has been reached"}
+                            className={`${btn} border-emerald/40 text-emerald hover:bg-emerald/8`}>
+                            Create format
+                          </button>
+                        )}
+                        {row.status === "drafting" && (
+                          <button disabled={busy === row.id} onClick={() => act(row, "cancel")}
+                            className={`${btn} border-border text-ink-3 hover:text-ink`}>
+                            Cancel
+                          </button>
+                        )}
+                        {(row.status === "provisional" || row.status === "rejected") && (
+                          <button disabled={busy === row.id} onClick={() => review(row, "verify")}
+                            className={`${btn} border-emerald/40 text-emerald hover:bg-emerald/8`}>
+                            Verify
+                          </button>
+                        )}
+                        {(row.status === "provisional" || row.status === "verified") && (
+                          <button disabled={busy === row.id} onClick={() => review(row, "reject")}
+                            className={`${btn} border-ember/40 text-ember hover:bg-ember/8`}>
+                            Reject
+                          </button>
+                        )}
+                        {row.status !== "drafting" && row.status !== "closed" && (
+                          <button disabled={busy === row.id} onClick={() => close(row)}
+                            className={`${btn} border-border text-ink-3 hover:text-ink`}>
+                            Close
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {open === row.id && row.sample && (
+                    <tr className="border-b border-border bg-ground/40">
+                      <td colSpan={5} className="px-4 py-3 text-xs text-ink-3">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div>
+                            <p className="font-semibold text-ink mb-1">Read from the invoice</p>
+                            {Object.entries(row.sample.header ?? {}).filter(([, v]) => v).map(([k, v]) => (
+                              <div key={k}><span className="text-ink-3">{k}:</span> <span className="text-ink">{v}</span></div>
+                            ))}
+                            <div className="mt-1">
+                              Checked against the printed totals: {Object.entries(row.sample.printed_totals_checked ?? {})
+                                .map(([k, v]) => `${k} ${v}`).join(", ") || "—"}
+                            </div>
+                            {row.assumptions.length > 0 && (
+                              <>
+                                <p className="font-semibold text-ink mt-2 mb-1">Assumed where the invoice says nothing</p>
+                                <ul className="list-disc ml-5">{row.assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                              </>
+                            )}
+                          </div>
+                          <div>
+                            <p className="font-semibold text-ink mb-1">Lines</p>
+                            <div className="font-mono text-[11px] max-h-48 overflow-y-auto">
+                              {(row.sample.lines ?? []).map((l, i) => <div key={i}>{l}</div>)}
+                            </div>
+                          </div>
+                        </div>
+                        {row.spec && (
+                          <details className="mt-3">
+                            <summary className="cursor-pointer hover:text-ink">Layout (JSON, for pdf_layouts.py)</summary>
+                            <pre className="mt-1 font-mono text-[11px] bg-surface border border-border rounded-lg p-2 max-h-64 overflow-auto">
+                              {JSON.stringify(row.spec, null, 2)}
+                            </pre>
+                          </details>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 /* ─── Main ─── */
 export default function AdminTab({ currentUsername }: { currentUsername?: string }) {
-  const [activeTab, setActiveTab] = useState<"users" | "groups" | "customers">("users")
+  const [activeTab, setActiveTab] = useState<"users" | "groups" | "customers" | "pdf formats">("users")
 
   return (
     <div>
       <div className="px-5 py-4 border-b border-border">
         <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
-          {(["users", "groups", "customers"] as const).map(tab => (
+          {(["users", "groups", "customers", "pdf formats"] as const).map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
               className={`px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${
                 activeTab === tab ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink"
@@ -1349,7 +1616,9 @@ export default function AdminTab({ currentUsername }: { currentUsername?: string
         ? <UsersTable currentUsername={currentUsername} />
         : activeTab === "groups"
         ? <GroupsPanel />
-        : <CustomersTable />}
+        : activeTab === "customers"
+        ? <CustomersTable />
+        : <PdfFormatsPanel />}
     </div>
   )
 }
