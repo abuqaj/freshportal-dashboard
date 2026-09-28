@@ -43,7 +43,7 @@ _STATUS_FOR = {"approve": "approved", "approve_always": "approved_always", "reje
 # after the usual Approve.
 INSTALL_KINDS = ("new-skill", "skill-edit")
 SKILL_BRANCH = "test_1"
-HEARTBEAT_FRESH = timedelta(minutes=15)
+HEARTBEAT_FRESH = timedelta(minutes=90)
 INSTALL_REPORTABLE = ("installed", "blocked", "failed")
 # Why an install cannot start now. The button is disabled with these same four
 # reasons, but that is a courtesy: the request arrives over HTTP, so this
@@ -561,7 +561,7 @@ def install_block_reason(state: dict | None, now: datetime | None = None) -> str
     """Which condition stops an install into this repository, or None when it
     can go ahead.
 
-    The heartbeat's picture is up to five minutes old, so this only decides
+    The heartbeat's picture is half an hour old or more, so this only decides
     whether asking is worthwhile; install_candidate.py re-checks the same
     conditions on the laptop, and that check is the one that counts."""
     if not state:
@@ -607,7 +607,7 @@ def record_agent_heartbeat(payload: dict) -> list[dict]:
     """Store what the laptop reports, and hand back what people have pressed.
 
     Usually that is an empty list. That is the normal case, and the reason this
-    can be a scheduled script every five minutes rather than a Claude session:
+    can be a scheduled script every thirty minutes rather than a Claude session:
     one request, no model, no run record."""
     ensure_kb_tables()
     repos = payload.get("repos") or {}
@@ -667,7 +667,7 @@ def _match_candidate(item: dict, candidates: list[dict]) -> dict | None:
 
 def request_install(item_id: str, username: str) -> dict:
     """Record that someone pressed Install. Nothing here reaches a repository:
-    the laptop collects this within five minutes and does the work."""
+    the laptop collects this within half an hour and does the work."""
     ensure_kb_tables()
     with _conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:

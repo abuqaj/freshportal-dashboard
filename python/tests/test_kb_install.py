@@ -103,11 +103,13 @@ def test_a_press_is_impossible_without_a_fresh_heartbeat():
     check("a heartbeat with no seen_at reads as offline",
           kb.install_block_reason({"present": True, "branch": kb.SKILL_BRANCH,
                                    "clean": True, "seen_at": None}) == kb.BLOCK_OFFLINE)
-    stale = heartbeat_state(minutes_ago=16)
-    check("a heartbeat older than 15 minutes is offline, however good it looked",
+    stale = heartbeat_state(minutes_ago=91)
+    check("a heartbeat older than 90 minutes is offline, however good it looked",
           kb.install_block_reason(stale) == kb.BLOCK_OFFLINE, stale)
-    check("14 minutes old is still fresh",
-          kb.install_block_reason(heartbeat_state(minutes_ago=14)) is None)
+    check("89 minutes old is still fresh",
+          kb.install_block_reason(heartbeat_state(minutes_ago=89)) is None)
+    check("20 minutes old is fresh: the next thirty-minute beat is not due yet",
+          kb.install_block_reason(heartbeat_state(minutes_ago=20)) is None)
 
 
 def test_each_condition_names_itself():

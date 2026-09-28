@@ -188,7 +188,7 @@ class AgentHeartbeat(BaseModel):
 
 @router.post("/kb/sync/agent/heartbeat", dependencies=_laptop)
 def sync_agent_heartbeat(req: AgentHeartbeat) -> dict:
-    """The five-minute heartbeat: what the laptop sees, and what it should do.
+    """The thirty-minute heartbeat: what the laptop sees, and what it should do.
     An empty install_requests is the normal answer."""
     _batch(req.candidates, "candidates")
     try:

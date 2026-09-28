@@ -13,7 +13,7 @@ const NO_RULE_KINDS = ["contradiction", "skill-edit", "new-skill"];
 // knowledge_base.py: new-skill is Install, skill-edit is Update.
 const INSTALL_KINDS = ["new-skill", "skill-edit"];
 const SKILL_BRANCH = "test_1";
-const HEARTBEAT_FRESH_MS = 15 * 60 * 1000;
+const HEARTBEAT_FRESH_MS = 90 * 60 * 1000;
 // How the laptop words refusing a file edited after the update was written.
 const STALE_UPDATE = "has changed since";
 
@@ -51,7 +51,7 @@ interface ReviewItem {
   install_message: string | null;
 }
 
-// What the laptop's five-minute heartbeat last reported for one repository.
+// What the laptop's thirty-minute heartbeat last reported for one repository.
 interface AgentState {
   repo: string;
   present: boolean;
@@ -257,7 +257,7 @@ function isInstallLocked(item: ReviewItem): boolean {
 
 /** Install into (or Update in) the repository the item names, with Reject
  *  beside it while the item is still open. Pressing only records the intent;
- *  the laptop collects it within five minutes and makes the commit. */
+ *  the laptop collects it within half an hour and makes the commit. */
 function InstallPanel({ item, agents, t, onChanged, children }: {
   item: ReviewItem; agents: AgentState[] | null; t: Strings; onChanged: (item: ReviewItem) => void;
   children?: React.ReactNode;
