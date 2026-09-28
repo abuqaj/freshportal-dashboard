@@ -46,13 +46,17 @@ this skill.
 - **Read with code, not with a model.** A `.docx` is read by a script (the
   user, 2026-09-17: reading one does not need AI), and so is a PDF with a
   text layer. Delivery import has no path for scans.
+- **The PDF is the source of truth** (the user, 2026-09-28: "Czasami JSON
+  rozni sie od PDF, jednak to PDF jest zrodlem prawdy"). A PDF layout reads
+  the invoice faithfully and does not copy a JSON parser's quirk; a quirk
+  found on the way is reported as a JSON-path bug, fixed separately.
 
 ## Which reader
 
 | The file | Read by | Today |
 |---|---|---|
 | JSON, or JSON inside `.txt` | `parse_delivery_json` in `python/parser_delivery.py`, endpoint `/delivery/parse` | the formats below |
-| PDF invoice with a text layer | `parse_delivery_pdf` in `python/parser_delivery_pdf.py`, one engine, with one `LayoutSpec` per supplier in `python/pdf_layouts.py`; endpoint `/delivery/parse-pdf` | Qualisa, Alissroses |
+| PDF invoice with a text layer | `parse_delivery_pdf` in `python/parser_delivery_pdf.py`, one engine, with one `LayoutSpec` per supplier in `python/pdf_layouts.py`; endpoint `/delivery/parse-pdf` | Qualisa, Alissroses, and since 2026-09-28 the 45 Ecuador and Colombia suppliers of the `pdf/` samples (`LAYOUTS` lists them) |
 | scanned PDF, no text layer | nothing: the engine refuses it and asks for the original PDF or the JSON | - |
 | `.docx` | nothing yet; see "A .docx delivery" below | - |
 
@@ -88,11 +92,13 @@ byte for byte, never overwrite or delete, and put a date prefix on a name
 clash. Then commit it there; that repo has no remote. If the folder is empty
 or missing, ask the user for earlier files of each format.
 
-PDF invoices belong in the same collection. `run_samples.py` reads only
-`.json` and `.txt`, so it skips them; a PDF is checked through the PDF tests
-instead (see the PDF steps). A file pasted into the chat is not a sample: ask
-for the path to the original, so it can be copied byte for byte. On
-2026-09-24 three files arrived only as chat text and could not be added.
+PDF invoices belong in the same collection, under `pdf/` (one invoice per
+supplier since 2026-09-28). `run_samples.py` reads `.json`, `.txt` and `.pdf`,
+subfolders too; for a PDF it records the layout, the header fields and every
+line, so `--compare` shows any change to any supplier. `-v` prints them. A
+file pasted into the chat is not a sample: ask for the path to the original,
+so it can be copied byte for byte. On 2026-09-24 three files arrived only as
+chat text and could not be added. For many files at once, ask for a folder.
 
 ## Steps for JSON
 
@@ -143,24 +149,44 @@ for the path to the original, so it can be copied byte for byte. On
      its printout, or the spec never matched the real text. Fix that
      supplier's spec only.
    - **No layout is detected** ("not in a supported supplier layout"): add a
-     `LayoutSpec` to `python/pdf_layouts.py`, following the five steps in
-     that file's docstring: `detect` from the template's wording, not one
-     shipment's; the grid; the four header fields FreshPortal needs
-     (`tx_company`, `id_invoice`, `dt_invoice`, `dt_fly`); `totals_marker` or
-     `totals_re` on the invoice's own totals; and for a grouped layout,
-     `merge_across_boxes` set to whatever `parser_delivery` does with the same
-     supplier's JSON, so one delivery imports the same way whichever file
-     arrives. A new supplier is a spec of a few dozen lines, never a new
-     parser.
+     `LayoutSpec` with `row_model="boxes"` to `python/pdf_layouts.py`,
+     following the steps in that file's docstring. Copy the spec of a
+     supplier on the same invoicing program if there is one: most of the
+     farms print from a handful of programs ("Farm Information", "Invoice
+     #:", Komet's "Box breakdown", Alissroses', "silverbook"). But `detect`
+     is the supplier's own name or tax number: the same program's columns
+     mean different things at different farms (Mysticflowers' BOX counts
+     boxes, Fiorentina's numbers them), and a spec found by the program's
+     wording reads another farm's file wrongly — on 2026-09-28 three farms'
+     invoices were caught by the Alissroses spec and one by Qualisa's.
+     `tx_company` is the name as `_SUPPLIER_GROWER_MAP` spells it, when it is
+     there, so supplier and grower resolve without a manual match. A new
+     supplier is a spec of a few dozen lines, never a new parser; what several
+     templates need goes into the engine, behind a spec field, with a test.
+   - **A layout is detected but is the wrong supplier's:** the detecting
+     spec matches by wording; give the new supplier a spec detected by name
+     and place it before that one in `LAYOUTS`.
    - **A scan:** ask for the original PDF or the JSON; there is no OCR path.
-4. **Keep the engine's refusals.** Without `totals_marker` or `totals_re` the
-   engine only logs "checksum skipped" and imports whatever it read, so every
-   spec points at the printed totals. A block whose quantities do not divide
-   between its boxes, and lines that do not add up to the printed totals,
-   stop the import. That is the safety net, not the bug.
-5. **Tests:** add a case to `python/tests/test_parser_delivery_pdf.py` with
-   the real text and rows from step 2, then run both test files and the JSON
-   regression check (step 5 for JSON).
+   - **What the invoice leaves out:** a bunch size, what its box letters
+     mean, a supplier name it does not print. Take it from the supplier's
+     other rows or its box summary (the full-box total says which letter is
+     a half), set it in the spec with a comment saying where it came from,
+     and tell the user it is an assumption to confirm.
+4. **Keep the engine's refusals.** A "boxes" spec cannot be built without
+   `totals_re` or `totals_marker`, and refuses a file whose printed totals it
+   cannot find. Point `boxes_re` and `fulls_re` at the box count and the
+   full-box equivalent too where the invoice prints them: they catch a box
+   read as the wrong size. A row whose bunches times bunch size is not its
+   printed stems, a block whose quantities do not divide between its boxes,
+   and lines that do not add up to the printed totals stop the import. That
+   is the safety net, not the bug.
+5. **Regression and tests:** run `run_samples.py` over the whole collection
+   with `--compare` against the baseline of step 1: every other supplier's
+   lines must come out unchanged. Then run both test files; when the engine
+   gained behaviour, add a test for it to
+   `python/tests/test_parser_delivery_pdf.py` with rows in the invoice's
+   shape (the real invoices stay out of git; the collection is the
+   supplier-by-supplier check).
 6. **Ship** with `ship-to-test`, then ask the user to upload the PDF in
    delivery import on the test environment. PDF reading is on `test_1` only:
    on 2026-09-23 the user sent the invoice picker to `main` without it (it

@@ -20,6 +20,10 @@ Everything genuinely common is handled here:
     guess when the printed quantities do not divide between them
   • merging a product printed twice inside one box
   • checking the result against the totals the invoice prints for itself
+  • (the "boxes" model, 2026-09-28) box counts, box numbers and ranges;
+    mix boxes as MB1…MBn; decimal commas; a length per column; grids read
+    off the page text; hidden white text, cells overflowing their
+    neighbours and too-tight letter spacing, each where a template needs it
 
 What a PDF cannot give, and a supplier's JSON can:
   • nu_box_weight — the real weight of a box. Qualisa's JSON carries 1.5 kg;
@@ -42,6 +46,7 @@ so a spec may leave them out rather than guess.
 """
 from __future__ import annotations
 
+import dataclasses
 import io
 import logging
 import re
@@ -51,6 +56,7 @@ from typing import Any, Callable
 from parser_delivery import (
     DeliveryLine,
     DeliveryOrder,
+    _enrich_variety,
     _normalise_box,
     _normalise_date,
     _parse_date_iso,
@@ -90,9 +96,68 @@ def _cell(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def extract_pdf(pdf_bytes: bytes) -> PdfDoc:
+def _is_white(color: Any) -> bool:
+    """A fill colour that prints nothing on a white page: white in grey, RGB
+    or CMYK."""
+    if not isinstance(color, (list, tuple)) or not color:
+        return False
+    values = [float(c) for c in color if isinstance(c, (int, float))]
+    if len(values) == 1 or len(values) == 3:
+        return all(v >= 0.99 for v in values)
+    if len(values) == 4:
+        return all(v <= 0.01 for v in values)
+    return False
+
+
+def _clip_overflow(page: Any) -> Any:
+    """The page without the text that runs out of its table cell into the next.
+
+    A cell too narrow for its text lets the text run on over its neighbour.
+    A viewer clips it, but the characters are still there, so the neighbour
+    reads as a mix of both ("FRESH FROM SOURCE B V" in San Andres del Chaupi's
+    ID column spills "E", "B" and "V" into the description: "EB BA VBY PINK").
+    Text is placed from where it starts, so a run of characters belongs to the
+    cell it starts in; whatever of it lies outside that cell is dropped.
+    """
+    cells = [c for t in page.find_tables() for c in t.cells if c]
+    if not cells:
+        return page
+
+    def cell_at(x: float, y: float):
+        return next((c for c in cells if c[0] <= x < c[2] and c[1] <= y < c[3]), None)
+
+    drop: set[tuple] = set()
+    home = None
+    prev = None
+    for ch in page.chars:
+        x, y = (ch["x0"] + ch["x1"]) / 2, (ch["top"] + ch["bottom"]) / 2
+        same_run = (prev is not None and abs(ch["top"] - prev["top"]) < 1
+                    and -0.5 <= ch["x0"] - prev["x1"] < 3)
+        if not same_run:
+            home = cell_at(x, y)
+        elif home is not None and not (home[0] <= x < home[2]):
+            drop.add((ch["x0"], ch["top"], ch["text"]))
+        prev = ch
+    if not drop:
+        return page
+    return page.filter(lambda obj: obj.get("object_type") != "char"
+                       or (obj["x0"], obj["top"], obj["text"]) not in drop)
+
+
+def extract_pdf(pdf_bytes: bytes, *, x_tolerance: float | None = None,
+                drop_white: bool = False, clip_overflow: bool = False) -> PdfDoc:
     """Read text and tables out of a PDF. Raises PdfParseError for anything
-    that is not a readable, text-layer PDF."""
+    that is not a readable, text-layer PDF.
+
+    The keyword options are for templates that need them, and are set in that
+    supplier's LayoutSpec (`extract`), never globally:
+      x_tolerance    a smaller gap still counts as a space; for a template
+                     printed so tightly that words run together
+                     ("MANDARINGARDEN")
+      drop_white     leave out white text, which a template can use to hide
+                     data inside the grid (Terra Pacific's "0.70000000…")
+      clip_overflow  see _clip_overflow
+    """
     try:
         import pdfplumber
     except ImportError as exc:  # pragma: no cover - deployment guard
@@ -100,13 +165,24 @@ def extract_pdf(pdf_bytes: bytes) -> PdfDoc:
             "PDF support requires the pdfplumber package (add it to requirements.txt)"
         ) from exc
 
+    text_kwargs: dict[str, Any] = {}
+    table_settings: dict[str, Any] = {}
+    if x_tolerance is not None:
+        text_kwargs["x_tolerance"] = x_tolerance
+        table_settings["text_x_tolerance"] = x_tolerance
+
     pages_text: list[str] = []
     tables: list[list[list[str]]] = []
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
-                pages_text.append(page.extract_text() or "")
-                for table in page.extract_tables():
+                if drop_white:
+                    page = page.filter(lambda obj: obj.get("object_type") != "char"
+                                       or not _is_white(obj.get("non_stroking_color")))
+                if clip_overflow:
+                    page = _clip_overflow(page)
+                pages_text.append(page.extract_text(**text_kwargs) or "")
+                for table in page.extract_tables(table_settings or None):
                     rows = [[_cell(c) for c in row] for row in table]
                     if rows:
                         tables.append(rows)
@@ -144,6 +220,38 @@ def _int(raw: str) -> int:
     return int(round(_num(raw)))
 
 
+# "1.200" groups thousands; "4.00" and "0.300" do not.
+_THOUSANDS_DOT_RE = re.compile(r"^[1-9]\d{0,2}(?:\.\d{3})+$")
+
+
+def _num_comma(raw: str) -> float:
+    """A number from an invoice that prints a decimal comma: '0,360',
+    '$ 1285,00', '4.438,50' → 0.36, 1285.0, 4438.5.
+
+    Such invoices still print some numbers with a point — Bosqueflowers'
+    box count reads "4.00" beside prices of "$ 0,40" — so a point is a
+    decimal point unless it groups thousands, and where both appear the
+    last one is the decimal separator.
+    """
+    s = re.sub(r"[^\d.,\-]", "", raw or "")
+    if not s:
+        return 0.0
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        head, _, tail = s.rpartition(",")
+        s = head.replace(",", "") + "." + tail
+    elif _THOUSANDS_DOT_RE.match(s):
+        s = s.replace(".", "")
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
 # --- value transforms a spec can ask for ---
 
 def nospace(v: str) -> str:
@@ -159,6 +267,41 @@ def date_iso(v: str) -> str:
 def date_us(v: str) -> str:
     """MM/DD/YYYY → DD-MM-YYYY"""
     return _normalise_date(v)
+
+
+def date_dmy(v: str) -> str:
+    """DD/MM/YYYY, D/M/YYYY or DD-MM-YYYY → DD-MM-YYYY"""
+    m = re.search(r"(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{4})", v)
+    return f"{m.group(1).zfill(2)}-{m.group(2).zfill(2)}-{m.group(3)}" if m else v
+
+
+def date_ymd(v: str) -> str:
+    """YYYY/MM/DD or YYYY-MM-DD → DD-MM-YYYY"""
+    m = re.search(r"(\d{4})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{1,2})", v)
+    return f"{m.group(3).zfill(2)}-{m.group(2).zfill(2)}-{m.group(1)}" if m else v
+
+
+_MONTHS = {
+    "jan": 1, "ene": 1, "feb": 2, "mar": 3, "apr": 4, "abr": 4, "may": 5,
+    "jun": 6, "jul": 7, "aug": 8, "ago": 8, "sep": 9, "set": 9, "oct": 10,
+    "nov": 11, "dec": 12, "dic": 12,
+}
+
+
+def date_text(v: str) -> str:
+    """A date with the month in words, in English or Spanish, in any of the
+    orders invoices print it: "21-sep-2026", "16 sept 2026", "24SEP2025",
+    "SEPTEMBER 16, 2026", "Sep 16 2026" → DD-MM-YYYY"""
+    m = re.search(r"(\d{1,2})\s*[-/ ]?\s*([A-Za-z]{3,})\.?\s*[-/ ,]?\s*(\d{4})", v)
+    if m:
+        day, month, year = m.group(1), m.group(2), m.group(3)
+    else:
+        m = re.search(r"([A-Za-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{4})", v)
+        if not m:
+            return v
+        month, day, year = m.group(1), m.group(2), m.group(3)
+    number = _MONTHS.get(month[:3].lower())
+    return f"{day.zfill(2)}-{number:02d}-{year}" if number else v
 
 
 def last_word(v: str) -> str:
@@ -305,6 +448,32 @@ def _key_values(doc: PdfDoc) -> dict[str, str]:
 GRID_FIELDS = ("count", "box", "species", "product", "length",
                "bunches", "stems", "rate", "subtotal")
 
+# What a row of the "boxes" model can carry — from a grid column, a group of a
+# text-line regex, or a group of product_re. Beyond GRID_FIELDS:
+#   number       box number ("7", "01") or range ("03 - 04", "1-4", "2Q - 3Q")
+#   variety      the variety itself, when a column or line holds only that
+#   color        a colour word printed between species and variety
+#   stems_bunch  stems per bunch
+#   bunches_box  bunches in each box of the row
+#   stems_box    stems in each box of the row
+#   rate_bunch   price per bunch
+#   location     the farm the row comes from
+#   qual         a grade, for nm_product
+#   label        the box label; "COLD"/"FRIO" or "WARM"/"CALIDO" in it
+#                qualifies the variety, as the JSON path's tx_label does
+#   number_last  the last box number, for a grid printing a range in two
+#                columns ("B I" 2, "B F" 3)
+ROW_FIELDS = GRID_FIELDS + ("number", "variety", "color", "stems_bunch", "bunches_box",
+                            "stems_box", "rate_bunch", "location", "qual", "label",
+                            "number_last")
+
+# How much of a full box each box code is, for checking the full-box
+# equivalent an invoice prints ("TOTAL FULL BOXES 9.125").
+BOX_FULLS = {"QBE": 0.25, "HBE": 0.5, "1/8": 0.125}
+
+# Box codes that are one letter, as several Ecuadorian templates print them.
+LETTER_BOXES = {"H": "HBE", "Q": "QBE", "E": "1/8"}
+
 
 @dataclass(frozen=True)
 class LayoutSpec:
@@ -349,6 +518,70 @@ class LayoutSpec:
                  product rows, which would make the invoice look like it
                  shipped from several warehouses and lose the location.
     location_re  regex whose group 1 is a warehouse name inside that block
+
+    The "boxes" row model (added 2026-09-28 for the Ecuador and Colombia
+    suppliers) generalises both: a row that states a box count or a box
+    number opens a block of boxes, and may name a product too; a row that
+    names only a product adds it to the block above. It builds lines the way
+    parser_delivery._parse_invoices_format does for a JSON with product ids:
+    a box holding one product is merged with the other boxes of that product
+    into one line with a box count, and each box of a block holding several
+    products is a mix box of its own, MB1…MBn. Its fields:
+
+    lines        text mode: regexes tried in turn at the start of each line of
+                 the page text, for templates whose grid is not a ruled table.
+                 Their named groups are ROW_FIELDS. A pattern may span lines.
+    lines_from   text mode: the rows start after the first match of this
+    lines_to     text mode: and end before the first match of this
+
+    A row opens a block when its `count` (how many boxes) is filled in, or
+    when its `number` (box number or range) differs from the row above; a
+    repeated number is the same box again (Stampsybox lists box 23 on nine
+    rows). A row with neither continues the block above.
+
+    cell_re     grid field → regex whose group 1 is that field inside its
+                 cell, for a cell holding two things ("2Q 2Q - 3Q")
+    length_cols  grid column → length, for a grid that prints the bunches
+                 under a column per length rather than a length column
+    header_columns  grid field → regex for its header cell, for a grid whose
+                 columns move between invoices; resolved from each invoice's
+                 own header row, over `columns`
+    lengths_from_header  every header cell that is a bare number ("50",
+                 "60") is a length column — for a grid that prints only the
+                 lengths the shipment has
+    box_map      printed box code (upper case) → FreshPortal code, for codes
+                 _normalise_box does not know ("E" → "1/8", "OCT" → "1/8")
+    default_box  the box code when the invoice prints none
+    box_fulls    extra box code → share of a full box, for the fulls check
+    species      the species when neither the grid nor the product names it
+    species_map  printed species (upper case) → the name lines carry
+    label_joins_variety  regex; a variety matching it is only half a name
+                 without its box label ("MIX COLOR" boxed as "BICO HOT"), so
+                 the label is added to it
+    stems_bunch  the bunch size when the invoice does not print it. Only for
+                 a supplier whose bunch size is fixed; everywhere else a row
+                 that does not say is refused.
+    decimal      "," for an invoice printing decimal commas
+    split_uneven  a block of one product whose bunches do not divide between
+                 its boxes is taken as boxes of one bunch more and one fewer,
+                 instead of refused — for a supplier that only ever states a
+                 total over its boxes
+    items_per_box  the quantities on a product row under a block row are
+                 per box, not summed across the block's boxes
+    block_row_is_summary  a block row names a product only for a block no
+                 product rows follow: when they do, they are its contents
+                 and the block row just sums them up ("ROS AST 70 x 250")
+    extract      keyword options for extract_pdf, for templates that need them
+    boxes_re     regex over the page text whose group 1, summed over every
+                 match, is the invoice's own box count ("TOTAL CAJAS H: 5")
+    fulls_re     regex whose group 1 is the full-box equivalent printed
+    totals_col   the grid column holding totals_marker, when not the product
+                 column
+
+    totals_re may name its groups boxes, bunches, stems, amount and fulls; a
+    "boxes" layout must find stems or amount among the printed totals, or it
+    refuses the file, because an unchecked parse is exactly what goes wrong
+    silently when a supplier changes its template.
     """
     name: str
     detect: str
@@ -364,18 +597,70 @@ class LayoutSpec:
     totals_marker: str = ""
     location_block: str = ""
     location_re: str = ""
+    # --- the "boxes" row model ---
+    lines: tuple[str, ...] = ()
+    lines_from: str = ""
+    lines_to: str = ""
+    cell_re: dict[str, str] = field(default_factory=dict)
+    length_cols: dict[int, int] = field(default_factory=dict)
+    header_columns: dict[str, str] = field(default_factory=dict)
+    lengths_from_header: bool = False
+    box_map: dict[str, str] = field(default_factory=dict)
+    default_box: str = ""
+    box_fulls: dict[str, float] = field(default_factory=dict)
+    species: str = ""
+    species_map: dict[str, str] = field(default_factory=dict)
+    label_joins_variety: str = ""
+    stems_bunch: int = 0
+    decimal: str = "."
+    items_per_box: bool = False
+    split_uneven: bool = False
+    block_row_is_summary: bool = False
+    extract: dict[str, Any] = field(default_factory=dict)
+    boxes_re: str = ""
+    fulls_re: str = ""
+    totals_col: int = -1
 
     def __post_init__(self) -> None:
-        if self.row_model not in ("flat", "grouped"):
+        if self.row_model not in ("flat", "grouped", "boxes"):
             raise ValueError(f"{self.name}: unknown row_model {self.row_model!r}")
-        if "product" not in self.columns:
-            raise ValueError(f"{self.name}: columns must map 'product'")
-        unknown = set(self.columns) - set(GRID_FIELDS)
-        if unknown:
-            raise ValueError(f"{self.name}: unknown grid columns {sorted(unknown)}")
+        if self.row_model == "boxes":
+            self._check_boxes_model()
+        else:
+            if "product" not in self.columns:
+                raise ValueError(f"{self.name}: columns must map 'product'")
+            unknown = set(self.columns) - set(GRID_FIELDS)
+            if unknown:
+                raise ValueError(f"{self.name}: unknown grid columns {sorted(unknown)}")
         for required in ("tx_company", "id_invoice", "dt_invoice", "dt_fly"):
             if required not in self.header:
                 raise ValueError(f"{self.name}: header must supply {required!r}")
+
+    def _check_boxes_model(self) -> None:
+        mapped = set(self.columns) | set(self.header_columns)
+        if not self.lines and not ({"product", "variety"} & mapped):
+            raise ValueError(f"{self.name}: map a 'product' or 'variety' column, or give lines")
+        if self.lines and mapped:
+            raise ValueError(f"{self.name}: a layout reads either the grid or the text lines")
+        named = mapped | set(self.cell_re)
+        for pattern in (*self.lines, self.product_re):
+            named |= set(re.compile(pattern).groupindex) if pattern else set()
+        unknown = named - set(ROW_FIELDS)
+        if unknown:
+            raise ValueError(f"{self.name}: unknown row fields {sorted(unknown)}")
+        if not ({"count", "number"} & named):
+            raise ValueError(f"{self.name}: nothing says how many boxes a row is")
+        if "box" not in named and not self.default_box:
+            raise ValueError(f"{self.name}: nothing says what box a row is in; "
+                             f"map 'box' or set default_box")
+        if self.decimal not in (".", ","):
+            raise ValueError(f"{self.name}: decimal must be '.' or ','")
+        if not (self.totals_re or self.totals_marker):
+            raise ValueError(f"{self.name}: point totals_re or totals_marker at the "
+                             f"invoice's printed totals")
+        unknown_extract = set(self.extract) - {"x_tolerance", "drop_white", "clip_overflow"}
+        if unknown_extract:
+            raise ValueError(f"{self.name}: unknown extract options {sorted(unknown_extract)}")
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +677,7 @@ class _Product:
     bunches: int
     rate: float
     nm_product: str
+    location: str = ""
 
 
 @dataclass
@@ -611,6 +897,498 @@ def _line(product: _Product, spec: LayoutSpec, species: Callable[[str], str],
 
 
 # ---------------------------------------------------------------------------
+# The "boxes" row model
+# ---------------------------------------------------------------------------
+
+# Row fields that count something across a row's boxes. A product row under a
+# block row takes the block row's other fields where it leaves them blank —
+# its box type, length, bunch size — but never these.
+_QUANTITY_FIELDS = {"count", "number", "bunches", "bunches_box", "stems", "stems_box",
+                    "subtotal", "product", "variety", "color", "qual"}
+
+# "03 - 04", "1-4", "2Q - 3Q": a range of box numbers.
+_BOX_RANGE_RE = re.compile(r"^\s*(\d+)\s*[A-Z]{0,2}\s*-\s*(\d+)\s*[A-Z]{0,2}\s*$", re.IGNORECASE)
+
+
+def _box_number(raw: str) -> tuple[tuple[int, int], int] | None:
+    """A box number or range → ((first, last), how many boxes)."""
+    raw = (raw or "").strip()
+    m = _BOX_RANGE_RE.match(raw)
+    if m:
+        first, last = int(m.group(1)), int(m.group(2))
+        if last < first:
+            raise PdfParseError(f"box range {raw!r} runs backwards")
+        return (first, last), last - first + 1
+    m = re.fullmatch(r"(\d+)\s*[A-Z]{0,2}", raw, re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        return (n, n), 1
+    return None
+
+
+def _table_row_fields(row: list[str], spec: LayoutSpec) -> dict[str, Any] | None:
+    """One grid row as {field: text}; None for a row too short to be one."""
+    highest = max([*spec.columns.values(), *spec.length_cols], default=-1)
+    if len(row) <= highest:
+        return None
+    fields: dict[str, Any] = {}
+    for name, idx in spec.columns.items():
+        value = row[idx].strip()
+        if name == "species":
+            value = _unwrap(value)
+        pattern = spec.cell_re.get(name)
+        if pattern and value:
+            m = re.search(pattern, value, re.IGNORECASE)
+            value = (m.group(1) or "").strip() if m else ""
+        fields[name] = value
+    if spec.length_cols:
+        fields["_lengths"] = [(length, row[idx]) for idx, length in spec.length_cols.items()]
+    return fields
+
+
+def _text_rows(doc: PdfDoc, spec: LayoutSpec) -> list[dict[str, Any]]:
+    """The rows of a grid that is not a ruled table, read off the page text:
+    at the start of every line each of spec.lines is tried in turn, and the
+    first that matches is a row. Lines no pattern matches — page headers,
+    footers, a wrapped remainder — are passed over, which is why a "boxes"
+    layout must check the printed totals."""
+    text = doc.text
+    if spec.lines_from:
+        m = re.search(spec.lines_from, text, re.IGNORECASE | re.MULTILINE)
+        if not m:
+            return []
+        text = text[m.end():]
+    if spec.lines_to:
+        m = re.search(spec.lines_to, text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            text = text[:m.start()]
+    patterns = [re.compile(p, re.IGNORECASE | re.MULTILINE) for p in spec.lines]
+
+    rows: list[dict[str, Any]] = []
+    pos = 0
+    while pos < len(text):
+        match = None
+        for pattern in patterns:
+            m = pattern.match(text, pos)
+            if m and m.end() > pos:
+                match = m
+                break
+        if match:
+            rows.append({k: (v or "").strip() for k, v in match.groupdict().items()})
+            pos = match.end()
+            if text[pos - 1] == "\n":
+                continue
+        newline = text.find("\n", pos)
+        if newline < 0:
+            break
+        pos = newline + 1
+    return rows
+
+
+@dataclass
+class _BoxBlock:
+    """`count` boxes opened by one row, and the products printed in them."""
+    count: int
+    box: str
+    opener: dict[str, Any]
+    products: list[_Product] = field(default_factory=list)
+    summary: list[_Product] = field(default_factory=list)
+
+
+# Our own consignee marks, which templates print in their label column too:
+# "1OZH", "OZHGYP", "VDF". On a box they say who it is for, not what is in it.
+_CUSTOMER_MARK_RE = re.compile(r"^(?:\d?OZ[A-Z]*|VDF|TFPO|PFC)$", re.IGNORECASE)
+
+
+def _clean_variety(variety: str) -> str:
+    """The variety without the marks some templates hang on it: "MONDIAL.",
+    "MONDIAL°", "* CARPE DIEM". An apostrophe printed as ° or ´ ("O°HARA")
+    becomes one, and a name wrapped after its hyphen ("X- PRESSION") is
+    joined again."""
+    v = re.sub(r"\s+", " ", variety or "")
+    v = re.sub(r"(?<=\w)[°´`’](?=\w)", "'", v)
+    v = re.sub(r"(?<=\w)- (?=\w)", "-", v)
+    return v.strip(" .*°-_")
+
+
+def _row_products(fields: dict[str, Any], spec: LayoutSpec, num: Callable[[str], float],
+                  block: _BoxBlock, is_item: bool) -> list[_Product]:
+    """The products a row names — one, or one per length for a grid printing
+    a column per length. Quantities come back summed over the block's boxes."""
+    fields = dict(fields)
+    if is_item:
+        for key, value in block.opener.items():
+            if key not in _QUANTITY_FIELDS and not key.startswith("_") and not fields.get(key):
+                fields[key] = value
+
+    cell = fields.get("product") or fields.get("variety") or ""
+    if spec.product_re:
+        m = re.match(spec.product_re, cell, re.IGNORECASE) if cell else None
+        if not m:
+            return []
+        for key, value in m.groupdict().items():
+            if value and value.strip():
+                fields[key] = value.strip()
+    variety = _clean_variety(fields.get("variety") or cell)
+    # A totals or subtotals row carries numbers in the product columns too.
+    if not variety or re.match(r"(?:SUB\s*-?\s*)?TOTAL", variety, re.IGNORECASE):
+        return []
+    label = _clean_variety(fields.get("label") or "")
+    if _CUSTOMER_MARK_RE.match(label):
+        label = ""
+    if label and spec.label_joins_variety and re.search(spec.label_joins_variety, variety,
+                                                        re.IGNORECASE):
+        variety = f"{variety} {label}"
+    variety = _enrich_variety(variety, label)
+
+    raw_species = (fields.get("species") or "").strip()
+    species = (spec.species_map.get(raw_species.upper()) or raw_species.title()
+               if raw_species else spec.species)
+
+    def n(name: str) -> float:
+        return num(fields.get(name) or "")
+
+    if "_lengths" in fields:
+        variants = [(length, num(value)) for length, value in fields["_lengths"] if num(value) > 0]
+        if not variants:
+            return []
+    else:
+        variants = [(int(n("length")), None)]
+
+    count = max(1, block.count)
+    scale = count if (is_item and spec.items_per_box) else 1
+    products = []
+    for length, bunches_here in variants:
+        stems_bunch = n("stems_bunch")
+        if bunches_here is not None:
+            bunches = bunches_here * scale
+            stems = 0.0 if len(variants) > 1 else n("stems") * scale
+        else:
+            bunches = n("bunches") * scale or n("bunches_box") * count
+            stems = n("stems") * scale or n("stems_box") * count
+        if not stems_bunch and bunches and stems:
+            stems_bunch = stems / bunches
+        stems_bunch = stems_bunch or spec.stems_bunch
+        if not bunches and stems and stems_bunch:
+            bunches = stems / stems_bunch
+        where = f"{spec.name} layout, {variety} {length}"
+        if not bunches or not stems_bunch:
+            raise PdfParseError(f"{where}: the invoice does not say how many bunches or stems "
+                                f"per bunch this row is")
+        if bunches != int(bunches) or stems_bunch != int(stems_bunch):
+            raise PdfChecksumError(f"{where}: {stems:g} stems do not make whole bunches "
+                                   f"({bunches:g} bunches of {stems_bunch:g})")
+        if stems and int(bunches) * int(stems_bunch) != int(stems):
+            raise PdfChecksumError(f"{where}: {bunches:g} bunches of {stems_bunch:g} stems is "
+                                   f"not the {stems:g} stems printed — the row is read wrongly")
+        bunches, stems_bunch = int(bunches), int(stems_bunch)
+
+        rate = n("rate")
+        if not rate and n("rate_bunch"):
+            rate = n("rate_bunch") / stems_bunch
+        # The row's amount is what the invoice charges; a unit price printed
+        # rounded ("0.08" for 12 stems at $1.00) gives way to it.
+        subtotal = n("subtotal") * scale if bunches_here is None or len(variants) == 1 else 0
+        if subtotal and abs(rate * bunches * stems_bunch - subtotal) > 0.01:
+            rate = subtotal / (bunches * stems_bunch)
+        values = {**{k: v for k, v in fields.items() if isinstance(v, str)},
+                  "variety": variety, "length": length, "stems_bunch": stems_bunch}
+        nm_product = (spec.nm_product.format_map(_Blank(values)).strip() if spec.nm_product
+                      else (fields.get("product") or variety))
+        products.append(_Product(
+            variety=variety, species=species, length=int(length), stems_bunch=stems_bunch,
+            bunches=bunches, rate=round(rate, 6), nm_product=re.sub(r"\s+", " ", nm_product),
+            location=(fields.get("location") or "").strip(),
+        ))
+    return products
+
+
+class _Blank(dict):
+    """format_map values where a missing placeholder reads as nothing."""
+    def __missing__(self, key: str) -> str:
+        return ""
+
+
+def _read_box_blocks(rows: list[dict[str, Any]], spec: LayoutSpec,
+                     num: Callable[[str], float]) -> tuple[list[_BoxBlock], int | None]:
+    """The blocks of boxes, and — when every block carries box numbers
+    starting at 1 — the last box number, which is then the box count."""
+    blocks: list[_BoxBlock] = []
+    last_number = None
+    numbers: list[tuple[int, int]] = []
+    unnumbered = False
+    location = ""
+    for fields in rows:
+        # A row naming only a farm heads the rows below it ("San Pablo HAWB …").
+        if fields.get("location") and not any(
+                fields.get(k) for k in ("count", "number", "product", "variety")):
+            location = fields["location"]
+            continue
+        if location and not fields.get("location"):
+            fields = {**fields, "location": location}
+        count_raw = (fields.get("count") or "").strip()
+        number_raw = fields.get("number") or ""
+        if number_raw and fields.get("number_last"):
+            number_raw = f"{number_raw} - {fields['number_last']}"
+        number = _box_number(number_raw)
+        opens = 0
+        # A box count is a whole number, "4" or "4.00"; a totals row merged
+        # into one cell ("TOTALS 8 200 65.00 …") is not one.
+        if re.fullmatch(r"\d+(?:[.,]0+)?", count_raw) and num(count_raw) >= 1:
+            opens = int(round(num(count_raw)))
+            last_number = number[0] if number else None
+        elif number and number[0] != last_number:
+            opens = number[1]
+            last_number = number[0]
+
+        if opens:
+            if number:
+                numbers.append(number[0])
+            else:
+                unnumbered = True
+            block = _BoxBlock(count=opens, box=fields.get("box") or "", opener=fields)
+            blocks.append(block)
+            products = _row_products(fields, spec, num, block, is_item=False)
+            if spec.block_row_is_summary:
+                block.summary = products
+            else:
+                block.products.extend(products)
+        elif blocks:
+            blocks[-1].products.extend(
+                _row_products(fields, spec, num, blocks[-1], is_item=True))
+        # A product before any row that opens a block has no box; it is left
+        # out, and the totals check says so.
+    for block in blocks:
+        if not block.products:
+            block.products = block.summary
+    last_box = (max(last for _, last in numbers)
+                if numbers and not unnumbered and min(first for first, _ in numbers) == 1
+                else None)
+    return [b for b in blocks if b.products], last_box
+
+
+def _box_code_boxes(raw: str, spec: LayoutSpec) -> str:
+    raw = (raw or "").strip() or spec.default_box
+    if spec.box_re:
+        m = re.search(spec.box_re, raw)
+        raw = m.group(1) if m else raw
+    else:
+        raw = re.sub(r"\s*\(.*?\)", "", raw)
+    raw = raw.strip()
+    return spec.box_map.get(raw.upper()) or _normalise_box(raw)
+
+
+def _split_uneven(block: _BoxBlock) -> list[_BoxBlock]:
+    """A block of one product whose bunches do not divide between its boxes,
+    as the boxes that hold one more and the boxes that hold one fewer:
+    272 stems in 3 boxes are 2 boxes of 91 and 1 of 90. Only for a supplier
+    whose invoice states nothing finer (split_uneven)."""
+    count = max(1, block.count)
+    if len(block.products) != 1 or block.products[0].bunches % count == 0:
+        return [block]
+    product = block.products[0]
+    base, extra = divmod(product.bunches, count)
+    parts = [dataclasses.replace(block, count=extra,
+                                 products=[dataclasses.replace(product, bunches=(base + 1) * extra)])]
+    if base:
+        parts.append(dataclasses.replace(
+            block, count=count - extra,
+            products=[dataclasses.replace(product, bunches=base * (count - extra))]))
+    return parts
+
+
+def _build_box_lines(blocks: list[_BoxBlock], spec: LayoutSpec
+                     ) -> tuple[list[DeliveryLine], int, float | None]:
+    """Lines as _parse_invoices_format builds them from a JSON with product
+    ids: a box of one product is merged with the other boxes of that product,
+    and each box holding several is a mix box MBn of its own. Returns the
+    lines, the box count and the full-box equivalent (None when a box code's
+    size is not known)."""
+    lines: list[DeliveryLine] = []
+    merged: dict[tuple, DeliveryLine] = {}
+    mix_box_counter = 0
+    nu_boxes = 0
+    fulls: float | None = 0.0
+
+    if spec.split_uneven:
+        blocks = [part for block in blocks for part in _split_uneven(block)]
+    for block in blocks:
+        count = max(1, block.count)
+        nu_boxes += count
+        box_type = _box_code_boxes(block.box, spec)
+        size = spec.box_fulls.get(box_type, BOX_FULLS.get(box_type))
+        fulls = None if (fulls is None or size is None) else fulls + size * count
+
+        uneven = next((p for p in block.products if p.bunches % count), None)
+        if uneven:
+            raise PdfChecksumError(
+                f"{spec.name} layout: a block of {count} boxes lists {uneven.bunches} "
+                f"bunches of {uneven.variety}, which does not divide between them — the "
+                f"boxes in this block are not identical, so per-box quantities cannot be "
+                f"recovered from the PDF."
+            )
+        # What one box of the block holds. A product printed on two rows of
+        # one box is one product of that box.
+        in_box: dict[tuple, list] = {}
+        for p in block.products:
+            key = (p.species.lower(), p.variety.lower(), p.length, p.stems_bunch, p.rate,
+                   p.location.lower())
+            if key in in_box:
+                in_box[key][1] += p.bunches // count
+            else:
+                in_box[key] = [p, p.bunches // count]
+        # Several products in one box make it a mix box, including one variety
+        # at two lengths or two prices: as single-product lines, each would
+        # count the same box again.
+        is_mix = len(in_box) > 1
+
+        for _ in range(count):
+            if is_mix and not spec.merge_across_boxes:
+                mix_box_counter += 1
+                box_code = f"MB{mix_box_counter}"
+                for product, bunches in in_box.values():
+                    line = _line(product, spec, lambda s: s, product.location,
+                                 box_code=box_code, bunches=bunches, physical_boxes=1)
+                    line.nm_box_type = box_type
+                    lines.append(line)
+                continue
+            for key, (product, bunches) in in_box.items():
+                # Boxes merge only when they hold the same, bunch for bunch:
+                # FreshPortal takes a line as N boxes of one content, and
+                # 6 boxes of 10 bunches plus 6 of 12 are not 12 boxes of 11.
+                merge_key = (*key, box_type, bunches)
+                if merge_key in merged:
+                    merged[merge_key].nu_bunches += bunches
+                    merged[merge_key].nu_physical_boxes += 1
+                else:
+                    merged[merge_key] = _line(product, spec, lambda s: s, product.location,
+                                              box_code=box_type, bunches=bunches,
+                                              physical_boxes=1)
+
+    lines.extend(merged.values())
+    lines.sort(key=lambda l: (l.nm_species, l.nm_variety, l.nu_length))
+    return lines, nu_boxes, (round(fulls, 4) if fulls is not None else None)
+
+
+def _printed_totals(doc: PdfDoc, spec: LayoutSpec, num: Callable[[str], float],
+                    from_grid: dict) -> dict:
+    """The totals the invoice prints for itself, from its totals row, its
+    totals text and its box count lines."""
+    printed = dict(from_grid)
+    if spec.totals_re:
+        m = re.search(spec.totals_re, doc.text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            for key, value in m.groupdict().items():
+                if not value:
+                    continue
+                if key in ("boxes", "bunches", "stems"):
+                    printed[key] = int(round(num(value)))
+                elif key in ("amount", "fulls"):
+                    printed[key] = num(value)
+    if spec.boxes_re:
+        found = re.findall(spec.boxes_re, doc.text, re.IGNORECASE | re.MULTILINE)
+        if found:
+            printed["boxes"] = sum(int(round(num(v))) for v in found)
+    if spec.fulls_re:
+        m = re.search(spec.fulls_re, doc.text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            printed["fulls"] = num(m.group(1))
+    return {k: v for k, v in printed.items() if v}
+
+
+def _resolve_columns(doc: PdfDoc, spec: LayoutSpec) -> LayoutSpec:
+    """The spec with header_columns and lengths_from_header turned into
+    column indexes, from this invoice's own header row."""
+    if not (spec.header_columns or spec.lengths_from_header):
+        return spec
+    wanted = [h.lower() for h in spec.grid_header]
+    header = next((row for table in doc.tables for row in table
+                   if _is_grid_header(row, wanted)), None)
+    if header is None:
+        return spec
+    columns = dict(spec.columns)
+    for name, pattern in spec.header_columns.items():
+        idx = next((i for i, cell in enumerate(header)
+                    if re.search(pattern, cell, re.IGNORECASE)), None)
+        if idx is None:
+            raise PdfParseError(f"{spec.name} layout: the product table has no column "
+                                f"headed like {pattern!r} for {name}")
+        columns[name] = idx
+    length_cols = dict(spec.length_cols)
+    if spec.lengths_from_header:
+        length_cols.update({i: int(cell) for i, cell in enumerate(header)
+                            if re.fullmatch(r"\d{2,3}", cell.strip())})
+    return dataclasses.replace(spec, columns=columns, header_columns={},
+                               lengths_from_header=False, length_cols=length_cols)
+
+
+def _parse_boxes(doc: PdfDoc, spec: LayoutSpec) -> DeliveryOrder:
+    num = _num_comma if spec.decimal == "," else _num
+    spec = _resolve_columns(doc, spec)
+    from_grid: dict = {}
+    if spec.lines:
+        rows = _text_rows(doc, spec)
+        if not rows:
+            raise PdfParseError(
+                f"{spec.name} layout: no line of this PDF's text reads as a product row. "
+                f"The template's lines no longer match the spec — run "
+                f"`python -m pdf_layouts <file.pdf>` to compare."
+            )
+    else:
+        grid = _grid_rows(doc, spec.grid_header)
+        if not grid:
+            raise PdfParseError(
+                f"{spec.name} layout: the product table was not found in this PDF. "
+                f"Expected a table with {', '.join(spec.grid_header)} in its header; "
+                f"the PDF has {_table_shapes(doc)}. Run "
+                f"`python -m pdf_layouts <file.pdf>` to see what it actually contains."
+            )
+        marker_col = spec.totals_col if spec.totals_col >= 0 else spec.columns.get(
+            "product", spec.columns.get("variety"))
+        rows = []
+        for row in grid:
+            if (spec.totals_marker and marker_col is not None and marker_col < len(row)
+                    and row[marker_col].strip().upper().startswith(spec.totals_marker.upper())):
+                def cell(name: str) -> str:
+                    idx = spec.columns.get(name)
+                    return row[idx] if idx is not None and idx < len(row) else ""
+                from_grid = {"boxes": int(round(num(cell("count")))),
+                             "bunches": int(round(num(cell("bunches")))),
+                             "stems": int(round(num(cell("stems")))),
+                             "amount": num(cell("subtotal"))}
+                continue
+            fields = _table_row_fields(row, spec)
+            if fields is not None:
+                rows.append(fields)
+
+    blocks, last_box = _read_box_blocks(rows, spec, num)
+    if not blocks:
+        raise PdfParseError(
+            f"{spec.name} layout: {len(rows)} row(s) were found but none parsed as a product. "
+            f"The column map, lines or product_re in this layout's spec no longer match "
+            f"what the invoice prints — run `python -m pdf_layouts <file.pdf>` to compare."
+        )
+    lines, nu_boxes, fulls = _build_box_lines(blocks, spec)
+    locations = {l.nm_location for l in lines}
+    nm_location = _warehouse(doc, spec) or (next(iter(locations)) if len(locations) == 1 else "")
+    order = _make_order(doc, spec, lines, nu_boxes, nm_location)
+
+    printed = _printed_totals(doc, spec, num, from_grid)
+    # Boxes numbered 1 to N are N boxes: a row missed on the way shows as one
+    # box short, where an invoice prints no box count of its own.
+    if last_box and not printed.get("boxes"):
+        printed["boxes"] = last_box
+    if not (printed.get("stems") or printed.get("amount")):
+        raise PdfChecksumError(
+            f"{spec.name} layout: the totals this invoice prints were not found, so the "
+            f"parsed lines cannot be checked against them. Nothing was imported — the "
+            f"template has probably changed; run `python -m pdf_layouts <file.pdf>`."
+        )
+    _check_totals(printed, order, spec.name, fulls=fulls)
+    return order
+
+
+# ---------------------------------------------------------------------------
 # Checksum
 # ---------------------------------------------------------------------------
 
@@ -619,7 +1397,8 @@ def _line(product: _Product, spec: LayoutSpec, species: Callable[[str], str],
 _AMOUNT_TOLERANCE = 0.05
 
 
-def _check_totals(printed: dict, order: DeliveryOrder, layout: str) -> None:
+def _check_totals(printed: dict, order: DeliveryOrder, layout: str,
+                  fulls: float | None = None) -> None:
     """Compare the rebuilt order against the totals the invoice prints for
     itself. This is what catches a supplier quietly changing their template."""
     if not printed:
@@ -634,6 +1413,11 @@ def _check_totals(printed: dict, order: DeliveryOrder, layout: str) -> None:
     if printed.get("amount") and abs(printed["amount"] - order.mny_total) > _AMOUNT_TOLERANCE:
         problems.append(f"amount: invoice says {printed['amount']:.2f}, "
                         f"parsed {order.mny_total:.2f}")
+    bunches = sum(l.nu_bunches for l in order.lines)
+    if printed.get("bunches") and printed["bunches"] != bunches:
+        problems.append(f"bunches: invoice says {printed['bunches']}, parsed {bunches}")
+    if printed.get("fulls") and fulls is not None and abs(printed["fulls"] - fulls) > 0.001:
+        problems.append(f"full boxes: invoice says {printed['fulls']:g}, parsed {fulls:g}")
     if problems:
         raise PdfChecksumError(
             f"{layout} layout: the parsed lines do not add up to the totals printed on "
@@ -675,7 +1459,39 @@ def _warehouse(doc: PdfDoc, spec: LayoutSpec) -> str:
     return next(iter(unique.values())) if len(unique) == 1 else ""
 
 
+def _make_order(doc: PdfDoc, spec: LayoutSpec, lines: list[DeliveryLine],
+                nu_boxes: int, nm_location: str) -> DeliveryOrder:
+    table_kv = _key_values(doc)
+
+    def header(name: str) -> str:
+        reader = spec.header.get(name)
+        return reader(doc, table_kv) if reader else ""
+
+    id_invoice = header("id_invoice")
+    return DeliveryOrder(
+        tx_company=header("tx_company"),
+        nm_location=nm_location,
+        id_invoice=id_invoice,
+        # Invoices that print no separate PO number repeat the invoice number,
+        # which is what the JSON parsers do for the same suppliers.
+        id_purchaseorder=header("id_purchaseorder") or id_invoice,
+        dt_fly=header("dt_fly"),
+        dt_invoice=header("dt_invoice"),
+        nm_ship=header("nm_ship"),
+        nm_cargo=header("nm_cargo"),
+        tx_awb=header("tx_awb"),
+        tx_hawb=header("tx_hawb"),
+        nu_boxes=nu_boxes,
+        nu_stems_total=sum(l.nu_stems_total for l in lines),
+        mny_total=round(sum(l.mny_total for l in lines), 2),
+        lines=lines,
+    )
+
+
 def parse_with_spec(doc: PdfDoc, spec: LayoutSpec) -> DeliveryOrder:
+    if spec.row_model == "boxes":
+        return _parse_boxes(doc, spec)
+
     rows = _grid_rows(doc, spec.grid_header)
     if not rows:
         raise PdfParseError(
@@ -698,32 +1514,7 @@ def parse_with_spec(doc: PdfDoc, spec: LayoutSpec) -> DeliveryOrder:
     lines, nu_boxes = _build_lines(
         blocks, spec, nm_location, _species_resolver(extra["species_seen"])
     )
-
-    table_kv = _key_values(doc)
-
-    def header(name: str) -> str:
-        reader = spec.header.get(name)
-        return reader(doc, table_kv) if reader else ""
-
-    id_invoice = header("id_invoice")
-    order = DeliveryOrder(
-        tx_company=header("tx_company"),
-        nm_location=nm_location,
-        id_invoice=id_invoice,
-        # Invoices that print no separate PO number repeat the invoice number,
-        # which is what the JSON parsers do for the same suppliers.
-        id_purchaseorder=header("id_purchaseorder") or id_invoice,
-        dt_fly=header("dt_fly"),
-        dt_invoice=header("dt_invoice"),
-        nm_ship=header("nm_ship"),
-        nm_cargo=header("nm_cargo"),
-        tx_awb=header("tx_awb"),
-        tx_hawb=header("tx_hawb"),
-        nu_boxes=nu_boxes,
-        nu_stems_total=sum(l.nu_stems_total for l in lines),
-        mny_total=round(sum(l.mny_total for l in lines), 2),
-        lines=lines,
-    )
+    order = _make_order(doc, spec, lines, nu_boxes, nm_location)
 
     printed = extra["printed"]
     if not printed and spec.totals_re:
@@ -768,6 +1559,10 @@ def parse_delivery_pdf(pdf_bytes: bytes) -> list[DeliveryOrder]:
             f"prints a different invoice, so each template needs to be described once "
             f"before its PDFs can be imported — send this file in to have it added."
         )
+    if spec.extract:
+        # Read again the way this template needs; detection above only needs
+        # the supplier's name, which any reading shows.
+        doc = extract_pdf(pdf_bytes, **spec.extract)
     log.info("[pdf] layout=%s tables=%d", spec.name, len(doc.tables))
     order = parse_with_spec(doc, spec)
     log.info("[pdf/%s] parsed %d line(s), %d box(es)", spec.name, len(order.lines), order.nu_boxes)

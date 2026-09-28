@@ -4,9 +4,11 @@
   python .claude/skills/new-delivery-json-format/scripts/run_samples.py PATH [PATH…]
          [--save-baseline FILE] [--compare FILE]
 
-PATH is a .json/.txt file or a folder of them. --save-baseline writes the
-summary; a later --compare against it shows what a parser change did to
-samples that already worked. Exit code 1 on a parse error or a changed sample.
+PATH is a .json/.txt/.pdf file or a folder of them (a folder's subfolders
+too). --save-baseline writes the summary; a later --compare against it shows
+what a parser change did to samples that already worked. A PDF's summary
+holds its layout and every line, so a change to any line of any supplier
+shows. Exit code 1 on a parse error or a changed sample.
 """
 from __future__ import annotations
 
@@ -48,7 +50,54 @@ def _number(value: object) -> float:
         return 0.0
 
 
+def summarise_pdf(path: Path) -> dict:
+    import logging
+
+    import parser_delivery_pdf
+    logging.getLogger("parser_delivery_pdf").setLevel(logging.ERROR)
+
+    data = path.read_bytes()
+    entry: dict = {"format": "pdf"}
+    try:
+        doc = parser_delivery_pdf.extract_pdf(data)
+        spec = parser_delivery_pdf.detect_pdf_layout(doc.text)
+        entry["format"] = f"pdf/{spec.name if spec else '-'}"
+        orders = parser_delivery_pdf.parse_delivery_pdf(data)
+    except Exception as exc:  # the report must show every failure, whatever its type
+        entry["error"] = f"{type(exc).__name__}: {exc}"
+        return entry
+    entry["orders"] = []
+    for order in orders:
+        entry["orders"].append({
+            "company": order.tx_company,
+            "invoice": order.id_invoice,
+            "po": order.id_purchaseorder,
+            "invoice_date": order.dt_invoice,
+            "fly_date": order.dt_fly,
+            "ship": order.nm_ship,
+            "cargo": order.nm_cargo,
+            "awb": order.tx_awb,
+            "hawb": order.tx_hawb,
+            "location": order.nm_location,
+            "lines": len(order.lines),
+            "boxes": order.nu_boxes,
+            "stems": order.nu_stems_total,
+            "stems_in_lines": order.nu_stems_total,
+            "total": order.mny_total,
+            "total_in_lines": order.mny_total,
+            "line_detail": [
+                f"{l.nm_box} x{l.nu_physical_boxes} | {l.nm_species} | {l.nm_variety} | "
+                f"{l.nu_length}cm | {l.nu_bunches}x{l.nu_stems_bunch} | {l.mny_rate_stem:g} | "
+                f"{l.nm_location} | {l.nm_product}"
+                for l in order.lines
+            ],
+        })
+    return entry
+
+
 def summarise(path: Path) -> dict:
+    if path.suffix.lower() == ".pdf":
+        return summarise_pdf(path)
     text = path.read_bytes().decode("utf-8-sig", errors="replace")
     try:
         data = json.loads(text)
@@ -83,7 +132,8 @@ def collect(paths: list[str]) -> list[Path]:
     for raw in paths:
         path = Path(raw)
         if path.is_dir():
-            files += sorted(p for p in path.iterdir() if p.suffix.lower() in (".json", ".txt"))
+            files += sorted(p for p in path.rglob("*")
+                            if p.is_file() and p.suffix.lower() in (".json", ".txt", ".pdf"))
         elif path.is_file():
             files.append(path)
         else:
@@ -104,7 +154,15 @@ def describe(name: str, entry: dict) -> list[str]:
         out.append(f"   {o['company']} | invoice {o['invoice']} | fly {o['fly_date']} | {o['lines']} line(s) | "
                    f"{o['boxes']} box(es) | {o['stems']} stems | total {o['total']}"
                    + (f"   <- {'; '.join(flags)}" if flags else ""))
+        if VERBOSE:
+            out.append(f"   dates {o.get('invoice_date')} / {o.get('fly_date')} | po {o.get('po')} | "
+                       f"ship {o.get('ship')} | cargo {o.get('cargo')} | awb {o.get('awb')} | "
+                       f"hawb {o.get('hawb')} | location {o.get('location')}")
+            out += [f"      {line}" for line in o.get("line_detail", [])]
     return out
+
+
+VERBOSE = False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,7 +171,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("paths", nargs="+")
     parser.add_argument("--save-baseline", type=Path)
     parser.add_argument("--compare", type=Path)
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="print a PDF's header fields and every line")
     args = parser.parse_args(argv)
+    global VERBOSE
+    VERBOSE = args.verbose
 
     summary = {path.name: summarise(path) for path in collect(args.paths)}
     for name, entry in summary.items():

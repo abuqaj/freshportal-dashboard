@@ -489,6 +489,261 @@ def test_every_spec_declares_what_freshportal_needs():
             assert required in spec.header, f"{spec.name} is missing {required}"
 
 
+# ---------------------------------------------------------------------------
+# The "boxes" row model (2026-09-28, 45 Ecuador and Colombia suppliers)
+# ---------------------------------------------------------------------------
+# Rows in the shapes those invoices print, with made-up figures. Every one of
+# the 49 real sample invoices is checked with run_samples.py against the
+# local sample collection; these pin the engine behaviour they rely on.
+
+import dataclasses  # noqa: E402
+
+from parser_delivery_pdf import (  # noqa: E402
+    LETTER_BOXES,
+    LayoutSpec,
+    _num_comma,
+    const,
+    date_dmy,
+    date_text,
+    date_ymd,
+    rx,
+)
+
+_HEADER = {"tx_company": const("TEST FARM"), "id_invoice": rx(r"INVOICE\s+(\d+)"),
+           "dt_invoice": rx(r"DATE\s+(\S+)"), "dt_fly": rx(r"DATE\s+(\S+)")}
+
+# BOX | TB | VARIETY | BUNCHES | ST/BUNCH | LENGTH | STEMS | PRICE | TOTAL, with
+# decimal commas and a box number or range in BOX, as the Farm Information
+# program prints it at Florequisa and Stampsybox.
+_NUMBERED = LayoutSpec(
+    name="numbered",
+    detect="NUMBERED",
+    grid_header=("box", "tb", "variety", "bunches"),
+    columns={"number": 0, "box": 1, "variety": 2, "bunches": 3, "stems_bunch": 4,
+             "length": 5, "stems": 6, "rate": 7, "subtotal": 8},
+    product_re="",
+    row_model="boxes",
+    header=_HEADER,
+    box_map=LETTER_BOXES,
+    species="Roses",
+    decimal=",",
+    totals_re=r"^TOTAL\s+(?P<bunches>\d+)\s+(?P<stems>\d+)\s+(?P<amount>[\d.,]+)\s*$",
+    boxes_re=r"TOTAL\s+CAJAS\s+[A-Z]\s*:\s*(\d+)",
+)
+_NUMBERED_HEADER = ["BOX", "TB", "VARIETY", "BUNCHES", "ST/BUNCH", "LENGTH", "STEMS",
+                    "PRICE", "TOTAL"]
+
+
+def _numbered_doc(rows, bunches, stems, amount, boxes_q=0, boxes_h=0):
+    text = (f"INVOICE 0001234\nDATE 21/09/2026\nTOTAL {bunches} {stems} {amount}\n"
+            f"TOTAL CAJAS H: {boxes_h}\nTOTAL CAJAS Q: {boxes_q}\n")
+    return PdfDoc(text=text, tables=[[_NUMBERED_HEADER, *rows]])
+
+
+def test_boxes_a_range_is_that_many_identical_boxes():
+    doc = _numbered_doc([["03 - 04", "Q", "MOONLIGHT", "8", "25", "60", "200", "0,400", "80,000"]],
+                        8, 200, "80,00", boxes_q=2)
+    order = parse_with_spec(doc, _NUMBERED)
+    [line] = order.lines
+    assert (line.nm_box, line.nu_physical_boxes, line.nu_bunches) == ("QBE", 2, 8)
+    assert line.mny_rate_stem == 0.4          # "0,400", a decimal comma
+    assert order.id_invoice == "0001234"      # leading zeros kept
+
+
+def test_boxes_a_repeated_number_is_one_mix_box():
+    """Stampsybox prints box 23 on every row of its contents."""
+    rows = [["23", "H", "MONDIAL", "2", "25", "60", "50", "0,450", "22,500"],
+            ["23", "H", "TARA", "1", "25", "60", "25", "0,450", "11,250"],
+            ["24", "Q", "EXPLORER", "4", "25", "60", "100", "0,500", "50,000"]]
+    order = parse_with_spec(_numbered_doc(rows, 7, 175, "83,75", boxes_q=1, boxes_h=1),
+                            _NUMBERED)
+    assert order.nu_boxes == 2
+    mix = [l for l in order.lines if l.nm_box == "MB1"]
+    assert {l.nm_variety for l in mix} == {"Mondial", "Tara"}
+    assert {l.nm_box_type for l in mix} == {"HBE"}
+    assert next(l for l in order.lines if l.nm_variety == "Explorer").nm_box == "QBE"
+
+
+def test_boxes_one_variety_at_two_lengths_is_a_mix_box():
+    """As two single-product lines, each would count the same box again."""
+    rows = [["1", "Q", "POMAROSA", "1", "25", "60", "25", "0,420", "10,500"],
+            ["", "Q", "POMAROSA", "3", "25", "70", "75", "0,420", "31,500"]]
+    order = parse_with_spec(_numbered_doc(rows, 4, 100, "42,00", boxes_q=1), _NUMBERED)
+    assert {l.nm_box for l in order.lines} == {"MB1"}
+    assert sum(l.nu_physical_boxes for l in order.lines if l.nm_box == "QBE") == 0
+
+
+def test_boxes_merge_only_boxes_that_hold_the_same():
+    """Six boxes of 10 bunches and six of 12 are two lines, not twelve boxes
+    of 11 — FreshPortal takes a line as N boxes of one content."""
+    spec = dataclasses.replace(_NUMBERED, columns={**_NUMBERED.columns, "count": 0,
+                                                   "number": 9})
+    rows = [["6", "H", "MIX COLOR", "60", "25", "60", "1500", "0,360", "540,000", ""],
+            ["6", "H", "MIX COLOR", "72", "25", "60", "1800", "0,360", "648,000", ""]]
+    order = parse_with_spec(_numbered_doc(rows, 132, 3300, "1188,00", boxes_h=12), spec)
+    got = sorted((l.nu_physical_boxes, l.nu_bunches) for l in order.lines)
+    assert got == [(6, 60), (6, 72)]
+
+
+def test_boxes_a_totals_row_is_never_a_product():
+    rows = [["1", "Q", "MONDIAL", "4", "25", "60", "100", "0,400", "40,000"],
+            ["", "", "TOTAL FCA", "4", "", "", "100", "", "40,000"]]
+    order = parse_with_spec(_numbered_doc(rows, 4, 100, "40,00", boxes_q=1), _NUMBERED)
+    assert [l.nm_variety for l in order.lines] == ["Mondial"]
+
+
+def test_boxes_refuse_a_row_whose_figures_disagree():
+    """4 bunches of 25 is not 125 stems: a column is read wrongly."""
+    rows = [["1", "Q", "MONDIAL", "4", "25", "60", "125", "0,400", "50,000"]]
+    with pytest.raises(PdfChecksumError) as exc:
+        parse_with_spec(_numbered_doc(rows, 4, 125, "50,00", boxes_q=1), _NUMBERED)
+    assert "read wrongly" in str(exc.value)
+
+
+def test_boxes_refuse_an_invoice_whose_totals_are_not_found():
+    rows = [["1", "Q", "MONDIAL", "4", "25", "60", "100", "0,400", "40,000"]]
+    doc = PdfDoc(text="INVOICE 1\nDATE 21/09/2026\n", tables=[[_NUMBERED_HEADER, *rows]])
+    with pytest.raises(PdfChecksumError) as exc:
+        parse_with_spec(doc, _NUMBERED)
+    assert "totals" in str(exc.value)
+
+
+def test_boxes_check_the_printed_box_count():
+    rows = [["1", "Q", "MONDIAL", "4", "25", "60", "100", "0,400", "40,000"]]
+    with pytest.raises(PdfChecksumError) as exc:
+        parse_with_spec(_numbered_doc(rows, 4, 100, "40,00", boxes_q=2), _NUMBERED)
+    assert "boxes" in str(exc.value)
+
+
+def test_boxes_a_rounded_unit_price_gives_way_to_the_row_amount():
+    """12 stems printed at 0.08 but charged 1.00."""
+    rows = [["1", "Q", "SAMPLES", "2", "6", "50", "12", "0,080", "1,000"]]
+    order = parse_with_spec(_numbered_doc(rows, 2, 12, "1,00", boxes_q=1), _NUMBERED)
+    assert order.mny_total == 1.0
+
+
+def test_boxes_boxes_numbered_from_one_are_counted():
+    """Where the invoice prints no box count, box numbers 1 to N are N boxes."""
+    spec = dataclasses.replace(_NUMBERED, boxes_re="")
+    rows = [["1", "Q", "MONDIAL", "4", "25", "60", "100", "0,400", "40,000"],
+            ["3", "Q", "MONDIAL", "4", "25", "60", "100", "0,400", "40,000"]]
+    with pytest.raises(PdfChecksumError) as exc:     # box 2 is missing
+        parse_with_spec(_numbered_doc(rows, 8, 200, "80,00"), spec)
+    assert "boxes: invoice says 3, parsed 2" in str(exc.value)
+
+
+# Text mode: a block line summing up an assorted box, then its contents per
+# box, as Rosaprima prints it.
+_ASSORTED = LayoutSpec(
+    name="assorted",
+    detect="ASSORTED",
+    grid_header=(),
+    columns={},
+    lines=(r"^ROS\s+(?:(?P<color>[A-Z]{3})\s+)?(?P<variety>.+?)\s+(?P<length>\d+)\s+x\s+"
+           r"(?P<stems_box>\d+)\s+Stem\s+(?P<count>\d+)\s+(?P<box>[A-Z]{2})\s+(?P<stems>\d+)\s+"
+           r"\$(?P<rate>[\d.]+)\s+\$(?P<subtotal>[\d,.]+)\s*$",
+           r"^ROS\s+(?:(?P<color>[A-Z]{3})\s+)?(?P<variety>.+?)\s+(?P<length>\d+)\s+"
+           r"(?P<bunches>\d+)\s+Bun\.\s+(?P<stems_bunch>\d+)\s+St/Bun\s+at\s+\$(?P<rate>[\d.]+)\s*$"),
+    product_re="",
+    row_model="boxes",
+    header=_HEADER,
+    block_row_is_summary=True,
+    items_per_box=True,
+    box_map={"JB": "HBE"},
+    stems_bunch=25,
+    totals_re=r"Total\s+stems:\s*(?P<stems>\d+)\s+Amount\s+\$(?P<amount>[\d.]+)",
+)
+_ASSORTED_TEXT = """INVOICE 1136840
+DATE 16/09/2026
+ROS AST 70 x 50 Stem 2 JB 100 $0.450 $45.00
+Vendor:Rosaprima
+ROS LAV Purple Crown 70 1 Bun. 25 St/Bun at $0.450
+ROS ORG Orange Crush 70 1 Bun. 25 St/Bun at $0.450
+ROS RED Freedom 70 x 250 Stem 4 JB 1000 $0.450 $450.00
+Vendor:Rosaprima
+Total stems: 1100 Amount $495.00"""
+
+
+def test_text_mode_assorted_box_takes_its_contents():
+    order = parse_with_spec(PdfDoc(text=_ASSORTED_TEXT), _ASSORTED)
+    mix = sorted((l.nm_box, l.nm_variety, l.nu_bunches) for l in order.lines
+                 if l.nm_box.startswith("MB"))
+    # Two boxes, each with one bunch of each; "AST" itself is not a product.
+    assert mix == [("MB1", "Orange Crush", 1), ("MB1", "Purple Crown", 1),
+                   ("MB2", "Orange Crush", 1), ("MB2", "Purple Crown", 1)]
+    freedom = next(l for l in order.lines if l.nm_variety == "Freedom")
+    # A box of one variety prints stems only: the spec's bunch size applies.
+    assert (freedom.nm_box, freedom.nu_physical_boxes, freedom.nu_bunches,
+            freedom.nu_stems_bunch) == ("HBE", 4, 40, 25)
+    assert order.nu_boxes == 6
+
+
+def test_length_columns_give_the_length():
+    """Tierra Verde prints the bunches under a column per length."""
+    spec = LayoutSpec(
+        name="by_length", detect="X", grid_header=("# box", "variedad"),
+        columns={"number": 0, "box": 1, "variety": 2, "stems_bunch": 3, "stems": 7,
+                 "rate": 8, "subtotal": 9},
+        length_cols={4: 50, 5: 60, 6: 70}, product_re="", row_model="boxes",
+        header=_HEADER, species="Roses",
+        totals_re=r"TOT\.\s*STEMS\s+(?P<stems>\d+)\s+TOTAL\s+(?P<amount>[\d.]+)")
+    doc = PdfDoc(text="INVOICE 1\nDATE 21/09/2026\nTOT. STEMS 100 TOTAL 90.00",
+                 tables=[[["# BOX", "BOX T", "VARIEDAD", "STxB", "50", "60", "70", "TALLOS",
+                           "UNIT", "TOTAL"],
+                          ["1", "QB", "PLAYA BLANCA", "25", "", "", "4", "100", "0.90", "90.00"]]])
+    [line] = parse_with_spec(doc, spec).lines
+    assert (line.nu_length, line.nu_bunches) == (70, 4)
+
+
+def test_split_uneven_boxes_keep_every_stem():
+    """272 stems in 3 half boxes: 2 of 91 and 1 of 90."""
+    spec = dataclasses.replace(
+        _NUMBERED, columns={"count": 0, "box": 1, "variety": 2, "stems": 6, "rate": 7,
+                            "subtotal": 8},
+        stems_bunch=1, split_uneven=True, boxes_re="",
+        totals_re=r"^TOTAL\s+\d+\s+(?P<stems>\d+)\s+(?P<amount>[\d.,]+)\s*$")
+    rows = [["3", "H", "STEMS OF ROSE", "", "", "", "272", "0,010", "2,720"]]
+    order = parse_with_spec(_numbered_doc(rows, 0, 272, "2,72"), spec)
+    assert sorted((l.nu_physical_boxes, l.nu_bunches) for l in order.lines) == [(1, 90), (2, 182)]
+    assert order.nu_boxes == 3
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("0,360", 0.36), ("$ 1285,00", 1285.0), ("4.438,50", 4438.5), ("2,851.200", 2851.2),
+    ("4.00", 4.0), ("0.300", 0.3), ("6.540", 6540.0), ("12075", 12075.0), ("", 0.0),
+])
+def test_decimal_comma_numbers(raw, expected):
+    assert _num_comma(raw) == expected
+
+
+@pytest.mark.parametrize("reader, raw, expected", [
+    (date_text, "21-sep-2026", "21-09-2026"),
+    (date_text, "16 sept 2026", "16-09-2026"),
+    (date_text, "24SEP2025", "24-09-2025"),
+    (date_text, "SEPTEMBER 16, 2026", "16-09-2026"),
+    (date_text, "Sep 16 2026", "16-09-2026"),
+    (date_dmy, "21/9/2026", "21-09-2026"),
+    (date_ymd, "2026/09/22", "22-09-2026"),
+])
+def test_date_readers(reader, raw, expected):
+    assert reader(raw) == expected
+
+
+def test_every_boxes_layout_is_found_by_its_own_name():
+    """Farms sharing one invoicing program must not catch each other's files:
+    a spec found by the program's wording would read another farm's columns
+    with its own map. And the two first layouts, which do detect by wording,
+    come after all of them."""
+    from pdf_layouts import ALISSROSES as alis, LAYOUTS, QUALISA as qualisa
+
+    names = [s.name for s in LAYOUTS]
+    assert len(names) == len(set(names))
+    assert LAYOUTS[-2:] == [qualisa, alis]
+    for spec in LAYOUTS[:-2]:
+        assert spec.row_model == "boxes"
+        assert spec.totals_re or spec.totals_marker, spec.name
+
+
 if __name__ == "__main__":
     # These use pytest fixtures and parametrisation, so pytest runs them —
     # but a machine without pytest must report "could not run" (2) rather
