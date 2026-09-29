@@ -12,7 +12,10 @@ invoices below are synthetic and keep only the shape that mattered.
   nu_stems_bunch the row's stems, tp_box a letter Q (QBE) or E (1/8)
   (Utopia invoice 186970, 2026-09-24).
 - FreshPortal receives QBE, HBE, 1/8 or a mix box label, and the invoice
-  number exactly as sent.
+  number exactly as sent. A box nobody has mapped goes as QBE, for the screen
+  to offer QBE, HBE, 1/8 or ECPS instead (user, 2026-09-29).
+- Fiorentina's invoice text: a row with no box number is more of the box
+  above, not the end of the table (invoice 0000157754, 2026-09-29).
 - A treated product whose name does not contain its nm_variety is a
   different product built on it, e.g. Florecal's tinted "TA RAINBOW MD" with
   nm_variety MONDIAL (invoice 1586318, 2026-09-24). A plain product whose
@@ -36,7 +39,12 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from parser_delivery import mix_box_lines, parse_delivery_json, resolve_growers  # noqa: E402
+from parser_delivery import (  # noqa: E402
+    guess_unknown_boxes,
+    mix_box_lines,
+    parse_delivery_json,
+    resolve_growers,
+)
 
 
 def _box(variety: str, bunches: int, rate: float, *, location: str = "", length: int = 60,
@@ -235,6 +243,13 @@ def test_utopia_rows_become_boxes_of_their_stems():
     assert {l.nm_species for l in order.lines} == {""}
 
 
+def test_utopia_h_is_a_half_box():
+    """As its PDF invoice says; the letter used to pass through (2026-09-29)."""
+    data = _invoice(UTOPIA, [_utopia_row("H", 2, 600, 0.34, 60)], 204)
+    [order] = parse_delivery_json(data)
+    assert [(l.nm_box, l.nu_physical_boxes) for l in order.lines] == [("HBE", 2)]
+
+
 def test_utopia_row_that_does_not_divide_is_left_and_flagged():
     data = _invoice(UTOPIA, [_utopia_row("Q", 3, 1000, 0.43, 60)], 430)
     data["invoices"][0]["nu_boxes"] = "3"
@@ -275,6 +290,102 @@ def test_text_invoice_keeps_leading_zeros():
     text = "FIORENTINA FLOWERS\nINVOICE # 000123\nDate : 23/09/2026\n"
     [order] = parse_delivery_json({text: None})
     assert order.id_invoice == "000123"
+
+
+_TEXT_HEADER = "BOX\nTB\nBox code\nVARIETY\nCAN\nBUNCHES\nLENGT\nSTEMS\nPRICE/UNIT\nTOTAL\n"
+
+
+def _text_invoice(*rows: str) -> dict:
+    """Fiorentina's invoice text, a value a line, as its JSON carries it."""
+    return {"FIORENTINA FLOWERS\nINVOICE # 0000157754\nDate : 16/09/2026\n" + _TEXT_HEADER
+            + "".join(rows) + "TOTAL\n9\n225\n97,500\n": None}
+
+
+@pytest.mark.parametrize("blank_box", ["", "\n"], ids=["no line", "empty line"])
+def test_text_invoice_reads_past_a_row_without_a_box_number(blank_box):
+    """Fiorentina 0000157754 prints box 1 as TIFFANY on two rows, the second
+    with no box number; reading stopped there and lost box 2."""
+    [order] = parse_delivery_json(_text_invoice(
+        "1\nQ\n1OZH\nTIFFANY\n1\n25\n50\n25\n0,300\n7,500\n",
+        f"{blank_box}Q\n1OZH\nTIFFANY\n4\n25\n50\n100\n0,300\n30,000\n",
+        "2\nQ\n1OZH\nBLUE TINTED\n4\n25\n60\n100\n0,600\n60,000\n",
+    ))
+    assert [(l.nm_variety, l.nm_box, l.nu_bunches) for l in order.lines] == [
+        ("Tiffany", "QBE", 5), ("Blue Tinted", "QBE", 4)]
+    assert (order.nu_boxes, order.nu_stems_total, order.mny_total) == (2, 225, 97.5)
+
+
+def test_text_invoice_box_of_two_products_is_a_mix_box():
+    [order] = parse_delivery_json(_text_invoice(
+        "1\nH\n1OZH\nTIFFANY\n1\n25\n50\n25\n0,300\n7,500\n",
+        "H\n1OZH\nMONDIAL\n4\n25\n50\n100\n0,300\n30,000\n",
+    ))
+    assert {(l.nm_box, l.nm_box_type) for l in order.lines} == {("MB1", "HBE")}
+    assert order.nu_boxes == 1
+
+
+# ── Boxes of one product holding different amounts ─────────────────────────
+# FreshPortal takes a line as N boxes of one content. Merged, 6 boxes of 10
+# bunches and 6 of 12 went as 12 of 11, and 6 of 10 with 1 of 12 as 7 of 10,
+# losing 2 bunches (user, 2026-09-29).
+
+def _per_box(order) -> list[tuple[int, int]]:
+    """(boxes, bunches in each) for every line, as build_stock_entry sends it."""
+    return sorted((l.nu_physical_boxes, l.nu_bunches // l.nu_physical_boxes) for l in order.lines)
+
+
+@pytest.mark.parametrize("small, big", [(6, 6), (6, 1)])
+def test_boxes_merge_only_when_they_hold_the_same(small, big):
+    boxes = [_box("FREEDOM", 10, 0.36, gu="G1", tp_box="HB")] * small \
+        + [_box("FREEDOM", 12, 0.36, gu="G1", tp_box="HB")] * big
+    [order] = parse_delivery_json(_invoice("ECOROSES S.A.", boxes, 0))
+    assert _per_box(order) == sorted([(small, 10), (big, 12)])
+    assert sum(l.nu_bunches for l in order.lines) == 10 * small + 12 * big
+
+
+def test_a_product_on_two_rows_of_one_box_is_that_box_once():
+    two_rows = _box("FREEDOM", 4, 0.36, gu="G1", tp_box="HB")
+    two_rows["products"] = two_rows["products"] * 2
+    boxes = [two_rows, _box("FREEDOM", 8, 0.36, gu="G1", tp_box="HB")]
+    [order] = parse_delivery_json(_invoice("ECOROSES S.A.", boxes, 0))
+    assert _per_box(order) == [(2, 8)]
+
+
+def test_factura_boxes_merge_only_when_they_hold_the_same():
+    def detalle(ramos: int) -> dict:
+        return {"code_caja": "QB", "productos": [{
+            "id_producto": "P1", "nombre_variedad": "EXPLORER", "tipo_producto": "ROSES",
+            "grado": 60, "tallos_x_ramo": 25, "ramos": ramos, "precio": 0.4, "variedad": "EXPLORER 60"}]}
+    data = {"id_factura": "0001", "empresa": "FLORICOLA BLOOMINGACRES S.A",
+            "detalles": [detalle(4), detalle(4), detalle(5)]}
+    [order] = parse_delivery_json(data)
+    assert _per_box(order) == [(1, 5), (2, 4)]
+
+
+def test_etiqueta_rows_merge_only_when_they_hold_the_same():
+    def row(bunches: int, boxes: int = 1) -> dict:
+        return {"PRODUCTO": "ROSE MONDIAL", "NomVariedad": "MONDIAL", "NomColor": "", "BOX": "HB",
+                "Bch/box": bunches, "st/Bch": 25, "Price": 0.35, "Boxes": boxes}
+    [order] = parse_delivery_json({"invoice": "7", "cajas": 5,
+                                   "detalle": [row(10), row(12), row(10, boxes=3)]})
+    # A row of three boxes counts the bunches of all three.
+    assert _per_box(order) == [(1, 12), (4, 10)]
+
+
+# ── Boxes nobody has mapped ────────────────────────────────────────────────
+
+def test_a_box_nobody_mapped_goes_as_qbe_and_says_what_it_was():
+    """user, 2026-09-29: an unknown box is QBE by default, with a choice."""
+    boxes = [_box("TIBET", 4, 0.5, tp_box="FB"), _box("MONDIAL", 4, 0.5, tp_box="HB"),
+             _mix("SB", ("A", 2, 0.2), ("B", 2, 0.2))]
+    [order] = parse_delivery_json(_invoice("FLORICOLA LA ROSALEDA S.A.", boxes, 120))
+    guess_unknown_boxes(order)
+    got = {l.nm_variety: (l.nm_box, l.box_guessed, l.nm_box_printed, l.nm_box_type)
+           for l in order.lines}
+    assert got["Tibet"] == ("QBE", True, "FB", "")
+    assert got["Mondial"] == ("HBE", False, "", "")
+    # A mix box keeps its MB label; its physical box is guessed the same way.
+    assert got["A"] == ("MB1", False, "", "QBE")
 
 
 def test_other_suppliers_keep_price_per_stem():

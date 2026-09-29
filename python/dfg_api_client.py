@@ -49,6 +49,14 @@ def lines_without_s20_length(lines: list[DeliveryLine]) -> list[str]:
             for l in lines if l.nu_length not in S20_LENGTHS]
 
 
+def lines_without_grower(lines: list[DeliveryLine]) -> list[str]:
+    """The lines FreshPortal may not receive yet, for want of a grower: no map
+    gives one for their supplier or farm, and none was picked on the screen
+    (user, 2026-09-29). Named for the refusal message."""
+    return [f"{l.nm_variety} ({l.nm_location or 'no farm'})"
+            for l in lines if not str(l.manufacturer_id or "").strip()]
+
+
 class DfgApiError(Exception):
     """Non-recoverable DFG API failure (auth, network, unexpected HTTP status,
     or a payload that's missing data required before it can even be sent)."""

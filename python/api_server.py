@@ -81,7 +81,7 @@ from kenya_box_weight import (
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from kb_routes import router as kb_router
 from parser_delivery import (parse_delivery_json, order_to_dict, resolve_growers, mix_box_lines,
-                             DeliveryOrder, DeliveryLine)
+                             guess_unknown_boxes, DeliveryOrder, DeliveryLine)
 from parser_delivery_pdf import parse_delivery_pdf, PdfParseError, PdfUnknownLayoutError
 import pdf_layout_ai
 import pdf_layout_store
@@ -91,7 +91,7 @@ from dfg_api_client import (
     build_batch_payload, create_batch as dfg_create_batch,
     add_stock_entries as dfg_add_stock_entries,
     get_open_invoices as dfg_get_open_invoices,
-    lines_without_s20_length,
+    lines_without_s20_length, lines_without_grower,
 )
 from scraper_catalogue import fetch_supplier_list
 from scraper_fust import fetch_fust_catalogue
@@ -2788,12 +2788,18 @@ def _resolve_and_match(
         # Growers before products: which mix boxes combine depends on the
         # growers, and which lines need a product search depends on that.
         resolve_growers(order, supplier_nm, grower_choices)
+        # A box nobody has mapped goes as QBE, for the screen to offer others.
+        guess_unknown_boxes(order)
         order.mix_lines = mix_box_lines(order)
         if with_matching:
             to_match = order.lines
             if together:
                 combined = {code for line in order.mix_lines for code in line.mix_boxes}
                 to_match = [line for line in order.lines if line.nm_box not in combined]
+            # A mix box its supplier's layout names ("Dianthus Sp Mix") is
+            # found by that name, as any line is; other mixes keep the fixed
+            # product, or none for the user to pick.
+            to_match = to_match + [line for line in order.mix_lines if line.mix_name]
             m, u = match_order_to_products(order, cached_matches, to_match)
             matched_count += m
             unmatched_count += u
@@ -3328,7 +3334,7 @@ def delivery_api_check(
     return {"exists": batch is not None, "batch": batch_summary(cfg, batch) if batch else None}
 
 
-def _require_s20_lengths(lines: list) -> None:
+def _require_length_and_grower(lines: list) -> None:
     """Nothing goes to FreshPortal while a line lacks a Floricode S20 length
     (user, 2026-09-28): some invoices print none, and the screen asks for one
     before it lets the shipment be created. Checked here too, so no other
@@ -3338,6 +3344,13 @@ def _require_s20_lengths(lines: list) -> None:
         raise HTTPException(
             400, "Every line needs a Floricode S20 length before it goes to FreshPortal; "
                  "missing or not an S20 length: " + ", ".join(missing))
+    # And not without its grower (user, 2026-09-29): FreshPortal would take
+    # the line with none, so the refusal is ours.
+    no_grower = lines_without_grower(lines)
+    if no_grower:
+        raise HTTPException(
+            400, "Every line needs a grower before it goes to FreshPortal; pick one for: "
+                 + ", ".join(no_grower))
 
 
 class DfgCreateRequest(BaseModel):
@@ -3393,7 +3406,7 @@ def delivery_api_create(
     order.lines = [l for l in order.lines if l.fp_product_id]
     if not order.lines:
         raise HTTPException(400, "No matched products to send — confirm product matches first")
-    _require_s20_lengths(order.lines)
+    _require_length_and_grower(order.lines)
 
     try:
         payload = build_batch_payload(
@@ -3477,7 +3490,7 @@ def delivery_api_retry(
     matched_lines = [l for l in order.lines if l.fp_product_id]
     if not matched_lines:
         raise HTTPException(400, "No matched products to retry")
-    _require_s20_lengths(matched_lines)
+    _require_length_and_grower(matched_lines)
 
     try:
         result = dfg_add_stock_entries(cfg, req.batch_id, req.supplier_fp_id, matched_lines, req.invoice_id)

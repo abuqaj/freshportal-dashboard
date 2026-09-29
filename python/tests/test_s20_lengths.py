@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from dfg_api_client import S20_LENGTHS, lines_without_s20_length  # noqa: E402
+from dfg_api_client import S20_LENGTHS, lines_without_grower, lines_without_s20_length  # noqa: E402
 from parser_delivery import DeliveryLine  # noqa: E402
 
 # As printed: "005 5 cm" … "070 70 cm", "072 72 cm", … "900 900 cm", "999 other".
@@ -63,6 +63,15 @@ def test_the_screen_checks_the_same_list():
 def test_a_line_without_a_length_is_named():
     lines = [_line("Mondial", 60), _line("Aila", 0), _line("Explorer", 71)]
     assert lines_without_s20_length(lines) == ["Aila (no length)", "Explorer (71 cm)"]
+
+
+def test_a_line_without_a_grower_is_named():
+    """No line goes to FreshPortal without a grower (user, 2026-09-29)."""
+    with_grower, without, blank = _line("Mondial", 60), _line("Pink Pigeon", 60), _line("Thea", 60)
+    with_grower.manufacturer_id, blank.manufacturer_id = "61397", "  "
+    without.nm_location = "San Pablo"
+    assert lines_without_grower([with_grower, without, blank]) == [
+        "Pink Pigeon (San Pablo)", "Thea (no farm)"]
 
 
 if __name__ == "__main__":

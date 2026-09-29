@@ -40,13 +40,16 @@ def test_no_id_is_listed_twice():
 
 def test_the_list_as_given():
     by_country = {c: sum(1 for g in GROWERS if g["country"] == c) for c in ("Ecuador", "Colombia")}
-    # 351 as given, less three Cantiza ids not needed for now (user, 2026-09-24).
-    assert by_country == {"Ecuador": 348, "Colombia": 254}
+    # 351 as given, less three Cantiza ids not needed for now (user, 2026-09-24),
+    # and MYJFlowers S.A.S, which delivery import resolves but the list lacked
+    # (user, 2026-09-29).
+    assert by_country == {"Ecuador": 349, "Colombia": 254}
     names = {g["manufacturer_id"]: g["nm_manufacturer"] for g in GROWERS}
     assert names["57365"] == "Ceres Farms cia ltd."
     assert names["57346"] == "FLORES ECUATORIANAS DE CALIDAD FLORECAL S.A."
     assert names["42623"] == "C.I Flores de Aposentos"
     assert names["58591"] == "FLORES SANTA MONICA ÑANTA CIA. LTDA."  # non-ASCII survives
+    assert names["61829"] == "MYJFlowers S.A.S"
 
 
 if __name__ == "__main__":

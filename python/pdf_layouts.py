@@ -259,6 +259,17 @@ FLOREQUISA = LayoutSpec(
     row_model="boxes",
     header={"tx_company": const("FLORES EQUINOCCIALES S.A FLOREQUISA"), **FARM_INFO_HEADER},
     box_map=LETTER_BOXES,
+    # No species is printed. The farm grows only chrysanthemum, eryngium,
+    # delphinium, gypsophila and dianthus (user, 2026-09-29): a variety not
+    # named after one of the first four is a dianthus.
+    species_rules=((r"GYPS", "Gypsophila"), (r"ERYNG", "Eryngium"), (r"DELPH", "Delphinium"),
+                   (r"CHRYS|CRISANT|POMPON|DAISY|SPIDER|CUSHION|DISBUD|SANTINI",
+                    "Chrysanthemum")),
+    species="Dianthus",
+    # Its assorted boxes go as one mix product each: Minami boxes as Dianthus
+    # Mix Minami, the other dianthus as Dianthus Sp Mix (user, 2026-09-29,
+    # invoice 0000171464: 2x300 and 3x300).
+    mix_names=((r"\bMINAMI\b", "Dianthus Mix Minami"), (r"^Dianthus\b", "Dianthus Sp Mix")),
     decimal=",",
     nm_product="{variety} {qual}",
     totals_re=FARM_INFO_TOTALS,
@@ -277,6 +288,10 @@ AGROGANA = LayoutSpec(
     header={"tx_company": const("AGROGANA S.A."), **FARM_INFO_HEADER},
     box_map=LETTER_BOXES,
     species="Roses",
+    # Boxes labelled MIX CALIDO are the farm's warm bicolour mix, MIX RED its
+    # red mix, whatever varieties it lists (user, 2026-09-29, 0000294844).
+    variety_rules=(("label", r"^MIX\s+CALIDO$", "Rosa Ec Bicolor Warm"),
+                   ("label", r"^MIX\s+RED$", "Rosa Ec Mix Red")),
     decimal=",",
     totals_re=FARM_INFO_TOTALS,
     boxes_re=FARM_INFO_BOXES,
@@ -475,6 +490,9 @@ NARANJO_ROSES = LayoutSpec(
         "dt_invoice": kv("invoice date", date_us),
         "dt_fly": kv("fly date", date_us),
     },
+    # "FBG" boxes of preserved roses go as QBE, HBE to choose (user,
+    # 2026-09-29). For the fulls check each is a full box: 500 are 500 fulls.
+    box_fulls={"FBG": 1.0},
     totals_marker="TOTALS",
     fulls_re=r"Number\s+in\s+(?:Fulls\s+)?([\d.]+)",
 )
@@ -662,7 +680,12 @@ COLIBRI = LayoutSpec(
     },
     box_map=LETTER_BOXES,
     species_map={"CARNATION": "Carnation", "MINICARNATION": "Mini Carnation"},
-    # Every row that states its bunch size says 20.
+    # Its mixes are the standard and the spray carnation mix (user,
+    # 2026-09-29, FA-123892: 4x240 and 3x240).
+    variety_rules=(("product", r"^Minicarnation\s+mix\b", "Dianthus Sp Mix"),
+                   ("product", r"^Carnation\s+mix\b", "Dianthus St Mix")),
+    # Every row that states its bunch size says 20; minicarnations too
+    # (user, 2026-09-29).
     stems_bunch=20,
     totals_re=r"Tt\.\s*Stems:\s*(?P<stems>[\d,]+)\s+Subtotal:\s*(?P<amount>[\d,.]+)",
     boxes_re=r"^(\d+)\s+TOTAL\s+PIECES",
@@ -673,7 +696,9 @@ COLIBRI = LayoutSpec(
 # The "silverbook" program: Tierra Verde and Montebello. The bunches stand
 # under a column per length; the column says the length.
 SILVERBOOK_HEADER = {
-    "id_invoice": rx(r"INVOICE:\s*(\d+(?:\s\d+)?)"),
+    # Montebello prints its series first, "001001 00024404"; the number is
+    # the last part (user, 2026-09-29). Tierra Verde prints only "00045564".
+    "id_invoice": rx(r"INVOICE:\s*(?:\d+ )?(\d+)"),
     "dt_invoice": rx(r"\bDATE\s+(\d{1,2}/\d{1,2}/\d{4})", date_dmy),
     "dt_fly": rx(r"\bDATE\s+(\d{1,2}/\d{1,2}/\d{4})", date_dmy),
     "nm_ship": rx(r"CONSIGNEE\s+(\S+)"),
@@ -734,6 +759,9 @@ GREENEX = LayoutSpec(
     },
     # An "OCT" box is an eighth.
     box_map={"OCT": "1/8"},
+    # No species is printed; the farm sends only these four (user, 2026-09-29).
+    species_rules=((r"LIL+Y\s*GRASS", "Lily Grass"), (r"RUSCUS", "Ruscus"),
+                   (r"PITTOSPORUM", "Pittosporum"), (r"ARALIA", "Aralia")),
     totals_re=(r"^(?P<boxes>\d+)\s+Full\s+Equivalent:\s*(?P<fulls>[\d.]+)\s+Weight:\s*[\d.]+\s+"
                r"(?P<stems>[\d,]+)\s+(?P<bunches>[\d,]+)\s+(?P<amount>[\d,.]+)"),
 )
@@ -891,7 +919,8 @@ FLORISOL = LayoutSpec(
     row_model="boxes",
     header={
         "tx_company": const("FLORISOL CIA LTDA"),
-        "id_invoice": rx(r"Invoice\s+Number\s*:\s*(PI\s*\d+)", nospace),
+        # As printed, with its space: "PI 246035" (user, 2026-09-29).
+        "id_invoice": rx(r"Invoice\s+Number\s*:\s*(PI\s?\d+)"),
         "dt_invoice": rx(r"Date\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", date_dmy),
         "dt_fly": rx(r"Date\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", date_dmy),
         "nm_ship": rx(r"Consignee\s*:\s*(\S+)"),
@@ -1067,6 +1096,9 @@ MYJ_FLOWERS = LayoutSpec(
         "tx_hawb": rx(r"HAWB:\s*(\S+)"),
     },
     species="Carnation",
+    # "MIX SELECT", "MIX FANCY": the standard carnation mix, a line per grade
+    # and per run of boxes (user, 2026-09-29, 028119: four lines of 2x400).
+    variety_rules=(("variety", r"^MIX$", "Dianthus St Mix"),),
     nm_product="{variety} {qual}",
     totals_re=(r"Full\s+Boxes:\s*(?P<fulls>[\d.]+)\s+(?P<stems>\d+)\s+"
                r"\$(?P<amount>[\d,.]+)"),
@@ -1109,9 +1141,9 @@ GUAISA = LayoutSpec(
         "tx_hawb": rx(r"AWB:[^/\n]*/\s*(\S+)"),
     },
     # Its box sizes are letters, 15 to 25 cm high ("A - 95x32.5x25",
-    # "X - 105x31x16.5", "M - 95x31x15.5"), each holding 100-125 stems here:
-    # quarter boxes.
-    box_map={"A": "QBE", "X": "QBE", "M": "QBE"},
+    # "X - 105x31x16.5", "M - 95x31x15.5"), each holding 100-125 stems here.
+    # None is mapped: they go as the quarter boxes they look like, and the
+    # screen lets the user pick another (user, 2026-09-29).
     species_map={"ROSE": "Roses"},
     # The invoice prints stems only; its roses are bunched by 25.
     stems_bunch=25,
@@ -1213,11 +1245,13 @@ UTOPIA = LayoutSpec(
         r"^(?P<location>[A-Z][A-Za-z ]+?)\s+HAWB:\s*\S+\s*$",
         # A row of boxes: "LIMONIUM WHITE ACTIVA 25ST 80CM 300ST (ST 2215338-5)
         # 80 CM 3 Q 0.75 900 ST 900 0.320 288.00" — the bunch size is only here.
+        # Gypsophila prints a stem's weight where the length goes: "25ST
+        # 1000GR … 40 GR" is 25 stems of 40 g (user, 2026-09-29: a weight).
         r"^(?P<product>.+?)\s+(?P<stems_bunch>\d+)ST\b.*?\((?:ST|SP)\s+[\d-]+\)\s+"
-        r"(?:(?P<length>\d+)\s+CM|\d+\s+GR)\s+(?P<count>\d+)\s+(?P<box>[A-Z])\s+[\d.]+\s+"
+        r"(?:(?P<length>\d+)\s+CM|(?P<grams>\d+)\s+GR)\s+(?P<count>\d+)\s+(?P<box>[A-Z])\s+[\d.]+\s+"
         r"\d+\s+(?:ST|BC)\s+(?P<stems>\d+)\s+(?P<rate>[\d.]+)\s+(?P<subtotal>[\d,.]+)\s*$",
         # and what is in them: "GYPSOPHILA (O) OVERTIME 40 GR 72 BC 1800 0.340 612.00"
-        r"^(?P<variety>[A-Z].+?)\s+(?:(?P<length>\d+)\s+CM|\d+\s+GR)\s+"
+        r"^(?P<variety>[A-Z].+?)\s+(?:(?P<length>\d+)\s+CM|(?P<grams>\d+)\s+GR)\s+"
         r"(?:(?P<bunches>\d+)\s+BC|\d+\s+ST)\s+(?P<stems>\d+)\s+(?P<rate>[\d.]+)\s+"
         r"(?P<subtotal>[\d,.]+)\s*$",
     ),
@@ -1332,9 +1366,13 @@ DR_ECUADOR_ROSES = LayoutSpec(
     },
     default_box="HB",
     species="Roses",
-    # Loose stems, counted by the stem; 272 of them over 3 half boxes.
+    # Loose sample stems go as the mixed box product (user, 2026-09-29).
+    variety_rules=(("variety", r"^Stems\s+of\s+rose$", "Rosa Ec Mix in Box"),),
+    # Loose stems, counted by the stem; 272 of them over 3 half boxes, packed
+    # 100 a box and the rest in the last (user, 2026-09-29).
     stems_bunch=1,
     split_uneven=True,
+    box_fill=100,
     totals_re=r"TOTAL\s+STEM\s+OF\s+ROSE\s+(?P<stems>\d+)(?s:.*?)VALUE\s+FCA\s+[A-Z]+\s+USD\s+(?P<amount>[\d.]+)",
 )
 
@@ -1350,8 +1388,12 @@ SAN_ANDRES = LayoutSpec(
     row_model="boxes",
     # "BULK ROSE STEM(50cm" — the box name, cut off by its narrow column.
     box_re=r"^([A-Z][A-Z ]*?)\s*(?:\(|$)",
+    # MB SPLENDID is ECPS and BULK ROSE STEM a half box; MB SUPER PETITE is
+    # not known and goes as QBE for the user to change (user, 2026-09-29).
+    box_map={"MB SPLENDID": "ECPS", "BULK ROSE STEM": "HBE"},
     header={
-        "tx_company": const("AGRICOLA SAN ANDRES DEL CHAUPI SA"),
+        # FreshPortal's supplier and grower Kiara / El Chaupi (user, 2026-09-29).
+        "tx_company": const("KIARA / EL CHAUPI"),
         "id_invoice": rx(r"^INVOICE\s+(\d+)", flags=re.IGNORECASE | re.MULTILINE),
         "dt_invoice": rx(r"^DATE:\s*(\d{1,2}/\d{1,2}/\d{4})", date_dmy, flags=re.IGNORECASE | re.MULTILINE),
         "dt_fly": rx(r"^DATE:\s*(\d{1,2}/\d{1,2}/\d{4})", date_dmy, flags=re.IGNORECASE | re.MULTILINE),

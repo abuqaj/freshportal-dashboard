@@ -60,6 +60,7 @@ from parser_delivery import (
     _normalise_box,
     _normalise_date,
     _parse_date_iso,
+    guess_box,
 )
 
 log = logging.getLogger(__name__)
@@ -490,15 +491,19 @@ GRID_FIELDS = ("count", "box", "species", "product", "length",
 #                qualifies the variety, as the JSON path's tx_label does
 #   number_last  the last box number, for a grid printing a range in two
 #                columns ("B I" 2, "B F" 3)
+#   grams        the weight of one stem in grams ("40 GR"), which goes to
+#                FreshPortal as the line's weight in kg
 ROW_FIELDS = GRID_FIELDS + ("number", "variety", "color", "stems_bunch", "bunches_box",
                             "stems_box", "rate_bunch", "location", "qual", "label",
-                            "number_last")
+                            "number_last", "grams")
 
 # How much of a full box each box code is, for checking the full-box
 # equivalent an invoice prints ("TOTAL FULL BOXES 9.125").
 BOX_FULLS = {"QBE": 0.25, "HBE": 0.5, "1/8": 0.125}
 
 # Box codes that are one letter, as several Ecuadorian templates print them.
+# The Farm Information program also has F, S, D and T; they stay unmapped
+# and go as a guessed QBE, like any box we do not know (user, 2026-09-29).
 LETTER_BOXES = {"H": "HBE", "Q": "QBE", "E": "1/8"}
 
 
@@ -577,11 +582,27 @@ class LayoutSpec:
                  "60") is a length column — for a grid that prints only the
                  lengths the shipment has
     box_map      printed box code (upper case) → FreshPortal code, for codes
-                 _normalise_box does not know ("E" → "1/8", "OCT" → "1/8")
+                 _normalise_box does not know ("E" → "1/8", "OCT" → "1/8").
+                 A code that is still not one of parser_delivery.KNOWN_BOXES
+                 goes as QBE, marked as a guess the screen lets the user change
     default_box  the box code when the invoice prints none
-    box_fulls    extra box code → share of a full box, for the fulls check
+    box_fulls    extra box code → share of a full box, for the fulls check;
+                 for a guessed box, keyed by the code as printed ("FBG")
     species      the species when neither the grid nor the product names it
     species_map  printed species (upper case) → the name lines carry
+    species_rules  (regex, species) pairs tried on the variety, for a supplier
+                 printing no species at all; the first that matches names it,
+                 else `species`
+    variety_rules  (row field, regex, name) triples: a row whose field
+                 matches is the product `name` whatever its variety — a mix
+                 the farm packs under its own label ("MIX CALIDO" → "Rosa Ec
+                 Bicolor Warm"). The field is "variety" or "label" as cleaned,
+                 or any other row field as printed. Such a product merges only
+                 across boxes printed one after another, and not across
+                 grades, so each run can be given its own length
+    mix_names    (regex, name) pairs: a mix box whose every product's
+                 "species variety" matches is sent combined as `name`,
+                 matched against the catalogue by that name
     label_joins_variety  regex; a variety matching it is only half a name
                  without its box label ("MIX COLOR" boxed as "BICO HOT"), so
                  the label is added to it
@@ -593,6 +614,9 @@ class LayoutSpec:
                  its boxes is taken as boxes of one bunch more and one fewer,
                  instead of refused — for a supplier that only ever states a
                  total over its boxes
+    box_fill     with split_uneven: each box of such a block holds this many
+                 bunches and the last one the rest (272 in 3: 100, 100, 72),
+                 where that accounts for exactly the block's boxes
     items_per_box  the quantities on a product row under a block row are
                  per box, not summed across the block's boxes
     block_row_is_summary  a block row names a product only for a block no
@@ -637,11 +661,15 @@ class LayoutSpec:
     box_fulls: dict[str, float] = field(default_factory=dict)
     species: str = ""
     species_map: dict[str, str] = field(default_factory=dict)
+    species_rules: tuple[tuple[str, str], ...] = ()
+    variety_rules: tuple[tuple[str, str, str], ...] = ()
+    mix_names: tuple[tuple[str, str], ...] = ()
     label_joins_variety: str = ""
     stems_bunch: int = 0
     decimal: str = "."
     items_per_box: bool = False
     split_uneven: bool = False
+    box_fill: int = 0
     block_row_is_summary: bool = False
     extract: dict[str, Any] = field(default_factory=dict)
     boxes_re: str = ""
@@ -688,6 +716,17 @@ class LayoutSpec:
         unknown_extract = set(self.extract) - {"x_tolerance", "drop_white", "clip_overflow"}
         if unknown_extract:
             raise ValueError(f"{self.name}: unknown extract options {sorted(unknown_extract)}")
+        for row_field, pattern, name in self.variety_rules:
+            if row_field not in ROW_FIELDS or not name:
+                raise ValueError(f"{self.name}: a variety rule needs a row field and a name, "
+                                 f"not {row_field!r} → {name!r}")
+            re.compile(pattern)
+        for pattern, name in (*self.species_rules, *self.mix_names):
+            if not name:
+                raise ValueError(f"{self.name}: a species rule or mix name needs a name")
+            re.compile(pattern)
+        if self.box_fill < 0:
+            raise ValueError(f"{self.name}: box_fill cannot be negative")
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +744,9 @@ class _Product:
     rate: float
     nm_product: str
     location: str = ""
+    weight: float = 0.0     # one stem, kg
+    qual: str = ""
+    named: bool = False     # the variety comes from a variety rule
 
 
 @dataclass
@@ -920,6 +962,7 @@ def _line(product: _Product, spec: LayoutSpec, species: Callable[[str], str],
         nm_box=box_code,
         nu_physical_boxes=physical_boxes,
         nm_location=nm_location,
+        nu_weight=product.weight,
     )
 
 
@@ -1063,14 +1106,30 @@ def _row_products(fields: dict[str, Any], spec: LayoutSpec, num: Callable[[str],
     label = _clean_variety(fields.get("label") or "")
     if _CUSTOMER_MARK_RE.match(label):
         label = ""
-    if label and spec.label_joins_variety and re.search(spec.label_joins_variety, variety,
-                                                        re.IGNORECASE):
-        variety = f"{variety} {label}"
-    variety = _enrich_variety(variety, label)
+    printed = variety
+
+    def rule_value(name: str) -> str:
+        if name in ("variety", "label"):
+            return printed if name == "variety" else label
+        value = fields.get(name)
+        return value if isinstance(value, str) else ""
+
+    named = next((name for row_field, pattern, name in spec.variety_rules
+                  if re.search(pattern, rule_value(row_field), re.IGNORECASE)), "")
+    if named:
+        variety = named
+    else:
+        if label and spec.label_joins_variety and re.search(spec.label_joins_variety, variety,
+                                                            re.IGNORECASE):
+            variety = f"{variety} {label}"
+        variety = _enrich_variety(variety, label)
 
     raw_species = (fields.get("species") or "").strip()
-    species = (spec.species_map.get(raw_species.upper()) or raw_species.title()
-               if raw_species else spec.species)
+    if raw_species:
+        species = spec.species_map.get(raw_species.upper()) or raw_species.title()
+    else:
+        species = next((name for pattern, name in spec.species_rules
+                        if re.search(pattern, printed, re.IGNORECASE)), spec.species)
 
     def n(name: str) -> float:
         return num(fields.get(name) or "")
@@ -1126,6 +1185,8 @@ def _row_products(fields: dict[str, Any], spec: LayoutSpec, num: Callable[[str],
             variety=variety, species=species, length=int(length), stems_bunch=stems_bunch,
             bunches=bunches, rate=round(rate, 6), nm_product=re.sub(r"\s+", " ", nm_product),
             location=(fields.get("location") or "").strip(),
+            weight=round(n("grams") / 1000, 4), qual=(fields.get("qual") or "").strip(),
+            named=bool(named),
         ))
     return products
 
@@ -1194,7 +1255,9 @@ def _read_box_blocks(rows: list[dict[str, Any]], spec: LayoutSpec,
     return [b for b in blocks if b.products], last_box
 
 
-def _box_code_boxes(raw: str, spec: LayoutSpec) -> str:
+def _box_code_boxes(raw: str, spec: LayoutSpec) -> tuple[str, str]:
+    """(the box FreshPortal gets, the printed code when that is a guess —
+    empty when the code is one we know)."""
     raw = (raw or "").strip() or spec.default_box
     if spec.box_re:
         m = re.search(spec.box_re, raw)
@@ -1202,18 +1265,35 @@ def _box_code_boxes(raw: str, spec: LayoutSpec) -> str:
     else:
         raw = re.sub(r"\s*\(.*?\)", "", raw)
     raw = raw.strip()
-    return spec.box_map.get(raw.upper()) or _normalise_box(raw)
+    box, guessed = guess_box(spec.box_map.get(raw.upper()) or _normalise_box(raw))
+    return box, (raw.upper() if guessed else "")
 
 
-def _split_uneven(block: _BoxBlock) -> list[_BoxBlock]:
+def _split_uneven(block: _BoxBlock, fill: int = 0) -> list[_BoxBlock]:
     """A block of one product whose bunches do not divide between its boxes,
     as the boxes that hold one more and the boxes that hold one fewer:
     272 stems in 3 boxes are 2 boxes of 91 and 1 of 90. Only for a supplier
-    whose invoice states nothing finer (split_uneven)."""
+    whose invoice states nothing finer (split_uneven).
+
+    With `fill`, boxes are filled with that many and the last takes the
+    rest, 100, 100 and 72 (user, 2026-09-29), wherever that makes exactly
+    the block's boxes."""
     count = max(1, block.count)
-    if len(block.products) != 1 or block.products[0].bunches % count == 0:
+    if len(block.products) != 1:
         return [block]
     product = block.products[0]
+    if fill:
+        full, rest = divmod(product.bunches, fill)
+        if full + (1 if rest else 0) == count:
+            parts = [dataclasses.replace(block, count=full,
+                                         products=[dataclasses.replace(product, bunches=fill * full)])
+                     ] if full else []
+            if rest:
+                parts.append(dataclasses.replace(
+                    block, count=1, products=[dataclasses.replace(product, bunches=rest)]))
+            return parts
+    if product.bunches % count == 0:
+        return [block]
     base, extra = divmod(product.bunches, count)
     parts = [dataclasses.replace(block, count=extra,
                                  products=[dataclasses.replace(product, bunches=(base + 1) * extra)])]
@@ -1233,17 +1313,20 @@ def _build_box_lines(blocks: list[_BoxBlock], spec: LayoutSpec
     size is not known)."""
     lines: list[DeliveryLine] = []
     merged: dict[tuple, DeliveryLine] = {}
+    # A named product's merge key → (its run, the last block it was in).
+    runs: dict[tuple, tuple[int, int]] = {}
     mix_box_counter = 0
     nu_boxes = 0
     fulls: float | None = 0.0
 
     if spec.split_uneven:
-        blocks = [part for block in blocks for part in _split_uneven(block)]
-    for block in blocks:
+        blocks = [part for block in blocks for part in _split_uneven(block, spec.box_fill)]
+    for index, block in enumerate(blocks):
         count = max(1, block.count)
         nu_boxes += count
-        box_type = _box_code_boxes(block.box, spec)
-        size = spec.box_fulls.get(box_type, BOX_FULLS.get(box_type))
+        box_type, printed_box = _box_code_boxes(block.box, spec)
+        size = (spec.box_fulls.get(printed_box) if printed_box
+                else spec.box_fulls.get(box_type, BOX_FULLS.get(box_type)))
         fulls = None if (fulls is None or size is None) else fulls + size * count
 
         uneven = next((p for p in block.products if p.bunches % count), None)
@@ -1258,8 +1341,9 @@ def _build_box_lines(blocks: list[_BoxBlock], spec: LayoutSpec
         # one box is one product of that box.
         in_box: dict[tuple, list] = {}
         for p in block.products:
+            # A named mix keeps its grades apart: they are different lengths.
             key = (p.species.lower(), p.variety.lower(), p.length, p.stems_bunch, p.rate,
-                   p.location.lower())
+                   p.location.lower(), p.weight, p.qual.lower() if p.named else "")
             if key in in_box:
                 in_box[key][1] += p.bunches // count
             else:
@@ -1268,6 +1352,9 @@ def _build_box_lines(blocks: list[_BoxBlock], spec: LayoutSpec
         # at two lengths or two prices: as single-product lines, each would
         # count the same box again.
         is_mix = len(in_box) > 1
+        mix_name = next((name for pattern, name in spec.mix_names
+                         if all(re.search(pattern, f"{p.species} {p.variety}", re.IGNORECASE)
+                                for p, _ in in_box.values())), "") if is_mix else ""
 
         for _ in range(count):
             if is_mix and not spec.merge_across_boxes:
@@ -1277,6 +1364,7 @@ def _build_box_lines(blocks: list[_BoxBlock], spec: LayoutSpec
                     line = _line(product, spec, lambda s: s, product.location,
                                  box_code=box_code, bunches=bunches, physical_boxes=1)
                     line.nm_box_type = box_type
+                    line.mix_name = mix_name
                     lines.append(line)
                 continue
             for key, (product, bunches) in in_box.items():
@@ -1284,6 +1372,16 @@ def _build_box_lines(blocks: list[_BoxBlock], spec: LayoutSpec
                 # FreshPortal takes a line as N boxes of one content, and
                 # 6 boxes of 10 bunches plus 6 of 12 are not 12 boxes of 11.
                 merge_key = (*key, box_type, bunches)
+                if product.named:
+                    # A named mix is whatever the farm packed in those boxes:
+                    # boxes printed apart stay apart, and the invoice prints no
+                    # length for them to be told by (MYJ 028119, MIX FANCY in
+                    # boxes 15-16 and 19-20: two lines; user, 2026-09-29).
+                    run, last = runs.get(merge_key, (0, index))
+                    if last < index - 1:
+                        run += 1
+                    runs[merge_key] = (run, index)
+                    merge_key = (*merge_key, run)
                 if merge_key in merged:
                     merged[merge_key].nu_bunches += bunches
                     merged[merge_key].nu_physical_boxes += 1
@@ -1291,6 +1389,9 @@ def _build_box_lines(blocks: list[_BoxBlock], spec: LayoutSpec
                     merged[merge_key] = _line(product, spec, lambda s: s, product.location,
                                               box_code=box_type, bunches=bunches,
                                               physical_boxes=1)
+                    if printed_box:
+                        merged[merge_key].box_guessed = True
+                        merged[merge_key].nm_box_printed = printed_box
 
     lines.extend(merged.values())
     lines.sort(key=lambda l: (l.nm_species, l.nm_variety, l.nu_length))

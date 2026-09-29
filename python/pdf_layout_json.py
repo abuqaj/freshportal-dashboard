@@ -57,8 +57,11 @@ _REGEX_FIELDS = {"detect", "product_re", "box_re", "totals_re", "location_block"
                  "lines_from", "lines_to", "label_joins_variety", "boxes_re", "fulls_re"}
 _BOOL_FIELDS = {"merge_across_boxes", "lengths_from_header", "items_per_box", "split_uneven",
                 "block_row_is_summary"}
-_INT_FIELDS = {"stems_bunch", "totals_col"}
+_INT_FIELDS = {"stems_bunch", "totals_col", "box_fill"}
 _STR_DICT_FIELDS = {"cell_re", "header_columns", "box_map", "species_map"}
+# Lists of [regex, name] pairs, and of [row field, regex, name] triples.
+_PAIR_FIELDS = {"species_rules", "mix_names"}
+_TRIPLE_FIELDS = {"variety_rules"}
 _EXTRACT_TYPES = {"x_tolerance": (int, float), "drop_white": bool, "clip_overflow": bool}
 
 
@@ -98,7 +101,7 @@ def spec_to_dict(spec: LayoutSpec) -> dict[str, Any]:
             if value == default:
                 continue
         if isinstance(value, tuple):
-            value = list(value)
+            value = [list(v) if isinstance(v, tuple) else v for v in value]
         if f.name == "length_cols":
             value = {str(k): v for k, v in value.items()}
         out[f.name] = value
@@ -235,6 +238,15 @@ def spec_from_dict(data: Any) -> LayoutSpec:
                 for k, v in value.items():
                     _regex(f"{name}.{k}", v)
             kwargs[name] = dict(value)
+        elif name in _PAIR_FIELDS or name in _TRIPLE_FIELDS:
+            size = 3 if name in _TRIPLE_FIELDS else 2
+            if not isinstance(value, list) or not all(
+                    isinstance(v, list) and len(v) == size and all(isinstance(x, str) for x in v)
+                    for v in value):
+                raise _fail(name, f"must be a list of {size} strings each")
+            for i, v in enumerate(value):
+                _regex(f"{name}[{i}]", v[-2])
+            kwargs[name] = tuple(tuple(v) for v in value)
         elif name == "box_fulls":
             if not isinstance(value, dict) or not all(
                     isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)

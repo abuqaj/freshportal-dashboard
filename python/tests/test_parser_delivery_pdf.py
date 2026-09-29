@@ -44,6 +44,7 @@ from parser_delivery_pdf import (  # noqa: E402
     detect_pdf_layout,
     parse_with_spec,
 )
+from parser_delivery import mix_box_lines  # noqa: E402
 from pdf_layouts import ALISSROSES, QUALISA  # noqa: E402
 
 
@@ -706,6 +707,93 @@ def test_split_uneven_boxes_keep_every_stem():
     order = parse_with_spec(_numbered_doc(rows, 0, 272, "2,72"), spec)
     assert sorted((l.nu_physical_boxes, l.nu_bunches) for l in order.lines) == [(1, 90), (2, 182)]
     assert order.nu_boxes == 3
+
+
+def test_box_fill_packs_whole_boxes_and_the_rest_last():
+    """272 stems in 3 half boxes, 100 a box: 100, 100 and 72 (user, 2026-09-29)."""
+    spec = dataclasses.replace(
+        _NUMBERED, columns={"count": 0, "box": 1, "variety": 2, "stems": 6, "rate": 7,
+                            "subtotal": 8},
+        stems_bunch=1, split_uneven=True, box_fill=100, boxes_re="",
+        totals_re=r"^TOTAL\s+\d+\s+(?P<stems>\d+)\s+(?P<amount>[\d.,]+)\s*$")
+    rows = [["3", "H", "STEMS OF ROSE", "", "", "", "272", "0,010", "2,720"]]
+    order = parse_with_spec(_numbered_doc(rows, 0, 272, "2,72"), spec)
+    assert sorted((l.nu_physical_boxes, l.nu_bunches) for l in order.lines) == [(1, 72), (2, 200)]
+
+
+# BOX | TB | VARIETY | … | TOTAL | LABEL: Agrogana's MIX CALIDO boxes.
+_LABELLED = dataclasses.replace(
+    _NUMBERED, columns={**_NUMBERED.columns, "label": 9},
+    variety_rules=(("label", r"^MIX\s+CALIDO$", "Rosa Ec Bicolor Warm"),))
+
+
+def test_variety_rule_names_the_product_and_keeps_runs_apart():
+    """Boxes labelled MIX CALIDO are one product, whatever variety they list;
+    boxes printed apart stay apart, so each run can get its own length."""
+    rows = [["01", "H", "HIGH MAGIC", "10", "25", "60", "250", "0,340", "85,000", "MIX CALIDO"],
+            ["02", "H", "BOGART", "10", "25", "60", "250", "0,340", "85,000", "MIX CALIDO"],
+            ["03", "H", "FREEDOM", "10", "25", "60", "250", "0,340", "85,000", ""],
+            ["04", "H", "TYCOON", "10", "25", "60", "250", "0,340", "85,000", "MIX CALIDO"]]
+    order = parse_with_spec(_numbered_doc(rows, 40, 1000, "340,00", boxes_h=4), _LABELLED)
+    got = sorted((l.nm_variety, l.nu_physical_boxes) for l in order.lines)
+    assert got == [("Freedom", 1), ("Rosa Ec Bicolor Warm", 1), ("Rosa Ec Bicolor Warm", 2)]
+
+
+def test_variety_rule_keeps_grades_apart():
+    """MYJ's MIX SELECT and MIX FANCY are one mix product at different
+    lengths, even at one price and in boxes side by side."""
+    spec = dataclasses.replace(
+        _NUMBERED, product_re=r"^(?P<variety>.+?)(?:\s+(?P<qual>FANCY|SELECT))?$",
+        variety_rules=(("variety", r"^MIX$", "Dianthus St Mix"),))
+    rows = [["1", "Q", "MIX SELECT", "20", "20", "", "400", "0,150", "60,000"],
+            ["2", "Q", "MIX FANCY", "20", "20", "", "400", "0,150", "60,000"]]
+    order = parse_with_spec(_numbered_doc(rows, 40, 800, "120,00", boxes_q=2), spec)
+    assert [(l.nm_variety, l.nu_physical_boxes, l.nu_length) for l in order.lines] == [
+        ("Dianthus St Mix", 1, 0), ("Dianthus St Mix", 1, 0)]
+
+
+def test_species_rules_and_mix_names_for_a_farm_printing_no_species():
+    """Florequisa prints no species, and its assorted boxes go as one mix
+    product each: Minami boxes as Dianthus Mix Minami, the rest as Dianthus
+    Sp Mix (user, 2026-09-29)."""
+    spec = dataclasses.replace(
+        _NUMBERED, species="Dianthus", species_rules=((r"GYPS", "Gypsophila"),),
+        mix_names=((r"\bMINAMI\b", "Dianthus Mix Minami"), (r"^Dianthus\b", "Dianthus Sp Mix")))
+    rows = [["01", "Q", "FEMENINE MINAMI", "6", "10", "", "60", "0,240", "14,400"],
+            ["", "Q", "LEMON MINAMI", "4", "10", "", "40", "0,240", "9,600"],
+            ["02", "Q", "AILA", "5", "10", "", "50", "0,200", "10,000"],
+            ["", "Q", "PIGEON", "5", "10", "", "50", "0,200", "10,000"],
+            ["03", "Q", "GYPSO XLENCE", "10", "25", "80", "250", "0,300", "75,000"]]
+    order = parse_with_spec(_numbered_doc(rows, 30, 450, "119,00", boxes_q=3), spec)
+    assert {l.nm_variety: l.nm_species for l in order.lines}["Gypso Xlence"] == "Gypsophila"
+    combined = {l.nm_variety: (l.fp_product_id, l.mix_boxes) for l in mix_box_lines(order)}
+    assert combined == {"Dianthus Mix Minami": ("", ["MB1"]), "Dianthus Sp Mix": ("", ["MB2"])}
+
+
+def test_a_box_nobody_mapped_goes_as_qbe_and_counts_as_printed():
+    """Naranjo's FBG is no box we know: it goes as QBE for the user to change,
+    and its size for the fulls check is the printed code's."""
+    spec = dataclasses.replace(_NUMBERED, box_fulls={"FBG": 1.0}, fulls_re=r"FULLS\s+([\d.]+)")
+    rows = [["1", "FBG", "CLASSY BLUE", "4", "25", "50", "100", "4,000", "400,000"],
+            ["2", "FBG", "CLASSY BLUE", "4", "25", "50", "100", "4,000", "400,000"]]
+
+    def doc(fulls):
+        text = f"INVOICE 1\nDATE 21/09/2026\nTOTAL 8 200 800,00\nTOTAL CAJAS F: 2\nFULLS {fulls}\n"
+        return PdfDoc(text=text, tables=[[_NUMBERED_HEADER, *rows]])
+
+    [line] = parse_with_spec(doc(2), spec).lines
+    assert (line.nm_box, line.box_guessed, line.nm_box_printed, line.nu_physical_boxes) == (
+        "QBE", True, "FBG", 2)
+    with pytest.raises(PdfChecksumError):
+        parse_with_spec(doc(0.5), spec)
+
+
+def test_stem_weight_in_grams_goes_as_kilograms():
+    """Utopia's gypsophila: "40 GR" is a stem's weight (user, 2026-09-29)."""
+    spec = dataclasses.replace(_NUMBERED, columns={**_NUMBERED.columns, "grams": 9})
+    rows = [["1", "H", "OVERTIME", "12", "25", "", "300", "0,340", "102,000", "40"]]
+    [line] = parse_with_spec(_numbered_doc(rows, 12, 300, "102,00", boxes_h=1), spec).lines
+    assert line.nu_weight == 0.04
 
 
 @pytest.mark.parametrize("raw, expected", [

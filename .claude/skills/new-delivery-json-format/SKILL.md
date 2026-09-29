@@ -23,11 +23,17 @@ this skill.
 - Suppliers send JSON inside `.txt` files too; that is accepted.
 - **Identical per-box lines** are grouped into one line with a quantity.
 - **Box content** = stems per bunch × bunches.
-- **Packaging codes:** FreshPortal receives only `QBE`, `HBE`, `1/8` or a
-  mix box label `MB1`, `MB2`…; any code starting with `QB` becomes `QBE` and
-  with `HB` becomes `HBE` (`QB ROSALEDA`, `QB3 ALSTRO`, `HB XL 1`). Mix box
-  logic stays as it is. Utopia Farms writes one letter: `Q` is `QBE`, `E`
-  is `1/8`.
+- **Packaging codes:** FreshPortal receives only `QBE`, `HBE`, `1/8`, `ECPS`
+  (`KNOWN_BOXES`) or a mix box label `MB1`, `MB2`…; any code starting with
+  `QB` becomes `QBE` and with `HB` becomes `HBE` (`QB ROSALEDA`, `QB3
+  ALSTRO`, `HB XL 1`). Mix box logic stays as it is. Utopia Farms writes one
+  letter: `Q` is `QBE`, `H` is `HBE`, `E` is `1/8`. A code nobody has mapped
+  goes as `QBE` and the screen offers the known ones instead (user,
+  2026-09-29): do not map a box by guesswork, leave it unmapped.
+- **Named mixes:** a supplier's own mix ("MIX CALIDO", "Carnation mix") is
+  the catalogue mix product the user names, set with the spec's
+  `variety_rules` / `mix_names`; such lines keep grades and runs of boxes
+  apart, so each can get its own length.
 - **Utopia Farms** sends one box entry per row of boxes: `nu_bunches` is the
   number of boxes and `nu_stems_bunch` the stems of the whole row (Q, 9,
   2700 = 9 boxes of 300 stems); the bunch size is in `nm_product` (`10ST`).

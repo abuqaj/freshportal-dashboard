@@ -36,6 +36,11 @@ const INVOICE_REQUIRED = /Invoice is required/i;
 // The boxes a mix box can go to FreshPortal in when sent together.
 const MIX_BOX_FUSTS = ["QBE", "HBE"];
 
+// The boxes delivery import knows (parser_delivery.KNOWN_BOXES): what a box
+// nobody has mapped can be changed to. It goes as QBE until then (user,
+// 2026-09-29).
+const KNOWN_FUSTS = ["QBE", "HBE", "1/8", "ECPS"];
+
 // Floricode S20, "Minimum length of flower stem": the only lengths a line may
 // go to FreshPortal with (user, 2026-09-28). Some invoices print none, so the
 // length is edited on the screen, and the shipment waits until every line it
@@ -118,6 +123,10 @@ interface DeliveryLine {
   // varieties inside with their bunches.
   mix_boxes?: string[];
   mix_content?: { nm_variety: string; nu_bunches: number }[];
+  // A box code nobody has mapped goes as QBE; the code the file gave
+  // (parser_delivery.guess_unknown_boxes), for the user to choose another.
+  box_guessed?: boolean;
+  nm_box_printed?: string;
 }
 
 interface DeliveryOrder {
@@ -935,6 +944,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // together line goes in (QBE or HBE) is editable, keyed by its gu_product ──
   const [mixTogether, setMixTogether] = useState(true);
   const [mixBoxEdits, setMixBoxEdits] = useState<Record<string, string>>({});
+  // ── The box chosen for a code nobody has mapped, keyed by the code as the
+  // file gave it: one choice says what "A" is for the whole invoice. Cleared
+  // with each new file ──
+  const [boxChoices, setBoxChoices] = useState<Record<string, string>>({});
   // While the separate view's parse runs (switchMixMode), and why it failed.
   const [mixReparsing, setMixReparsing] = useState(false);
   const [mixReparseError, setMixReparseError] = useState("");
@@ -1021,7 +1034,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       manufacturer_id: growerEdits[growerLocationKey(line.nm_location)] ?? line.manufacturer_id,
       nu_box_weight: boxWeightEdits[boxEditKey(line)] ?? line.nu_box_weight,
       nu_length: lineLength(line),
-      nm_box: (isMixLine(line) && mixBoxEdits[line.gu_product]) || line.nm_box,
+      nm_box: (isMixLine(line) && mixBoxEdits[line.gu_product])
+        || (line.box_guessed && boxChoices[line.nm_box_printed ?? ""])
+        || line.nm_box,
     };
   }
 
@@ -1039,6 +1054,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // Of those, the ones still without a Floricode S20 length: until there are
   // none, no shipment is created (user, 2026-09-28).
   const lengthMissing = sendLines.filter(l => !S20_LENGTHS.has(lineLength(l))).length;
+  // Nor while one has no grower (user, 2026-09-29).
+  const growerMissing = sendLines.filter(l => !withEdits(l).manufacturer_id).length;
 
   function setOrderExistingBatch(idx: number, batch: ExistingBatch | null) {
     setParseResult(prev => prev && {
@@ -1325,6 +1342,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setLineEdits({});
       setMixBoxEdits({});
       setLengthEdits({});
+      setBoxChoices({});
       setEditingKey(null);
       setShowOnlyUnmatched(false);
       setShowOnlyUnapproved(false);
@@ -1593,8 +1611,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       return;
     }
     // The import button waits for every line it sends to have a Floricode S20
-    // length; checked here too, since the partial-approval dialog calls in.
-    if (lengthMissing > 0) return;
+    // length and a grower; checked here too, since the partial-approval
+    // dialog calls in.
+    if (lengthMissing > 0 || growerMissing > 0) return;
 
     // Check if all matched lines are approved — show modal if not
     if (!skipPartialCheck) {
@@ -1865,6 +1884,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLineEdits({});
     setMixBoxEdits({});
     setLengthEdits({});
+    setBoxChoices({});
     setEditingKey(null);
     setEditModalOpen(false);
     setGrowerEdits({});
@@ -2828,13 +2848,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               placeholder={td.tableSearchPlaceholder}
               className="flex-1 h-9 px-3 rounded-xl text-sm border border-border bg-surface outline-none focus:border-emerald/50 placeholder:text-ink-3/50 transition-colors"
             />
-            {lengthMissing > 0 && (
-              <span className="text-[11px] text-brick max-w-[220px] leading-tight">{td.lengthMissing(lengthMissing)}</span>
+            {(lengthMissing > 0 || growerMissing > 0) && (
+              <span className="text-[11px] text-brick max-w-[220px] leading-tight flex flex-col gap-0.5">
+                {lengthMissing > 0 && <span>{td.lengthMissing(lengthMissing)}</span>}
+                {growerMissing > 0 && <span>{td.growerMissing(growerMissing)}</span>}
+              </span>
             )}
             <button
               onClick={() => handleImport()}
-              disabled={mixReparsing || sendCount === 0 || lengthMissing > 0}
-              title={lengthMissing > 0 ? td.lengthMissing(lengthMissing) : undefined}
+              disabled={mixReparsing || sendCount === 0 || lengthMissing > 0 || growerMissing > 0}
+              title={[lengthMissing > 0 ? td.lengthMissing(lengthMissing) : "",
+                      growerMissing > 0 ? td.growerMissing(growerMissing) : ""].filter(Boolean).join("\n") || undefined}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >
               {topUpBatch ? td.addMissingBtn(sendCount) : td.importBtn}
@@ -2845,10 +2869,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           {(() => {
             return (
           <div className="relative">
-          {/* The lengths the Length inputs suggest: Floricode S20. */}
-          <datalist id="s20-lengths">
-            {Array.from(S20_LENGTHS).map(n => <option key={n} value={n} />)}
-          </datalist>
           <div ref={refTable} aria-busy={mixReparsing}
             className={`overflow-x-auto overflow-y-auto max-h-[440px] rounded-2xl border border-border transition-opacity
               ${mixReparsing ? "opacity-40 pointer-events-none select-none" : ""}`}>
@@ -3014,6 +3034,28 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                               <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[7px] text-emerald-dark">▼</span>
                             </HoverCard>
                           );
+                        })() : line.box_guessed ? (() => {
+                          // A code nobody has mapped goes as QBE; the choice
+                          // holds for every line of that code, and the box
+                          // stays marked until one is made (user, 2026-09-29).
+                          const printed = line.nm_box_printed ?? "";
+                          const chosen = boxChoices[printed];
+                          return (
+                            <span className="relative inline-flex" title={td.boxGuessed(printed)}>
+                              <select
+                                value={chosen ?? line.nm_box}
+                                onChange={e => { const v = e.target.value; setBoxChoices(prev => ({ ...prev, [printed]: v })); }}
+                                aria-label={td.boxGuessed(printed)}
+                                className={`appearance-none h-6 pl-1 pr-3 rounded-md border text-[10px] font-medium cursor-pointer outline-none
+                                  ${chosen
+                                    ? "bg-muted text-ink-3 border-border hover:border-emerald focus:border-emerald"
+                                    : "bg-blush/30 text-brick border-brick/50 hover:border-brick focus:border-brick"}`}
+                              >
+                                {KNOWN_FUSTS.map(code => <option key={code} value={code}>{code}</option>)}
+                              </select>
+                              <span className={`pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[7px] ${chosen ? "text-ink-3" : "text-brick"}`}>▼</span>
+                            </span>
+                          );
                         })() : line.nm_box ? (
                           <span className={`inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-medium
                             ${isMbLine(line) ? MIX_ACCENT : "bg-muted text-ink-3 border-border"}`}>
@@ -3070,7 +3112,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         {Math.floor(line.nu_bunches / Math.max(1, line.nu_physical_boxes ?? 1)) * line.nu_stems_bunch}
                       </td>
                       <td className="px-3 py-2">
-                        {/* Edited as box weight is. Only a Floricode S20 length
+                        {/* Typed in as box weight is, with no list to pick
+                            from (user, 2026-09-29). Only a Floricode S20 length
                             is taken: one the invoice left out, or one S20 does
                             not have, stays marked until it is set, and the
                             shipment waits for it (user, 2026-09-28). */}
@@ -3080,7 +3123,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           min="5"
                           max="900"
                           inputMode="numeric"
-                          list="s20-lengths"
                           ref={el => { lengthInputRefs.current[i] = el; }}
                           value={lengthValue > 0 ? lengthValue : ""}
                           placeholder="—"
