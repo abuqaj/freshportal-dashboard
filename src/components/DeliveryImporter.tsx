@@ -1083,6 +1083,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const lengthMissing = sendLines.filter(l => !S20_LENGTHS.has(lineLength(l))).length;
   // Nor while one has no grower (user, 2026-09-29).
   const growerMissing = sendLines.filter(l => !withEdits(l).manufacturer_id).length;
+  // Nor a new shipment without a delivery date, from the file or set here
+  // (user, 2026-09-30); lines added to an existing one keep its date.
+  const dateMissing = !topUpBatch
+    && !/^\d{2}-\d{2}-\d{4}$/.test(orderDateOverride || parseResult?.orders[activeOrderIdx]?.dt_fly || "");
 
   function setOrderExistingBatch(idx: number, batch: ExistingBatch | null) {
     setParseResult(prev => prev && {
@@ -1639,9 +1643,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       return;
     }
     // The import button waits for every line it sends to have a Floricode S20
-    // length and a grower; checked here too, since the partial-approval
-    // dialog calls in.
-    if (lengthMissing > 0 || growerMissing > 0) return;
+    // length and a grower, and for a delivery date; checked here too, since
+    // the partial-approval dialog calls in.
+    if (lengthMissing > 0 || growerMissing > 0 || dateMissing) return;
 
     // Check if all matched lines are approved — show modal if not
     if (!skipPartialCheck) {
@@ -2877,16 +2881,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               placeholder={td.tableSearchPlaceholder}
               className="flex-1 h-9 px-3 rounded-xl text-sm border border-border bg-surface outline-none focus:border-emerald/50 placeholder:text-ink-3/50 transition-colors"
             />
-            {(lengthMissing > 0 || growerMissing > 0) && (
+            {(lengthMissing > 0 || growerMissing > 0 || dateMissing) && (
               <span className="text-[11px] text-brick max-w-[220px] leading-tight flex flex-col gap-0.5">
+                {dateMissing && <span>{td.dateMissing}</span>}
                 {lengthMissing > 0 && <span>{td.lengthMissing(lengthMissing)}</span>}
                 {growerMissing > 0 && <span>{td.growerMissing(growerMissing)}</span>}
               </span>
             )}
             <button
               onClick={() => handleImport()}
-              disabled={mixReparsing || sendCount === 0 || lengthMissing > 0 || growerMissing > 0}
-              title={[lengthMissing > 0 ? td.lengthMissing(lengthMissing) : "",
+              disabled={mixReparsing || sendCount === 0 || lengthMissing > 0 || growerMissing > 0 || dateMissing}
+              title={[dateMissing ? td.dateMissing : "",
+                      lengthMissing > 0 ? td.lengthMissing(lengthMissing) : "",
                       growerMissing > 0 ? td.growerMissing(growerMissing) : ""].filter(Boolean).join("\n") || undefined}
               className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
             >

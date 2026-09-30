@@ -773,6 +773,8 @@ LAILA_FLOWERS = LayoutSpec(
         "nm_ship": rx(r"CONSIGNEE\s+(.+?)\s+M\.A\.W\.B", nospace),
     },
     species="Roses",
+    # Its "Mixtas" boxes are the mixed box product (user, 2026-09-30).
+    variety_rules=(("variety", r"^Mixtas$", "Rosa Ec Mix in Box"),),
     totals_re=SILVERBOOK_TOTALS,
 )
 

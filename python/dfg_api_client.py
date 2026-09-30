@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -27,6 +28,9 @@ log = logging.getLogger(__name__)
 # This integration only ever handles Ecuador-origin flowers — hardcoded per
 # explicit decision (2026-08-12), not derived from any field in the source JSON.
 _COUNTRY = "EC"
+
+# A shipment's date is the day it is entered, as the Netherlands counts days.
+_BATCH_DATE_TZ = "Europe/Amsterdam"
 
 # Floricode S20, "Minimum length of flower stem": the only lengths a line may
 # go to FreshPortal with (user, 2026-09-28). From Floricode's "E-Kenmerkcodes
@@ -399,10 +403,21 @@ def build_batch_payload(
     if not order.supplier_fp_id:
         raise DfgApiError(f"supplier_fp_id not resolved for {order.tx_company!r} — cannot build payload")
 
+    # The delivery date is the file's, or the one set on the screen; without
+    # one nothing is sent (user, 2026-09-30). Florisol's PI246249 prints none.
+    delivery_date = _to_iso_date(order.dt_fly or "")
+    try:
+        date.fromisoformat(delivery_date)
+    except ValueError:
+        raise DfgApiError(f"invoice {order.id_invoice!r} has no delivery date — "
+                          "set it on the screen before creating the shipment")
+
     return {
         "number": order.id_invoice,
-        "date": _to_iso_date(order.dt_invoice),
-        "delivery_date": _to_iso_date(order.dt_fly),
+        # The day the shipment is entered, not the supplier's invoice date
+        # (user, 2026-09-30).
+        "date": datetime.now(ZoneInfo(_BATCH_DATE_TZ)).date().isoformat(),
+        "delivery_date": delivery_date,
         "supplier_id": int(order.supplier_fp_id),
         "stock_entries": [build_stock_entry(line) for line in order.lines],
         "customer_id": customer_id,
