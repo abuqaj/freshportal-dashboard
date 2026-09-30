@@ -314,14 +314,14 @@ def resolve_supplier(cfg: Config, order: DeliveryOrder) -> None:
 
 
 def fill_missing_delivery_date(order: DeliveryOrder) -> None:
-    """A file that gives no delivery date gets tomorrow's, as DD-MM-YYYY, and
-    a warning saying so; the user changes it on the screen where it is wrong
-    (user, 2026-09-30). Florisol's PI246249 prints "Date : / /"."""
+    """A file that gives no delivery date gets tomorrow's, as DD-MM-YYYY; the
+    user changes it on the screen where it is wrong, and needs no notice that
+    it was missing (user, 2026-09-30). Florisol's PI246249 prints
+    "Date : / /"."""
     if (order.dt_fly or "").strip():
         return
     tomorrow = datetime.now(ZoneInfo(_BATCH_DATE_TZ)).date() + timedelta(days=1)
     order.dt_fly = tomorrow.strftime("%d-%m-%Y")
-    order.warnings.append({"code": "delivery_date_defaulted", "date": order.dt_fly})
 
 
 def _to_iso_date(dd_mm_yyyy: str) -> str:

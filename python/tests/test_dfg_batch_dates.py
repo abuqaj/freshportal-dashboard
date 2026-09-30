@@ -3,7 +3,7 @@
 `date` is the day the shipment is entered, as the Netherlands counts days,
 not the supplier's invoice date. `delivery_date` is the file's delivery date
 or the one set on the screen; a file with none (Florisol's PI246249 prints
-"Date : / /") gets tomorrow's at parse time, with a warning, and a payload
+"Date : / /") gets tomorrow's at parse time, without a notice, and a payload
 still without one is refused. No request leaves the machine.
 
 Run either way:
@@ -57,13 +57,14 @@ def test_date_is_the_day_of_entry_not_the_invoice_date(monkeypatch):
     assert payload["delivery_date"] == "2026-09-24"
 
 
-def test_a_file_without_a_delivery_date_gets_tomorrow_and_says_so(monkeypatch):
+def test_a_file_without_a_delivery_date_gets_tomorrow(monkeypatch):
     monkeypatch.setattr(dfg_api_client, "datetime", _HalfPastMidnightInAmsterdam)
     order = _order(id_invoice="PI 246249", dt_fly="", dt_invoice="")
     dfg_api_client.fill_missing_delivery_date(order)
     # The 30th in Amsterdam, so tomorrow is 1 October.
     assert order.dt_fly == "01-10-2026"
-    assert order.warnings == [{"code": "delivery_date_defaulted", "date": "01-10-2026"}]
+    # No notice: the user does not need one (user, 2026-09-30).
+    assert order.warnings == []
     assert dfg_api_client.build_batch_payload(order)["delivery_date"] == "2026-10-01"
 
 
