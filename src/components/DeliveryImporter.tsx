@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useSession } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
 import DeliveryTour, { TourStep } from "./DeliveryTour";
+import LayoutDraftMeter, { LAYOUT_DRAFT_PRICE_SHOWN_USD } from "./LayoutDraftMeter";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -201,8 +202,9 @@ class UnknownLayoutError extends Error {
   }
 }
 
-// How often a running draft is asked how it is going.
-const LAYOUT_DRAFT_POLL_MS = 4000;
+// How often a running draft is asked how it is going: often enough for the
+// spend counter to run on smoothly.
+const LAYOUT_DRAFT_POLL_MS = 2000;
 
 interface FPSupplier {
   fp_supplier_id: string;
@@ -1010,8 +1012,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [unknownLayout, setUnknownLayout] = useState<UnknownLayoutInfo | null>(null);
   const [layoutDraftId, setLayoutDraftId] = useState<number | null>(null);
   const [layoutNote, setLayoutNote] = useState<
-    { kind: "cancelled" } | { kind: "failed"; detail: string } | { kind: "limit"; perDay: number } | null
+    { kind: "cancelled" } | { kind: "failed" } | { kind: "limit"; perDay: number } | null
   >(null);
+  // The second question before a paid format, and where on the screen it
+  // appears (fractions of the room it has); then what the draft has spent.
+  const [paidConfirm, setPaidConfirm] = useState<{ invoiceId: number; x: number; y: number } | null>(null);
+  const [draftSpend, setDraftSpend] = useState(0);
 
   // Keyed by variety name only (length excluded) — a confirmed product match is a
   // variety-identity decision, so it applies to every line sharing the name in this
@@ -1425,13 +1431,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         if (detail?.code === "not_waiting") { setLayoutDraftId(invoiceId); return; }
         setLayoutNote(detail?.code === "draft_limit"
           ? { kind: "limit", perDay: detail.drafts_per_day }
-          : { kind: "failed", detail: typeof detail === "string" ? detail : detail?.message ?? "" });
+          : { kind: "failed" });
         setStage("idle");
         return;
       }
       setLayoutDraftId(invoiceId);
-    } catch (err) {
-      setLayoutNote({ kind: "failed", detail: err instanceof Error ? err.message : String(err) });
+    } catch {
+      setLayoutNote({ kind: "failed" });
       setStage("idle");
     }
   }
@@ -1450,21 +1456,24 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   useEffect(() => {
     if (layoutDraftId == null) return;
     setStage("parsing");
+    setDraftSpend(0);
     let stopped = false;
     const timer = setInterval(async () => {
       try {
         const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${layoutDraftId}`);
         if (!res.ok || stopped) return;
-        const row: { status: string; error?: string | null } = await res.json();
-        if (stopped || row.status === "drafting") return;
+        const row: { status: string; cost_usd?: number | null } = await res.json();
+        if (stopped) return;
+        if (row.status === "drafting") {
+          setDraftSpend(row.cost_usd ?? 0);
+          return;
+        }
         stopped = true;
         setLayoutDraftId(null);
         if (row.status === "provisional" || row.status === "verified") {
           handleParse();
         } else {
-          setLayoutNote(row.status === "failed"
-            ? { kind: "failed", detail: row.error ?? "" }
-            : { kind: "cancelled" });
+          setLayoutNote(row.status === "failed" ? { kind: "failed" } : { kind: "cancelled" });
           setStage("idle");
         }
       } catch {}
@@ -1896,6 +1905,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setJsonText("");
     setPdfFile(null);
     setUnknownLayout(null);
+    setPaidConfirm(null);
     setLayoutDraftId(null);
     setLayoutNote(null);
     setFileLoaded(false);
@@ -2142,18 +2152,22 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── PARSING ── */}
       {stage === "parsing" && (
         <div className="flex flex-col items-center gap-5 py-8">
-          <div className="relative flex items-center justify-center">
-            <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
-            </svg>
-            <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
-              <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
-            </svg>
-          </div>
           {layoutDraftId == null ? (
-            <p className="text-sm font-semibold text-ink">{td.parsing}</p>
+            <>
+              <div className="relative flex items-center justify-center">
+                <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
+                </svg>
+                <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
+                  <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
+                </svg>
+              </div>
+              <p className="text-sm font-semibold text-ink">{td.parsing}</p>
+            </>
           ) : (
             <>
+              {/* The money counted as the tokens go (user, 2026-09-30). */}
+              <LayoutDraftMeter usd={draftSpend} catchUpMs={LAYOUT_DRAFT_POLL_MS} spentLabel={td.layoutSpent} />
               <p className="text-sm font-semibold text-ink text-center max-w-sm">{td.layoutDrafting}</p>
               {/* Stops the model on the server and clears what it made; the
                   invoice stays saved for IT (user, 2026-09-28). */}
@@ -2168,22 +2182,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         </div>
       )}
 
-      {/* How a temporary layout ended when it did not end in one. */}
+      {/* How a temporary layout ended when it did not end in one: in plain
+          words, the reason is IT's and waits in Admin (user, 2026-09-30). */}
       {stage === "idle" && layoutNote && (
         <div className={`text-xs rounded-xl px-3 py-2 border leading-relaxed ${layoutNote.kind === "cancelled"
           ? "text-ink bg-sand/60 border-taupe/40" : "text-brick bg-blush/30 border-blush"}`}>
           {layoutNote.kind === "cancelled" ? td.layoutDraftCancelled
             : layoutNote.kind === "limit" ? td.unknownLayoutNoneLeft(layoutNote.perDay)
             : td.layoutDraftFailed}
-          {layoutNote.kind === "failed" && layoutNote.detail && (
-            <p className="mt-1 font-mono text-[11px] text-brick/80">{layoutNote.detail}</p>
-          )}
         </div>
       )}
 
       {/* A PDF no layout reads: it is saved for IT, and a temporary layout
           may be drafted now, within a daily limit — waiting for IT is what
-          the dialog recommends (user, 2026-09-28). */}
+          the dialog recommends (user, 2026-09-28). Kept short, with the
+          price rounded well up (user, 2026-09-30). */}
       {unknownLayout && (() => {
         const left = unknownLayout.drafts_left_today ?? 0;
         const perDay = unknownLayout.drafts_per_day ?? 0;
@@ -2199,11 +2212,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 <div className="flex flex-col gap-2">
                   <p className="text-sm font-bold text-brick">{td.unknownLayoutTitle}</p>
                   <p className="text-xs text-ink-3 leading-relaxed">{saved ? td.unknownLayoutBody : td.unknownLayoutNotSaved}</p>
-                  {saved && (
+                  {available && (
                     <p className="text-xs font-medium text-ink leading-relaxed">
-                      {!available ? td.unknownLayoutUnavailable
-                        : left > 0 ? td.unknownLayoutLeft(left, perDay)
-                        : td.unknownLayoutNoneLeft(perDay)}
+                      {canTry ? td.unknownLayoutPaid(LAYOUT_DRAFT_PRICE_SHOWN_USD) : td.unknownLayoutNoneLeft(perDay)}
                     </p>
                   )}
                 </div>
@@ -2218,7 +2229,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 </button>
                 {canTry && (
                   <button
-                    onClick={() => startLayoutDraft(unknownLayout.invoice_id as number)}
+                    onClick={() => {
+                      setPaidConfirm({ invoiceId: unknownLayout.invoice_id as number, x: Math.random(), y: Math.random() });
+                      setUnknownLayout(null);
+                    }}
                     className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
                   >
                     {td.unknownLayoutTry}
@@ -2229,6 +2243,49 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </>
         );
       })()}
+
+      {/* Asked once more before paying, with No suggested, and somewhere
+          else on the screen each time (user, 2026-09-30). */}
+      {paidConfirm && (
+        <>
+          <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPaidConfirm(null)} />
+          <div className="fixed inset-0 z-[301] pointer-events-none">
+            <div
+              role="alertdialog"
+              aria-label={td.layoutPaidConfirm}
+              className={`absolute pointer-events-auto w-[min(20rem,calc(100%-2rem))] rounded-2xl ${POPUP_WARNING_FRAME} p-5 flex flex-col gap-4`}
+              style={{
+                // Anywhere, and always whole: moving the popup back by the
+                // same share of its own size keeps its far edge on screen.
+                left: `calc(1rem + (100% - 2rem) * ${paidConfirm.x})`,
+                top: `calc(1rem + (100% - 2rem) * ${paidConfirm.y})`,
+                transform: `translate(${-paidConfirm.x * 100}%, ${-paidConfirm.y * 100}%)`,
+              }}
+            >
+              <p className="text-sm font-bold text-brick leading-snug">{td.layoutPaidConfirm}</p>
+              <div className="flex gap-2 justify-end">
+                <button
+                  autoFocus
+                  onClick={() => setPaidConfirm(null)}
+                  className="h-9 px-5 rounded-xl text-sm font-semibold border-2 border-emerald text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
+                >
+                  {td.layoutPaidNo}
+                </button>
+                <button
+                  onClick={() => {
+                    const id = paidConfirm.invoiceId;
+                    setPaidConfirm(null);
+                    startLayoutDraft(id);
+                  }}
+                  className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
+                >
+                  {td.layoutPaidYes}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Already in FreshPortal. The file's first parse stopped before any
           product search, so the user hears it at once instead of after the

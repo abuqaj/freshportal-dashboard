@@ -23,6 +23,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import parser_delivery_pdf  # noqa: E402
 import pdf_layout_ai  # noqa: E402
 import pdf_layout_store as store  # noqa: E402
 from parser_delivery_pdf import PdfUnknownLayoutError, parse_delivery_pdf  # noqa: E402
@@ -132,8 +133,32 @@ def test_a_layout_that_never_finishes_is_stopped():
 
 def test_an_unknown_invoice_is_refused_as_unknown_without_a_database(monkeypatch):
     monkeypatch.setattr(store, "reading_layouts", lambda: (_ for _ in ()).throw(RuntimeError("no db")))
-    with pytest.raises(PdfUnknownLayoutError):
+    with pytest.raises(PdfUnknownLayoutError) as exc:
         parse_delivery_pdf(INVOICE)
+    assert exc.value.layout is None
+
+
+# The supplier's layout in code, from before it changed its printout: the
+# totals line it looks for is not there any more.
+_OUTDATED = spec_from_dict({**GOOD, "name": "test_farm",
+                            "totals_re": r"^GRAND TOTAL\s+(?P<stems>\d+)"})
+
+
+def test_a_known_supplier_whose_layout_cannot_read_the_invoice_goes_to_it(monkeypatch):
+    """A new printout from a known supplier is a format error like an unknown
+    supplier's: saved for IT, and offered for drafting (user, 2026-09-30)."""
+    monkeypatch.setattr(parser_delivery_pdf, "_specs", lambda: [_OUTDATED])
+    monkeypatch.setattr(parser_delivery_pdf, "_parse_with_stored", lambda pdf: None)
+    with pytest.raises(PdfUnknownLayoutError) as exc:
+        parse_delivery_pdf(INVOICE)
+    assert exc.value.layout == "test_farm"
+    assert "test_farm layout finds this invoice but cannot read it" in str(exc.value)
+
+
+def test_a_layout_drafted_for_the_new_printout_reads_it(monkeypatch):
+    monkeypatch.setattr(parser_delivery_pdf, "_specs", lambda: [_OUTDATED])
+    monkeypatch.setattr(parser_delivery_pdf, "_parse_with_stored", lambda pdf: ["drafted"])
+    assert parse_delivery_pdf(INVOICE) == ["drafted"]
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +241,65 @@ def test_a_submission_that_does_not_read_the_invoice_is_not_taken(stored):
     assert "finish" in stored
 
 
+def test_the_draft_leaves_what_it_has_spent_so_far(stored, monkeypatch):
+    """The delivery screen counts the money as the tokens go (user,
+    2026-09-30): each check for a cancel leaves the spend so far."""
+    seen = []
+    monkeypatch.setattr(pdf_layout_ai, "CANCEL_CHECK_SECONDS", 0)
+    monkeypatch.setattr(store, "draft_status", lambda layout_id, usage=None: (
+        seen.append(usage), store.DRAFTING)[1])
+
+    class Stream(_Stream):
+        def __iter__(self):
+            yield SimpleNamespace(type="message_start", message=SimpleNamespace(usage=SimpleNamespace(
+                input_tokens=1000, cache_creation_input_tokens=0, cache_read_input_tokens=0,
+                output_tokens=1)))
+            for _ in range(3):
+                yield SimpleNamespace(type="content_block_delta",
+                                      delta=SimpleNamespace(type="text_delta", text="x" * 400))
+            yield SimpleNamespace(type="message_stop")
+
+    model = _Model([("test_layout", {"layout": GOOD}),
+                    ("submit_layout", {"layout": GOOD, "supplier": "X", "assumptions": []})])
+    plain = model.stream
+    model.beta.messages.stream = lambda **p: Stream(plain(**p).message)
+    pdf_layout_ai.draft(5, "invoice.pdf", INVOICE, client=model)
+
+    costs = [u["cost_usd"] for u in seen]
+    assert costs == sorted(costs) and costs[0] < costs[-1]
+    # Mid-turn: the input as reported, the output estimated from the 1,200
+    # characters streamed so far.
+    assert (1000, 300) in [(u["input_tokens"], u["output_tokens"]) for u in seen]
+    # After the last turn the figures are exact: what the draft is stored with.
+    usage = stored["finish"][-1]
+    assert (usage["input_tokens"], usage["output_tokens"]) == (2000, 1000)
+    assert seen[-1]["cost_usd"] <= usage["cost_usd"]
+
+
+def test_opus_5_5_drafts_at_medium_effort_and_its_own_prices(stored, monkeypatch):
+    """Railway runs Claude Opus 5.5 from 2026-09-30: it thinks more per level
+    than Opus 5, and reads its cache at 0.20 USD per million, not 0.1x input."""
+    monkeypatch.setattr(pdf_layout_ai, "EFFORT", "")
+    model = _Model([("submit_layout", {"layout": GOOD, "supplier": "X", "assumptions": []})])
+    pdf_layout_ai.draft(4, "invoice.pdf", INVOICE, client=model, model="claude-opus-5-5",
+                        cancelled=lambda: False)
+    assert model.sent[0]["model"] == "claude-opus-5-5"
+    assert model.sent[0]["output_config"] == {"effort": "medium"}
+    assert pdf_layout_ai.effort("claude-opus-5") == "high"
+    usage = pdf_layout_ai.Usage("claude-opus-5-5")
+    usage.add(SimpleNamespace(input_tokens=0, cache_creation_input_tokens=0,
+                              cache_read_input_tokens=1_000_000, output_tokens=0))
+    assert usage.cost == 0.2
+
+
+def test_the_model_hears_why_the_suppliers_layout_failed(stored):
+    model = _Model([("submit_layout", {"layout": GOOD, "supplier": "X", "assumptions": []})])
+    pdf_layout_ai.draft(3, "invoice.pdf", INVOICE, client=model, cancelled=lambda: False,
+                        read_error="the test_farm layout finds this invoice but cannot read it: x")
+    prompt = model.sent[0]["messages"][0]["content"]
+    assert "WHY NO LAYOUT READS IT" in prompt and "test_farm layout" in prompt
+
+
 def test_cancelling_stops_the_draft_and_stores_nothing(stored):
     model = _Model([("test_layout", {"layout": GOOD}), ("test_layout", {"layout": GOOD})])
     answers = iter([False, False, True])
@@ -280,6 +364,29 @@ def test_an_unknown_invoice_is_saved_once(db):
     assert first["status"] == store.WAITING and again["id"] == first["id"]
     assert store.get_pdf(first["id"]) == ("a.pdf", INVOICE)
     assert store.pending_count() == 1
+
+
+@needs_db
+def test_the_reason_a_known_layout_failed_is_kept_for_it(db):
+    row = store.save_unknown("a.pdf", INVOICE, "anna", "the test_farm layout finds this invoice "
+                                                       "but cannot read it: stems")
+    assert row["read_error"].startswith("the test_farm layout")
+    assert store.save_unknown("b.pdf", INVOICE + b"2", "anna")["read_error"] is None
+
+
+@needs_db
+def test_a_running_draft_leaves_its_spend_until_cancelled(db, monkeypatch):
+    monkeypatch.setattr(store, "MAX_DRAFTS_PER_DAY", 2)
+    row = store.save_unknown("a.pdf", INVOICE, "anna")
+    store.begin_draft(row["id"], "anna")
+    spend = {"model": "claude-opus-5", "turns": 1, "input_tokens": 30000, "output_tokens": 800,
+             "cost_usd": 0.17}
+    assert store.draft_status(row["id"], spend) == store.DRAFTING
+    shown = store.get_layout(row["id"])
+    assert (shown["input_tokens"], shown["output_tokens"], shown["cost_usd"]) == (30000, 800, 0.17)
+    store.cancel_draft(row["id"], "anna")
+    assert store.draft_status(row["id"], spend) == store.WAITING
+    assert store.get_layout(row["id"])["cost_usd"] is None
 
 
 @needs_db

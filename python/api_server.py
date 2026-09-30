@@ -2926,10 +2926,12 @@ def delivery_parse_pdf(
             orders = parse_delivery_pdf(content)
         except PdfUnknownLayoutError as exc:
             # Saved for IT, and offered for a temporary layout: the screen
-            # asks the user first (pdf_layout_store).
-            log.warning("[delivery/parse-pdf] %s: no layout reads it", pdf.filename)
-            raise HTTPException(422, _unknown_layout_detail(pdf.filename or "invoice.pdf",
-                                                            content, user, str(exc)))
+            # asks the user first (pdf_layout_store). So is a known
+            # supplier's invoice its layout cannot read (user, 2026-09-30).
+            log.warning("[delivery/parse-pdf] %s: no layout reads it: %s", pdf.filename, exc)
+            raise HTTPException(422, _unknown_layout_detail(
+                pdf.filename or "invoice.pdf", content, user, str(exc),
+                str(exc) if exc.layout else None))
         except PdfParseError as exc:
             # Both an unknown layout and a failed checksum are the user's to
             # act on, not a server fault — the message says what to do next.
@@ -2951,12 +2953,13 @@ def _username(payload: dict) -> str:
     return str(payload.get("username") or payload.get("sub") or "unknown")
 
 
-def _unknown_layout_detail(file_name: str, content: bytes, user: dict, message: str) -> dict:
+def _unknown_layout_detail(file_name: str, content: bytes, user: dict, message: str,
+                           read_error: str | None = None) -> dict:
     """What the delivery screen needs to offer a temporary layout: the saved
     invoice, and how many drafts today still allows."""
     detail: dict = {"code": "unknown_pdf_layout", "message": message}
     try:
-        row = pdf_layout_store.save_unknown(file_name, content, _username(user))
+        row = pdf_layout_store.save_unknown(file_name, content, _username(user), read_error)
         detail.update({
             "invoice_id": row["id"], "status": row["status"],
             "drafts_left_today": pdf_layout_store.drafts_left_today(),
@@ -3043,7 +3046,7 @@ def pdf_layout_draft(layout_id: int, payload: dict = Depends(_delivery_or_admin)
         pdf_layout_store.fail_draft(layout_id, "The saved invoice file is missing.")
         raise HTTPException(404, "The saved invoice file is missing")
     name, content = found
-    pdf_layout_ai.start(layout_id, name, content)
+    pdf_layout_ai.start(layout_id, name, content, row.get("read_error"))
     return _layout_for_screen(row)
 
 

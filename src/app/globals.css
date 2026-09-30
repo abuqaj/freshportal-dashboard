@@ -242,8 +242,28 @@ html, body { height: 100%; margin: 0; }
 }
 .panel-drop { animation: panel-drop 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; transform-origin: top center; }
 
+/* ── Delivery import: a temporary PDF format being paid for ─────────────────
+   The clerk in LayoutDraftMeter flicks notes off the stack into a bin while
+   the spend grows (user, 2026-09-30); data-counting, from React state, says
+   when that is. The amount itself is React state, never an animation. The
+   bin is drawn over the notes, so they drop in behind its front. */
+@keyframes ldm-toss {
+  0%   { transform: translate(0, 0) rotate(0deg) scale(1); }
+  45%  { transform: translate(24px, -34px) rotate(170deg) scale(0.85); }
+  80%  { transform: translate(42px, -8px) rotate(300deg) scale(0.75); }
+  100% { transform: translate(46px, 16px) rotate(360deg) scale(0.7); }
+}
+@keyframes ldm-flick {
+  0%, 100% { transform: rotate(0deg); }
+  30%      { transform: rotate(-7deg); }
+}
+.ldm-toss  { transform-box: fill-box; transform-origin: center; animation: ldm-toss 0.7s ease-in infinite; }
+.ldm-flick { transform-box: view-box; transform-origin: 58px 94px; animation: ldm-flick 0.35s ease-in-out infinite; }
+[data-counting="false"] .ldm-toss  { visibility: hidden; animation: none; }
+[data-counting="false"] .ldm-flick { animation: none; }
+
 @media (prefers-reduced-motion: reduce) {
-  .battery-pulse, .panel-drop {
+  .battery-pulse, .panel-drop, .ldm-toss, .ldm-flick {
     animation: none !important;
   }
 }

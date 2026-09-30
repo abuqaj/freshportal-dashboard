@@ -75,8 +75,15 @@ class PdfChecksumError(PdfParseError):
 
 
 class PdfUnknownLayoutError(PdfParseError):
-    """No layout, in code or drafted and stored, reads this supplier's invoice.
-    The delivery screen answers it by having one drafted (pdf_layout_ai)."""
+    """No layout, in code or drafted and stored, reads this supplier's invoice:
+    none finds it, or the one that finds it cannot read it - the supplier
+    changed its printout, say - and `layout` names that one. Either way the
+    delivery screen saves the invoice for IT and offers to have a layout
+    drafted (pdf_layout_ai; user, 2026-09-30)."""
+
+    def __init__(self, message: str, layout: str | None = None):
+        super().__init__(message)
+        self.layout = layout
 
 
 # A PDF with no text layer is a scan. Nothing can be parsed out of it without
@@ -1685,9 +1692,9 @@ def detect_pdf_layout(text: str) -> LayoutSpec | None:
 def parse_delivery_pdf(pdf_bytes: bytes) -> list[DeliveryOrder]:
     """Parse a supplier PDF invoice into DeliveryOrder objects.
 
-    Raises PdfParseError when the file is not a readable invoice in a known
-    layout, and PdfChecksumError when the parsed lines disagree with the
-    totals the invoice prints for itself.
+    Raises PdfParseError when the file cannot be read at all (not a PDF, a
+    scan), and PdfUnknownLayoutError when no layout reads it - including a
+    known supplier's invoice whose lines disagree with the totals it prints.
     """
     doc = extract_pdf(pdf_bytes)
     spec = detect_pdf_layout(doc.text)
@@ -1703,11 +1710,26 @@ def parse_delivery_pdf(pdf_bytes: bytes) -> list[DeliveryOrder]:
             f"prints a different invoice, so each template needs to be described once "
             f"before its PDFs can be imported — send this file in to have it added."
         )
-    if spec.extract:
-        # Read again the way this template needs; detection above only needs
-        # the supplier's name, which any reading shows.
-        doc = extract_pdf(pdf_bytes, **spec.extract)
-    log.info("[pdf] layout=%s tables=%d", spec.name, len(doc.tables))
-    order = parse_with_spec(doc, spec)
+    try:
+        if spec.extract:
+            # Read again the way this template needs; detection above only
+            # needs the supplier's name, which any reading shows.
+            doc = extract_pdf(pdf_bytes, **spec.extract)
+        log.info("[pdf] layout=%s tables=%d", spec.name, len(doc.tables))
+        order = parse_with_spec(doc, spec)
+    except Exception as exc:
+        # The supplier's layout finds the invoice but cannot read it: a new
+        # printout, most likely. A layout drafted for it reads it instead;
+        # without one it goes to IT like an unknown supplier's.
+        if not isinstance(exc, PdfParseError):
+            log.exception("[pdf/%s] the layout failed", spec.name)
+        stored = _parse_with_stored(pdf_bytes)
+        if stored is not None:
+            return stored
+        reason = str(exc) if isinstance(exc, PdfParseError) else f"{type(exc).__name__}: {exc}"
+        raise PdfUnknownLayoutError(
+            f"the {spec.name} layout finds this invoice but cannot read it: {reason}",
+            layout=spec.name,
+        ) from exc
     log.info("[pdf/%s] parsed %d line(s), %d box(es)", spec.name, len(order.lines), order.nu_boxes)
     return [order]

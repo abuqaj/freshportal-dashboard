@@ -95,6 +95,9 @@ def ensure_table() -> None:
                     review_note      TEXT
                 )
             """)
+            # Why a known supplier's layout could not read the invoice (added
+            # 2026-09-30); empty for a supplier no layout knows.
+            cur.execute("ALTER TABLE pdf_layouts ADD COLUMN IF NOT EXISTS read_error TEXT")
             cur.execute("CREATE INDEX IF NOT EXISTS pdf_layouts_status_idx ON pdf_layouts(status)")
             cur.execute("CREATE INDEX IF NOT EXISTS pdf_layouts_sha_idx ON pdf_layouts(file_sha256)")
     _table_ready = True
@@ -107,7 +110,8 @@ def _invalidate() -> None:
 
 
 # Everything but the PDF itself, which is fetched only when someone opens it.
-_COLUMNS = ("id, status, supplier, spec, assumptions, sample, error, file_name, model, turns, "
+_COLUMNS = ("id, status, supplier, spec, assumptions, sample, error, read_error, file_name, "
+            "model, turns, "
             "input_tokens, output_tokens, cost_usd, created_by, created_at, draft_started_at, "
             "drafted_by, finished_at, reviewed_by, reviewed_at, review_note")
 
@@ -136,10 +140,11 @@ def _fail_stale(cur) -> None:
 # Saved invoices and drafting
 # ---------------------------------------------------------------------------
 
-def save_unknown(file_name: str, pdf: bytes, username: str) -> dict:
-    """Keep a PDF no layout reads, for IT and for drafting one. The same file
-    saved before is not saved again: its row comes back, whatever became of
-    it since (a rejected draft excepted)."""
+def save_unknown(file_name: str, pdf: bytes, username: str, read_error: str | None = None) -> dict:
+    """Keep a PDF no layout reads, for IT and for drafting one; read_error
+    says why, when a known supplier's layout found it but could not read it.
+    The same file saved before is not saved again: its row comes back,
+    whatever became of it since (a rejected draft excepted)."""
     ensure_table()
     sha = hashlib.sha256(pdf).hexdigest()
     with _conn() as conn:
@@ -154,9 +159,10 @@ def save_unknown(file_name: str, pdf: bytes, username: str) -> dict:
             if existing:
                 return _row(existing)
             cur.execute(f"""
-                INSERT INTO pdf_layouts (status, file_name, file_sha256, pdf, created_by)
-                VALUES (%s, %s, %s, %s, %s) RETURNING {_COLUMNS}
-            """, (WAITING, file_name, sha, psycopg2.Binary(pdf), username))
+                INSERT INTO pdf_layouts (status, file_name, file_sha256, pdf, created_by, read_error)
+                VALUES (%s, %s, %s, %s, %s, %s) RETURNING {_COLUMNS}
+            """, (WAITING, file_name, sha, psycopg2.Binary(pdf), username,
+                  (read_error or "")[:2000] or None))
             return _row(cur.fetchone())
 
 
@@ -206,12 +212,20 @@ def begin_draft(layout_id: int, username: str) -> dict:
             return _row(cur.fetchone())
 
 
-def draft_status(layout_id: int) -> str | None:
+def draft_status(layout_id: int, usage: dict | None = None) -> str | None:
     """The row's status, cheaply: a running draft asks it to see whether it
-    was cancelled."""
+    was cancelled, and leaves what it has spent so far (usage) for the
+    delivery screen's counter. A cancelled draft's figures stay cleared."""
     ensure_table()
     with _conn() as conn:
         with conn.cursor() as cur:
+            if usage:
+                cur.execute("""
+                    UPDATE pdf_layouts SET model = %s, turns = %s, input_tokens = %s,
+                        output_tokens = %s, cost_usd = %s
+                    WHERE id = %s AND status = %s
+                """, (usage.get("model"), usage.get("turns"), usage.get("input_tokens"),
+                      usage.get("output_tokens"), usage.get("cost_usd"), layout_id, DRAFTING))
             cur.execute("SELECT status FROM pdf_layouts WHERE id = %s", (layout_id,))
             row = cur.fetchone()
     return row[0] if row else None

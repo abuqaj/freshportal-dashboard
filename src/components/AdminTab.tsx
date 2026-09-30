@@ -1345,6 +1345,8 @@ interface PdfLayoutRow {
     lines?: string[]; line_count?: number
   } | null
   error: string | null
+  // Why a known supplier's layout could not read it (a new printout, say).
+  read_error: string | null
   file_name: string | null
   model: string | null
   turns: number | null
@@ -1492,6 +1494,7 @@ function PdfFormatsPanel() {
                         {row.file_name || `Invoice #${row.id}`}
                       </button>
                       {row.supplier && <div className="text-xs text-ink-3">{row.supplier}</div>}
+                      {row.read_error && <div className="text-[11px] text-ink-3 mt-1 max-w-xs">{row.read_error}</div>}
                     </td>
                     <td className="px-4 py-3">
                       <Badge variant={status.variant}>{status.label}</Badge>
