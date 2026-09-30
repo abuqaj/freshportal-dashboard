@@ -139,7 +139,7 @@ function Modal({ title, onClose, wide, children }: {
   if (!mounted) return null
 
   return createPortal(
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+    <div className="fixed inset-0 popup-backdrop flex items-center justify-center z-50 p-4"
       onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div ref={ref} className={`bg-surface rounded-3xl border border-border shadow-2xl w-full ${wide ? "max-w-lg" : "max-w-md"}`}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">

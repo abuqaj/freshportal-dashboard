@@ -13,10 +13,12 @@ import {
 } from "lucide-react";
 import DeliveryTour, { TourStep } from "./DeliveryTour";
 import LayoutDraftMeter, { LAYOUT_DRAFT_PRICE_SHOWN_USD } from "./LayoutDraftMeter";
+import MascotRunner from "./MascotRunner";
 import { Tip } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Popup } from "@/components/ui/dialog";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -2253,9 +2255,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         const available = saved && unknownLayout.drafting_available !== false;
         const canTry = available && left > 0;
         return (
-          <>
-            <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setUnknownLayout(null)} />
-            <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}>
+          <Popup
+            title={td.unknownLayoutTitle}
+            onClose={() => setUnknownLayout(null)}
+            className={`inset-x-4 top-1/2 -translate-y-1/2 max-w-md mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}
+          >
               <div className="flex items-start gap-3">
                 <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-brick">
                   <TriangleAlert className="size-5" />
@@ -2285,52 +2289,42 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   </Tip>
                 )}
               </div>
-            </div>
-          </>
+          </Popup>
         );
       })()}
 
       {/* Asked once more before paying, with No suggested, and somewhere
           else on the screen each time (user, 2026-09-30). */}
       {paidConfirm && (
-        <>
-          <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPaidConfirm(null)} />
-          <div className="fixed inset-0 z-[301] pointer-events-none">
-            <div
-              role="alertdialog"
-              aria-label={td.layoutPaidConfirm}
-              className={`absolute pointer-events-auto w-[min(20rem,calc(100%-2rem))] rounded-2xl ${POPUP_WARNING_FRAME} p-5 flex flex-col gap-4`}
-              style={{
-                // Anywhere, and always whole: moving the popup back by the
-                // same share of its own size keeps its far edge on screen.
-                left: `calc(1rem + (100% - 2rem) * ${paidConfirm.x})`,
-                top: `calc(1rem + (100% - 2rem) * ${paidConfirm.y})`,
-                transform: `translate(${-paidConfirm.x * 100}%, ${-paidConfirm.y * 100}%)`,
+        <Popup
+          title={td.layoutPaidConfirm}
+          role="alertdialog"
+          onClose={() => setPaidConfirm(null)}
+          className={`w-[min(20rem,calc(100%-2rem))] rounded-2xl ${POPUP_WARNING_FRAME} p-5 flex flex-col gap-4`}
+          style={{
+            // Anywhere, and always whole: moving the popup back by the
+            // same share of its own size keeps its far edge on screen.
+            left: `calc(1rem + (100% - 2rem) * ${paidConfirm.x})`,
+            top: `calc(1rem + (100% - 2rem) * ${paidConfirm.y})`,
+            transform: `translate(${-paidConfirm.x * 100}%, ${-paidConfirm.y * 100}%)`,
+          }}
+        >
+          <p className="text-sm font-bold text-brick leading-snug">{td.layoutPaidConfirm}</p>
+          <div className="flex gap-2 justify-end">
+            <Button autoFocus variant="emphasis" onClick={() => setPaidConfirm(null)}>
+              {td.layoutPaidNo}
+            </Button>
+            <Button
+              onClick={() => {
+                const id = paidConfirm.invoiceId;
+                setPaidConfirm(null);
+                startLayoutDraft(id);
               }}
             >
-              <p className="text-sm font-bold text-brick leading-snug">{td.layoutPaidConfirm}</p>
-              <div className="flex gap-2 justify-end">
-                <button
-                  autoFocus
-                  onClick={() => setPaidConfirm(null)}
-                  className="h-9 px-5 rounded-xl text-sm font-semibold border-2 border-emerald text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
-                >
-                  {td.layoutPaidNo}
-                </button>
-                <button
-                  onClick={() => {
-                    const id = paidConfirm.invoiceId;
-                    setPaidConfirm(null);
-                    startLayoutDraft(id);
-                  }}
-                  className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
-                >
-                  {td.layoutPaidYes}
-                </button>
-              </div>
-            </div>
+              {td.layoutPaidYes}
+            </Button>
           </div>
-        </>
+        </Popup>
       )}
 
       {/* Already in FreshPortal. The file's first parse stopped before any
@@ -2341,9 +2335,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         const hits = existingHits;
         const total = existingFound.invoices_in_file ?? hits.length;
         return (
-          <>
-            <div className="fixed inset-0 bg-black/60 z-[300]" />
-            <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}>
+          <Popup
+            title={td.existsTitle}
+            dismissable={false}
+            className={`inset-x-4 top-1/2 -translate-y-1/2 max-w-md mx-auto max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}
+          >
               <div className="flex items-start gap-3">
                 <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-brick">
                   <Layers className="size-5" />
@@ -2381,8 +2377,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   </Button>
                 </Tip>
               </div>
-            </div>
-          </>
+          </Popup>
         );
       })()}
 
@@ -2429,15 +2424,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 onChange={e => { if (!fileLoaded) setJsonText(e.target.value); }}
               />
             )}
-            <div className="flex items-center justify-between mt-3">
-              <Tip content={td.dropHint}>
-                <span className="inline-flex items-center gap-1.5 text-ink-3">
-                  <Upload className="size-4" />
-                  {[".json", ".txt", ".pdf"].map(ext => (
-                    <span key={ext} className="px-1.5 py-0.5 rounded-md border border-border bg-muted text-[10.5px] font-medium">{ext}</span>
-                  ))}
-                </span>
-              </Tip>
+            {/* The formats it takes sit by the browse button, on the right
+                (user, 2026-09-30). */}
+            <div className="flex items-center justify-end mt-3">
               <div className="flex items-center gap-1.5">
                 {(jsonText || pdfFile) && (
                   <Tip content={td.clearJson}>
@@ -2451,6 +2440,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     </Button>
                   </Tip>
                 )}
+                <Tip content={td.dropHint}>
+                  <span className="inline-flex items-center gap-1.5 text-ink-3">
+                    <Upload className="size-4" />
+                    {[".json", ".txt", ".pdf"].map(ext => (
+                      <span key={ext} className="px-1.5 py-0.5 rounded-md border border-border bg-muted text-[10.5px] font-medium">{ext}</span>
+                    ))}
+                  </span>
+                </Tip>
                 <Tip content={td.browseBtn}>
                   <Button size="icon" aria-label={td.browseBtn} onClick={() => fileInputRef.current?.click()}>
                     <FolderOpen className="size-4" />
@@ -2479,9 +2476,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* Supplier confirmation popup */}
           {supplierConfirmOpen && resolvedSupplier && (
-            <>
-              <div className="fixed inset-0 bg-black/60 z-[300]" />
-              <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-sm mx-auto rounded-2xl ${POPUP_FRAME} p-6 flex flex-col gap-5`}>
+            <Popup
+              title={td.supplierConfirmTitle}
+              dismissable={false}
+              className={`inset-x-4 top-1/2 -translate-y-1/2 max-w-sm mx-auto rounded-2xl ${POPUP_FRAME} p-6 flex flex-col gap-5`}
+            >
                 <div className="flex items-start gap-3">
                   <div className="flex-shrink-0 w-10 h-10 rounded-full bg-sand border border-taupe/40 flex items-center justify-center text-ink-2">
                     <Factory className="size-5" />
@@ -2506,8 +2505,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     {td.supplierConfirmYes}
                   </Button>
                 </div>
-              </div>
-            </>
+            </Popup>
           )}
 
           {/* Order tabs if multiple invoices */}
@@ -2699,12 +2697,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* Supplier picker modal */}
           {supplierPickerOpen && (
-            <>
-              <div
-                className="fixed inset-0 bg-black/60 z-[200]"
-                onClick={() => setSupplierPickerOpen(false)}
-              />
-              <div className={`fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}>
+            <Popup
+              title={td.selectSupplierTitle}
+              onClose={() => setSupplierPickerOpen(false)}
+              className={`inset-x-4 top-16 bottom-16 max-w-md mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}
+            >
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
                   <div>
                     <span className="text-sm font-semibold text-ink">{td.selectSupplierTitle}</span>
@@ -2744,8 +2741,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       ))
                   )}
                 </div>
-              </div>
-            </>
+            </Popup>
           )}
 
         </div>
@@ -2756,9 +2752,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* Partial approve confirmation modal */}
           {partialApproveOpen && (
-            <>
-              <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPartialApproveOpen(false)} />
-              <div className={`fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-sm mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}>
+            <Popup
+              title={td.approved(approvedCandidates, matchedCandidates)}
+              onClose={() => setPartialApproveOpen(false)}
+              className={`inset-x-4 top-1/2 -translate-y-1/2 max-w-sm mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}
+            >
                 <div className="flex items-center gap-3">
                   <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-brick">
                     <TriangleAlert className="size-5" />
@@ -2776,8 +2774,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     </Button>
                   </Tip>
                 </div>
-              </div>
-            </>
+            </Popup>
           )}
 
           {/* Everything about the lines in one row of chips: a word or two
@@ -3337,9 +3334,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             const currentMatchName = currentEdit?.catalogue_nm_product ?? editLine?.catalogue_nm_product ?? "";
             const matchResults = editSearchResults;
             return (
-              <>
-                <div className="fixed inset-0 bg-black/60 z-[200]" onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} />
-                <div className={`fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}>
+              <Popup
+                title={editLine ? td.editMatchTitle : td.editNoMatchTitle}
+                onClose={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }}
+                className={`inset-x-4 top-12 bottom-4 max-w-lg mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}
+              >
                   <div className="px-4 py-3 border-b border-border shrink-0">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -3415,8 +3414,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       );
                     })}
                   </div>
-                </div>
-              </>
+              </Popup>
             );
           })()}
 
@@ -3435,12 +3433,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               setGrowerEdits(prev => ({ ...prev, [locKey]: g.manufacturer_id }));
               close();
             };
+            // Framed and marked in brand green like the customer and invoice
+            // pickers (SearchableSelect), with the same keys (user, 2026-09-24).
             return (
-              <>
-                <div className="fixed inset-0 bg-black/60 z-[200]" onClick={close} />
-                {/* Framed and marked in brand green like the customer and invoice
-                    pickers (SearchableSelect), with the same keys (user, 2026-09-24). */}
-                <div className={`fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}>
+              <Popup
+                title={td.editGrowerTitle}
+                onClose={close}
+                className={`inset-x-4 top-12 bottom-4 max-w-lg mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}
+              >
                   <div className="px-4 py-3 border-b border-border shrink-0">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -3510,8 +3510,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       );
                     })}
                   </div>
-                </div>
-              </>
+              </Popup>
             );
           })()}
 
@@ -3520,18 +3519,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       {/* ── IMPORTING ── */}
       {stage === "importing" && (
-        <div key="importing" className="step-enter flex flex-col items-center gap-5 py-8">
-          <div className="relative flex items-center justify-center">
-            <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
-            </svg>
-            <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
-              <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
-            </svg>
-          </div>
-          <div className="text-center space-y-1 max-w-xs">
-            <p className="text-sm font-semibold text-ink">{td.creatingShipment}</p>
-          </div>
+        <div key="importing" className="step-enter flex flex-col items-center gap-5 py-6">
+          {/* The company runner carries the shipment over (user, 2026-09-30). */}
+          <MascotRunner label={td.creatingShipment} />
           {isAdmin && logs.length > 0 && <ProgressLog title={td.importing} logs={logs} />}
         </div>
       )}
@@ -3655,7 +3645,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
             {/* Product lines — full added/failed/skipped/excluded breakdown */}
             <div className="px-6 pt-4 pb-2 border-t border-border">
-              <details className="text-xs">
+              <details className="text-xs" open>
                 <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.productLinesLog(doneLineStatuses.length)}</summary>
                 <div className="mt-2 max-h-64 overflow-y-auto space-y-1 pr-1">
                   {doneLineStatuses.map(({ line, status, message }, i) => {

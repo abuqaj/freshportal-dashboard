@@ -813,7 +813,7 @@ export default function ProductCreator({ lang }: Props) {
 
       {/* Duplicate warning modal — step 1 */}
       {showDuplicateWarning && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center popup-backdrop">
           <div className="bg-surface rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
             <div className="flex items-start gap-4 mb-5">
               <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 text-ember text-lg font-bold border border-ember/30">!</div>
@@ -835,7 +835,7 @@ export default function ProductCreator({ lang }: Props) {
 
       {/* Duplicate warning modal — step 2: the name the backend found in FreshPortal */}
       {nameExists && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center popup-backdrop">
           <div className="bg-surface rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
             <div className="flex items-start gap-4 mb-5">
               <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 text-ember text-lg font-bold border border-ember/30">!</div>
