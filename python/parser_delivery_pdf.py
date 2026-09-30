@@ -599,7 +599,8 @@ class LayoutSpec:
                  Bicolor Warm"). The field is "variety" or "label" as cleaned,
                  or any other row field as printed. Such a product merges only
                  across boxes printed one after another, and not across
-                 grades, so each run can be given its own length
+                 grades, so each run can be given its own length — as does
+                 any product the invoice prints no length for
     mix_names    (regex, name) pairs: a mix box whose every product's
                  "species variety" matches is sent combined as `name`,
                  matched against the catalogue by that name
@@ -1372,11 +1373,13 @@ def _build_box_lines(blocks: list[_BoxBlock], spec: LayoutSpec
                 # FreshPortal takes a line as N boxes of one content, and
                 # 6 boxes of 10 bunches plus 6 of 12 are not 12 boxes of 11.
                 merge_key = (*key, box_type, bunches)
-                if product.named:
-                    # A named mix is whatever the farm packed in those boxes:
-                    # boxes printed apart stay apart, and the invoice prints no
-                    # length for them to be told by (MYJ 028119, MIX FANCY in
-                    # boxes 15-16 and 19-20: two lines; user, 2026-09-29).
+                if product.named or not product.length:
+                    # A named mix is whatever the farm packed in those boxes,
+                    # and a product printed with no length may be two lengths:
+                    # boxes printed apart stay apart, so the screen can give
+                    # each its own (MYJ 028119, MIX FANCY in boxes 15-16 and
+                    # 19-20: two lines; user, 2026-09-29: "często to właśnie
+                    # length jest tym co różni produkty").
                     run, last = runs.get(merge_key, (0, index))
                     if last < index - 1:
                         run += 1

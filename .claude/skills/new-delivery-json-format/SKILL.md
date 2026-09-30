@@ -33,7 +33,9 @@ this skill.
 - **Named mixes:** a supplier's own mix ("MIX CALIDO", "Carnation mix") is
   the catalogue mix product the user names, set with the spec's
   `variety_rules` / `mix_names`; such lines keep grades and runs of boxes
-  apart, so each can get its own length.
+  apart, so each can get its own length. So does any line the invoice
+  prints no length for: the length, and the box, are set per line on the
+  screen, and often they are what tells two lines apart (user, 2026-09-29).
 - **Utopia Farms** sends one box entry per row of boxes: `nu_bunches` is the
   number of boxes and `nu_stems_bunch` the stems of the whole row (Q, 9,
   2700 = 9 boxes of 300 stems); the bunch size is in `nm_product` (`10ST`).

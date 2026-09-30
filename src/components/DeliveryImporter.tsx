@@ -925,18 +925,42 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     [growers],
   );
 
-  // ── Box weight inline edit — keyed by deliveryKey, ArrowUp/Down moves focus
-  // between rows within the column (ref map indexed by displayLines position) ──
+  // ── Box weight inline edit — per line, as its box is (lineEditKey), cleared
+  // with each new file. ArrowUp/Down moves focus between rows within the
+  // column (ref map indexed by displayLines position) ──
   const [boxWeightEdits, setBoxWeightEdits] = useState<Record<string, number>>({});
   const boxWeightInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
   // ── Length inline edit — some invoices print none, and only a Floricode S20
-  // length goes to FreshPortal (user, 2026-09-28). Keyed like box weight plus
-  // the length the file gave, so a variety at two lengths keeps them apart;
-  // cleared with each new file, since a length is this invoice's, not the
-  // variety's. ArrowUp/Down moves between rows as in the box weight column ──
+  // length goes to FreshPortal (user, 2026-09-28). Each line takes its own:
+  // the length is often what tells two lines of one product apart (user,
+  // 2026-09-29), so typing it on one line never changes another. Cleared with
+  // each new file, since a length is this invoice's, not the variety's.
+  // ArrowUp/Down moves between rows as in the box weight column ──
   const [lengthEdits, setLengthEdits] = useState<Record<string, number>>({});
   const lengthInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+  // A line's key for its length: its order, what it holds and, among lines
+  // holding exactly the same, its place (MYJ's two runs of MIX FANCY are the
+  // same product, box and bunches, and two lengths). Not the line's position
+  // in the table, which sorting and filtering move; and the same in both mix
+  // views, whose parses list the file's other lines in the same order.
+  const lineKeys = useMemo(() => {
+    const keys = new Map<DeliveryLine, string>();
+    parseResult?.orders.forEach((o, i) => {
+      const groups: [string, DeliveryLine[]][] = [["line", o.lines], ["mix", o.mix_lines ?? []]];
+      for (const [group, lines] of groups) {
+        const seen = new Map<string, number>();
+        for (const l of lines) {
+          const held = [l.gu_product, l.nm_variety, l.nm_box, l.nm_box_printed ?? "", l.nu_physical_boxes,
+                        l.nu_bunches, l.nu_stems_bunch, l.mny_rate_stem, l.nm_location, l.nu_length].join("|");
+          const n = seen.get(held) ?? 0;
+          seen.set(held, n + 1);
+          keys.set(l, `${i}|${group}|${held}#${n}`);
+        }
+      }
+    });
+    return keys;
+  }, [parseResult]);
 
   // ── Mix boxes: each variety its own line (separate), or each box one line
   // of a mix product (together, the default: user, 2026-09-25). Kept across
@@ -944,10 +968,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // together line goes in (QBE or HBE) is editable, keyed by its gu_product ──
   const [mixTogether, setMixTogether] = useState(true);
   const [mixBoxEdits, setMixBoxEdits] = useState<Record<string, string>>({});
-  // ── The box chosen for a code nobody has mapped, keyed by the code as the
-  // file gave it: one choice says what "A" is for the whole invoice. Cleared
-  // with each new file ──
-  const [boxChoices, setBoxChoices] = useState<Record<string, string>>({});
+  // ── The box a line goes in, chosen per line like its length (user,
+  // 2026-09-29: two lines of one product may be different boxes). A code
+  // nobody has mapped arrives as QBE and stays marked until one is chosen.
+  // Keyed by lineEditKey; cleared with each new file ──
+  const [boxEdits, setBoxEdits] = useState<Record<string, string>>({});
   // While the separate view's parse runs (switchMixMode), and why it failed.
   const [mixReparsing, setMixReparsing] = useState(false);
   const [mixReparseError, setMixReparseError] = useState("");
@@ -995,19 +1020,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     return (line.nm_variety ?? "").toLowerCase().trim();
   }
 
-  // Box weight is edited per variety, but a together mix line is boxes of
-  // its own: the 40cm and 60cm mix boxes weigh what they weigh.
+  // A line's variety, or a together mix line's own boxes: what edits fall
+  // back to for a line lineKeys does not know.
   function boxEditKey(line: DeliveryLine): string {
     return isMixLine(line) ? line.gu_product : deliveryKey(line);
   }
 
-  function lengthEditKey(line: DeliveryLine): string {
-    return `${boxEditKey(line)}|${line.nu_length ?? 0}`;
+  // What a line's own length, box and box weight are kept under (lineKeys):
+  // each line's are its own (user, 2026-09-29).
+  function lineEditKey(line: DeliveryLine): string {
+    return lineKeys.get(line) ?? `${boxEditKey(line)}|${line.nu_length ?? 0}`;
   }
 
   // The length a line goes to FreshPortal with; 0 when it has none yet.
   function lineLength(line: DeliveryLine): number {
-    return lengthEdits[lengthEditKey(line)] ?? line.nu_length ?? 0;
+    return lengthEdits[lineEditKey(line)] ?? line.nu_length ?? 0;
   }
 
   // The lines the review step shows and imports. With mix boxes together,
@@ -1032,10 +1059,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
       catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
       manufacturer_id: growerEdits[growerLocationKey(line.nm_location)] ?? line.manufacturer_id,
-      nu_box_weight: boxWeightEdits[boxEditKey(line)] ?? line.nu_box_weight,
+      nu_box_weight: boxWeightEdits[lineEditKey(line)] ?? line.nu_box_weight,
       nu_length: lineLength(line),
-      nm_box: (isMixLine(line) && mixBoxEdits[line.gu_product])
-        || (line.box_guessed && boxChoices[line.nm_box_printed ?? ""])
+      nm_box: (isMixLine(line) ? mixBoxEdits[line.gu_product]
+               : !isMbLine(line) && boxEdits[lineEditKey(line)])
         || line.nm_box,
     };
   }
@@ -1342,7 +1369,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setLineEdits({});
       setMixBoxEdits({});
       setLengthEdits({});
-      setBoxChoices({});
+      setBoxEdits({});
+      setBoxWeightEdits({});
       setEditingKey(null);
       setShowOnlyUnmatched(false);
       setShowOnlyUnapproved(false);
@@ -1884,7 +1912,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLineEdits({});
     setMixBoxEdits({});
     setLengthEdits({});
-    setBoxChoices({});
+    setBoxEdits({});
+    setBoxWeightEdits({});
     setEditingKey(null);
     setEditModalOpen(false);
     setGrowerEdits({});
@@ -2901,9 +2930,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 ) : displayLines.map((line, i) => {
                   const dk = deliveryKey(line);
                   const edit = lineEdits[dk];
-                  const boxKey = boxEditKey(line);
+                  const boxKey = lineEditKey(line);
                   const boxWeightValue = boxWeightEdits[boxKey] ?? line.nu_box_weight ?? 0;
-                  const lengthKey = lengthEditKey(line);
+                  const lengthKey = boxKey;
                   const lengthValue = lineLength(line);
                   const lengthOk = S20_LENGTHS.has(lengthValue);
                   const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
@@ -3034,26 +3063,29 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                               <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[7px] text-emerald-dark">▼</span>
                             </HoverCard>
                           );
-                        })() : line.box_guessed ? (() => {
-                          // A code nobody has mapped goes as QBE; the choice
-                          // holds for every line of that code, and the box
-                          // stays marked until one is made (user, 2026-09-29).
-                          const printed = line.nm_box_printed ?? "";
-                          const chosen = boxChoices[printed];
+                        })() : !isMbLine(line) ? (() => {
+                          // Each line's box is its own, like its length (user,
+                          // 2026-09-29). A code nobody has mapped arrives as
+                          // QBE and stays marked until a box is chosen.
+                          const chosen = boxEdits[boxKey];
+                          const fust = chosen ?? line.nm_box;
+                          const fusts = KNOWN_FUSTS.includes(fust) ? KNOWN_FUSTS : [fust, ...KNOWN_FUSTS];
+                          const flagged = !!line.box_guessed && !chosen;
                           return (
-                            <span className="relative inline-flex" title={td.boxGuessed(printed)}>
+                            <span className="relative inline-flex"
+                                  title={line.box_guessed ? td.boxGuessed(line.nm_box_printed ?? "") : undefined}>
                               <select
-                                value={chosen ?? line.nm_box}
-                                onChange={e => { const v = e.target.value; setBoxChoices(prev => ({ ...prev, [printed]: v })); }}
-                                aria-label={td.boxGuessed(printed)}
+                                value={fust}
+                                onChange={e => { const v = e.target.value; setBoxEdits(prev => ({ ...prev, [boxKey]: v })); }}
+                                aria-label={line.box_guessed ? td.boxGuessed(line.nm_box_printed ?? "") : td.mixBoxTypeTitle}
                                 className={`appearance-none h-6 pl-1 pr-3 rounded-md border text-[10px] font-medium cursor-pointer outline-none
-                                  ${chosen
-                                    ? "bg-muted text-ink-3 border-border hover:border-emerald focus:border-emerald"
-                                    : "bg-blush/30 text-brick border-brick/50 hover:border-brick focus:border-brick"}`}
+                                  ${flagged
+                                    ? "bg-blush/30 text-brick border-brick/50 hover:border-brick focus:border-brick"
+                                    : "bg-muted text-ink-3 border-border hover:border-emerald focus:border-emerald"}`}
                               >
-                                {KNOWN_FUSTS.map(code => <option key={code} value={code}>{code}</option>)}
+                                {fusts.map(code => <option key={code} value={code}>{code}</option>)}
                               </select>
-                              <span className={`pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[7px] ${chosen ? "text-ink-3" : "text-brick"}`}>▼</span>
+                              <span className={`pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[7px] ${flagged ? "text-brick" : "text-ink-3"}`}>▼</span>
                             </span>
                           );
                         })() : line.nm_box ? (

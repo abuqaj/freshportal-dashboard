@@ -752,6 +752,22 @@ def test_variety_rule_keeps_grades_apart():
         ("Dianthus St Mix", 1, 0), ("Dianthus St Mix", 1, 0)]
 
 
+def test_boxes_with_no_length_printed_apart_stay_apart():
+    """With no length printed, boxes of one product printed apart may be two
+    lengths, which the screen sets per line (Florequisa's PINK PIGEON in
+    boxes 10-11 and 14-15; user, 2026-09-29). A printed length still merges."""
+    rows = [["1", "Q", "PINK PIGEON", "30", "10", "", "300", "0,200", "60,000"],
+            ["2", "Q", "PINK PIGEON", "30", "10", "", "300", "0,200", "60,000"],
+            ["3", "Q", "THEA", "30", "10", "", "300", "0,200", "60,000"],
+            ["4", "Q", "PINK PIGEON", "30", "10", "", "300", "0,200", "60,000"],
+            ["5", "Q", "MOONLIGHT", "30", "10", "65", "300", "0,200", "60,000"],
+            ["6", "Q", "THEA", "30", "10", "", "300", "0,200", "60,000"],
+            ["7", "Q", "MOONLIGHT", "30", "10", "65", "300", "0,200", "60,000"]]
+    order = parse_with_spec(_numbered_doc(rows, 210, 2100, "420,00", boxes_q=7), _NUMBERED)
+    got = sorted((l.nm_variety, l.nu_physical_boxes) for l in order.lines)
+    assert got == [("Moonlight", 2), ("Pink Pigeon", 1), ("Pink Pigeon", 2), ("Thea", 1), ("Thea", 1)]
+
+
 def test_species_rules_and_mix_names_for_a_farm_printing_no_species():
     """Florequisa prints no species, and its assorted boxes go as one mix
     product each: Minami boxes as Dianthus Mix Minami, the rest as Dianthus
