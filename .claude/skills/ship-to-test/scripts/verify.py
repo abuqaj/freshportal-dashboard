@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import re
 import shutil
 import subprocess
@@ -66,6 +67,31 @@ def check_python(files: list[str]) -> None:
         report("FAIL", "Python syntax", "\n".join(errors))
     else:
         report("PASS", "Python syntax", f"{len(python_files)} changed file(s)")
+
+
+def check_python_names(files: list[str]) -> None:
+    """Names used but never defined, which compile() cannot see.
+
+    On 2026-09-25 one such name, in a log line run at start-up, stopped the
+    Railway backend from starting. pyflakes finds them without running the code.
+    """
+    python_files = [f for f in files if f.endswith(".py") and (ROOT / f).is_file()]
+    if not python_files:
+        report("PASS", "Python names", "no changed Python file")
+        return
+    if importlib.util.find_spec("pyflakes") is None:
+        report("SKIP", "Python names",
+               "pyflakes is not installed, so undefined names were not looked for.\n"
+               "Install it once: python -m pip install --user pyflakes")
+        return
+    run = subprocess.run([sys.executable, "-m", "pyflakes", *python_files], cwd=ROOT,
+                         capture_output=True, text=True, encoding="utf-8", errors="replace",
+                         env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    undefined = [line for line in (run.stdout + run.stderr).splitlines() if "undefined name" in line]
+    if undefined:
+        report("FAIL", "Python names", "\n".join(undefined[:25]))
+    else:
+        report("PASS", "Python names", f"{len(python_files)} changed file(s), no undefined name")
 
 
 def _line_ending_style(data: bytes) -> str:
@@ -193,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     files = changed_files(base)
     check_branch()
     check_python(files)
+    check_python_names(files)
     check_line_endings(files, base)
     check_translations(args.i18n)
     check_tab_maps(args.page)
