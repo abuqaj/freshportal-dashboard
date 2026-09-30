@@ -30,6 +30,25 @@
   --color-sand:          #E4E1D8;
   --color-taupe:         #8E8B81;
 
+  /* shadcn/ui's colour names on the same palette (user, 2026-09-30: shadcn
+     for every module but the Analysis Tool, in the system colours), so a
+     component added from shadcn wears them without being recoloured.
+     `muted` and `border` are the system's own, above. */
+  --color-background:           #FFFFFF;
+  --color-foreground:           #111A14;
+  --color-primary:              #1A7D45;
+  --color-primary-foreground:   #FFFFFF;
+  --color-secondary:            #E4E1D8;
+  --color-secondary-foreground: #111A14;
+  --color-accent:               #C4DED0;
+  --color-accent-foreground:    #0F5C32;
+  --color-destructive:          #B03A2B;
+  --color-popover:              #FFFFFF;
+  --color-popover-foreground:   #111A14;
+  --color-muted-foreground:     #728070;
+  --color-input:                #D8DDD8;
+  --color-ring:                 #1A7D45;
+
   /* Legacy tile gradients (used as bg in tiles) */
   --color-tile-a-from:   #1A7D45;
   --color-tile-a-to:     #0D5430;
