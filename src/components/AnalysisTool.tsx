@@ -18,8 +18,8 @@ const LOCALES: Record<Lang, string> = { en: "en-GB", nl: "nl-NL", pl: "pl-PL", e
 
 interface BiStats {
   stock_entry_dim_count?: number;
-  stock_entry_daily_count?: number;
-  snapshot_days?: number;
+  offer_state_count?: number;
+  offers_online_today?: number;
   order_lines_count?: number;
   invoice_customer_count?: number;
 }
@@ -543,7 +543,7 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
           {stats && (
             <span className="text-xs text-ink-3">
               {fmtNum(stats.stock_entry_dim_count ?? 0, locale)} {t.statStockEntries} ·{" "}
-              {t.statSnapshotDays(String(stats.snapshot_days ?? 0))} ·{" "}
+              {t.statOnlineToday(fmtNum(stats.offers_online_today ?? 0, locale))} ·{" "}
               {fmtNum(stats.order_lines_count ?? 0, locale)} {t.statOrderLines} ·{" "}
               {fmtNum(stats.invoice_customer_count ?? 0, locale)} {t.statInvoiceMaps}
             </span>

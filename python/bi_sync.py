@@ -78,6 +78,23 @@ can't reuse that table (confirmed 2026-09-02).
 The "supplier" table (id, name — the FreshPortal-registered supplier list,
 confirmed by the user 2026-09-02) is read every sync and kept in
 bi_suppliers, purely as an id->name lookup for chart legends.
+
+What was online, and at what price (2026-09-25). The export now carries
+availability_start_date, availability_end_date, webshop_visible and the
+OZ-Hami Quito Amsterdam customer-group price, so an offer lot is online on
+day D when visible=1, webshop_visible=1 and D falls inside its window. Those
+are kept in bi_offer_states as a change log: one row each time a lot's
+listing (window, group price, on/off) changes, not one row per lot per day.
+A daily row would not even be correct — the export only returns lots
+mutated since yesterday, so on 2026-09-24 just 106 of the 1,573 lots online
+that day were in the pull, and "online on D" has to be read from each lot's
+last known state instead. It is also what fits the database: a daily row
+per offer lot was estimated at 100-200 MB a year, the change log at 15-20.
+bi_stock_entry_daily is therefore no longer written; its old rows stay.
+
+The group price is what OZEDS (customer 12) sees before transport, which
+the outgoing invoice adds per stem (about 0.009 EUR on 2026-09-23/24, so a
+0.865 listing sells at 0.875) — confirmed by the user 2026-09-25.
 """
 from __future__ import annotations
 
@@ -85,6 +102,7 @@ import calendar
 import logging
 import threading
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from bi_sync_client import (
     get_export_url, download_export_zip, read_table,
@@ -92,8 +110,9 @@ from bi_sync_client import (
 )
 from config import Config
 from db import (
-    upsert_bi_stock_entry_dim, upsert_bi_stock_entry_daily, upsert_bi_order_lines,
+    upsert_bi_stock_entry_dim, upsert_bi_order_lines,
     upsert_bi_products,
+    get_bi_offer_current_states, apply_bi_offer_state_changes,
     upsert_bi_invoice_customer, get_bi_invoice_customer_map,
     upsert_bi_suppliers,
     log_bi_sync_start, log_bi_sync_finish, append_bi_sync_message,
@@ -115,6 +134,31 @@ EXCLUDED_CUSTOMER_IDS = {"160"}
 _sync_lock = threading.Lock()
 _sync_running = False
 _sync_message = ""
+
+# When the scheduled sync runs, in Amsterdam time (the user, 2026-09-25).
+# Buying starts in Amsterdam at 05:00, so that pull records what is on offer
+# as the day opens; by 20:00 the Ecuador team has finished adjusting what is
+# online, so that pull records what they left for the next day. Each pull
+# keeps only a lot's latest state, so a lot changed twice between two pulls
+# shows only its second change. The export's own timestamps are Amsterdam
+# time too: a pull at 06:18 UTC on 2026-09-09 held a change from 08:17.
+BI_SYNC_TIMEZONE = "Europe/Amsterdam"
+BI_SYNC_HOURS = (5, 20)
+
+
+def last_bi_sync_slot(now: datetime) -> datetime:
+    """The latest scheduled sync time at or before `now` (timezone-aware),
+    in Amsterdam time. A last successful run older than this means a
+    scheduled pull was missed."""
+    tz = ZoneInfo(BI_SYNC_TIMEZONE)
+    local = now.astimezone(tz)
+    for days_back in (0, 1):
+        day = local.date() - timedelta(days=days_back)
+        for hour in sorted(BI_SYNC_HOURS, reverse=True):
+            slot = datetime(day.year, day.month, day.day, hour, tzinfo=tz)
+            if slot <= local:
+                return slot
+    raise AssertionError("yesterday's last slot is always in the past")
 
 
 # The export does NOT use one date format. mutation_date_time comes back as
@@ -159,6 +203,129 @@ def parse_export_datetime(value: str | None) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+# The lots the webshop sells from: "offer" (4) and "limited offer" (5).
+OFFER_STOCK_ENTRY_TYPES = ("4", "5")
+
+# The one customer-group price the export carries today, read by its exact
+# name. Another group would arrive as another column with the same prefix,
+# and taking whichever came first would mix two groups' prices in one series.
+OZH_GROUP_PRICE_COLUMN = "calculated_customer_group_price_oze_hami_quito_amsterdam"
+GROUP_PRICE_COLUMN_PREFIX = "calculated_customer_group_price_"
+
+
+def _is_one(value) -> bool:
+    return str(value or "").strip() in ("1", "true", "True")
+
+
+def _export_number(value) -> float | None:
+    """A number from the export, decimal comma or dot. The group price is
+    the one stock_entry column written with a comma ("0,725") while every
+    other price uses a dot, and float() alone would store it as NULL."""
+    text = str(value or "").strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _export_date(value) -> str | None:
+    """availability_start/end_date as ISO, or None. The raw CSV has them
+    ISO, a copy that went through Excel comes back day-first, and an unset
+    date arrives as 0000-00-00, which no format accepts."""
+    parsed = parse_export_datetime(value)
+    return parsed.date().isoformat() if parsed else None
+
+
+def offer_state_from_row(row: dict) -> dict | None:
+    """One stock_entry row as an offer listing state, or None when it is not
+    an offer lot. `listed` is everything "on sale online" needs besides the
+    date: visible=1 (the lot is shown to users at all — not a soft-delete
+    flag, as was assumed until the user corrected it 2026-09-25) and
+    webshop_visible=1."""
+    if str(row.get("stock_entry_type_id") or "").strip() not in OFFER_STOCK_ENTRY_TYPES:
+        return None
+    entry_id = str(row.get("id") or "").strip()
+    if not entry_id:
+        return None
+    return {
+        "stock_entry_id": entry_id,
+        "mutation_time": parse_export_datetime(row.get("mutation_date_time")),
+        "listed": _is_one(row.get("visible")) and _is_one(row.get("webshop_visible")),
+        "available_from": _export_date(row.get("availability_start_date")),
+        "available_until": _export_date(row.get("availability_end_date")),
+        "group_price": _export_number(row.get(OZH_GROUP_PRICE_COLUMN)),
+        "price": _export_number(row.get("price")),
+        "quantity_per_pack": _export_number(row.get("quantity_per_pack")),
+        "quantity_available": _export_number(row.get("quantity_available")),
+    }
+
+
+def _price_key(value) -> float | None:
+    return None if value is None else round(float(value), 4)
+
+
+def _same_listing(current: dict, new: dict) -> bool:
+    """Whether `new` continues the lot's current state rather than starting
+    a new one. Off is off whatever its window says: FreshPortal keeps
+    rolling an unlisted lot's window forward, and a row for each of those
+    would record listings nobody could buy from."""
+    if not current["listed"] and not new["listed"]:
+        return True
+    return (
+        current["listed"] == new["listed"]
+        and current["available_from"] == new["available_from"]
+        and current["available_until"] == new["available_until"]
+        and _price_key(current["group_price"]) == _price_key(new["group_price"])
+    )
+
+
+def plan_offer_state_changes(
+    current: dict[str, dict], incoming: list[dict], now: datetime,
+) -> tuple[list[dict], list[dict]]:
+    """Split this export's offer rows into new states (insert) and
+    continuations of a lot's current state (update in place).
+
+    `current` maps stock_entry_id -> that lot's latest stored state
+    (state_since, last_mutation_time, listed, window, group_price); it is
+    updated as rows are planned. Times are naive FreshPortal wall-clock.
+
+    - A lot is skipped until it is first listed: nine in ten offer lots in
+      an export are switched off, and they only matter once on sale.
+    - A row no newer than what is stored is skipped, so re-running a sync
+      changes nothing and an older backfill cannot overwrite a newer state.
+    - A lot's first state starts when its window opened, if that is earlier
+      than the mutation that brought it in. A lot put online on Monday and
+      first sold from on Tuesday arrives with Tuesday's mutation time, and
+      would otherwise count as offline on Monday. Later states start at
+      their mutation, because an earlier start would hide the state before.
+    """
+    inserts: list[dict] = []
+    updates: list[dict] = []
+    for state in sorted(incoming, key=lambda s: s["mutation_time"] or now):
+        mutated = state["mutation_time"] or now
+        existing = current.get(state["stock_entry_id"])
+        if existing is None:
+            if not state["listed"]:
+                continue
+            since = mutated
+            if state["available_from"]:
+                since = min(since, datetime.fromisoformat(state["available_from"]))
+            row = {**state, "state_since": since, "mutation_time": mutated}
+            inserts.append(row)
+        elif mutated <= existing["last_mutation_time"]:
+            continue
+        elif _same_listing(existing, state):
+            row = {**state, "state_since": existing["state_since"], "mutation_time": mutated}
+            updates.append(row)
+        else:
+            row = {**state, "state_since": mutated, "mutation_time": mutated}
+            inserts.append(row)
+        current[state["stock_entry_id"]] = {**row, "last_mutation_time": mutated}
+    return inserts, updates
 
 
 def _normalise_datetime_field(row: dict, field: str) -> None:
@@ -252,16 +419,19 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
         # quantity, webshop_visible, available_from/until, ...), never
         # soft-deleted (confirmed by the user 2026-09-02). Every other type —
         # "default lot" (1) and "standard" (physical stock, created per order
-        # and consumed/soft-deleted via visible=1 on fulfillment) — has
-        # completely different lifecycle semantics (high-churn, order-driven)
-        # and would otherwise dominate/skew any "how much is offered" count.
-        # The visible=0 check is kept as a defensive no-op belt-and-suspenders
-        # filter — offer/limited-offer rows are never expected to have
-        # visible=1 in the first place.
+        # and consumed on fulfillment) — has completely different lifecycle
+        # semantics (high-churn, order-driven) and would otherwise
+        # dominate/skew any "how much is offered" count.
+        #
+        # visible=1 means the lot is shown to users (confirmed by the user
+        # 2026-09-25). Until then this kept visible=0 instead, on the belief
+        # that 1 marked a used-up entry, which threw away 11,595 of the 11,699
+        # offer lots in the 2026-09-25 export and 1,569 of the 1,573 online
+        # on 2026-09-24.
         stock_entries = [
             r for r in all_stock_entries
-            if str(r.get("visible") or "0").strip() not in ("1", "true", "True")
-            and str(r.get("stock_entry_type_id") or "").strip() in ("4", "5")
+            if _is_one(r.get("visible"))
+            and str(r.get("stock_entry_type_id") or "").strip() in OFFER_STOCK_ENTRY_TYPES
         ]
         # Product names come from the FULL list, not the type 4/5 subset —
         # sold lines point at "standard" entries, whose products are absent
@@ -269,11 +439,25 @@ def _run_bi_sync_for_range(cfg: Config, mutation_datetime: str, filter_start: st
         upsert_bi_products(all_stock_entries)
 
         _s(f"Read {len(all_stock_entries)} stock_entry rows, {len(stock_entries)} offer/limited-offer "
-           f"lots (type 4/5, visible=0) after dropping other types — upserting…")
+           f"lots (type 4/5, visible=1) after dropping other types — upserting…")
         upsert_bi_stock_entry_dim(stock_entries)
-        snapshot_date = date.today().isoformat()
-        upsert_bi_stock_entry_daily(stock_entries, snapshot_date)
-        _s(f"Upserted {len(stock_entries)} stock_entry rows (snapshot_date={snapshot_date})")
+        _s(f"Upserted {len(stock_entries)} stock_entry rows")
+
+        # What is online and at what price — see the module docstring.
+        header = all_stock_entries[0].keys() if all_stock_entries else []
+        other_groups = [c for c in header if c.startswith(GROUP_PRICE_COLUMN_PREFIX) and c != OZH_GROUP_PRICE_COLUMN]
+        if all_stock_entries and OZH_GROUP_PRICE_COLUMN not in header:
+            _s(f"WARNING: stock_entry has no {OZH_GROUP_PRICE_COLUMN} column — "
+               f"offer listings are stored without a price")
+        if other_groups:
+            _s(f"Ignoring other customer-group price columns: {', '.join(other_groups)}")
+        offer_states = [s for s in (offer_state_from_row(r) for r in all_stock_entries) if s]
+        current_states = get_bi_offer_current_states([s["stock_entry_id"] for s in offer_states])
+        inserts, updates = plan_offer_state_changes(current_states, offer_states, datetime.now())
+        apply_bi_offer_state_changes(inserts, updates)
+        _s(f"Offer listings: {sum(1 for s in offer_states if s['listed'])} of {len(offer_states)} offer lots "
+           f"listed (visible and webshop_visible) — {len(inserts)} new state(s), "
+           f"{len(updates)} continued")
 
         _s("Reading order_lines table…")
         # The export file is literally "order_line.csv" (singular) — confirmed

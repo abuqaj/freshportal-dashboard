@@ -401,7 +401,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
     <div>
       {/* Disable auto VBN confirmation */}
       {showDisableConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center popup-backdrop">
           <div className="bg-surface rounded-2xl shadow-2xl max-w-sm w-full mx-4 p-6">
             <div className="flex items-start gap-4 mb-5">
               <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 border border-ember/30">

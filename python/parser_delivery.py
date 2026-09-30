@@ -51,6 +51,14 @@ class DeliveryLine:
     # stands for, and the varieties inside as {nm_variety, nu_bunches}.
     mix_boxes: list[str] = field(default_factory=list)
     mix_content: list[dict[str, Any]] = field(default_factory=list)
+    # On an MBn line, the product its box goes as when sent combined, where
+    # the supplier's layout knows it ("Dianthus Mix Minami"); empty leaves it
+    # to the species (_MIX_BOX_PRODUCTS).
+    mix_name: str = ""
+    # A box code we have not mapped goes as QBE (guess_unknown_boxes): the code
+    # the file gave, for the screen to offer the choice.
+    box_guessed: bool = False
+    nm_box_printed: str = ""
 
     @property
     def nu_stems_total(self) -> int:
@@ -177,6 +185,37 @@ def _normalise_box(tp: str) -> str:
     return tp
 
 
+# The boxes delivery import knows (user, 2026-09-29: "te co znamy"). A code
+# outside them, and not a mix box label, is one nobody has mapped: it goes as
+# a quarter box, and the screen offers these to choose from instead.
+KNOWN_BOXES = ("QBE", "HBE", "1/8", "ECPS")
+_UNKNOWN_BOX_DEFAULT = "QBE"
+
+
+def guess_box(code: str) -> tuple[str, bool]:
+    """(the box FreshPortal gets, whether that is a guess) for a normalised code."""
+    if code in KNOWN_BOXES or _re.fullmatch(r"MB\d+", code or ""):
+        return code, False
+    return _UNKNOWN_BOX_DEFAULT, True
+
+
+def guess_unknown_boxes(order: "DeliveryOrder") -> None:
+    """Every line's box as one FreshPortal knows, in place: a code nobody has
+    mapped ("FB", Guaisa's "A", "MB SUPER PETITE") becomes QBE, keeping the
+    code the file gave for the screen to show. A mix box's physical code is
+    guessed the same way. Call after parsing, before mix_box_lines."""
+    for line in order.lines:
+        if line.box_guessed:
+            continue
+        if _re.fullmatch(r"MB\d+", line.nm_box):
+            if line.nm_box_type:
+                line.nm_box_type = guess_box(line.nm_box_type)[0]
+            continue
+        box, guessed = guess_box(line.nm_box)
+        if guessed:
+            line.nm_box_printed, line.nm_box, line.box_guessed = line.nm_box, box, True
+
+
 # Per-stem weight (products[].nu_weight) isn't a thing roses are sold/
 # weighed by in this supplier network — a nonzero value on a rose line is
 # stray data (e.g. bled in from a neighbouring field in the source feed),
@@ -264,6 +303,8 @@ _SUPPLIER_GROWER_MAP: dict[str, str] = {
     "montebellofarms cia ltda": "61692",
     "monterosas farms": "57536",
     "myj flowers": "61829",
+    # The grower's own name in FreshPortal (user, 2026-09-29).
+    "myjflowers": "61829",
     "mystic flowers s.a.": "57353",
     "naranjo roses": "57379",
     "natuflor s.a.": "57389",
@@ -448,8 +489,8 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
 
     for inv in data.get("invoices", []):
         # Parsing rules:
-        #   • Single-variety box (1 unique gu_product): aggregate by gu_product + tp_box.
-        #     nm_box = tp_box (e.g. "HB", "QB").
+        #   • Single-variety box (1 unique gu_product): aggregate by gu_product + tp_box,
+        #     only boxes holding the same number of bunches. nm_box = tp_box (e.g. "HB", "QB").
         #   • Multi-variety box (Mix box): each product becomes its own line.
         #     All products in the same physical box share a sequential label MB1, MB2 …
         #     assigned in encounter order across the invoice. nm_box = "MB1", "MB2", etc.
@@ -529,6 +570,9 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
             else:
                 # Single-variety box — aggregate by gu_product + box_type.
                 # Different box types (HBE vs QBE) stay as separate lines.
+                # First what this box holds of each product: the same product
+                # can be printed on two rows of one box.
+                in_box: dict[str, tuple[dict, str, str, str, int]] = {}
                 for prod in products_in_box:
                     gu = str(prod.get("gu_product") or "").strip()
                     if not gu:
@@ -552,12 +596,19 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     mny_rate = float(prod.get("mny_rate_stem") or 0)
                     nm_location = (prod.get("nm_location") or "").strip()
                     key = f"{gu}|{tp_box}|{nm_variety.lower()}|{mny_rate}|{nm_location.lower()}"
-                    nu_bunches = int(prod.get("nu_bunches") or 0)
+                    held = in_box[key][4] if key in in_box else 0
+                    in_box[key] = (prod, gu, nm_variety, nm_location,
+                                   held + int(prod.get("nu_bunches") or 0))
 
+                for key, (prod, gu, nm_variety, nm_location, nu_bunches) in in_box.items():
+                    # Boxes merge only when they hold the same, bunch for bunch:
+                    # FreshPortal takes a line as N boxes of one content, and
+                    # 6 boxes of 10 bunches plus 6 of 12 are not 12 boxes of 11
+                    # (user, 2026-09-29; 6 of 10 and 1 of 12 even lost 2 bunches).
+                    key = f"{key}|{nu_bunches}"
                     if key in merged:
                         merged[key].nu_bunches += nu_bunches
-                        if key not in keys_new_in_this_box:
-                            merged[key].nu_physical_boxes += 1
+                        merged[key].nu_physical_boxes += 1
                     else:
                         merged[key] = DeliveryLine(
                             gu_product=gu,
@@ -576,7 +627,6 @@ def _parse_invoices_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                             ),
                             nu_box_weight=float(box.get("nu_box_weight") or 0),
                         )
-                    keys_new_in_this_box.add(key)
 
         lines = sorted(
             merged.values(),
@@ -744,8 +794,9 @@ def _parse_ceresfarms_format(data: dict[str, Any]) -> list[DeliveryOrder]:
     return orders
 
 
-# Utopia Farms writes the box type as one letter.
-_UTOPIA_BOX_CODES = {"Q": "QBE", "E": "1/8"}
+# Utopia Farms writes the box type as one letter. "H" is a half box, as its
+# PDF invoice says (user, 2026-09-29; it used to pass through as "H").
+_UTOPIA_BOX_CODES = {"Q": "QBE", "E": "1/8", "H": "HBE"}
 
 
 def _utopia_boxes(box: dict[str, Any]) -> list[dict[str, Any]]:
@@ -780,7 +831,7 @@ def _utopia_boxes(box: dict[str, Any]) -> list[dict[str, Any]]:
 def _parse_utopia_format(data: dict[str, Any]) -> list[DeliveryOrder]:
     """Parse Utopia Farms: the invoices shape, each box entry a row of boxes.
 
-    - tp_box is a letter: Q is a quarter box (QBE), E an eighth (1/8).
+    - tp_box is a letter: Q is a quarter box (QBE), H a half (HBE), E an eighth (1/8).
     - nu_bunches is the number of boxes in the row, and nu_stems_bunch the
       stems of the whole row (found 2026-09-24, invoice 186970: Q, 9 and 2700
       are 9 boxes of 300 stems). The bunch size is only in nm_product.
@@ -860,15 +911,20 @@ def _parse_factura_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                     )
                 keys_new_in_this_box.add(key)
         else:
+            # What this box holds of each product, then boxes merge only when
+            # they hold the same, bunch for bunch (user, 2026-09-29): see
+            # _parse_invoices_format.
+            in_box: dict[str, tuple[dict, int]] = {}
             for prod in products_in_box:
                 gu = str(prod.get("id_producto") or "").strip()
-                key = f"{gu}|{tp_box}"
-                nu_bunches = int(prod.get("ramos") or 0)
+                held = in_box[gu][1] if gu in in_box else 0
+                in_box[gu] = (prod, held + int(prod.get("ramos") or 0))
+            for gu, (prod, nu_bunches) in in_box.items():
+                key = f"{gu}|{tp_box}|{nu_bunches}"
 
                 if key in merged:
                     merged[key].nu_bunches += nu_bunches
-                    if key not in keys_new_in_this_box:
-                        merged[key].nu_physical_boxes += 1
+                    merged[key].nu_physical_boxes += 1
                 else:
                     merged[key] = DeliveryLine(
                         gu_product=gu,
@@ -882,7 +938,6 @@ def _parse_factura_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                         nm_product=(prod.get("variedad") or "").strip(),
                         nm_box=tp_box,
                     )
-                keys_new_in_this_box.add(key)
 
     lines = sorted(
         merged.values(),
@@ -960,14 +1015,27 @@ def _parse_text_invoice(text: str) -> list[DeliveryOrder]:
             break
 
     delivery_lines: list[DeliveryLine] = []
-    nu_boxes = 0
+    # Each box and its rows, in printed order. A row printed without a box
+    # number is more of the box above: the invoice's BOX cell is blank, which
+    # comes out as an empty line or as no line at all. Reading used to stop
+    # there and lose every row after it (Fiorentina 0000157754 prints box 1
+    # as TIFFANY on two rows; fixed 2026-09-29).
+    boxes: list[tuple[str, list[DeliveryLine]]] = []
 
     if table_start >= 0:
         pos = table_start
-        while pos + _COLS <= len(lines):
-            chunk = [l.strip() for l in lines[pos:pos + _COLS]]
-            # End-of-table: first column is "TOTAL" or non-numeric
-            if not chunk[0] or not _re.fullmatch(r'\d+', chunk[0]):
+        while pos < len(lines):
+            head = lines[pos].strip()
+            if _re.fullmatch(r'\d+', head):
+                chunk, step = [l.strip() for l in lines[pos:pos + _COLS]], _COLS
+            elif (head == '' and boxes and pos + 1 < len(lines)
+                  and lines[pos + 1].strip().upper() in _BOX_LETTER_MAP):
+                chunk, step = [l.strip() for l in lines[pos:pos + _COLS]], _COLS
+            elif head.upper() in _BOX_LETTER_MAP and boxes:
+                chunk, step = [''] + [l.strip() for l in lines[pos:pos + _COLS - 1]], _COLS - 1
+            else:
+                break  # end of the table: "TOTAL", or anything else
+            if len(chunk) < _COLS:
                 break
             try:
                 box_letter = chunk[1].upper()
@@ -978,11 +1046,11 @@ def _parse_text_invoice(text: str) -> list[DeliveryOrder]:
                 nu_length     = int(chunk[6])
                 mny_rate_stem = float(chunk[8].replace(',', '.'))
             except (ValueError, IndexError):
-                pos += _COLS
+                pos += step
                 continue
 
             gu = f"{nm_variety.lower()}_{nu_length}_{nu_stems_bunch}_{mny_rate_stem}"
-            delivery_lines.append(DeliveryLine(
+            line = DeliveryLine(
                 gu_product=gu,
                 nm_variety=nm_variety,
                 nm_species='Roses',
@@ -994,9 +1062,27 @@ def _parse_text_invoice(text: str) -> list[DeliveryOrder]:
                 nm_product=f"{nm_variety} {nu_length}CM",
                 nm_box=nm_box,
                 nu_physical_boxes=1,
-            ))
-            nu_boxes += 1
-            pos += _COLS
+            )
+            if chunk[0]:
+                boxes.append((nm_box, []))
+            rows = boxes[-1][1]
+            # The same product on two rows of one box is one line of it.
+            same = next((r for r in rows if r.gu_product == gu), None)
+            if same:
+                same.nu_bunches += nu_bunches
+            else:
+                rows.append(line)
+            pos += step
+
+    # A box holding several products is a mix box, MBn, as in the other formats.
+    mix_box_counter = 0
+    for box_code, rows in boxes:
+        if len(rows) > 1:
+            mix_box_counter += 1
+            for row in rows:
+                row.nm_box, row.nm_box_type = f"MB{mix_box_counter}", box_code
+        delivery_lines.extend(rows)
+    nu_boxes = len(boxes)
 
     return [DeliveryOrder(
         tx_company=tx_company,
@@ -1055,10 +1141,13 @@ def _parse_etiqueta_format(data: dict[str, Any]) -> list[DeliveryOrder]:
         else:
             nm_species = producto.split()[0].title() if producto else ""
 
-        key = f"{nm_variety.lower()}|{tp_box}|{nu_stems_bunch}|{mny_rate_stem}"
+        # Rows merge only when their boxes hold the same, bunch for bunch
+        # (user, 2026-09-29): see _parse_invoices_format. A line's nu_bunches
+        # counts every box of it, as build_stock_entry divides them back.
+        key = f"{nm_variety.lower()}|{tp_box}|{nu_stems_bunch}|{mny_rate_stem}|{nu_bunches}"
 
         if key in merged:
-            merged[key].nu_bunches += nu_bunches
+            merged[key].nu_bunches += nu_bunches * nu_boxes_item
             merged[key].nu_physical_boxes += nu_boxes_item
         else:
             merged[key] = DeliveryLine(
@@ -1067,7 +1156,7 @@ def _parse_etiqueta_format(data: dict[str, Any]) -> list[DeliveryOrder]:
                 nm_species=nm_species,
                 nu_length=0,
                 nu_stems_bunch=nu_stems_bunch,
-                nu_bunches=nu_bunches,
+                nu_bunches=nu_bunches * nu_boxes_item,
                 mny_rate_stem=mny_rate_stem,
                 id_floricode="",
                 nm_product=producto,
@@ -1202,6 +1291,11 @@ def mix_box_lines(order: DeliveryOrder) -> list[DeliveryLine]:
 
         first = lines[0]
         number, name = _mix_box_product({l.nm_species for l in lines})
+        # A name the supplier's layout gave the box goes by name, like any
+        # other line: it is matched against the catalogue in api_server.
+        mix_name = first.mix_name if len({l.mix_name for l in lines}) == 1 else ""
+        if mix_name:
+            number, name = "", mix_name
         fust = first.nm_box_type or _MIX_BOX_DEFAULT_FUST
         rate = round(sum(l.nu_stems_total * l.mny_rate_stem for l in lines) / stems, 4)
         box_weight = max(l.nu_box_weight for l in lines)
@@ -1238,6 +1332,7 @@ def mix_box_lines(order: DeliveryOrder) -> list[DeliveryLine]:
                 match_method="mix_box" if number else "none",
                 manufacturer_id=first.manufacturer_id,
                 mix_boxes=[code],
+                mix_name=mix_name,
             )
         held = contents.setdefault(key, {})
         for l in lines:
@@ -1515,6 +1610,9 @@ def _line_to_dict(l: DeliveryLine) -> dict:
     if l.mix_boxes:
         d["mix_boxes"] = l.mix_boxes
         d["mix_content"] = l.mix_content
+    if l.box_guessed:
+        d["box_guessed"] = True
+        d["nm_box_printed"] = l.nm_box_printed
     return d
 
 

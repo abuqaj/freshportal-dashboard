@@ -14,15 +14,32 @@ import DeliveryImporter from "@/components/DeliveryImporter";
 import AnalysisTool from "@/components/AnalysisTool";
 import KenyaBoxWeight from "@/components/KenyaBoxWeight";
 import KenyaSupplier from "@/components/KenyaSupplier";
+import KnowledgeBase from "@/components/KnowledgeBase";
 import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
 import { useSystem } from "@/contexts/SystemContext";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis" | "boxweight" | "supplier";
+type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis" | "boxweight" | "supplier" | "knowledge";
 
-const STAMGEGEVENS_ONLY_TABS: Tab[] = ["vbn", "create", "photos"];
-const ECUADOR_ONLY_TABS:      Tab[] = ["delivery", "analysis"];
-const KENYA_ONLY_TABS:        Tab[] = ["boxweight", "supplier"];
+// Which modules each system offers. A module listed here shows up only on the
+// systems that list it; anything not listed anywhere (history, admin,
+// knowledge) reads from our own database and shows everywhere.
+//
+// The test tenant offers New Products alone: its endpoints follow the selected
+// system, while VBN Check/Fix and Photo Uploader always run against
+// Stamgegevens and would quietly work on live data under a "Test" heading.
+const SYSTEM_TABS: Record<string, Tab[]> = {
+  stamgegevens: ["vbn", "create", "photos"],
+  ecuador:      ["delivery", "analysis"],
+  kenya:        ["boxweight", "supplier"],
+  test:         ["create"],
+};
+
+const SYSTEM_SCOPED_TABS = new Set<Tab>(Object.values(SYSTEM_TABS).flat());
+
+function systemOffers(systemId: string, tab: Tab): boolean {
+  return !SYSTEM_SCOPED_TABS.has(tab) || (SYSTEM_TABS[systemId] ?? []).includes(tab);
+}
 
 // ModuleCard pads its content, so a new module gets sane margins without
 // having to remember. These screens opt out because their layout depends on
@@ -40,35 +57,66 @@ const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
   { id: "analysis",  gradient: "from-[#7C3AED] to-[#4C1D95]", perm: "analysis:view" },
   { id: "boxweight", gradient: "from-[#0891B2] to-[#155E75]", perm: "boxweight:run" },
   { id: "supplier",  gradient: "from-[#B45309] to-[#7C2D12]", perm: "supplier:add" },
+  { id: "knowledge", gradient: "from-[#BE185D] to-[#831843]", perm: "knowledge:review" },
 ];
 
 /* ─── 3-D tilt hook ─── */
+/** A frame of the gesture writes the transform and nothing else. The tilt used
+ *  to re-declare the transition on every mouse move, which dirties the
+ *  element's style each frame, and it left the card unpromoted, so the browser
+ *  redrew the whole tile — artwork included — instead of re-composing a layer
+ *  it already had. That is invisible on a gradient tile and very visible on a
+ *  system tile carrying a full-bleed flag. The promotion is taken on the way in
+ *  and handed back once the card has settled, so a hover that is over does not
+ *  keep a layer per tile. */
 function useTilt(strength = 10) {
   const ref = useRef<HTMLDivElement>(null);
   const raf = useRef<number | null>(null);
+  const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onMouseEnter = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (settle.current) { clearTimeout(settle.current); settle.current = null; }
+    el.style.willChange = "transform";
+    el.style.transition = "transform 0.08s ease";
+  }, []);
 
   const onMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = ref.current;
     if (!el) return;
+    const { clientX, clientY } = e;
     if (raf.current) cancelAnimationFrame(raf.current);
     raf.current = requestAnimationFrame(() => {
+      raf.current = null;
       const rect = el.getBoundingClientRect();
-      const x = ((e.clientX - rect.left) / rect.width  - 0.5) * strength;
-      const y = ((e.clientY - rect.top)  / rect.height - 0.5) * strength;
+      const x = ((clientX - rect.left) / rect.width  - 0.5) * strength;
+      const y = ((clientY - rect.top)  / rect.height - 0.5) * strength;
       el.style.transform = `perspective(900px) rotateY(${x}deg) rotateX(${-y}deg) scale(1.035)`;
-      el.style.transition = "transform 0.08s ease";
     });
   }, [strength]);
 
   const onMouseLeave = useCallback(() => {
-    if (raf.current) cancelAnimationFrame(raf.current);
+    if (raf.current) { cancelAnimationFrame(raf.current); raf.current = null; }
     const el = ref.current;
     if (!el) return;
     el.style.transition = "transform 0.5s cubic-bezier(0.34,1.3,0.64,1)";
     el.style.transform = "";
+    settle.current = setTimeout(() => {
+      el.style.willChange = "";
+      settle.current = null;
+    }, 520);
   }, []);
 
-  return { ref, onMouseMove, onMouseLeave };
+  useEffect(() => {
+    const pending = raf, settling = settle;
+    return () => {
+      if (pending.current) cancelAnimationFrame(pending.current);
+      if (settling.current) clearTimeout(settling.current);
+    };
+  }, []);
+
+  return { ref, onMouseEnter, onMouseMove, onMouseLeave };
 }
 
 /* ─── Decorative SVG bg inside hub tiles ─── */
@@ -122,6 +170,7 @@ function Tile({
   return (
     <div
       ref={tilt.ref}
+      onMouseEnter={tilt.onMouseEnter}
       onMouseMove={tilt.onMouseMove}
       onMouseLeave={tilt.onMouseLeave}
       onClick={onClick}
@@ -168,6 +217,7 @@ function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: 
     : tab === "analysis" ? t.nav.analysisTool
     : tab === "boxweight" ? t.nav.kenyaBoxWeight
     : tab === "supplier" ? t.nav.kenyaSupplier
+    : tab === "knowledge" ? t.nav.knowledgeBase
     : null;
 
   return (
@@ -240,11 +290,12 @@ const MODULE_WIDTH: Record<Tab, string> = {
   history:   "max-w-4xl",
   create:    "max-w-3xl",
   photos:    "max-w-5xl",
-  admin:     "max-w-3xl",
+  admin:     "max-w-5xl",
   delivery:  "max-w-7xl",
   analysis:  "max-w-4xl",
   boxweight: "max-w-6xl",
   supplier:  "max-w-4xl",
+  knowledge: "max-w-6xl",
 };
 
 function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, onSelectTab, children }: {
@@ -351,34 +402,53 @@ function SystemCard({
   system: FPSystem; isActive: boolean; index: number; onClick: () => void;
 }) {
   const tilt = useTilt(6);
+  // A flag covers the tile, so the brand colour behind it never shows. A logo
+  // does not: painting the brand colour behind a brand logo swallowed it, so
+  // logo tiles keep a light surface and wear the colour as a top strip.
+  const isLogo = system.art === "logo";
   return (
     <div
       ref={tilt.ref}
+      onMouseEnter={tilt.onMouseEnter}
       onMouseMove={tilt.onMouseMove}
       onMouseLeave={tilt.onMouseLeave}
       onClick={onClick}
       style={{ animationDelay: `${index * 70}ms` }}
-      className={`tile-enter relative overflow-hidden rounded-3xl cursor-pointer ${system.fallbackGradient} group min-h-[200px]
-        ${isActive ? "ring-4 ring-white/70 ring-offset-4 ring-offset-ground" : ""}`}
+      className={`tile-enter-flat relative overflow-hidden rounded-3xl cursor-pointer group min-h-[200px]
+        ${isLogo ? "bg-surface border border-border" : system.fallbackGradient}
+        ${isActive ? `ring-4 ring-offset-4 ring-offset-ground ${isLogo ? "ring-emerald" : "ring-white/70"}` : ""}`}
     >
-      {/* Full-bleed SVG background */}
+      {/* Brand colour, kept clear of the logo */}
+      {isLogo && <span className={`absolute inset-x-0 top-0 h-1.5 ${system.accent} z-10`} />}
+
+      {/* Flags fill the tile; a logo is shown whole, above the caption.
+          will-change keeps the artwork on a layer of its own: everything else
+          here — the hover darkening, the arrow bubble — animates a colour on
+          hover, and without the split every one of those frames redrew the
+          flag underneath it. Ecuador alone is over a thousand paths. */}
       <img
         src={system.svgPath}
         alt=""
         aria-hidden="true"
-        className="absolute inset-0 w-full h-full object-cover select-none pointer-events-none"
+        decoding="async"
+        className={`absolute inset-0 w-full h-full select-none pointer-events-none will-change-transform ${
+          isLogo ? "object-contain px-8 pt-10 pb-24" : "object-cover"
+        }`}
         draggable={false}
       />
 
-      {/* Bottom scrim for text readability */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+      {/* Bottom scrim for text readability — over a light tile it only needs
+          to cover the caption, so it fades out before reaching the logo */}
+      <div className={`absolute inset-0 bg-gradient-to-t ${
+        isLogo ? "from-black/75 via-transparent to-transparent" : "from-black/70 via-black/20 to-transparent"
+      }`} />
 
       {/* Hover darkening */}
       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/15 transition-colors duration-300" />
 
       {/* Active checkmark badge */}
       {isActive && (
-        <div className="absolute top-3 right-3 w-7 h-7 rounded-full bg-white flex items-center justify-center shadow">
+        <div className="absolute top-4 right-3 w-7 h-7 rounded-full bg-white border border-border flex items-center justify-center shadow z-10">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <path d="M2.5 7l3.5 3.5 5.5-6" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
@@ -440,6 +510,17 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
   const isAdmin = permissions.includes("admin:manage");
   const { system } = useSystem();
 
+  // PDF invoices no layout reads, and temporary layouts nobody has checked:
+  // IT hears of them on its own tile (user, 2026-09-28).
+  const [pdfForIt, setPdfForIt] = useState(0);
+  useEffect(() => {
+    if (!isAdmin || !RAILWAY) return;
+    fetch(`${RAILWAY}/delivery/pdf-layouts/pending-count`)
+      .then(r => (r.ok ? r.json() : { count: 0 }))
+      .then(d => setPdfForIt(Number(d.count) || 0))
+      .catch(() => {});
+  }, [isAdmin]);
+
   const allTiles: { id: Tab; perm: string; label: string; desc: string; gradient: string; stat?: string; statColor?: string; icon: React.ReactNode }[] = [
     {
       id: "vbn",
@@ -463,7 +544,11 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
       label: t.nav.newProducts,
       desc: t.hub.createDesc,
       gradient: "bg-gradient-to-br from-ember to-[#B83220]",
-      stat: productCount != null ? t.hub.catalogueStat(productCount) : t.hub.catalogueLoading,
+      // The product count comes from our copy of Stamgegevens, so on any other
+      // system it would be someone else's number — name the portal instead.
+      stat: system.id === "stamgegevens"
+        ? (productCount != null ? t.hub.catalogueStat(productCount) : t.hub.catalogueLoading)
+        : t.hub.onSystem(system.name),
       statColor: "text-white/70",
       icon: (
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -510,8 +595,8 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
       label: t.hub.adminLabel,
       desc: t.hub.adminDesc,
       gradient: "bg-gradient-to-br from-[#374151] to-[#111827]",
-      stat: t.hub.adminStat,
-      statColor: "text-white/60",
+      stat: pdfForIt > 0 ? t.hub.adminPdfPending(pdfForIt) : t.hub.adminStat,
+      statColor: pdfForIt > 0 ? "text-white font-semibold" : "text-white/60",
       icon: (
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
           <circle cx="12" cy="8" r="4" stroke="white" strokeWidth="1.8"/>
@@ -581,17 +666,25 @@ function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permission
         </svg>
       ),
     },
+    {
+      id: "knowledge",
+      perm: "knowledge:review",
+      label: t.nav.knowledgeBase,
+      desc: t.hub.knowledgeDesc,
+      gradient: "bg-gradient-to-br from-[#BE185D] to-[#831843]",
+      stat: t.hub.knowledgeStat,
+      statColor: "text-white/60",
+      icon: (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M5 4h9a3 3 0 013 3v13H8a3 3 0 01-3-3V4z" stroke="white" strokeWidth="1.8" strokeLinejoin="round"/>
+          <path d="M5 17a3 3 0 013-3h9M9 8h5" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+        </svg>
+      ),
+    },
   ];
 
-  const isStamgegevens = system.id === "stamgegevens";
-  const isEcuador = system.id === "ecuador";
-  const isKenya = system.id === "kenya";
-
   const tiles = allTiles.filter(tile =>
-    (isAdmin || permissions.includes(tile.perm)) &&
-    (isStamgegevens || !STAMGEGEVENS_ONLY_TABS.includes(tile.id)) &&
-    (isEcuador || !ECUADOR_ONLY_TABS.includes(tile.id)) &&
-    (isKenya || !KENYA_ONLY_TABS.includes(tile.id))
+    (isAdmin || permissions.includes(tile.perm)) && systemOffers(system.id, tile.id)
   );
 
   const colsClass = tiles.length <= 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
@@ -718,9 +811,7 @@ export default function Dashboard() {
 
   const navTabs = NAV_TABS_ALL
     .filter(nt => isAdmin || permissions.includes(nt.perm))
-    .filter(nt => system.id === "stamgegevens" || !STAMGEGEVENS_ONLY_TABS.includes(nt.id))
-    .filter(nt => system.id === "ecuador"      || !ECUADOR_ONLY_TABS.includes(nt.id))
-    .filter(nt => system.id === "kenya"        || !KENYA_ONLY_TABS.includes(nt.id))
+    .filter(nt => systemOffers(system.id, nt.id))
     .map(nt => ({
       id:       nt.id,
       gradient: nt.gradient,
@@ -732,6 +823,7 @@ export default function Dashboard() {
               : nt.id === "delivery"  ? t.nav.deliveryImporter
               : nt.id === "boxweight" ? t.nav.kenyaBoxWeight
               : nt.id === "supplier"  ? t.nav.kenyaSupplier
+              : nt.id === "knowledge" ? t.nav.knowledgeBase
               : t.nav.analysisTool,
     }));
 
@@ -786,6 +878,7 @@ export default function Dashboard() {
             {tab === "analysis"  && <AnalysisTool     lang={lang}/>}
             {tab === "boxweight" && <KenyaBoxWeight   lang={lang}/>}
             {tab === "supplier"  && <KenyaSupplier    lang={lang}/>}
+            {tab === "knowledge" && <KnowledgeBase    lang={lang}/>}
           </ModuleCard>
         )}
       </div>

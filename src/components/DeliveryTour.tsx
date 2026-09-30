@@ -139,10 +139,11 @@ export default function DeliveryTour({ steps, stepIndex, onNext, onSkip, t }: Pr
       {/* Spotlight — box-shadow creates dark area around the target element */}
       {rect && <div style={spotlightStyle} />}
 
-      {/* Tooltip card */}
+      {/* Tooltip card — framed like every popup of delivery import
+          (POPUP_FRAME in DeliveryImporter). */}
       <div
         style={tooltipStyle}
-        className="bg-surface border border-border rounded-2xl shadow-2xl p-4 flex flex-col gap-3"
+        className="bg-surface border-2 border-emerald rounded-2xl shadow-[0_16px_48px_rgba(17,26,20,0.35)] p-4 flex flex-col gap-3"
       >
         <div className="flex items-center justify-between">
           <span className="text-[11px] font-semibold text-ink-3">

@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -27,6 +28,37 @@ log = logging.getLogger(__name__)
 # This integration only ever handles Ecuador-origin flowers — hardcoded per
 # explicit decision (2026-08-12), not derived from any field in the source JSON.
 _COUNTRY = "EC"
+
+# A shipment's date is the day it is entered, as the Netherlands counts days.
+_BATCH_DATE_TZ = "Europe/Amsterdam"
+
+# Floricode S20, "Minimum length of flower stem": the only lengths a line may
+# go to FreshPortal with (user, 2026-09-28). From Floricode's "E-Kenmerkcodes
+# snij.pdf" (2017-03-21), pages 49-51: every centimetre from 5 to 70, then the
+# steps below; each code is its length in cm. 999 "other" is left out, being
+# no length. The delivery screen checks the same list (S20_LENGTHS in
+# DeliveryImporter.tsx) before it lets a shipment be created.
+S20_LENGTHS = frozenset([
+    *range(5, 71), 72, 75, 80, 82, 85, 90, 95, 100, 105, 110, 115, 120, 125, 128, 130,
+    135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200, 205, 210, 215,
+    220, 225, 230, 240, 250, 300, 350, 400, 450, 500, 550, 600, 700, 800, 900,
+])
+
+
+def lines_without_s20_length(lines: list[DeliveryLine]) -> list[str]:
+    """The lines FreshPortal may not receive yet, for want of a length: the
+    invoice printed none and none was set on the screen, or it is not an S20
+    length. Named for the refusal message."""
+    return [f"{l.nm_variety} ({f'{l.nu_length} cm' if l.nu_length else 'no length'})"
+            for l in lines if l.nu_length not in S20_LENGTHS]
+
+
+def lines_without_grower(lines: list[DeliveryLine]) -> list[str]:
+    """The lines FreshPortal may not receive yet, for want of a grower: no map
+    gives one for their supplier or farm, and none was picked on the screen
+    (user, 2026-09-29). Named for the refusal message."""
+    return [f"{l.nm_variety} ({l.nm_location or 'no farm'})"
+            for l in lines if not str(l.manufacturer_id or "").strip()]
 
 
 class DfgApiError(Exception):
@@ -150,6 +182,44 @@ def get_batch(cfg: Config, supplier_id: str, batch_number: str) -> dict[str, Any
     return resp.json()
 
 
+def batch_summary(cfg: Config, batch: dict[str, Any]) -> dict[str, Any]:
+    """A shipment get_batch() found, as delivery import shows it and compares
+    a file against it: where it went, links to it in FreshPortal, and one
+    entry per stock line with what identifies the line.
+
+    The GET answers the batch flat, not wrapped in "batch" as the POSTs are,
+    with the length inside `characteristics` and `invoice_id` next to
+    `customer` since 2026-08-26. An `invoice_id` of 0 is read as none, as the
+    API's own examples write 0 for an empty id.
+    """
+    customer = batch.get("customer") or {}
+    invoice_id = batch.get("invoice_id") or None
+    entries = []
+    for entry in batch.get("stock_entries") or []:
+        characteristics = entry.get("characteristics") or {}
+        try:
+            length = int(characteristics.get("length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        entries.append({
+            "product_number": str(entry.get("product_number") or "").strip(),
+            "length": length,
+            "manufacturer_id": str(entry.get("manufacturer_id") or ""),
+            "fust": str(entry.get("fust") or ""),
+            "quantity": entry.get("quantity") or 0,
+        })
+    return {
+        "id": batch.get("id"),
+        "number": str(batch.get("number") or ""),
+        "created_at": str(batch.get("created_at") or ""),
+        "customer_name": str(customer.get("name") or ""),
+        "invoice_id": invoice_id,
+        "batch_url": _batch_url(cfg, batch.get("id")),
+        "invoice_url": _invoice_url(cfg, invoice_id),
+        "stock_entries": entries,
+    }
+
+
 # How far back the invoice picker looks. "Open" at FreshPortal reaches years
 # back — a test customer came back with invoices from 2024-07 — and a delivery
 # is never allocated to one of those, so they are noise in a picker that has
@@ -243,6 +313,17 @@ def resolve_supplier(cfg: Config, order: DeliveryOrder) -> None:
     order.supplier_fp_id = find_supplier_fp_id(cfg.freshportal_url, order.tx_company)
 
 
+def fill_missing_delivery_date(order: DeliveryOrder) -> None:
+    """A file that gives no delivery date gets tomorrow's, as DD-MM-YYYY; the
+    user changes it on the screen where it is wrong, and needs no notice that
+    it was missing (user, 2026-09-30). Florisol's PI246249 prints
+    "Date : / /"."""
+    if (order.dt_fly or "").strip():
+        return
+    tomorrow = datetime.now(ZoneInfo(_BATCH_DATE_TZ)).date() + timedelta(days=1)
+    order.dt_fly = tomorrow.strftime("%d-%m-%Y")
+
+
 def _to_iso_date(dd_mm_yyyy: str) -> str:
     """DD-MM-YYYY (parser_delivery's normalised format) → YYYY-MM-DD for the DFG API."""
     parts = dd_mm_yyyy.strip().split("-")
@@ -333,10 +414,21 @@ def build_batch_payload(
     if not order.supplier_fp_id:
         raise DfgApiError(f"supplier_fp_id not resolved for {order.tx_company!r} — cannot build payload")
 
+    # The delivery date is the file's, or the one set on the screen; without
+    # one nothing is sent (user, 2026-09-30). Florisol's PI246249 prints none.
+    delivery_date = _to_iso_date(order.dt_fly or "")
+    try:
+        date.fromisoformat(delivery_date)
+    except ValueError:
+        raise DfgApiError(f"invoice {order.id_invoice!r} has no delivery date — "
+                          "set it on the screen before creating the shipment")
+
     return {
         "number": order.id_invoice,
-        "date": _to_iso_date(order.dt_invoice),
-        "delivery_date": _to_iso_date(order.dt_fly),
+        # The day the shipment is entered, not the supplier's invoice date
+        # (user, 2026-09-30).
+        "date": datetime.now(ZoneInfo(_BATCH_DATE_TZ)).date().isoformat(),
+        "delivery_date": delivery_date,
         "supplier_id": int(order.supplier_fp_id),
         "stock_entries": [build_stock_entry(line) for line in order.lines],
         "customer_id": customer_id,
@@ -393,23 +485,38 @@ def create_batch(cfg: Config, payload: dict[str, Any]) -> BatchResult:
     return result
 
 
-def add_stock_entries(cfg: Config, batch_id: int, supplier_id: str, lines: list[DeliveryLine]) -> BatchResult:
+def add_stock_entries(
+    cfg: Config,
+    batch_id: int,
+    supplier_id: str,
+    lines: list[DeliveryLine],
+    invoice_id: int | None = None,
+) -> BatchResult:
     """POST /dfg/v1/batch_stock_entry — add stock entries to an already-existing batch.
 
     Two use cases from the workflow:
     1. Retrying lines that came back in create_batch()'s `.errors` (e.g. after
        the product_number has been fixed via user confirmation).
     2. A GET showed the shipment already exists but is missing some products
-       that are present in the source JSON — add just the missing ones.
+       that are present in the source file — add just the missing ones.
+
+    `invoice_id` is the invoice the batch is on, as its GET or its create
+    reported it. FreshPortal described the field as optional, filled from the
+    batch's own invoice when empty (2026-08-26), yet a request without it
+    answered 422 "Invoice is required for batch_id: 116972" (2026-09-28). So
+    it is always sent as a key, like the ids in build_batch_payload(), and
+    with the batch's invoice whenever one is known.
     """
     payload = {
         "batch_id": batch_id,
         "supplier_id": int(supplier_id),
+        "invoice_id": invoice_id,
         "stock_entries": [build_stock_entry(line) for line in lines],
     }
     resp = _request(cfg, "POST", "/dfg/v1/batch_stock_entry", json=payload)
     _raise_for_status_with_body(resp)
     result = _parse_batch_response(resp.json())
+    result.invoice_id = result.invoice_id or invoice_id
     result.batch_url = _batch_url(cfg, result.batch_id or batch_id)
     result.invoice_url = _invoice_url(cfg, result.invoice_id)
     return result

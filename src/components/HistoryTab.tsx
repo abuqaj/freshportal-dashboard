@@ -118,7 +118,7 @@ export default function HistoryTab({ lang }: Props) {
       productLines?: {
         nm_variety: string; nu_length: number; nu_bunches: number;
         match_method: string; catalogue_nm_product: string;
-        status: "added" | "failed" | "skipped" | "notApproved"; message: string;
+        status: "added" | "failed" | "skipped" | "notApproved" | "inPortal"; message: string;
       }[];
       requestLogs?: string[];
     } | null;
@@ -395,9 +395,13 @@ export default function HistoryTab({ lang }: Props) {
                                 {row.details?.template_name && (
                                   <span className="text-ink-3/60 text-[10px]">{t.create.templateLabel} {row.details.template_name}</span>
                                 )}
-                                {row.details?.success === false && (
+                                {row.details?.status === "unconfirmed" ? (
+                                  <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] px-1.5 py-0.5 rounded-md font-medium">{t.create.badgeUnconfirmed}</span>
+                                ) : row.details?.success === false ? (
                                   <span className="bg-ember-light text-ember text-[10px] px-1.5 py-0.5 rounded-md font-medium">failed</span>
-                                )}
+                                ) : row.details?.warnings && row.details.warnings.length > 0 ? (
+                                  <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] px-1.5 py-0.5 rounded-md font-medium">{t.create.badgeWarnings}</span>
+                                ) : null}
                               </span>
                             ) : row.type === "photo_upload" ? (
                               <span className="flex items-center gap-2">
@@ -784,6 +788,7 @@ export default function HistoryTab({ lang }: Props) {
                                   failed:      { label: t.delivery.lineStatusFailed,      cls: "bg-red-500/10 text-red-500 border-red-500/20" },
                                   skipped:     { label: t.delivery.lineStatusSkipped,     cls: "bg-amber-500/10 text-amber-600 border-amber-500/20" },
                                   notApproved: { label: t.delivery.lineStatusNotApproved, cls: "bg-muted text-ink-3 border-border" },
+                                  inPortal:    { label: t.delivery.lineStatusInPortal,    cls: "bg-sand/60 text-ink border-taupe/40" },
                                 }[pl.status];
                                 return (
                                   <div key={i} className="flex items-start justify-between gap-2 py-1 border-b border-border/40 last:border-0">

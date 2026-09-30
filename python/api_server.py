@@ -18,17 +18,20 @@ from queue import Empty, Queue
 
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import Config, ALLOWED_FP_URLS, get_kenya_cfg
+from config import (Config, FP_SYSTEM_BY_URL, apply_system_login, export_cfg,
+                    system_id_for_url, get_kenya_cfg)
 from i18n import msg as i18n_msg
 from scraper_fp import fetch_products, fix_vbn_batch, FPProduct, _debug_fetch, _debug_rendered
-from product_creator import ProductMatch, search_products, find_best_template, copy_and_create, generate_product_number, find_available_number
+from product_creator import (ProductMatch, search_products, find_best_template, copy_and_create,
+                             generate_product_number, find_available_number, uses_catalogue_copy,
+                             catalogue_for)
 from scraper_vbn import lookup_vbn_codes, get_colour_vbn_table, invalidate_colour_table, search_vbn_by_name, get_floricode_colors, invalidate_colors_cache
 from verifier import verify_products, KNOWN_VBN
 from photo_uploader import run as run_photo_uploader
@@ -47,7 +50,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_ecuador_product_count, get_ecuador_sync_history, search_ecuador_products_db,
                get_ecuador_product_names,
                get_bi_sync_history, get_bi_stats,
-               get_bi_stock_entries_daily_series, get_bi_order_lines_daily_series,
+               get_bi_offers_online_daily_series, get_bi_order_lines_daily_series,
                get_bi_products_only_picker, get_bi_lengths_for_product, get_bi_suppliers_for_picker,
                get_bi_customers_for_picker,
                get_kenya_box_weight_customers, set_kenya_box_weight_customer,
@@ -57,11 +60,15 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_price_trend_by_length, get_bi_price_vs_length, get_bi_price_elasticity,
                get_bi_supplier_price_comparison, get_bi_supplier_volatility,
                get_bi_supplier_market_deviation, get_bi_seasonality, get_bi_event_impact,
-               get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags)
+               get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags,
+               search_vbn_catalog, get_vbn_catalog_product, get_vbn_catalog_status,
+               get_vbn_catalog_history, vbn_catalog_has_rows)
 from sync import run_full_sync, run_incremental_sync, is_sync_running, get_sync_message, run_full_sync_ecuador
-from bi_sync import run_bi_sync, run_bi_sync_range, is_bi_sync_running
+from bi_sync import (run_bi_sync, run_bi_sync_range, is_bi_sync_running,
+                     BI_SYNC_HOURS, BI_SYNC_TIMEZONE, last_bi_sync_slot)
+from vbn_catalog import run_vbn_catalog_sync
 from kenya_supplier import (
-    extract_from_pdf as kenya_supplier_extract_pdf,
+    extract_from_document as kenya_supplier_extract_document,
     create_supplier as kenya_supplier_create_portal,
     DuplicateSupplierCode as KenyaDuplicateSupplierCode,
 )
@@ -72,14 +79,19 @@ from kenya_box_weight import (
     invoice_details_url as kenya_invoice_details_url,
 )
 from auth_middleware import require_permission, require_any_permission, get_token_payload
+from kb_routes import router as kb_router
 from parser_delivery import (parse_delivery_json, order_to_dict, resolve_growers, mix_box_lines,
-                             DeliveryOrder, DeliveryLine)
+                             guess_unknown_boxes, DeliveryOrder, DeliveryLine)
+from parser_delivery_pdf import parse_delivery_pdf, PdfParseError, PdfUnknownLayoutError
+import pdf_layout_ai
+import pdf_layout_store
 from delivery_product_match import match_order_to_products
 from dfg_api_client import (
-    DfgApiError, resolve_supplier, get_batch as dfg_get_batch,
+    DfgApiError, resolve_supplier, get_batch as dfg_get_batch, batch_summary,
     build_batch_payload, create_batch as dfg_create_batch,
     add_stock_entries as dfg_add_stock_entries,
     get_open_invoices as dfg_get_open_invoices,
+    lines_without_s20_length, lines_without_grower, fill_missing_delivery_date,
 )
 from scraper_catalogue import fetch_supplier_list
 from scraper_fust import fetch_fust_catalogue
@@ -89,14 +101,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 
 def get_cfg(request: Request, payload: dict = Depends(get_token_payload)) -> Config:
-    """Return a Config instance, overriding freshportal_url when the user has a system-scoped permission."""
+    """Return a Config instance, pointed at the system the screen has selected.
+
+    The X-FP-URL header is honoured for admins, for the two module permissions
+    that have always carried it, and for anyone holding the system:<id>
+    permission of the system asked for — the same rule the hub uses to offer a
+    system at all. Without that, someone who picked the test portal would have
+    their products created on the live one instead.
+    """
     cfg = Config()
     user_perms = payload.get("permissions", [])
-    can_override = any(p in user_perms for p in ("admin:manage", "delivery:import", "catalogue:sync"))
+    fp_url = request.headers.get("X-FP-URL", "").strip().rstrip("/")
+    system = FP_SYSTEM_BY_URL.get(fp_url)
+    if not system:
+        return cfg
+    can_override = any(p in user_perms for p in
+                       ("admin:manage", "delivery:import", "catalogue:sync", f"system:{system}"))
     if can_override:
-        fp_url = request.headers.get("X-FP-URL", "").strip().rstrip("/")
-        if fp_url in ALLOWED_FP_URLS:
-            cfg.freshportal_url = fp_url
+        cfg.freshportal_url = fp_url
+        apply_system_login(cfg, system)
     return cfg
 
 
@@ -126,6 +149,7 @@ class PhotoExecuteRequest(BaseModel):
     lang: str = "en"
 
 app = FastAPI(title="FreshPortal API", version="1.0.0")
+app.include_router(kb_router)
 
 
 _scheduler = BackgroundScheduler(timezone="UTC")
@@ -143,24 +167,51 @@ _BI_AUTO_LAST_CHECK_KEY = "bi_auto_last_check"
 
 
 def _daily_bi_sync() -> None:
-    """Pull yesterday's BI Sync export — yesterday, not today, since
-    order_lines is filtered to rows created exactly on mutation_datetime
-    (bi_sync.py) and today's data isn't complete yet while today is still
-    running. Matches the manual Analysis Tool UI's default date.
+    """Pull the BI Sync export from yesterday on — yesterday, not today,
+    since order_lines is filtered to rows created exactly on
+    mutation_datetime (bi_sync.py) and today's data isn't complete yet
+    while today is still running. Matches the manual Analysis Tool UI's
+    default date. Runs at 05:00 and 20:00 Amsterdam time (BI_SYNC_HOURS);
+    the evening pull re-reads yesterday's order_lines, which the upsert
+    absorbs, and records what is online after the Ecuador team's changes.
 
     Only records bi_auto_last_check on a genuine success (result["ok"]) —
     same reasoning as _auto_vbn_check not updating its own last-check
     setting on failure: a failed run leaves the "reference" at the last
     real success, so the startup catch-up logic below correctly sees it as
-    still-overdue and retries soon instead of waiting a full day."""
+    missed and retries soon instead of waiting for the next slot."""
     import datetime
     cfg = Config()
     yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-    log.info("Daily BI sync started (mutation_datetime=%s)", yesterday)
+    log.info("Scheduled BI sync started (mutation_datetime=%s)", yesterday)
     result = run_bi_sync(cfg, yesterday)
-    log.info("Daily BI sync finished: %s", result)
+    log.info("Scheduled BI sync finished: %s", result)
     if result.get("ok"):
         set_setting(_BI_AUTO_LAST_CHECK_KEY, datetime.datetime.now(datetime.timezone.utc).isoformat())
+
+
+_VBN_CATALOG_LAST_CHECK_KEY = "vbn_catalog_last_check"
+_VBN_CATALOG_JOB_ID = "daily_vbn_catalog_sync"
+
+
+def _daily_vbn_catalog_sync() -> None:
+    """Refresh the Floricode VBN mirror. Delta by default — vbn_catalog
+    promotes it to a full read by itself whenever the tables are empty, so a
+    fresh deploy fills them without anyone having to press anything.
+
+    Like the BI sync above, the last-check setting is only stamped on success,
+    so a failed run stays overdue and the startup logic retries it soon
+    instead of standing down for a full day."""
+    import datetime
+    cfg = Config()
+    log.info("Daily VBN catalogue sync started")
+    try:
+        result = run_vbn_catalog_sync(cfg)
+    except Exception:
+        log.exception("Daily VBN catalogue sync failed")
+        return
+    log.info("Daily VBN catalogue sync finished: %s", result)
+    set_setting(_VBN_CATALOG_LAST_CHECK_KEY, datetime.datetime.now(datetime.timezone.utc).isoformat())
 
 
 def _auto_vbn_check() -> None:
@@ -258,13 +309,14 @@ async def _on_startup() -> None:
     _scheduler.add_job(_hourly_sync, "date", run_date=first_run, id="initial_sync")
     _scheduler.add_job(_hourly_sync, "interval", hours=1, id="hourly_sync")
 
-    # Daily BI sync — DB-persisted schedule (mirrors the auto VBN check
-    # below) so a redeploy doesn't reset the 24h cadence or trigger a bonus
-    # same-day sync: reference is the last recorded *successful* run, not
-    # process-start time. Staggered a bit further out than the Ecuador
-    # sync's initial run (above) so the two don't hit the DB at the same
-    # moment right after a deploy/restart. Always scheduled (no enable
-    # toggle, unlike auto VBN check) — this one's meant to just always run.
+    # BI sync at fixed Amsterdam times, 05:00 and 20:00 (BI_SYNC_HOURS in
+    # bi_sync.py, 2026-09-25). Until then it ran every 24 h from the last
+    # successful run, so its time of day drifted with every deploy. A slot
+    # missed while the process was down, or one whose run failed, is caught
+    # up 180 s after start: the reference is the last recorded *successful*
+    # run, not process-start time. 180 s staggers it after the Ecuador sync's
+    # initial run (above) so the two don't hit the DB at the same moment.
+    # Always scheduled (no enable toggle, unlike auto VBN check).
     bi_last_check_str = get_setting(_BI_AUTO_LAST_CHECK_KEY)
     bi_reference_dt = None
     if bi_last_check_str:
@@ -273,22 +325,47 @@ async def _on_startup() -> None:
         except ValueError:
             bi_reference_dt = None
 
-    if bi_reference_dt is None:
-        # Never run before (fresh DB / first deploy of this feature) — run
-        # soon rather than waiting a full day for the first data to land.
-        bi_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=180)
-        log.info("Daily BI sync: no prior successful run recorded — first run in 180 s")
-    else:
-        bi_elapsed = (datetime.datetime.now(datetime.timezone.utc) - bi_reference_dt).total_seconds()
-        if bi_elapsed >= 23 * 3600:
-            bi_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=180)
-            log.info("Daily BI sync: overdue by %.1f h — catch-up run in 180 s", bi_elapsed / 3600)
-        else:
-            bi_next_run = bi_reference_dt + datetime.timedelta(days=1)
-            log.info("Daily BI sync: %.1f h since last successful run — next run at %s",
-                      bi_elapsed / 3600, bi_next_run.isoformat())
+    bi_now = datetime.datetime.now(datetime.timezone.utc)
+    bi_missed_slot = last_bi_sync_slot(bi_now)
+    if bi_reference_dt is None or bi_reference_dt < bi_missed_slot:
+        _scheduler.add_job(_daily_bi_sync, "date", run_date=bi_now + datetime.timedelta(seconds=180),
+                           id="bi_sync_catch_up")
+        log.info("BI sync: last successful run %s is before the %s slot — catch-up run in 180 s",
+                 bi_last_check_str or "never", bi_missed_slot.isoformat())
 
-    _scheduler.add_job(_daily_bi_sync, "interval", days=1, id="daily_bi_sync", next_run_time=bi_next_run)
+    _scheduler.add_job(_daily_bi_sync, "cron", hour=",".join(str(h) for h in BI_SYNC_HOURS), minute=0,
+                       timezone=BI_SYNC_TIMEZONE, id="daily_bi_sync")
+
+    # Daily Floricode catalogue refresh — same DB-persisted cadence as the BI
+    # sync. Floricode changes a few thousand rows a year, so a delta is
+    # normally seconds; the point of running it daily is that the mirror must
+    # never be the reason a brand-new VBN code looks unknown.
+    vc_last_str = get_setting(_VBN_CATALOG_LAST_CHECK_KEY)
+    vc_reference_dt = None
+    if vc_last_str:
+        try:
+            vc_reference_dt = datetime.datetime.fromisoformat(vc_last_str)
+        except ValueError:
+            vc_reference_dt = None
+
+    if vc_reference_dt is None:
+        # First deploy of this feature: the tables are empty, so this run is
+        # the full ~12 s read that fills them. Staggered past the BI sync so
+        # a fresh deploy doesn't start both at once.
+        vc_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=240)
+        log.info("VBN catalogue sync: no prior run recorded — first (full) run in 240 s")
+    else:
+        vc_elapsed = (datetime.datetime.now(datetime.timezone.utc) - vc_reference_dt).total_seconds()
+        if vc_elapsed >= 23 * 3600:
+            vc_next_run = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=240)
+            log.info("VBN catalogue sync: overdue by %.1f h — catch-up run in 240 s", vc_elapsed / 3600)
+        else:
+            vc_next_run = vc_reference_dt + datetime.timedelta(days=1)
+            log.info("VBN catalogue sync: %.1f h since last run — next run at %s",
+                     vc_elapsed / 3600, vc_next_run.isoformat())
+
+    _scheduler.add_job(_daily_vbn_catalog_sync, "interval", days=1,
+                       id=_VBN_CATALOG_JOB_ID, next_run_time=vc_next_run)
 
     # Restore auto VBN scheduler state from DB
     if get_setting("vbn_auto_enabled") == "1":
@@ -325,8 +402,8 @@ async def _on_startup() -> None:
         log.info("Auto VBN check scheduler restored (daily)")
 
     _scheduler.start()
-    log.info("APScheduler started — first product sync in 60 s (hourly), next BI sync at %s (daily)",
-              bi_next_run.isoformat())
+    log.info("APScheduler started — first product sync in 60 s (hourly), next scheduled BI sync at %s "
+             "(05:00 and 20:00 Amsterdam)", _scheduler.get_job("daily_bi_sync").next_run_time.isoformat())
 
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
@@ -687,6 +764,7 @@ def sync_history_ecuador(limit: int = 10, offset: int = 0, _: dict = Depends(req
 def bi_sync_debug_pull(
     mutation_datetime: str,
     tables: str = "",
+    system: str = "",
     _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """TEMP admin debug endpoint (2026-08-26) — pull a BI Sync export and
@@ -698,7 +776,14 @@ def bi_sync_debug_pull(
     """
     from bi_sync_client import pull_and_summarize, BiSyncError
 
+    # `system` looks at another tenant's export (e.g. "test"); without it the
+    # main BI Sync credentials are used, as before.
     cfg = Config()
+    if system:
+        creds = export_cfg(system)
+        if creds is None:
+            raise HTTPException(400, f"No export key configured for system '{system}'")
+        cfg = creds
     table_filter = tuple(t.strip() for t in tables.split(",") if t.strip())
     try:
         return pull_and_summarize(cfg, mutation_datetime, tables_of_interest=table_filter)
@@ -715,8 +800,8 @@ def bi_sync_run(
     _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Manually trigger a BI Sync ingestion run (non-blocking) — for backfills
-    or ad-hoc re-runs on a specific date. Also runs automatically once a day
-    via APScheduler (_daily_bi_sync, 2026-08-31)."""
+    or ad-hoc re-runs on a specific date. Also runs automatically at 05:00
+    and 20:00 Amsterdam time via APScheduler (_daily_bi_sync)."""
     if is_bi_sync_running():
         raise HTTPException(409, "BI sync already running")
     cfg = Config()
@@ -758,10 +843,11 @@ def bi_sync_history(limit: int = 10, offset: int = 0, _: dict = Depends(require_
 
 @app.get("/bi-sync/charts")
 def bi_sync_charts(days: int = 30, _: dict = Depends(require_any_permission("admin:manage", "analysis:view"))):
-    """First aggregate series for the Analysis Tool — live stock_entry count
-    per snapshot_date, and order_lines (OZEDS) count/revenue per creation day."""
+    """First aggregate series for the Analysis Tool — offer lots online per
+    day with their average group price, and order_lines (OZEDS)
+    count/revenue per creation day."""
     return {
-        "stock_entries_daily": get_bi_stock_entries_daily_series(days),
+        "offers_online_daily": get_bi_offers_online_daily_series(days),
         "order_lines_daily": get_bi_order_lines_daily_series(days),
     }
 
@@ -1068,8 +1154,10 @@ def kenya_box_weight_set_customer(
 class KenyaRunRequest(BaseModel):
     """Which enabled customers this one run should cover.
 
-    Omitted or empty means all of them, so a caller that knows nothing about
-    the selection keeps working."""
+    Omitted means all of them, so a caller that knows nothing about the
+    selection keeps working. An empty list is refused: on the screen it means
+    nothing is ticked, and reading it here as "all" would write to the open
+    invoices of every enabled customer (review 2026-09-25)."""
     customer_ids: list[str] | None = None
 
 
@@ -1084,10 +1172,12 @@ def _kenya_run_scope(req: KenyaRunRequest | None) -> set[str]:
     enabled = [c["customer_id"] for c in get_kenya_box_weight_customers() if c["enabled"]]
     if not enabled:
         raise HTTPException(400, "No customers enabled for the Kenya box-weight module")
-    wanted = [str(c).strip() for c in (req.customer_ids if req else None) or []]
+    if req is None or req.customer_ids is None:
+        return set(enabled)
+    wanted = [str(c).strip() for c in req.customer_ids]
     wanted = [c for c in wanted if c]
     if not wanted:
-        return set(enabled)
+        raise HTTPException(400, "No customers selected for this run")
     unknown = sorted(set(wanted) - set(enabled))
     if unknown:
         raise HTTPException(400, f"Not enabled for the Kenya box-weight module: {', '.join(unknown)}")
@@ -1188,17 +1278,20 @@ def kenya_box_weight_run(
 
 @app.post("/kenya/supplier/extract")
 async def kenya_supplier_extract(
+    # Still named "pdf" although it now also takes a .docx: renaming the form
+    # field would break uploads between the Vercel and the Railway deploy.
     pdf: UploadFile = File(...),
     _: dict = Depends(require_any_permission("admin:manage", "supplier:add")),
 ):
-    """Read a scanned supplier form and return the fields, for review.
+    """Read a supplier form (scanned PDF or Word .docx) and return the
+    fields, for review.
 
     Writes nothing — not to the database and not to FreshPortal. The portal
     side of this module is deliberately not wired up until the extraction
     has been eyeballed on real documents."""
     try:
         content = await pdf.read()
-        return {"ok": True, **kenya_supplier_extract_pdf(get_kenya_cfg(), content, pdf.filename or "")}
+        return {"ok": True, **kenya_supplier_extract_document(get_kenya_cfg(), content, pdf.filename or "")}
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
@@ -1568,19 +1661,125 @@ async def photo_upload(xlsx: UploadFile = File(...), _: dict = Depends(require_p
     return {"success": True, "message": "Photo upload completed."}
 
 
+def _catalog_row_to_result(r: dict) -> dict:
+    """Shape a mirrored row like the Floricode search result the UI expects.
+
+    `name` stays the Dutch official name: the verifier, the AI prompts and the
+    checker's own display all treat it as "what Floricode calls this code", and
+    switching it here would change what those compare against. The English name
+    rides alongside as `name_en` — it is what the *search* now matches on.
+    """
+    return {
+        "id": str(r.get("id")),
+        "name": r.get("name_nl") or r.get("name_en") or "",
+        "name_en": r.get("name_en") or "",
+        "short_name": r.get("short_name") or "",
+        "product_group_id": r.get("product_group_id"),
+        "product_group": r.get("group_en") or r.get("group_nl") or "",
+        "expired": bool(r.get("expiry_date")),
+        "score": float(r["score"]) if r.get("score") is not None else None,
+    }
+
+
 @app.get("/vbn-search")
-def vbn_search_endpoint(q: str, limit: int = 8, _: dict = Depends(require_permission("vbn:check")), cfg: Config = Depends(get_cfg)):
-    """Search VBN codes by name words. q='dianthus solex' finds VBNs containing both words."""
+def vbn_search_endpoint(
+    q: str,
+    limit: int = 8,
+    include_expired: bool = False,
+    all_applications: bool = False,
+    _: dict = Depends(require_permission("vbn:check")),
+    cfg: Config = Depends(get_cfg),
+):
+    """Search VBN codes by name. q='dianthus solex' finds codes matching both.
+
+    Answered from the local Floricode mirror, which ranks the whole catalogue
+    by similarity and matches English names directly. Falls back to the live
+    Floricode search only while the mirror is still empty (first deploy, or a
+    sync that has never succeeded) — so this endpoint keeps working before the
+    first sync lands, just with the old Dutch-only, unranked behaviour.
+    """
+    rows = search_vbn_catalog(
+        q, limit=limit,
+        application_id=None if all_applications else 1,
+        include_expired=include_expired,
+    )
+    if rows:
+        return {"results": [_catalog_row_to_result(r) for r in rows], "source": "mirror"}
+
+    if vbn_catalog_has_rows():
+        # Mirror is populated and simply has no match — a live call would not
+        # find one either, and pretending otherwise would hide a real "this
+        # name matches nothing" answer behind a slow network round-trip.
+        return {"results": [], "source": "mirror"}
+
     results = search_vbn_by_name(q, cfg.floricode_username, cfg.floricode_password, limit=limit)
-    return {"results": results}
+    return {"results": results, "source": "floricode"}
+
+
+@app.get("/vbn-catalog/status")
+def vbn_catalog_status(_: dict = Depends(require_permission("vbn:check"))):
+    """Row counts, freshness and the last sync run of the Floricode mirror."""
+    return get_vbn_catalog_status()
+
+
+@app.get("/vbn-catalog/history")
+def vbn_catalog_history(limit: int = 20, _: dict = Depends(require_permission("vbn:check"))):
+    return {"history": get_vbn_catalog_history(limit)}
+
+
+@app.post("/vbn-catalog/sync")
+def vbn_catalog_sync(
+    mode: str = "delta",
+    _: dict = Depends(require_permission("admin:manage")),
+    cfg: Config = Depends(get_cfg),
+):
+    """Kick off a catalogue refresh in the background.
+
+    mode='delta' reads only what Floricode changed since the last run;
+    mode='full' re-reads everything (~12 s). A delta against empty tables
+    promotes itself to a full read, so 'delta' is always safe to call.
+    """
+    if mode not in ("delta", "full"):
+        raise HTTPException(status_code=400, detail="mode must be 'delta' or 'full'")
+
+    def _run():
+        try:
+            run_vbn_catalog_sync(cfg, mode=mode)
+        except Exception:
+            log.exception("Manual VBN catalogue sync failed")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"ok": True, "started": True, "mode": mode}
 
 
 @app.get("/vbn-name/{code}")
 def get_vbn_name(code: str, _: dict = Depends(require_any_permission("vbn:check", "products:create")), cfg: Config = Depends(get_cfg)):
-    """Return the official Floricode name for a single VBN code."""
-    # Check hardcoded table first (instant, no API call)
+    """Return the official Floricode name for a single VBN code.
+
+    The mirror answers first. It is a verbatim copy of what Floricode serves,
+    so it is the authority here — ahead of KNOWN_VBN, which is a hand-kept
+    stopgap from before the mirror existed and spells some codes in English
+    ("Ranunculus other") where Floricode says Dutch ("Ranunculus overig").
+    KNOWN_VBN stays on as the offline fallback for the window before the
+    first sync lands.
+    """
+    row = get_vbn_catalog_product(code)
+    if row and (row.get("name_nl") or row.get("name_en")):
+        return {
+            "code": code,
+            "name": row.get("name_nl") or row.get("name_en"),
+            "name_en": row.get("name_en") or "",
+            "short_name": row.get("short_name") or "",
+            "product_group_id": row.get("product_group_id"),
+            "product_group": row.get("group_en") or row.get("group_nl") or "",
+            "expired": bool(row.get("expiry_date")),
+            "found": True,
+            "source": "mirror",
+        }
+    # Hand-kept table (instant, no API call) — only reached while the mirror
+    # has no answer for this code.
     if code in KNOWN_VBN:
-        return {"code": code, "name": KNOWN_VBN[code], "found": True}
+        return {"code": code, "name": KNOWN_VBN[code], "found": True, "source": "known"}
     # Query Floricode
     result = lookup_vbn_codes(
         [code],
@@ -1610,6 +1809,8 @@ class ProductCreateRequest(BaseModel):
     lang: str = "en"
     vbn_code: str | None = None
     color_id: str | None = None
+    color_name: str | None = None  # label shown on screen — compared with what FreshPortal saved
+    allow_duplicate_name: bool = False  # set after the user confirms a name that already exists
 
 
 class AIAnalyzeRequest(BaseModel):
@@ -1632,13 +1833,31 @@ def cancel_task(token: str, _: dict = Depends(get_token_payload)):
     return {"ok": True, "found": token in _cancel_tokens}
 
 
+def _product_catalogue(cfg: Config, on_status=None, lang: str = "en"):
+    """The product list to read for the system *cfg* points at.
+
+    The Postgres copy for the system it mirrors; otherwise that system's BI
+    Sync export, held in memory, when it has an export key of its own. With
+    neither, the module falls back to reading FreshPortal through the browser.
+    """
+    if uses_catalogue_copy(cfg):
+        return catalogue_for(cfg)
+    system = system_id_for_url(cfg.freshportal_url)
+    creds = export_cfg(system) if system else None
+    export = None
+    if creds is not None:
+        import product_export
+        export = product_export.load(system, creds, on_status=on_status, lang=lang)
+    return catalogue_for(cfg, export=export)
+
+
 @app.post("/product-search")
 def product_search(req: ProductSearchRequest, _: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
     try:
         cfg.validate()
     except ValueError as e:
         raise HTTPException(400, str(e))
-    matches = search_products(req.name, cfg)
+    matches = search_products(req.name, cfg, catalogue=_product_catalogue(cfg))
     return {
         "results": [
             {
@@ -1689,8 +1908,10 @@ async def product_search_stream(req: ProductSearchRequest, _: dict = Depends(req
 
             # Use the variety-aware search (typo-resistant ILIKE substrings + genus).
             # Falls back to Playwright automatically when DB is not yet populated.
-            matches = search_products(req.name, cfg, on_status=on_status, lang=req.lang)
-            source = "db" if get_product_count() > 0 else "scrape"
+            catalogue = _product_catalogue(cfg, on_status=on_status, lang=req.lang)
+            matches = search_products(req.name, cfg, on_status=on_status, lang=req.lang,
+                                      catalogue=catalogue)
+            source = {"copy": "db", "portal": "scrape"}.get(catalogue.source, catalogue.source)
             queue.put({"type": "result", "data": {
                 "results": _matches_to_results(matches),
                 "source": source,
@@ -1964,7 +2185,7 @@ def product_number_suggest(name: str = "", number: str = "", _: dict = Depends(r
     base = number.strip() or (generate_product_number(name.strip()) if name.strip() else "")
     if not base:
         raise HTTPException(400, "Provide 'name' or 'number' query param")
-    result = find_available_number(base, cfg, name=name.strip())
+    result = find_available_number(base, cfg, name=name.strip(), catalogue=_product_catalogue(cfg))
     if result is None:
         return {"available_number": None, "original_number": base, "changed": False}
     return {"available_number": result, "original_number": base, "changed": result != base}
@@ -1972,7 +2193,11 @@ def product_number_suggest(name: str = "", number: str = "", _: dict = Depends(r
 
 @app.post("/product-create/stream")
 async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(require_permission("products:create")), cfg: Config = Depends(get_cfg)):
-    """SSE stream: copies template product, renames it, returns result."""
+    """SSE stream: copies template product, renames it, returns result.
+
+    The creation keeps running if the client disconnects — once save may have
+    been clicked there is nothing safe to stop.
+    """
     try:
         cfg.validate()
     except ValueError as e:
@@ -1985,7 +2210,17 @@ async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(req
             def on_status(msg: str) -> None:
                 queue.put({"type": "status", "message": msg})
 
-            result = copy_and_create(req.template_id, req.new_name, cfg, on_status=on_status, product_number=req.product_number, lang=req.lang, vbn_code=req.vbn_code, color_id=req.color_id)
+            result = copy_and_create(
+                req.template_id, req.new_name, cfg,
+                on_status=on_status,
+                product_number=req.product_number,
+                lang=req.lang,
+                vbn_code=req.vbn_code,
+                color_id=req.color_id,
+                color_name=req.color_name,
+                allow_duplicate_name=req.allow_duplicate_name,
+                catalogue=_product_catalogue(cfg, on_status=on_status, lang=req.lang),
+            )
             queue.put({"type": "result", "data": result})
         except Exception as e:
             log.exception("product-create/stream failed")
@@ -2013,6 +2248,34 @@ async def product_create_stream(req: ProductCreateRequest, _: dict = Depends(req
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
+
+
+@app.get("/product-export/status")
+def product_export_status(_: dict = Depends(require_any_permission("admin:manage", "products:create"))):
+    """What product lists are held in memory, per system, and how old they are."""
+    import product_export
+    return {"since_days": product_export.SINCE_DAYS,
+            "max_age_seconds": product_export.DEFAULT_MAX_AGE_S,
+            "lists": product_export.state()}
+
+
+@app.post("/product-export/refresh")
+def product_export_refresh(system: str = "", _: dict = Depends(require_permission("admin:manage"))):
+    """Download a system's product list again, now, and wait for it.
+
+    Slow on purpose — a years-wide export is why the module normally fetches
+    in the background.
+    """
+    import product_export
+    creds = export_cfg(system)
+    if creds is None:
+        raise HTTPException(400, f"No export key configured for system '{system}'")
+    products = product_export.load(system, creds, wait=True, force=True)
+    if products is None:
+        raise HTTPException(502, "Could not read the export — see /product-export/status for the error")
+    return {"ok": True, "system": system, "products": len(products.rows),
+            "since": products.since, "zip_size_bytes": products.zip_size_bytes,
+            "files_in_export": products.source_files}
 
 
 @app.get("/debug/colour-table")
@@ -2385,10 +2648,193 @@ class DeliveryParseRequest(BaseModel):
     raw_json: dict | list
     supplier_id: str = ""
     with_matching: bool = True
-    # How the review step shows mix boxes; see delivery_parse.
+    # How the review step shows mix boxes; see _resolve_and_match.
     mix_mode: str = "together"
+    # What to do when FreshPortal already holds the shipment; see _resolve_and_match.
+    existing: str = "check"
 
 
+def _existing_batches(orders: list[DeliveryOrder], supplier_id: str) -> list[dict | None]:
+    """The shipment FreshPortal already holds for each order (batch_summary),
+    None where it holds none.
+
+    A lookup that fails is logged and read as none: it must not stop the
+    parse, and the import asks FreshPortal again before it writes anything.
+    """
+    if not supplier_id:
+        return [None] * len(orders)
+    cfg = get_ecuador_cfg()
+    found: list[dict | None] = []
+    for order in orders:
+        summary = None
+        if order.id_invoice:
+            try:
+                batch = dfg_get_batch(cfg, supplier_id, order.id_invoice)
+                summary = batch_summary(cfg, batch) if batch else None
+            except Exception:
+                log.warning("[delivery/parse] could not check FreshPortal for shipment %r of supplier %s",
+                            order.id_invoice, supplier_id, exc_info=True)
+        found.append(summary)
+    return found
+
+
+def _resolve_and_match(
+    orders: list[DeliveryOrder],
+    supplier_id_in: str,
+    with_matching: bool,
+    mix_mode: str = "together",
+    existing: str = "check",
+) -> dict:
+    """Everything that happens to a parsed delivery regardless of the file it
+    came from: resolve the supplier, match every line against the products
+    master DB, resolve growers, and shape the response.
+
+    Shared by /delivery/parse (JSON) and /delivery/parse-pdf, so a PDF import
+    behaves identically to the JSON one — including reusing the supplier's
+    confirmed product matches, which are cached by variety name rather than by
+    the supplier's own product id, and so carry across both file types.
+
+    mix_mode "together" (the screen's default) searches products only for the
+    lines shown with mix boxes sent together, and leaves the varieties inside
+    combined mix boxes unmatched: product search is where parsing spends its
+    time, and a mix-heavy invoice is mostly such varieties (Florecal 1586318:
+    3 searches instead of 19; user, 2026-09-25). "separate" matches every
+    line, which the screen asks for when the user switches to that view; its
+    answer holds both views.
+
+    Before any of the matching, FreshPortal is asked whether it already holds
+    each invoice's shipment. With existing "check" (a first parse) a hit ends
+    the parse there, with `existing` listing the shipments found and no
+    orders: the user learns at once, not after the product search and the
+    whole review (user, 2026-09-28). "compare" is the user's choice to go on
+    anyway: every order is matched as usual and carries the shipment it
+    already has, if any, as `existing_batch`, for the screen to add only the
+    lines the shipment is missing.
+    """
+    if not orders:
+        raise HTTPException(400, "No invoices found in the file")
+
+    log.info("[delivery/parse] parsed %d order(s)", len(orders))
+
+    # Resolve supplier_id from the parsed order's company name.
+    # This ensures we never rely on a hardcoded value from the UI.
+    fp_url = get_ecuador_cfg().freshportal_url
+    supplier_id = supplier_id_in
+    # supplier_confirmed=True when the supplier is already known:
+    #   • user sent explicit supplier_id in the request (already selected/confirmed)
+    #   • saved tx_company→fp_supplier_id mapping exists in DB (manually confirmed before)
+    #   • auto-resolved from fp_suppliers (name match already exists)
+    # False = nothing found → truly new supplier → show confirmation popup.
+    supplier_confirmed = bool(supplier_id_in)
+    if orders:
+        saved_map = get_supplier_name_map(fp_url, orders[0].tx_company)
+        if saved_map:
+            supplier_id = saved_map
+            supplier_confirmed = True
+            log.info("[delivery/parse] supplier_id=%s from saved map for tx_company=%r", supplier_id, orders[0].tx_company)
+        else:
+            resolved = find_supplier_fp_id(fp_url, orders[0].tx_company)
+            if resolved:
+                supplier_id = resolved
+                supplier_confirmed = True
+                log.info("[delivery/parse] auto-resolved supplier_id=%s from tx_company=%r", supplier_id, orders[0].tx_company)
+            elif not supplier_id:
+                log.warning("[delivery/parse] could not resolve supplier from tx_company=%r", orders[0].tx_company)
+
+    # Resolved once, ahead of the loop, so grower resolution can match
+    # against FreshPortal's own canonical supplier name instead of the
+    # raw tx_company text from the JSON — the same delivery's tx_company
+    # varies in formatting between documents (e.g. "Quality Service
+    # Qualisa S.A.S" vs FreshPortal's registered "Qualisa"), which
+    # find_supplier_fp_id() above already resolved through robust
+    # word-based matching; reusing that result avoids re-solving the
+    # same "which supplier is this really" problem a second time in
+    # _resolve_grower_id() with a weaker heuristic (found 2026-08-28).
+    # The already-in-FreshPortal answer names the supplier with it too.
+    supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
+
+    existing_batches = _existing_batches(orders, supplier_id)
+    if existing != "compare" and any(existing_batches):
+        log.info("[delivery/parse] already in FreshPortal: %s — stopping before matching",
+                 [b["number"] for b in existing_batches if b])
+        return {
+            "existing": [
+                {**batch, "id_invoice": order.id_invoice}
+                for order, batch in zip(orders, existing_batches) if batch
+            ],
+            "invoices_in_file": len(orders),
+            "orders": [],
+            "supplier_id": supplier_id,
+            "supplier_nm": supplier_nm,
+            "supplier_confirmed": supplier_confirmed,
+            "matched_count": 0,
+            "unmatched_count": 0,
+            "cached_matches_used": 0,
+        }
+
+    cached_matches: dict = {}
+    if with_matching and supplier_id:
+        cached_matches = get_delivery_matches(fp_url, supplier_id)
+        log.info("[delivery/parse] supplier=%s cached_matches=%d", supplier_id, len(cached_matches))
+
+    grower_choices = get_grower_choices(fp_url, supplier_id) if supplier_id else {}
+
+    matched_count = 0
+    unmatched_count = 0
+
+    together = mix_mode != "separate"
+    for order in orders:
+        order.supplier_fp_id = supplier_id
+        # No delivery date in the file: tomorrow's, for the user to change.
+        fill_missing_delivery_date(order)
+        # Growers before products: which mix boxes combine depends on the
+        # growers, and which lines need a product search depends on that.
+        resolve_growers(order, supplier_nm, grower_choices)
+        # A box nobody has mapped goes as QBE, for the screen to offer others.
+        guess_unknown_boxes(order)
+        order.mix_lines = mix_box_lines(order)
+        if with_matching:
+            to_match = order.lines
+            if together:
+                combined = {code for line in order.mix_lines for code in line.mix_boxes}
+                to_match = [line for line in order.lines if line.nm_box not in combined]
+            # A mix box its supplier's layout names ("Dianthus Sp Mix") is
+            # found by that name, as any line is; other mixes keep the fixed
+            # product, or none for the user to pick.
+            to_match = to_match + [line for line in order.mix_lines if line.mix_name]
+            m, u = match_order_to_products(order, cached_matches, to_match)
+            matched_count += m
+            unmatched_count += u
+            for line in to_match:
+                log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
+                          line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
+
+    mix_numbers = {l.fp_product_id for o in orders for l in o.mix_lines if l.match_method == "mix_box"}
+    mix_names = get_ecuador_product_names(sorted(mix_numbers))
+    for number in mix_numbers - mix_names.keys():
+        log.warning("[delivery/parse] mix box product %s is not in ecuador_products", number)
+    for order in orders:
+        for line in order.mix_lines:
+            if line.match_method == "mix_box":
+                line.catalogue_nm_product = mix_names.get(line.fp_product_id, "")
+    result_orders = [
+        {**order_to_dict(order), "existing_batch": batch}
+        for order, batch in zip(orders, existing_batches)
+    ]
+
+    log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
+    return {
+        "orders": result_orders,
+        "supplier_id": supplier_id,
+        "supplier_nm": supplier_nm,
+        "supplier_confirmed": supplier_confirmed,
+        "matched_count": matched_count,
+        "unmatched_count": unmatched_count,
+        "cached_matches_used": len(cached_matches),
+        # "together": the varieties inside combined mix boxes are unmatched,
+        # and the separate view needs a parse with mix_mode "separate".
+        "mix_mode": "together" if together else "separate",
+    }
 
 
 @app.post("/delivery/parse")
@@ -2398,21 +2844,12 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
     product_number for the DFG BatchV1 API.
 
     Request body:
-      { raw_json: <the full delivery JSON>, supplier_id: "27", with_matching: true,
-        mix_mode: "together" }
+      { raw_json: <the full delivery JSON>, supplier_id: "27", with_matching: true }
 
     Returns aggregated DeliveryOrder(s) with match results per line.
-
-    mix_mode "together" (the screen's default) searches products only for the
-    lines shown with mix boxes sent together, and leaves the varieties inside
-    combined mix boxes unmatched: product search is where parsing spends its
-    time, and a mix-heavy invoice is mostly such varieties (Florecal 1586318:
-    3 searches instead of 19; user, 2026-09-25). "separate" matches every
-    line, which the screen asks for when the user switches to that view; its
-    answer holds both views.
     """
-    log.info("[delivery/parse] starting — supplier=%s with_matching=%s mix_mode=%s",
-             req.supplier_id, req.with_matching, req.mix_mode)
+    log.info("[delivery/parse] starting — supplier=%s with_matching=%s mix_mode=%s existing=%s",
+             req.supplier_id, req.with_matching, req.mix_mode, req.existing)
     try:
         try:
             raw = req.raw_json
@@ -2432,103 +2869,225 @@ def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_perm
             log.exception("[delivery/parse] parse_delivery_json failed")
             raise HTTPException(400, f"Invalid delivery JSON: {exc}")
 
-        if not orders:
-            raise HTTPException(400, "No invoices found in JSON")
-
-        log.info("[delivery/parse] parsed %d order(s)", len(orders))
-
-        # Resolve supplier_id from the parsed order's company name.
-        # This ensures we never rely on a hardcoded value from the UI.
-        fp_url = get_ecuador_cfg().freshportal_url
-        supplier_id = req.supplier_id
-        # supplier_confirmed=True when the supplier is already known:
-        #   • user sent explicit supplier_id in the request (already selected/confirmed)
-        #   • saved tx_company→fp_supplier_id mapping exists in DB (manually confirmed before)
-        #   • auto-resolved from fp_suppliers (name match already exists)
-        # False = nothing found → truly new supplier → show confirmation popup.
-        supplier_confirmed = bool(req.supplier_id)
-        if orders:
-            saved_map = get_supplier_name_map(fp_url, orders[0].tx_company)
-            if saved_map:
-                supplier_id = saved_map
-                supplier_confirmed = True
-                log.info("[delivery/parse] supplier_id=%s from saved map for tx_company=%r", supplier_id, orders[0].tx_company)
-            else:
-                resolved = find_supplier_fp_id(fp_url, orders[0].tx_company)
-                if resolved:
-                    supplier_id = resolved
-                    supplier_confirmed = True
-                    log.info("[delivery/parse] auto-resolved supplier_id=%s from tx_company=%r", supplier_id, orders[0].tx_company)
-                elif not supplier_id:
-                    log.warning("[delivery/parse] could not resolve supplier from tx_company=%r", orders[0].tx_company)
-
-        cached_matches: dict = {}
-        if req.with_matching and supplier_id:
-            cached_matches = get_delivery_matches(fp_url, supplier_id)
-            log.info("[delivery/parse] supplier=%s cached_matches=%d", supplier_id, len(cached_matches))
-
-        # Resolved once, ahead of the loop, so grower resolution can match
-        # against FreshPortal's own canonical supplier name instead of the
-        # raw tx_company text from the JSON — the same delivery's tx_company
-        # varies in formatting between documents (e.g. "Quality Service
-        # Qualisa S.A.S" vs FreshPortal's registered "Qualisa"), which
-        # find_supplier_fp_id() above already resolved through robust
-        # word-based matching; reusing that result avoids re-solving the
-        # same "which supplier is this really" problem a second time in
-        # _resolve_grower_id() with a weaker heuristic (found 2026-08-28).
-        supplier_nm = get_supplier_name_by_id(fp_url, supplier_id) if supplier_id else ""
-        grower_choices = get_grower_choices(fp_url, supplier_id) if supplier_id else {}
-
-        matched_count = 0
-        unmatched_count = 0
-
-        together = req.mix_mode != "separate"
-        for order in orders:
-            order.supplier_fp_id = supplier_id
-            # Growers before products: which mix boxes combine depends on the
-            # growers, and which lines need a product search depends on that.
-            resolve_growers(order, supplier_nm, grower_choices)
-            order.mix_lines = mix_box_lines(order)
-            if req.with_matching:
-                to_match = order.lines
-                if together:
-                    combined = {code for line in order.mix_lines for code in line.mix_boxes}
-                    to_match = [line for line in order.lines if line.nm_box not in combined]
-                m, u = match_order_to_products(order, cached_matches, to_match)
-                matched_count += m
-                unmatched_count += u
-                for line in to_match:
-                    log.info("[delivery/parse] match: variety=%r length=%s -> fp_product_id=%r method=%s",
-                              line.nm_variety, line.nu_length, line.fp_product_id, line.match_method)
-
-        mix_numbers = {l.fp_product_id for o in orders for l in o.mix_lines if l.match_method == "mix_box"}
-        mix_names = get_ecuador_product_names(sorted(mix_numbers))
-        for number in mix_numbers - mix_names.keys():
-            log.warning("[delivery/parse] mix box product %s is not in ecuador_products", number)
-        for order in orders:
-            for line in order.mix_lines:
-                if line.match_method == "mix_box":
-                    line.catalogue_nm_product = mix_names.get(line.fp_product_id, "")
-        result_orders = [order_to_dict(order) for order in orders]
-
-        log.info("[delivery/parse] done — matched=%d unmatched=%d", matched_count, unmatched_count)
-        return {
-            "orders": result_orders,
-            "supplier_id": supplier_id,
-            "supplier_nm": supplier_nm,
-            "supplier_confirmed": supplier_confirmed,
-            "matched_count": matched_count,
-            "unmatched_count": unmatched_count,
-            "cached_matches_used": len(cached_matches),
-            # "together": the varieties inside combined mix boxes are unmatched,
-            # and the separate view needs a parse with mix_mode "separate".
-            "mix_mode": "together" if together else "separate",
-        }
+        return _resolve_and_match(orders, req.supplier_id, req.with_matching, req.mix_mode, req.existing)
     except HTTPException:
         raise
     except Exception as exc:
         log.exception("[delivery/parse] unexpected error")
         raise HTTPException(500, f"Internal error: {exc}")
+
+
+# An invoice PDF is a few hundred KB; the largest sample so far is 8 pages at
+# under 200 KB. The cap is there so a wrong file cannot tie up the worker.
+MAX_DELIVERY_PDF_BYTES = 20 * 1024 * 1024
+
+
+@app.post("/delivery/parse-pdf")
+def delivery_parse_pdf(
+    pdf: UploadFile = File(...),
+    supplier_id: str = Form(""),
+    with_matching: bool = Form(True),
+    mix_mode: str = Form("together"),
+    existing: str = Form("check"),
+    user: dict = Depends(require_any_permission("admin:manage", "delivery:import")),
+):
+    """Same as /delivery/parse, for suppliers who send a printed invoice
+    instead of a data feed.
+
+    The PDF is read against the supplier layouts described in pdf_layouts.py
+    and produces the same DeliveryOrder shape, so matching, grower resolution
+    and the DFG payload are identical from here on — including the confirmed
+    product matches already cached for this supplier, which are keyed by
+    variety name and so apply to both file types.
+
+    A PDF carries less than a JSON export: no box weights, no per-stem
+    weights, and a farm/location only when the invoice prints a single
+    warehouse. Where a supplier offers both, the JSON is the better import.
+
+    A plain def, like /delivery/parse, so it runs in the threadpool: reading
+    the PDF and the database lookups in matching block, and on the event
+    loop they stalled every other request, progress streams included, for
+    as long as a large invoice took (review 2026-09-25).
+    """
+    log.info("[delivery/parse-pdf] starting — file=%r supplier=%s",
+             pdf.filename, supplier_id)
+    try:
+        content = pdf.file.read()
+        if not content:
+            raise HTTPException(400, "The uploaded file is empty")
+        if len(content) > MAX_DELIVERY_PDF_BYTES:
+            raise HTTPException(
+                413,
+                f"That PDF is {len(content) // (1024 * 1024)} MB — the limit is "
+                f"{MAX_DELIVERY_PDF_BYTES // (1024 * 1024)} MB.",
+            )
+
+        try:
+            orders = parse_delivery_pdf(content)
+        except PdfUnknownLayoutError as exc:
+            # Saved for IT, and offered for a temporary layout: the screen
+            # asks the user first (pdf_layout_store). So is a known
+            # supplier's invoice its layout cannot read (user, 2026-09-30).
+            log.warning("[delivery/parse-pdf] %s: no layout reads it: %s", pdf.filename, exc)
+            raise HTTPException(422, _unknown_layout_detail(
+                pdf.filename or "invoice.pdf", content, user, str(exc),
+                str(exc) if exc.layout else None))
+        except PdfParseError as exc:
+            # Both an unknown layout and a failed checksum are the user's to
+            # act on, not a server fault — the message says what to do next.
+            log.warning("[delivery/parse-pdf] %s: %s", pdf.filename, exc)
+            raise HTTPException(400, str(exc))
+        except Exception as exc:
+            log.exception("[delivery/parse-pdf] parse_delivery_pdf failed")
+            raise HTTPException(400, f"Could not read this PDF: {exc}")
+
+        return _resolve_and_match(orders, supplier_id, with_matching, mix_mode, existing)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("[delivery/parse-pdf] unexpected error")
+        raise HTTPException(500, f"Internal error: {exc}")
+
+
+def _username(payload: dict) -> str:
+    return str(payload.get("username") or payload.get("sub") or "unknown")
+
+
+def _unknown_layout_detail(file_name: str, content: bytes, user: dict, message: str,
+                           read_error: str | None = None) -> dict:
+    """What the delivery screen needs to offer a temporary layout: the saved
+    invoice, and how many drafts today still allows."""
+    detail: dict = {"code": "unknown_pdf_layout", "message": message}
+    try:
+        row = pdf_layout_store.save_unknown(file_name, content, _username(user), read_error)
+        detail.update({
+            "invoice_id": row["id"], "status": row["status"],
+            "drafts_left_today": pdf_layout_store.drafts_left_today(),
+            "drafts_per_day": pdf_layout_store.MAX_DRAFTS_PER_DAY,
+            "drafting_available": bool(Config().anthropic_api_key),
+        })
+    except Exception as exc:
+        log.exception("[delivery/parse-pdf] could not save the unknown invoice")
+        detail.update({"invoice_id": None, "save_error": str(exc)})
+    return detail
+
+
+def _layout_for_screen(row: dict) -> dict:
+    """A saved invoice as the delivery screen follows it: not the layout
+    itself, which is Admin's."""
+    return {k: v for k, v in row.items() if k != "spec"}
+
+
+_delivery_or_admin = require_any_permission("admin:manage", "delivery:import")
+_admin = require_any_permission("admin:manage")
+
+
+@app.get("/delivery/pdf-layouts/pending-count")
+def pdf_layouts_pending_count(_: dict = Depends(_admin)):
+    """What IT still has to look at: invoices no layout reads, and drafted
+    layouts not yet checked. Shown on the Admin tile."""
+    try:
+        return {"count": pdf_layout_store.pending_count()}
+    except Exception as exc:
+        log.warning("[pdf-layouts] pending count unavailable: %s", exc)
+        return {"count": 0}
+
+
+@app.get("/delivery/pdf-layouts")
+def pdf_layouts_list(view: str = "open", _: dict = Depends(_admin)):
+    """Saved invoices and drafted layouts, for Admin: open (what IT still has
+    to act on, and drafts under way) or all."""
+    statuses = None if view == "all" else [*pdf_layout_store.FOR_IT, pdf_layout_store.DRAFTING]
+    return {
+        "layouts": pdf_layout_store.list_layouts(statuses),
+        "drafts_left_today": pdf_layout_store.drafts_left_today(),
+        "drafts_per_day": pdf_layout_store.MAX_DRAFTS_PER_DAY,
+        "drafting_available": bool(Config().anthropic_api_key),
+    }
+
+
+@app.get("/delivery/pdf-layouts/{layout_id}")
+def pdf_layout_get(layout_id: int, payload: dict = Depends(_delivery_or_admin)):
+    row = pdf_layout_store.get_layout(layout_id)
+    if row is None:
+        raise HTTPException(404, "No such invoice")
+    return row if "admin:manage" in (payload.get("permissions") or []) else _layout_for_screen(row)
+
+
+@app.get("/delivery/pdf-layouts/{layout_id}/pdf")
+def pdf_layout_file(layout_id: int, _: dict = Depends(_admin)):
+    found = pdf_layout_store.get_pdf(layout_id)
+    if found is None:
+        raise HTTPException(404, "No such invoice")
+    name, content = found
+    safe = "".join(c if c.isalnum() or c in " ._-#" else "_" for c in name)
+    return Response(content, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{safe}"'})
+
+
+@app.post("/delivery/pdf-layouts/{layout_id}/draft")
+def pdf_layout_draft(layout_id: int, payload: dict = Depends(_delivery_or_admin)):
+    """Start drafting a temporary layout for a saved invoice, within today's
+    limit. It runs in the background; GET the invoice to follow it."""
+    if not Config().anthropic_api_key:
+        raise HTTPException(503, {"code": "drafting_unavailable",
+                                  "message": "ANTHROPIC_API_KEY is not configured"})
+    try:
+        row = pdf_layout_store.begin_draft(layout_id, _username(payload))
+    except pdf_layout_store.DraftLimitReached as exc:
+        raise HTTPException(429, {"code": "draft_limit", "message": str(exc),
+                                  "drafts_per_day": pdf_layout_store.MAX_DRAFTS_PER_DAY})
+    except LookupError:
+        raise HTTPException(404, "No such invoice")
+    except ValueError as exc:
+        raise HTTPException(409, {"code": "not_waiting", "message": str(exc)})
+    found = pdf_layout_store.get_pdf(layout_id)
+    if found is None:
+        pdf_layout_store.fail_draft(layout_id, "The saved invoice file is missing.")
+        raise HTTPException(404, "The saved invoice file is missing")
+    name, content = found
+    pdf_layout_ai.start(layout_id, name, content, row.get("read_error"))
+    return _layout_for_screen(row)
+
+
+@app.post("/delivery/pdf-layouts/{layout_id}/cancel")
+def pdf_layout_cancel(layout_id: int, payload: dict = Depends(_delivery_or_admin)):
+    """Stop a draft: the connection to the model closes, whatever it made is
+    cleared, and the invoice waits in Admin again."""
+    try:
+        return _layout_for_screen(pdf_layout_store.cancel_draft(layout_id, _username(payload)))
+    except LookupError:
+        raise HTTPException(409, {"code": "not_drafting",
+                                  "message": "This invoice is not being drafted for."})
+
+
+class PdfLayoutReviewRequest(BaseModel):
+    decision: str
+    note: str | None = None
+
+
+@app.post("/delivery/pdf-layouts/{layout_id}/review")
+def pdf_layout_review(layout_id: int, req: PdfLayoutReviewRequest, payload: dict = Depends(_admin)):
+    """IT verifies or rejects a drafted layout."""
+    try:
+        return pdf_layout_store.review(layout_id, req.decision, _username(payload), req.note)
+    except LookupError:
+        raise HTTPException(404, "No drafted layout with that id")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class PdfLayoutCloseRequest(BaseModel):
+    note: str | None = None
+
+
+@app.post("/delivery/pdf-layouts/{layout_id}/close")
+def pdf_layout_close(layout_id: int, req: PdfLayoutCloseRequest, payload: dict = Depends(_admin)):
+    """IT has added this invoice's layout in code, or sets the invoice aside."""
+    try:
+        return pdf_layout_store.close(layout_id, _username(payload), req.note)
+    except LookupError:
+        raise HTTPException(409, "This invoice cannot be closed now; is it being drafted for?")
 
 
 class DeliveryProductSearchRequest(BaseModel):
@@ -2544,21 +3103,25 @@ def delivery_product_search(
     """Live search against ecuador_products (not the Stamgegevens `products` table)
     for the manual match-correction modal in DeliveryImporter — a manual override
     must only ever offer products actually provisioned in Ecuador, otherwise it
-    can reproduce the exact "not usable" failure it's meant to fix."""
+    can reproduce the exact "not usable" failure it's meant to fix.
+
+    Relevance picks which products come back; the list itself reads
+    alphabetically, products with a GTIN first (user, 2026-09-28)."""
     if len(req.query.strip()) < 2:
         return {"results": []}
     rows = search_ecuador_products_db(req.query.strip(), limit=req.limit)
-    return {
-        "results": [
-            {
-                "fp_product_id": r.get("product_number") or "",
-                "nm_product": r.get("name") or "",
-                "id_floricode": r.get("vbn_number") or "",
-            }
-            for r in rows
-            if r.get("product_number")
-        ]
-    }
+    results = [
+        {
+            "fp_product_id": r.get("product_number") or "",
+            "nm_product": r.get("name") or "",
+            "id_floricode": r.get("vbn_number") or "",
+            "gtin": (r.get("product_gtin") or "").strip(),
+        }
+        for r in rows
+        if r.get("product_number")
+    ]
+    results.sort(key=lambda p: (not p["gtin"], p["nm_product"].casefold(), p["fp_product_id"]))
+    return {"results": results}
 
 
 @app.get("/delivery/debug-match")
@@ -2762,6 +3325,10 @@ def delivery_api_check(
     Mandatory pre-flight step: the DFG API does not dedupe on
     (supplier_id, number) itself — a duplicate POST creates a second, separate
     batch instead of being rejected or upserted (confirmed 2026-08-12).
+
+    The batch comes back as batch_summary shapes it, the same shape a parse
+    attaches as an order's existing_batch, so the screen compares a file
+    against either one the same way.
     """
     cfg = get_ecuador_cfg()
     try:
@@ -2769,7 +3336,26 @@ def delivery_api_check(
     except Exception as exc:
         log.exception("[delivery/api/check] failed")
         raise HTTPException(502, f"DFG API error: {exc}")
-    return {"exists": batch is not None, "batch": batch}
+    return {"exists": batch is not None, "batch": batch_summary(cfg, batch) if batch else None}
+
+
+def _require_length_and_grower(lines: list) -> None:
+    """Nothing goes to FreshPortal while a line lacks a Floricode S20 length
+    (user, 2026-09-28): some invoices print none, and the screen asks for one
+    before it lets the shipment be created. Checked here too, so no other
+    caller can send a line without it."""
+    missing = lines_without_s20_length(lines)
+    if missing:
+        raise HTTPException(
+            400, "Every line needs a Floricode S20 length before it goes to FreshPortal; "
+                 "missing or not an S20 length: " + ", ".join(missing))
+    # And not without its grower (user, 2026-09-29): FreshPortal would take
+    # the line with none, so the refusal is ours.
+    no_grower = lines_without_grower(lines)
+    if no_grower:
+        raise HTTPException(
+            400, "Every line needs a grower before it goes to FreshPortal; pick one for: "
+                 + ", ".join(no_grower))
 
 
 class DfgCreateRequest(BaseModel):
@@ -2825,6 +3411,7 @@ def delivery_api_create(
     order.lines = [l for l in order.lines if l.fp_product_id]
     if not order.lines:
         raise HTTPException(400, "No matched products to send — confirm product matches first")
+    _require_length_and_grower(order.lines)
 
     try:
         payload = build_batch_payload(
@@ -2880,6 +3467,8 @@ class DfgRetryRequest(BaseModel):
     batch_id: int
     supplier_fp_id: str
     order: dict  # only the lines to retry/add
+    # The invoice the batch is on, as its check or its create reported it.
+    invoice_id: int | None = None
 
 
 @app.post("/delivery/api/retry")
@@ -2899,16 +3488,17 @@ def delivery_api_retry(
     except Exception as exc:
         raise HTTPException(400, f"Invalid order payload: {exc}")
 
-    log.info("[delivery/api/retry] received from client: batch_id=%s supplier_fp_id=%s lines=%s",
-              req.batch_id, req.supplier_fp_id,
+    log.info("[delivery/api/retry] received from client: batch_id=%s supplier_fp_id=%s invoice_id=%s lines=%s",
+              req.batch_id, req.supplier_fp_id, req.invoice_id,
               [(l.nm_variety, l.nu_length, l.fp_product_id) for l in order.lines])
 
     matched_lines = [l for l in order.lines if l.fp_product_id]
     if not matched_lines:
         raise HTTPException(400, "No matched products to retry")
+    _require_length_and_grower(matched_lines)
 
     try:
-        result = dfg_add_stock_entries(cfg, req.batch_id, req.supplier_fp_id, matched_lines)
+        result = dfg_add_stock_entries(cfg, req.batch_id, req.supplier_fp_id, matched_lines, req.invoice_id)
     except DfgApiError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:

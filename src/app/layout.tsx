@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { SessionProvider } from "next-auth/react";
 import FetchAuthPatch from "@/components/FetchAuthPatch";
+import { Toaster } from "@/components/ui/sonner";
 import { SystemProvider } from "@/contexts/SystemContext";
 import { auth } from "@/lib/auth";
 import Script from "next/script";
@@ -37,6 +38,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             {children}
           </SystemProvider>
         </SessionProvider>
+        <Toaster />
       </body>
     </html>
   );

@@ -1,5 +1,6 @@
 import { sql, db } from "@vercel/postgres"
 import bcrypt from "bcryptjs"
+import { FP_SYSTEMS } from "@/lib/systems"
 
 export interface AuthUser {
   id: number
@@ -17,7 +18,12 @@ export interface AuthGroup {
   permissions?: string[]
 }
 
-const ALL_PERMISSIONS = [
+/** One per system, read off FP_SYSTEMS rather than written out again here —
+ *  Admin > Groups already builds its list that way, and a system that exists
+ *  in one place and not the other is a system nobody can be given. */
+const SYSTEM_PERMISSIONS = FP_SYSTEMS.map(s => `system:${s.id}`)
+
+const MODULE_PERMISSIONS = [
   "vbn:check",
   "vbn:fix",
   "products:create",
@@ -27,13 +33,10 @@ const ALL_PERMISSIONS = [
   "boxweight:run",
   "supplier:add",
   "analysis:view",
-  "system:stamgegevens",
-  "system:piazza",
-  "system:ecuador",
-  "system:netherlands",
-  "system:kenya",
-  "system:coloriginz",
+  "knowledge:review",
 ]
+
+const ALL_PERMISSIONS = [...MODULE_PERMISSIONS, ...SYSTEM_PERMISSIONS]
 
 const DEFAULT_GROUPS: Record<string, string[]> = {
   admin: ALL_PERMISSIONS,
@@ -94,28 +97,42 @@ async function _migrateAuth() {
       PRIMARY KEY (group_id, permission_id)
     )
   `
+  await sql`
+    CREATE TABLE IF NOT EXISTS auth_migrations (
+      name       TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
 
   // Seed permissions
   for (const perm of ALL_PERMISSIONS) {
     await sql`INSERT INTO auth_permissions (name) VALUES (${perm}) ON CONFLICT (name) DO NOTHING`
   }
 
-  // Seed default groups — only insert permissions when the group is first created
-  for (const [groupName, groupPerms] of Object.entries(DEFAULT_GROUPS)) {
-    const inserted = await sql`INSERT INTO auth_groups (name) VALUES (${groupName}) ON CONFLICT (name) DO NOTHING`
-    if ((inserted.rowCount ?? 0) > 0) {
+  // Seed default groups on an empty database only. This used to run on every
+  // cold start, which undid deletions: remove the viewer group in Admin, and
+  // the next cold instance inserted it again — often before the screen had
+  // finished refreshing, so it looked like Delete did nothing. Same rule as
+  // the default admin user below: seed when there is nothing there, never on
+  // top of groups someone has since edited.
+  const { rows: [{ count: groupCount }] } = await sql`SELECT COUNT(*)::int AS count FROM auth_groups`
+  if (groupCount === 0) {
+    for (const [groupName, groupPerms] of Object.entries(DEFAULT_GROUPS)) {
+      // ON CONFLICT keeps two cold starts racing each other harmless.
+      await sql`INSERT INTO auth_groups (name) VALUES (${groupName}) ON CONFLICT (name) DO NOTHING`
       const { rows: [group] } = await sql`SELECT id FROM auth_groups WHERE name = ${groupName}`
-      if (group) {
-        for (const perm of groupPerms) {
-          await sql`
-            INSERT INTO auth_group_permissions (group_id, permission_id)
-            SELECT ${group.id}, id FROM auth_permissions WHERE name = ${perm}
-            ON CONFLICT DO NOTHING
-          `
-        }
+      if (!group) continue
+      for (const perm of groupPerms) {
+        await sql`
+          INSERT INTO auth_group_permissions (group_id, permission_id)
+          SELECT ${group.id}, id FROM auth_permissions WHERE name = ${perm}
+          ON CONFLICT DO NOTHING
+        `
       }
     }
   }
+
+  await grantNewSystemsToFullAccessGroups()
 
   // Seed default admin user if no users exist
   const { rows: [{ count }] } = await sql`SELECT COUNT(*)::int AS count FROM auth_users`
@@ -131,6 +148,81 @@ async function _migrateAuth() {
         INSERT INTO auth_user_groups (user_id, group_id) VALUES (${newUser.id}, ${adminGroup.id})
         ON CONFLICT DO NOTHING
       `
+    }
+  }
+}
+
+/** Runs `body` once for this database, ever — the counterpart to the seeds
+ *  above, which are skipped whenever there is already something there. The
+ *  claim is the INSERT itself, so two cold instances racing cannot both run
+ *  the body; a body that throws releases the claim and is tried again. */
+async function runOnce(name: string, body: () => Promise<void>) {
+  const { rows } = await sql`
+    INSERT INTO auth_migrations (name) VALUES (${name})
+    ON CONFLICT (name) DO NOTHING
+    RETURNING name
+  `
+  if (rows.length === 0) return
+  try {
+    await body()
+  } catch (err) {
+    await sql`DELETE FROM auth_migrations WHERE name = ${name}`
+    throw err
+  }
+}
+
+/** A system added to FP_SYSTEMS after the database was seeded reaches nobody.
+ *  The permission row appears, and Admin > Groups offers it, but no group holds
+ *  it — and the hub reads a group's explicit system:* list ahead of
+ *  admin:manage, so a group that could enter every system now enters every
+ *  system but the new one, and the tile is missing for everybody. That is what
+ *  happened to Test.
+ *
+ *  So hand a new system to the groups that already hold every other system,
+ *  and to those only: a group that names three systems named them on purpose,
+ *  and a group holding none already reaches all of them through admin:manage.
+ *  Once per system, so unticking one in Admin is not undone on the next cold
+ *  start — the trap the group seed above fell into.
+ *
+ *  "Every other system" leaves out the ones no group holds at all. Those are
+ *  new as well: with two systems added in one deploy, each one counted the
+ *  other against every group, neither was granted, and the markers stopped
+ *  any retry (review 2026-09-25). */
+async function grantNewSystemsToFullAccessGroups() {
+  if (SYSTEM_PERMISSIONS.length < 2) return
+  for (const perm of SYSTEM_PERMISSIONS) {
+    // A grant that fails is a tile somebody has to tick by hand; it must not
+    // be a login that fails. The claim is released, so the next cold start
+    // tries again.
+    try {
+      await runOnce(`grant:${perm}:to-full-access-groups`, async () => {
+        const { rows } = await sql`
+          SELECT gp.group_id, p.name
+          FROM auth_group_permissions gp
+          JOIN auth_permissions p ON p.id = gp.permission_id
+          WHERE p.name LIKE 'system:%'
+        `
+        const held = new Map<number, Set<string>>()
+        for (const row of rows) {
+          const groupId = row.group_id as number
+          const names = held.get(groupId) ?? new Set<string>()
+          names.add(row.name as string)
+          held.set(groupId, names)
+        }
+        const heldByAnyone = new Set(rows.map(row => row.name as string))
+        const others = SYSTEM_PERMISSIONS.filter(p => p !== perm && heldByAnyone.has(p))
+        if (others.length === 0) return
+        for (const [groupId, names] of held) {
+          if (!others.every(o => names.has(o))) continue
+          await sql`
+            INSERT INTO auth_group_permissions (group_id, permission_id)
+            SELECT ${groupId}, id FROM auth_permissions WHERE name = ${perm}
+            ON CONFLICT DO NOTHING
+          `
+        }
+      })
+    } catch (err) {
+      console.error(`[auth] could not grant ${perm} to full-access groups`, err)
     }
   }
 }

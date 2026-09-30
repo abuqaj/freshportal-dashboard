@@ -4,7 +4,21 @@ import React, { useState, useRef, useCallback, useEffect, useMemo } from "react"
 import { createPortal } from "react-dom";
 import { useSession } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
+import { toast } from "sonner";
+import {
+  ArrowRight, Ban, Box, Calendar, Check, CheckCheck, CircleQuestionMark, CircleX, CloudCheck, Eraser,
+  ExternalLink, Factory, FileText, FolderOpen, History as HistoryIcon, Info, Layers, LoaderCircle, Merge,
+  Pencil, Play, Plus, Receipt, RotateCcw, RotateCw, Ruler, Search, Split, Sprout, Tag, TriangleAlert,
+  Upload, User, X,
+} from "lucide-react";
 import DeliveryTour, { TourStep } from "./DeliveryTour";
+import LayoutDraftMeter, { LAYOUT_DRAFT_PRICE_SHOWN_USD } from "./LayoutDraftMeter";
+import MascotRunner from "./MascotRunner";
+import { Tip } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Popup } from "@/components/ui/dialog";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -28,13 +42,46 @@ function isMixLine(line: DeliveryLine): boolean {
   return (line.mix_boxes?.length ?? 0) > 0;
 }
 
+// FreshPortal's answer to adding lines to a shipment it finds no invoice for
+// (POST /dfg/v1/batch_stock_entry: 422 "Invoice is required for batch_id: …",
+// 2026-09-28).
+const INVOICE_REQUIRED = /Invoice is required/i;
+
 // The boxes a mix box can go to FreshPortal in when sent together.
 const MIX_BOX_FUSTS = ["QBE", "HBE"];
 
-// Mix boxes are marked in the system palette, the one the Analysis Tool's
-// charts use (analysis/charts.tsx LINE_COLORS): its pale green #C4DED0 with
-// emerald, not a colour of their own (user, 2026-09-25).
-const MIX_ACCENT = "bg-[#C4DED0] text-emerald-dark border-emerald/25";
+// The boxes delivery import knows (parser_delivery.KNOWN_BOXES): what a box
+// nobody has mapped can be changed to. It goes as QBE until then (user,
+// 2026-09-29).
+const KNOWN_FUSTS = ["QBE", "HBE", "1/8", "ECPS"];
+
+// Floricode S20, "Minimum length of flower stem": the only lengths a line may
+// go to FreshPortal with (user, 2026-09-28). Some invoices print none, so the
+// length is edited on the screen, and the shipment waits until every line it
+// sends has one of these. From Floricode's "E-Kenmerkcodes snij.pdf"
+// (2017-03-21), pages 49-51: every cm from 5 to 70, then the steps below; 999
+// "other" is left out, being no length. The backend checks the same list
+// (S20_LENGTHS in dfg_api_client.py; test_s20_lengths.py keeps them equal).
+const S20_LENGTHS: ReadonlySet<number> = new Set([
+  ...Array.from({ length: 66 }, (_, i) => i + 5),
+  72, 75, 80, 82, 85, 90, 95, 100, 105, 110, 115, 120, 125, 128, 130, 135, 140, 145, 150,
+  155, 160, 165, 170, 175, 180, 185, 190, 195, 200, 205, 210, 215, 220, 225, 230, 240,
+  250, 300, 350, 400, 450, 500, 550, 600, 700, 800, 900,
+]);
+
+// The whole module draws only on the system palette, the Analysis Tool's
+// chart colours, named in globals.css (user, 2026-09-25): brick and blush
+// for errors and warnings, emerald and sage for what is sure, sand and
+// taupe for what is neutral. Mix boxes are marked in sage with emerald.
+const MIX_ACCENT = "bg-sage text-emerald-dark border-emerald/25";
+
+// Every popup of the module wears the customer picker's frame: brand green
+// with a heavy shadow, so it stands off the white page it opens over. A
+// warning wears the same frame in brick (user, 2026-09-28). A popup's search
+// field is the customer field itself.
+const POPUP_FRAME = "border-2 border-emerald bg-surface shadow-[0_16px_48px_rgba(17,26,20,0.35)]";
+const POPUP_WARNING_FRAME = "border-2 border-brick bg-surface shadow-[0_16px_48px_rgba(17,26,20,0.35)]";
+const POPUP_SEARCH_INPUT = "h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full";
 
 // A grower from the Ecuador system's manufacturer list (Ecuador and Colombia),
 // as GET /growers returns it; manufacturer_id is what the DFG API receives.
@@ -62,6 +109,8 @@ interface CatalogueProduct {
   nu_stems_bunch?: number | null;
   nu_stems_pack?: number | null;
   nm_packaging?: string;
+  // Only on /delivery/product-search results; empty when the product has none.
+  gtin?: string;
 }
 
 interface DeliveryLine {
@@ -88,6 +137,10 @@ interface DeliveryLine {
   // varieties inside with their bunches.
   mix_boxes?: string[];
   mix_content?: { nm_variety: string; nu_bunches: number }[];
+  // A box code nobody has mapped goes as QBE; the code the file gave
+  // (parser_delivery.guess_unknown_boxes), for the user to choose another.
+  box_guessed?: boolean;
+  nm_box_printed?: string;
 }
 
 interface DeliveryOrder {
@@ -107,12 +160,64 @@ interface DeliveryOrder {
   mix_lines?: DeliveryLine[];
   // Set by parser_delivery.py; see DeliveryOrder.warnings there.
   warnings?: DeliveryWarning[];
+  // The shipment FreshPortal already holds for this invoice, once the user
+  // chose to add to it; the import then sends only what it is missing.
+  existing_batch?: ExistingBatch | null;
+}
+
+// One stock line of a shipment already in FreshPortal, as
+// dfg_api_client.batch_summary passes it on.
+interface PortalStockEntry {
+  product_number: string;
+  length: number;
+  manufacturer_id: string;
+  fust: string;
+  quantity: number;
+}
+
+// A shipment FreshPortal already holds (dfg_api_client.batch_summary), from
+// a parse or from /delivery/api/check.
+interface ExistingBatch {
+  id: number;
+  number: string;
+  created_at: string;
+  customer_name: string;
+  invoice_id: number | null;
+  batch_url: string;
+  invoice_url: string;
+  stock_entries: PortalStockEntry[];
 }
 
 type DeliveryWarning =
   | { code: "bunches_split_by_invoice_total"; variety: string; length: number; boxes: number; bunches_in_file: number; bunches_per_box: number }
   | { code: "invoice_total_mismatch"; invoice_total: number; file_total: number }
-  | { code: "box_count_mismatch"; invoice_boxes: number; file_boxes: number };
+  | { code: "box_count_mismatch"; invoice_boxes: number; file_boxes: number }
+  // Read with a layout drafted automatically, which IT has not checked yet.
+  | { code: "provisional_pdf_layout"; layout_id: number; supplier: string; assumptions: string[] };
+
+// A PDF no layout reads: saved on the server for IT, and offered for a
+// temporary layout (python/pdf_layout_store.py).
+interface UnknownLayoutInfo {
+  code: "unknown_pdf_layout";
+  message: string;
+  invoice_id: number | null;
+  status?: string;
+  drafts_left_today?: number;
+  drafts_per_day?: number;
+  drafting_available?: boolean;
+}
+
+class UnknownLayoutError extends Error {
+  info: UnknownLayoutInfo;
+  constructor(info: UnknownLayoutInfo) {
+    super(info.message);
+    this.info = info;
+  }
+}
+
+// How often a running draft is asked how it is going: often enough for the
+// spend counter to run on smoothly.
+const LAYOUT_DRAFT_POLL_MS = 2000;
 
 interface FPSupplier {
   fp_supplier_id: string;
@@ -131,6 +236,50 @@ interface ParseResult {
   matched_count: number;
   unmatched_count: number;
   mix_mode?: MixMode;
+  // Only when a first parse stopped because FreshPortal already holds some
+  // of the file's shipments: those shipments, and no orders.
+  existing?: (ExistingBatch & { id_invoice: string })[];
+  invoices_in_file?: number;
+}
+
+// What a first parse asks the server to do about a shipment FreshPortal
+// already holds: stop before matching and say so, or go on and attach it to
+// its order for the import to add only what it is missing.
+type ExistingMode = "check" | "compare";
+
+// Which of `lines` the shipment already in FreshPortal holds, and how many of
+// its entries no line accounts for. A line is there when an entry has its
+// product and length. Each entry accounts for one line only, so two lines of
+// the same product and length need two entries; an entry from the line's own
+// grower is taken first, then any. `asSent` gives a line as it would go to
+// FreshPortal, with what the user changed on the screen.
+function compareWithPortal(
+  lines: DeliveryLine[],
+  entries: PortalStockEntry[],
+  asSent: (line: DeliveryLine) => DeliveryLine,
+): { inPortal: Set<DeliveryLine>; portalOnly: number } {
+  const key = (product: string, length: number) => `${product.trim().toUpperCase()}|${Number(length) || 0}`;
+  const left = new Map<string, PortalStockEntry[]>();
+  for (const e of entries) {
+    const k = key(e.product_number, e.length);
+    left.set(k, [...(left.get(k) ?? []), e]);
+  }
+  const sent = lines.map(asSent);
+  const inPortal = new Set<DeliveryLine>();
+  for (const sameGrower of [true, false]) {
+    lines.forEach((line, i) => {
+      const s = sent[i];
+      if (inPortal.has(line) || !s.fp_product_id) return;
+      const bucket = left.get(key(s.fp_product_id, s.nu_length));
+      const at = bucket?.findIndex(e => !sameGrower || e.manufacturer_id === String(s.manufacturer_id || "")) ?? -1;
+      if (!bucket || at < 0) return;
+      bucket.splice(at, 1);
+      inPortal.add(line);
+    });
+  }
+  let portalOnly = 0;
+  left.forEach(bucket => { portalOnly += bucket.length; });
+  return { inPortal, portalOnly };
 }
 
 type Stage = "idle" | "parsing" | "shipment" | "preview" | "importing" | "done" | "error";
@@ -263,31 +412,40 @@ const NEW_INVOICE_ID = "new";
 // request per row, short enough that a deliberate hover beats the click.
 const INVOICE_PRELOAD_DWELL_MS = 180;
 
-const MATCH_BADGE: Record<MatchMethod, { label: string; cls: string }> = {
-  variety_length:       { label: "exact",        cls: "bg-emerald/15 text-emerald border-emerald/20" },
-  variety_nolen:        { label: "exact~len",    cls: "bg-emerald/10 text-emerald border-emerald/15" },
-  variety_anylength:    { label: "exact~len",    cls: "bg-emerald/10 text-emerald border-emerald/15" },
-  floricode:            { label: "VBN",          cls: "bg-blue-500/15 text-blue-600 border-blue-500/20" },
-  fuzzy_variety:        { label: "fuzzy",        cls: "bg-amber-500/15 text-amber-600 border-amber-500/20" },
-  fuzzy_variety_nolen:  { label: "fuzzy~len",    cls: "bg-amber-500/10 text-amber-600 border-amber-500/15" },
-  fuzzy_nolen:          { label: "fuzzy~",       cls: "bg-orange-500/15 text-orange-600 border-orange-500/20" },
-  fuzzy_anylength:      { label: "fuzzy~len",    cls: "bg-orange-500/10 text-orange-600 border-orange-500/15" },
-  cached:               { label: "cached ✓",     cls: "bg-green-500/15 text-green-700 border-green-500/25" },
-  mix_box:              { label: "mix box",      cls: MIX_ACCENT },
-  none:                 { label: "no match",     cls: "bg-red-500/10 text-red-500 border-red-500/20" },
+// How a line found its product, drawn as an icon; the words are in the
+// tooltip (user, 2026-09-30). "~" marks a product of another length.
+type MatchTipKey =
+  | "matchTipExact" | "matchTipOtherLength" | "matchTipVbn" | "matchTipFuzzy"
+  | "matchTipFuzzyOtherLength" | "matchTipCached" | "matchTipMixBox" | "matchTipNone";
+const MATCH_BADGE: Record<MatchMethod, { icon: React.ReactNode; cls: string; tip: MatchTipKey }> = {
+  variety_length:       { icon: <CheckCheck className="size-3" />,   cls: "bg-sage text-emerald-dark border-emerald/25",   tip: "matchTipExact" },
+  variety_nolen:        { icon: <><Check className="size-3" />~</>,  cls: "bg-sage/50 text-emerald-dark border-sage",      tip: "matchTipOtherLength" },
+  variety_anylength:    { icon: <><Check className="size-3" />~</>,  cls: "bg-sage/50 text-emerald-dark border-sage",      tip: "matchTipOtherLength" },
+  floricode:            { icon: <Tag className="size-3" />,          cls: "bg-sand text-ink border-taupe/40",              tip: "matchTipVbn" },
+  fuzzy_variety:        { icon: "≈",                                 cls: "bg-blush/60 text-brick border-blush",           tip: "matchTipFuzzy" },
+  fuzzy_variety_nolen:  { icon: "≈~",                                cls: "bg-blush/35 text-brick border-blush/70",        tip: "matchTipFuzzyOtherLength" },
+  fuzzy_nolen:          { icon: "≈",                                 cls: "bg-blush/60 text-brick border-blush",           tip: "matchTipFuzzy" },
+  fuzzy_anylength:      { icon: "≈~",                                cls: "bg-blush/35 text-brick border-blush/70",        tip: "matchTipFuzzyOtherLength" },
+  cached:               { icon: <HistoryIcon className="size-3" />,  cls: "bg-emerald text-white border-emerald",          tip: "matchTipCached" },
+  mix_box:              { icon: <Box className="size-3" />,          cls: MIX_ACCENT,                                      tip: "matchTipMixBox" },
+  none:                 { icon: <Ban className="size-3" />,          cls: "bg-blush/60 text-brick border-brick/30",        tip: "matchTipNone" },
 };
 
-type DoneLineStatus = "added" | "failed" | "skipped" | "notApproved";
+type DoneLineStatus = "added" | "failed" | "skipped" | "notApproved" | "inPortal";
 
-// Shared by the "done" screen's live doneLineStatuses memo and by
+// Shared by the "done" screen's live doneLineStatuses and by
 // logImportResult() (which persists the same breakdown into the delivery
 // import log so it's still visible later from History) — one source of
-// truth for "what actually happened to this line."
+// truth for "what actually happened to this line." `inPortal` holds the lines
+// a shipment already in FreshPortal had, which the import did not send.
 function computeLineStatuses(
   lines: DeliveryLine[],
   importResult: DfgCreateResult,
   lineEdits: Record<string, { fp_product_id?: string; catalogue_nm_product?: string; manufacturer_id?: string }>,
   approvedKeys: Set<string>,
+  inPortal?: Set<DeliveryLine>,
+  // The length the line went with: the one set on the screen, if any.
+  lengthOf: (line: DeliveryLine) => number = line => line.nu_length,
 ): { line: DeliveryLine; status: DoneLineStatus; message: string }[] {
   const failedMsg = new Map(importResult.errors.map(e => [`${e.product_number}|${e.length}`, e.message]));
   return lines.map(line => {
@@ -295,8 +453,9 @@ function computeLineStatuses(
     const edit = lineEdits[dk];
     const fpId = edit?.fp_product_id ?? line.fp_product_id;
     if (!fpId) return { line, status: "skipped" as const, message: "" };
+    if (inPortal?.has(line)) return { line, status: "inPortal" as const, message: "" };
     if (!approvedKeys.has(dk)) return { line, status: "notApproved" as const, message: "" };
-    const key = `${fpId}|${line.nu_length}`;
+    const key = `${fpId}|${lengthOf(line)}`;
     if (failedMsg.has(key)) return { line, status: "failed" as const, message: failedMsg.get(key) ?? "" };
     return { line, status: "added" as const, message: "" };
   });
@@ -327,6 +486,13 @@ const DROPDOWN_MARGIN = 8;
 // room actually available. Opening downwards regardless ran the options off
 // the bottom of the screen, where the page scroll could not reach them
 // (found 2026-09-18 on the invoice picker, which sits lowest in the card).
+//
+// It opens on a click or a key, never on focus alone, and closes when the
+// window loses focus. The browser hands focus back to the field when the user
+// returns from another tab or window, and a list opened that way (or left
+// open) had its second row lying exactly over "Continue to products": the
+// click meant for Continue picked that customer instead, so Stock turned into
+// A. Heemskerk and the step did not advance (found 2026-09-28).
 function SearchableSelect({ options, value, onChange, onPreload, placeholder, noMatchLabel, className, disabled, firstNearInput }: {
   options: ComboOption[];
   value: string;
@@ -413,14 +579,25 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
       if (dropdownRef.current?.contains(target)) return;
       setOpen(false);
     }
+    function onWindowBlur() { setOpen(false); }
     document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
+    window.addEventListener("blur", onWindowBlur);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      window.removeEventListener("blur", onWindowBlur);
+    };
   }, []);
 
   const q = query.trim().toLowerCase();
   const filtered = q
     ? options.filter(o => o.name.toLowerCase().includes(q) || o.id.toLowerCase().includes(q))
     : options;
+
+  function openList(initialQuery: string) {
+    setOpen(true);
+    setQuery(initialQuery);
+    setHighlighted(0);
+  }
 
   function selectOption(o: ComboOption) {
     onChange(o.id);
@@ -436,10 +613,22 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
         value={open ? query : (selected?.name ?? "")}
         readOnly={!open}
         disabled={disabled}
-        onClick={() => { if (!open && !disabled) { setOpen(true); setQuery(""); setHighlighted(0); } }}
+        onClick={() => { if (!open && !disabled) openList(""); }}
         onChange={e => { setQuery(e.target.value); setHighlighted(0); if (!open) setOpen(true); }}
-        onFocus={() => { if (disabled) return; setOpen(true); setQuery(""); setHighlighted(0); }}
         onKeyDown={e => {
+          // Closed, a key only opens the list (a typed character starts the
+          // search): choosing needs the list in view, so Enter cannot pick an
+          // option the user is not looking at.
+          if (!open) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              openList("");
+            } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+              e.preventDefault();
+              openList(e.key);
+            }
+            return;
+          }
           if (e.key === "ArrowDown" || e.key === "ArrowUp") {
             e.preventDefault();
             // In a list drawn bottom-up, going down goes back towards the
@@ -470,8 +659,7 @@ function SearchableSelect({ options, value, onChange, onPreload, placeholder, no
             maxHeight: pos.maxHeight,
             ...(pos.openUp ? { bottom: pos.bottom } : { top: pos.top }),
           }}
-          className={`z-[500] overflow-y-auto rounded-xl border-2 border-emerald bg-surface
-            shadow-[0_16px_48px_rgba(17,26,20,0.35)] divide-y divide-border
+          className={`z-[500] overflow-y-auto rounded-xl ${POPUP_FRAME} divide-y divide-border
             ${bottomUp ? "flex flex-col-reverse divide-y-reverse" : ""}`}
         >
           {filtered.length === 0 ? (
@@ -540,8 +728,8 @@ function HoverCard({ content, children, className }: {
       {pos && typeof document !== "undefined" && createPortal(
         <div
           style={{ position: "fixed", ...pos, maxWidth: HOVER_CARD_ROOM.width }}
-          className="z-[500] pointer-events-none rounded-xl border border-border bg-surface px-3 py-2
-                     text-xs font-normal text-ink whitespace-normal shadow-[0_8px_24px_rgba(17,26,20,0.2)]"
+          className={`z-[500] pointer-events-none rounded-xl ${POPUP_FRAME} px-3 py-2
+                     text-xs font-normal text-ink whitespace-normal`}
         >
           {content}
         </div>,
@@ -704,9 +892,12 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   ], [openInvoices, td]);
   const [orderDateOverride, setOrderDateOverride] = useState("");
   const [dateEditOpen, setDateEditOpen] = useState(false);
-  // Set when /delivery/api/check finds the shipment already exists — blocks
-  // create until the user explicitly chooses to add the missing lines instead.
-  const [existingBatch, setExistingBatch] = useState<{ id: number; number: string } | null>(null);
+  // A first parse that stopped because FreshPortal already holds the
+  // shipment: shown until the user opens it, edits it or lets the file go.
+  const [existingFound, setExistingFound] = useState<ParseResult | null>(null);
+  // Why the import brought the user back a step instead of writing anything:
+  // FreshPortal's answer at import time differed from the one at parse.
+  const [notice, setNotice] = useState("");
   const [retrying, setRetrying] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoParseRef = useRef(false);
@@ -717,7 +908,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const refShipmentPill    = useRef<HTMLDivElement>(null);
   const refCustomerCard    = useRef<HTMLDivElement>(null);
   const refCatalogueStatus = useRef<HTMLDivElement>(null);
-  const refApproveToolbar  = useRef<HTMLDivElement>(null);
+  const refApproveToolbar  = useRef<HTMLTableCellElement>(null);
   const refTable           = useRef<HTMLDivElement>(null);
   const refActionBtns      = useRef<HTMLDivElement>(null);
   const refImportResult    = useRef<HTMLDivElement>(null);
@@ -754,10 +945,42 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     [growers],
   );
 
-  // ── Box weight inline edit — keyed by deliveryKey, ArrowUp/Down moves focus
-  // between rows within the column (ref map indexed by displayLines position) ──
+  // ── Box weight inline edit — per line, as its box is (lineEditKey), cleared
+  // with each new file. ArrowUp/Down moves focus between rows within the
+  // column (ref map indexed by displayLines position) ──
   const [boxWeightEdits, setBoxWeightEdits] = useState<Record<string, number>>({});
   const boxWeightInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+
+  // ── Length inline edit — some invoices print none, and only a Floricode S20
+  // length goes to FreshPortal (user, 2026-09-28). Each line takes its own:
+  // the length is often what tells two lines of one product apart (user,
+  // 2026-09-29), so typing it on one line never changes another. Cleared with
+  // each new file, since a length is this invoice's, not the variety's.
+  // ArrowUp/Down moves between rows as in the box weight column ──
+  const [lengthEdits, setLengthEdits] = useState<Record<string, number>>({});
+  const lengthInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+  // A line's key for its length: its order, what it holds and, among lines
+  // holding exactly the same, its place (MYJ's two runs of MIX FANCY are the
+  // same product, box and bunches, and two lengths). Not the line's position
+  // in the table, which sorting and filtering move; and the same in both mix
+  // views, whose parses list the file's other lines in the same order.
+  const lineKeys = useMemo(() => {
+    const keys = new Map<DeliveryLine, string>();
+    parseResult?.orders.forEach((o, i) => {
+      const groups: [string, DeliveryLine[]][] = [["line", o.lines], ["mix", o.mix_lines ?? []]];
+      for (const [group, lines] of groups) {
+        const seen = new Map<string, number>();
+        for (const l of lines) {
+          const held = [l.gu_product, l.nm_variety, l.nm_box, l.nm_box_printed ?? "", l.nu_physical_boxes,
+                        l.nu_bunches, l.nu_stems_bunch, l.mny_rate_stem, l.nm_location, l.nu_length].join("|");
+          const n = seen.get(held) ?? 0;
+          seen.set(held, n + 1);
+          keys.set(l, `${i}|${group}|${held}#${n}`);
+        }
+      }
+    });
+    return keys;
+  }, [parseResult]);
 
   // ── Mix boxes: each variety its own line (separate), or each box one line
   // of a mix product (together, the default: user, 2026-09-25). Kept across
@@ -765,9 +988,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // together line goes in (QBE or HBE) is editable, keyed by its gu_product ──
   const [mixTogether, setMixTogether] = useState(true);
   const [mixBoxEdits, setMixBoxEdits] = useState<Record<string, string>>({});
-  // While the separate view's parse runs (switchMixMode), and why it failed.
+  // ── The box a line goes in, chosen per line like its length (user,
+  // 2026-09-29: two lines of one product may be different boxes). A code
+  // nobody has mapped arrives as QBE and stays marked until one is chosen.
+  // Keyed by lineEditKey; cleared with each new file ──
+  const [boxEdits, setBoxEdits] = useState<Record<string, string>>({});
+  // While the separate view's parse runs (switchMixMode); a failure is a toast.
   const [mixReparsing, setMixReparsing] = useState(false);
-  const [mixReparseError, setMixReparseError] = useState("");
   // Bumped by every parse and by reset, so an answer for a file that has
   // since been parsed again or put away is dropped rather than shown.
   const parseSeqRef = useRef(0);
@@ -786,13 +1013,28 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Table sort / filter / view ────────────────────────────────────────────
   const [showOnlyUnmatched, setShowOnlyUnmatched] = useState(false);
   const [showOnlyUnapproved, setShowOnlyUnapproved] = useState(false);
+  // The lines a "no length" or "no grower" chip was clicked for, fixed at the
+  // click: a row stays in view while its length is typed in, although "6" is
+  // already a valid length on the way to "60".
+  const [issueFilter, setIssueFilter] = useState<{ kind: "length" | "grower"; keys: Set<string> } | null>(null);
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
   const [tableSearch, setTableSearch] = useState("");
-  const [duplicateWarning, setDuplicateWarning] = useState<string[]>([]);
-  const [multiFileError, setMultiFileError] = useState(false);
   const [fileLoaded, setFileLoaded] = useState(false);
+  // A PDF is sent to the server as-is: only the parser knows how to read a
+  // supplier's printed layout, so there is nothing useful to show in the
+  // textarea and nothing the browser can check before parsing.
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  // A PDF no layout reads: what the server said (the dialog is open while
+  // set), and the saved invoice a temporary layout is being drafted for. How
+  // a draft ended when it did not end in a layout is a toast.
+  const [unknownLayout, setUnknownLayout] = useState<UnknownLayoutInfo | null>(null);
+  const [layoutDraftId, setLayoutDraftId] = useState<number | null>(null);
+  // The second question before a paid format, and where on the screen it
+  // appears (fractions of the room it has); then what the draft has spent.
+  const [paidConfirm, setPaidConfirm] = useState<{ invoiceId: number; x: number; y: number } | null>(null);
+  const [draftSpend, setDraftSpend] = useState(0);
 
   // Keyed by variety name only (length excluded) — a confirmed product match is a
   // variety-identity decision, so it applies to every line sharing the name in this
@@ -801,10 +1043,21 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     return (line.nm_variety ?? "").toLowerCase().trim();
   }
 
-  // Box weight is edited per variety, but a together mix line is boxes of
-  // its own: the 40cm and 60cm mix boxes weigh what they weigh.
+  // A line's variety, or a together mix line's own boxes: what edits fall
+  // back to for a line lineKeys does not know.
   function boxEditKey(line: DeliveryLine): string {
     return isMixLine(line) ? line.gu_product : deliveryKey(line);
+  }
+
+  // What a line's own length, box and box weight are kept under (lineKeys):
+  // each line's are its own (user, 2026-09-29).
+  function lineEditKey(line: DeliveryLine): string {
+    return lineKeys.get(line) ?? `${boxEditKey(line)}|${line.nu_length ?? 0}`;
+  }
+
+  // The length a line goes to FreshPortal with; 0 when it has none yet.
+  function lineLength(line: DeliveryLine): number {
+    return lengthEdits[lineEditKey(line)] ?? line.nu_length ?? 0;
   }
 
   // The lines the review step shows and imports. With mix boxes together,
@@ -829,9 +1082,40 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       fp_product_id: edit?.fp_product_id ?? line.fp_product_id,
       catalogue_nm_product: edit?.catalogue_nm_product ?? line.catalogue_nm_product,
       manufacturer_id: growerEdits[growerLocationKey(line.nm_location)] ?? line.manufacturer_id,
-      nu_box_weight: boxWeightEdits[boxEditKey(line)] ?? line.nu_box_weight,
-      nm_box: (isMixLine(line) && mixBoxEdits[line.gu_product]) || line.nm_box,
+      nu_box_weight: boxWeightEdits[lineEditKey(line)] ?? line.nu_box_weight,
+      nu_length: lineLength(line),
+      nm_box: (isMixLine(line) ? mixBoxEdits[line.gu_product]
+               : !isMbLine(line) && boxEdits[lineEditKey(line)])
+        || line.nm_box,
     };
+  }
+
+  // The shipment FreshPortal already holds for this invoice, when the user
+  // chose to add to it or the import found it; null for a new shipment.
+  const topUpBatch = parseResult?.orders[activeOrderIdx]?.existing_batch ?? null;
+  // Which lines of the table that shipment already has. Worked out from the
+  // lines as they would be sent, so a match changed on the screen counts.
+  const portal = topUpBatch ? compareWithPortal(activeLines, topUpBatch.stock_entries, withEdits) : null;
+  // The lines an import can still send: all of them, or those the shipment lacks.
+  const candidateLines = portal ? activeLines.filter(l => !portal.inPortal.has(l)) : activeLines;
+  // Of those, the ones the import button will send: approved, with a product.
+  const sendLines = candidateLines.filter(l => approvedKeys.has(deliveryKey(l)) && !!withEdits(l).fp_product_id);
+  const sendCount = sendLines.length;
+  // Of those, the ones still without a Floricode S20 length: until there are
+  // none, no shipment is created (user, 2026-09-28).
+  const lengthMissing = sendLines.filter(l => !S20_LENGTHS.has(lineLength(l))).length;
+  // Nor while one has no grower (user, 2026-09-29).
+  const growerMissing = sendLines.filter(l => !withEdits(l).manufacturer_id).length;
+  // Nor a new shipment without a delivery date, from the file or set here
+  // (user, 2026-09-30); lines added to an existing one keep its date.
+  const dateMissing = !topUpBatch
+    && !/^\d{2}-\d{2}-\d{4}$/.test(orderDateOverride || parseResult?.orders[activeOrderIdx]?.dt_fly || "");
+
+  function setOrderExistingBatch(idx: number, batch: ExistingBatch | null) {
+    setParseResult(prev => prev && {
+      ...prev,
+      orders: prev.orders.map((o, i) => i === idx ? { ...o, existing_batch: batch } : o),
+    });
   }
 
   // order.dt_fly is always normalised to "DD-MM-YYYY" by the parser; <input type="date">
@@ -899,11 +1183,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
   useEffect(() => {
     if (!autoParseRef.current) return;
-    if (!jsonText.trim() || stage !== "idle") return;
+    if ((!jsonText.trim() && !pdfFile) || stage !== "idle") return;
     autoParseRef.current = false;
     handleParseClick();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jsonText]);
+  }, [jsonText, pdfFile]);
 
   // The grower list (Ecuador system, growers from Ecuador and Colombia) is read once per visit.
   useEffect(() => {
@@ -985,8 +1269,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── File drop / select ──────────────────────────────────────────────────
 
   function handleFile(file: File) {
+    if (/\.pdf$/i.test(file.name)) {
+      setJsonText("");
+      setPdfFile(file);
+      setFileLoaded(true);
+      autoParseRef.current = true;
+      return;
+    }
     const reader = new FileReader();
     reader.onload = e => {
+      setPdfFile(null);
       setJsonText((e.target?.result as string) || "");
       setFileLoaded(true);
       autoParseRef.current = true;
@@ -997,10 +1289,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
     const files = e.dataTransfer.files;
-    if (files.length > 1) { setMultiFileError(true); return; }
-    setMultiFileError(false);
+    if (files.length > 1) { toast.error(td.onlyOneFile); return; }
     const f = files[0];
-    if (f && /\.(json|txt)$/i.test(f.name)) handleFile(f);
+    if (f && /\.(json|txt|pdf)$/i.test(f.name)) handleFile(f);
   }
 
   // ── Clear match cache ──────────────────────────────────────────────────
@@ -1008,8 +1299,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [clearingCache, setClearingCache] = useState(false);
 
   async function handleClearCache() {
+    if (clearingCache) return;
     const supplierId = resolvedSupplier?.fp_supplier_id || parseResult?.supplier_id;
-    if (!supplierId) { alert(td.clearCacheNoSupplier); return; }
+    if (!supplierId) { toast.error(td.clearCacheNoSupplier); return; }
     const supplierName = resolvedSupplier?.nm_supplier || supplierId;
     if (!confirm(td.clearCacheConfirm(supplierName, supplierId))) return;
     setClearingCache(true);
@@ -1020,75 +1312,94 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       const res = await fetch(`${RAILWAY}/catalogue/${supplierId}/matches`, { method: "DELETE" });
       if (!res.ok) throw new Error(await res.text());
       // Re-parse the currently loaded JSON so the table reflects fresh matching.
-      await handleParse(supplierId, true);
-    } catch { alert(td.clearCacheError); }
+      await handleParse(supplierId, true, "compare");
+    } catch { toast.error(td.clearCacheError); }
     finally { setClearingCache(false); }
-  }
-
-  // ── Duplicate detection ────────────────────────────────────────────────
-
-  async function checkDuplicate(text: string): Promise<string[]> {
-    try {
-      const body = JSON.parse(text);
-      const rawInvoices: { id_invoice?: string }[] = body.invoices ?? (Array.isArray(body) ? body : [body]);
-      const ids = rawInvoices.map(i => i.id_invoice).filter(Boolean) as string[];
-      if (!ids.length) return [];
-      const res = await fetch(`${RAILWAY}/delivery/import-log?limit=500`);
-      if (!res.ok) return [];
-      const data = await res.json();
-      const entries: { id_invoice?: string }[] = data.history ?? data.logs ?? (Array.isArray(data) ? data : []);
-      const existing = new Set<string>(entries.map(l => l.id_invoice).filter(Boolean) as string[]);
-      return ids.filter(id => existing.has(id));
-    } catch { return []; }
-  }
-
-  async function handleParseClick() {
-    if (!jsonText.trim()) return;
-    const dupes = await checkDuplicate(jsonText);
-    if (dupes.length > 0) {
-      setDuplicateWarning(dupes);
-      return;
-    }
-    await handleParse();
   }
 
   // ── Parse & match ──────────────────────────────────────────────────────
 
+  // Whether FreshPortal already holds the shipment is asked by the parse
+  // itself, before any product search, for a JSON and a PDF alike: the
+  // import log this used to be checked against knew only imports made here,
+  // by invoice number alone, and a PDF's number only after the whole parse.
+  async function handleParseClick() {
+    if (!jsonText.trim() && !pdfFile) return;
+    await handleParse();
+  }
+
   // The loaded file, parsed and matched. A together parse leaves the
   // varieties inside combined mix boxes unmatched, which is most of the
-  // product search on a mix-heavy invoice (see delivery_parse).
-  async function requestParse(mixMode: MixMode, supplierIdOverride?: string): Promise<ParseResult> {
-    const res = await fetch(`${RAILWAY}/delivery/parse`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        raw_json: JSON.parse(jsonText),
-        with_matching: true,
-        mix_mode: mixMode,
-        ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
-      }),
-    });
-    if (!res.ok) throw new Error(await res.text());
+  // product search on a mix-heavy invoice (see _resolve_and_match).
+  async function requestParse(mixMode: MixMode, supplierIdOverride?: string, existing: ExistingMode = "compare"): Promise<ParseResult> {
+    let res: Response;
+    if (pdfFile) {
+      // Sent as multipart: the file goes up untouched, since reading a
+      // supplier's printed layout only happens server-side.
+      const form = new FormData();
+      form.append("pdf", pdfFile);
+      form.append("with_matching", "true");
+      form.append("mix_mode", mixMode);
+      form.append("existing", existing);
+      if (supplierIdOverride) form.append("supplier_id", supplierIdOverride);
+      res = await fetch(`${RAILWAY}/delivery/parse-pdf`, { method: "POST", body: form });
+    } else {
+      res = await fetch(`${RAILWAY}/delivery/parse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          raw_json: JSON.parse(jsonText),
+          with_matching: true,
+          mix_mode: mixMode,
+          existing,
+          ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
+        }),
+      });
+    }
+    if (!res.ok) {
+      const body = await res.text();
+      if (pdfFile && res.status === 422) {
+        try {
+          const detail = JSON.parse(body).detail;
+          if (detail?.code === "unknown_pdf_layout") throw new UnknownLayoutError(detail as UnknownLayoutInfo);
+        } catch (e) {
+          if (e instanceof UnknownLayoutError) throw e;
+        }
+      }
+      throw new Error(body);
+    }
     return res.json();
   }
 
-  async function handleParse(supplierIdOverride?: string, keepStage = false) {
-    if (!jsonText.trim()) return;
+  // `existing` "check" for a file's first parse, which stops as soon as
+  // FreshPortal turns out to hold the shipment; "compare" once the user chose
+  // to go on, and for every parse after the first.
+  async function handleParse(supplierIdOverride?: string, keepStage = false, existing: ExistingMode = "check") {
+    if (!jsonText.trim() && !pdfFile) return;
     parseSeqRef.current++;
     setMixReparsing(false);
-    setMixReparseError("");
     setStage("parsing");
-    setDuplicateWarning([]);
+    setExistingFound(null);
+    setNotice("");
     setError("");
     try {
-      const data = await requestParse(mixTogether ? "together" : "separate", supplierIdOverride);
+      const data = await requestParse(mixTogether ? "together" : "separate", supplierIdOverride, existing);
+      if (data.existing?.length) {
+        setExistingFound(data);
+        setStage("idle");
+        return;
+      }
       setParseResult(data);
       setActiveOrderIdx(0);
       setLineEdits({});
       setMixBoxEdits({});
+      setLengthEdits({});
+      setBoxEdits({});
+      setBoxWeightEdits({});
       setEditingKey(null);
       setShowOnlyUnmatched(false);
       setShowOnlyUnapproved(false);
+      setIssueFilter(null);
       setSortCol(null);
       setColFilters({});
       if (data.supplier_id) {
@@ -1107,10 +1418,85 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setApprovedKeys(preApproved);
       if (!keepStage) setStage("shipment");
     } catch (err: unknown) {
+      if (err instanceof UnknownLayoutError) {
+        // Someone is already drafting for this very file: follow that draft.
+        if (err.info.status === "drafting" && err.info.invoice_id != null) {
+          setLayoutDraftId(err.info.invoice_id);
+          return;
+        }
+        setUnknownLayout(err.info);
+        setStage("idle");
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
       setStage("error");
     }
   }
+
+  // ── A PDF no layout reads (user, 2026-09-28): the server has saved it for
+  // IT; the user may ask for a temporary layout, within a daily limit, and
+  // cancel it while it is being drafted. The draft runs on the server; this
+  // screen follows it, and parses the file again once it has a layout. ──
+  async function startLayoutDraft(invoiceId: number) {
+    setUnknownLayout(null);
+    try {
+      const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${invoiceId}/draft`, { method: "POST" });
+      if (!res.ok) {
+        const detail = await res.json().then(b => b.detail).catch(() => null);
+        if (detail?.code === "not_waiting") { setLayoutDraftId(invoiceId); return; }
+        toast.error(detail?.code === "draft_limit"
+          ? td.unknownLayoutNoneLeft(detail.drafts_per_day)
+          : td.layoutDraftFailed);
+        setStage("idle");
+        return;
+      }
+      setLayoutDraftId(invoiceId);
+    } catch {
+      toast.error(td.layoutDraftFailed);
+      setStage("idle");
+    }
+  }
+
+  async function cancelLayoutDraft() {
+    const id = layoutDraftId;
+    if (id == null) return;
+    setLayoutDraftId(null);
+    setStage("idle");
+    toast(td.layoutDraftCancelled);
+    try {
+      await fetch(`${RAILWAY}/delivery/pdf-layouts/${id}/cancel`, { method: "POST" });
+    } catch {}
+  }
+
+  useEffect(() => {
+    if (layoutDraftId == null) return;
+    setStage("parsing");
+    setDraftSpend(0);
+    let stopped = false;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${layoutDraftId}`);
+        if (!res.ok || stopped) return;
+        const row: { status: string; cost_usd?: number | null } = await res.json();
+        if (stopped) return;
+        if (row.status === "drafting") {
+          setDraftSpend(row.cost_usd ?? 0);
+          return;
+        }
+        stopped = true;
+        setLayoutDraftId(null);
+        if (row.status === "provisional" || row.status === "verified") {
+          handleParse();
+        } else {
+          if (row.status === "failed") toast.error(td.layoutDraftFailed);
+          else toast(td.layoutDraftCancelled);
+          setStage("idle");
+        }
+      } catch {}
+    }, LAYOUT_DRAFT_POLL_MS);
+    return () => { stopped = true; clearInterval(timer); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutDraftId]);
 
   // Switching to together never parses: every answer holds that view. The
   // separate view needs the varieties inside combined mix boxes matched, which
@@ -1120,7 +1506,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // new answer shares with the old one.
   async function switchMixMode(together: boolean) {
     setMixTogether(together);
-    setMixReparseError("");
     if (together || !parseResult || parseResult.mix_mode !== "together") return;
     if (!parseResult.orders.some(o => (o.mix_lines ?? []).some(isMixLine))) return;
     const seq = ++parseSeqRef.current;
@@ -1140,7 +1525,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     } catch (err: unknown) {
       if (seq !== parseSeqRef.current) return;
       setMixTogether(true);
-      setMixReparseError(err instanceof Error ? err.message : String(err));
+      toast.error(td.mixSeparateFailed, { description: err instanceof Error ? err.message : String(err) });
     } finally {
       if (seq === parseSeqRef.current) setMixReparsing(false);
     }
@@ -1165,29 +1550,57 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   async function handleSelectSupplier(supplier: FPSupplier) {
     setSupplierPickerOpen(false);
     setResolvedSupplier(supplier);
-    setExistingBatch(null);
 
     // Changing supplier only changes which fp_supplier_id is sent when the
     // shipment is created — product matches are not supplier-scoped, so there
     // is no need to re-parse the JSON or re-run matching here.
     const txCompany = parseResult?.orders[activeOrderIdx]?.tx_company ?? "";
-    try {
-      await fetch(`${RAILWAY}/catalogue/supplier-map`, {
+    await Promise.all([
+      recheckExisting(supplier.fp_supplier_id),
+      fetch(`${RAILWAY}/catalogue/supplier-map`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tx_company: txCompany, fp_supplier_id: supplier.fp_supplier_id }),
-      });
-    } catch {}
+      }).catch(() => {}),
+    ]);
+  }
+
+  // A supplier picked by hand is the first chance to ask FreshPortal whether
+  // it already holds these shipments: a supplier the parse could not resolve
+  // was never asked about, and a changed one was asked about the wrong
+  // supplier. A lookup that fails reads as none, since the import asks again
+  // before it writes anything.
+  async function recheckExisting(supplierId: string) {
+    if (!parseResult) return;
+    const seq = parseSeqRef.current;
+    const found = await Promise.all(parseResult.orders.map(async (o): Promise<ExistingBatch | null> => {
+      if (!o.id_invoice) return null;
+      try {
+        const res = await fetch(`${RAILWAY}/delivery/api/check`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ supplier_fp_id: supplierId, batch_number: o.id_invoice }),
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.exists ? data.batch : null;
+      } catch { return null; }
+    }));
+    if (seq !== parseSeqRef.current) return;
+    setParseResult(prev => prev && {
+      ...prev,
+      orders: prev.orders.map((o, i) => ({ ...o, existing_batch: found[i] ?? null })),
+    });
   }
 
   // ── Import to FreshPortal ───────────────────────────────────────────────
 
-  async function logImportResult(order: DeliveryOrder, fullLines: DeliveryLine[], result: DfgCreateResult) {
+  async function logImportResult(order: DeliveryOrder, fullLines: DeliveryLine[], result: DfgCreateResult, inPortal?: Set<DeliveryLine>) {
     if (!result.batch_id) return;
     try {
-      const productLines = computeLineStatuses(fullLines, result, lineEdits, approvedKeys).map(({ line, status, message }) => ({
+      const productLines = computeLineStatuses(fullLines, result, lineEdits, approvedKeys, inPortal, lineLength).map(({ line, status, message }) => ({
         nm_variety: line.nm_variety,
-        nu_length: line.nu_length,
+        nu_length: lineLength(line),
         nu_bunches: line.nu_bunches,
         match_method: line.match_method,
         catalogue_nm_product: line.catalogue_nm_product,
@@ -1246,17 +1659,22 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       setStage("error");
       return;
     }
-    if (!customerId) {
+    if (!customerId && !topUpBatch) {
       // Shouldn't be reachable via the UI — the shipment step gates on this —
       // but guard defensively since this function can also run on retry paths.
+      // A shipment already in FreshPortal needs no customer: it has its own.
       setStage("shipment");
       return;
     }
+    // The import button waits for every line it sends to have a Floricode S20
+    // length and a grower, and for a delivery date; checked here too, since
+    // the partial-approval dialog calls in.
+    if (lengthMissing > 0 || growerMissing > 0 || dateMissing) return;
 
     // Check if all matched lines are approved — show modal if not
     if (!skipPartialCheck) {
-      const totalMatched = activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
-      const totalApproved = activeLines.filter(l => {
+      const totalMatched = candidateLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
+      const totalApproved = candidateLines.filter(l => {
         const dk = deliveryKey(l);
         return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk);
       }).length;
@@ -1275,15 +1693,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setLogs([]);
     setImportResult(null);
     setError("");
+    setNotice("");
 
+    const approvedLines = activeLines.filter(line => approvedKeys.has(deliveryKey(line)));
     const orderWithEdits: DeliveryOrder = {
       ...order,
       // Already in `lines` when sent together; the other view is not sent.
       mix_lines: undefined,
+      existing_batch: undefined,
       dt_fly: orderDateOverride || order.dt_fly,
-      lines: activeLines
-        .filter(line => approvedKeys.has(deliveryKey(line)))
-        .map(withEdits),
+      lines: approvedLines.map(withEdits),
     };
     // Skipped means no product even after the user's own pick: read from the
     // parse alone, a line matched by hand was listed as skipped although it
@@ -1291,40 +1710,53 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     const skippedUnmatched = activeLines.map(withEdits).filter(l => !l.fp_product_id).map(l => l.nm_product);
 
     try {
+      // Asked again right before writing, whatever the parse found: the DFG
+      // API does not stop a second shipment of the same number itself.
       const checkData = await loggedRequest(
         `${RAILWAY}/delivery/api/check`,
         { supplier_fp_id: supplierFpId, batch_number: order.id_invoice },
         td.checkingExisting,
       );
+      const found: ExistingBatch | null = checkData.exists ? checkData.batch : null;
 
-      if (checkData.exists) {
-        const batch = checkData.batch;
-        setExistingBatch({ id: batch.id, number: batch.number });
-        const existingKeys = new Set(
-          (batch.stock_entries ?? []).map((se: { product_number: string; characteristics?: { length?: number } }) =>
-            `${se.product_number}|${se.characteristics?.length ?? 0}`)
-        );
-        const missingLines = orderWithEdits.lines.filter(l => !existingKeys.has(`${l.fp_product_id}|${l.nu_length}`));
+      // FreshPortal has changed since the screen asked: the shipment turned up
+      // (created meanwhile, or under a supplier picked since), or it is gone.
+      // Nothing is written; the user is taken back to see what that means.
+      // Before, a shipment found here was topped up without asking, and a
+      // failure there was the first the user heard of it (2026-09-28).
+      if (!found !== !topUpBatch) {
+        setOrderExistingBatch(activeOrderIdx, found);
+        setNotice(found ? td.foundAtImport(found.number) : td.goneAtImport(topUpBatch?.number ?? order.id_invoice));
+        setStage(found ? "preview" : "shipment");
+        return;
+      }
 
+      if (found) {
+        // Compared against what FreshPortal holds now, which the screen then
+        // shows too, so what was sent and what the result says agree.
+        setOrderExistingBatch(activeOrderIdx, found);
+        const { inPortal } = compareWithPortal(activeLines, found.stock_entries, withEdits);
+        const missingLines = approvedLines.filter(l => !inPortal.has(l)).map(withEdits);
         if (missingLines.length === 0) {
-          setError(td.batchAlreadyExistsComplete(batch.number));
-          setStage("error");
+          setNotice(td.batchAlreadyExistsComplete(found.number));
+          setStage("preview");
           return;
         }
 
+        const topUpOrder: DeliveryOrder = { ...orderWithEdits, lines: missingLines };
         const retryData = await loggedRequest(
           `${RAILWAY}/delivery/api/retry`,
-          { batch_id: batch.id, supplier_fp_id: supplierFpId, order: { ...orderWithEdits, lines: missingLines } },
-          td.addingMissingToExisting(batch.number, missingLines.length),
+          { batch_id: found.id, supplier_fp_id: supplierFpId, invoice_id: found.invoice_id, order: topUpOrder },
+          td.addingMissingToExisting(found.number, missingLines.length),
         );
         const result: DfgCreateResult = {
-          batch_id: retryData.batch_id, number: retryData.number, created: false,
-          stock_entries_ok: retryData.stock_entries_ok, errors: retryData.errors,
-          skipped_unmatched: skippedUnmatched, batch_url: retryData.batch_url,
-          invoice_id: retryData.invoice_id, invoice_url: retryData.invoice_url,
+          batch_id: retryData.batch_id ?? found.id, number: retryData.number || found.number, created: false,
+          stock_entries_ok: retryData.stock_entries_ok ?? [], errors: retryData.errors ?? [],
+          skipped_unmatched: skippedUnmatched, batch_url: retryData.batch_url || found.batch_url,
+          invoice_id: retryData.invoice_id ?? found.invoice_id, invoice_url: retryData.invoice_url || found.invoice_url,
         };
         setImportResult(result);
-        await logImportResult(orderWithEdits, activeLines, result);
+        await logImportResult(topUpOrder, activeLines, result, inPortal);
         setStage("done");
         return;
       }
@@ -1369,10 +1801,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     if (!retryLines.length) return;
 
     setRetrying(true);
+    setError("");
     try {
       const retryData = await loggedRequest(
         `${RAILWAY}/delivery/api/retry`,
-        { batch_id: importResult.batch_id, supplier_fp_id: supplierFpId, order: { ...order, mix_lines: undefined, lines: retryLines } },
+        {
+          batch_id: importResult.batch_id,
+          supplier_fp_id: supplierFpId,
+          invoice_id: importResult.invoice_id ?? null,
+          order: { ...order, mix_lines: undefined, existing_batch: undefined, lines: retryLines },
+        },
         td.retryingBtn,
       );
       setImportResult(prev => prev ? {
@@ -1477,15 +1915,20 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   function reset() {
     parseSeqRef.current++;
     setMixReparsing(false);
-    setMixReparseError("");
     setStage("idle");
     setJsonText("");
+    setPdfFile(null);
+    setUnknownLayout(null);
+    setPaidConfirm(null);
+    setLayoutDraftId(null);
+    setFileLoaded(false);
+    setExistingFound(null);
+    setNotice("");
     setParseResult(null);
     logsRef.current = [];
     setLogs([]);
     setError("");
     setImportResult(null);
-    setExistingBatch(null);
     setCustomerId("");
     // An import can create an invoice, so what was cached before it no longer
     // describes the customer.
@@ -1495,6 +1938,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setApprovedKeys(new Set());
     setLineEdits({});
     setMixBoxEdits({});
+    setLengthEdits({});
+    setBoxEdits({});
+    setBoxWeightEdits({});
     setEditingKey(null);
     setEditModalOpen(false);
     setGrowerEdits({});
@@ -1506,12 +1952,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     setSupplierSearch("");
     setShowOnlyUnmatched(false);
     setShowOnlyUnapproved(false);
+    setIssueFilter(null);
     setSortCol(null);
     setSortDir("asc");
     setColFilters({});
     setTableSearch("");
-    setDuplicateWarning([]);
-    setMultiFileError(false);
     setFileLoaded(false);
   }
 
@@ -1532,6 +1977,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // ── Render ──────────────────────────────────────────────────────────────
 
   const order = parseResult?.orders[activeOrderIdx];
+  // The shipments a first parse found already in FreshPortal, if it stopped.
+  const existingHits = existingFound?.existing ?? [];
 
   const displayLines = useMemo(() => {
     let lines = [...activeLines];
@@ -1564,7 +2011,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           (l.mix_boxes ?? []).some(code => code.toLowerCase().includes(q)) ||
           l.match_method.toLowerCase().includes(q) ||
           (l.id_floricode ?? "").toLowerCase().includes(q) ||
-          String(l.nu_length).includes(q)
+          String(lineLength(l)).includes(q)
         );
       });
     }
@@ -1576,6 +2023,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         if (sortCol === "variety")    { av = a.nm_variety;       bv = b.nm_variety; }
         else if (sortCol === "box")   { av = a.nm_box || "";     bv = b.nm_box || ""; }
         else if (sortCol === "boxQty") { av = a.nu_physical_boxes; bv = b.nu_physical_boxes; }
+        // By the file's length: sorted by the edited one, a row would move
+        // away while its length is being typed in.
         else if (sortCol === "length") { av = a.nu_length;       bv = b.nu_length; }
         else if (sortCol === "stemsBunch") { av = a.nu_stems_bunch; bv = b.nu_stems_bunch; }
         else if (sortCol === "bunches") { av = a.nu_bunches;     bv = b.nu_bunches; }
@@ -1589,11 +2038,46 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       });
     }
     return lines;
-  }, [activeLines, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits]);
+  }, [activeLines, showOnlyUnmatched, showOnlyUnapproved, approvedKeys, tableSearch, sortCol, sortDir, lineEdits, lengthEdits]);
 
-  // Counted over what is on screen, so they follow the mix box switch.
-  const matchedCount = activeLines.filter(l => l.fp_product_id).length;
-  const unmatchedCount = activeLines.length - matchedCount;
+  // Counted over what is on screen, so they follow the mix box switch, and
+  // with the products picked by hand.
+  const hasProduct = (l: DeliveryLine) => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id);
+  const unmatchedCount = activeLines.filter(l => !hasProduct(l)).length;
+  // Of the lines an import can still send: those with a product, and of
+  // them the approved ones. The header checkbox and the approved chip.
+  const matchedCandidates = candidateLines.filter(hasProduct).length;
+  const approvedCandidates = candidateLines.filter(l => hasProduct(l) && approvedKeys.has(deliveryKey(l))).length;
+
+  // The lines the "no length" and "no grower" chips stand for, by line key.
+  const lengthMissingKeys = sendLines.filter(l => !S20_LENGTHS.has(lineLength(l))).map(lineEditKey);
+  const growerMissingKeys = sendLines.filter(l => !withEdits(l).manufacturer_id).map(lineEditKey);
+  function toggleIssueFilter(kind: "length" | "grower") {
+    setIssueFilter(prev => prev?.kind === kind ? null
+      : { kind, keys: new Set(kind === "length" ? lengthMissingKeys : growerMissingKeys) });
+  }
+  const shownLines = issueFilter ? displayLines.filter(l => issueFilter.keys.has(lineEditKey(l))) : displayLines;
+  const tableFiltered = !!(tableSearch || sortCol || showOnlyUnmatched || showOnlyUnapproved || issueFilter);
+  function clearTableView() {
+    setTableSearch("");
+    setSortCol(null);
+    setSortDir("asc");
+    setShowOnlyUnmatched(false);
+    setShowOnlyUnapproved(false);
+    setIssueFilter(null);
+  }
+
+  // What the round import button says: why it waits, or what it will do.
+  const importBlockers = [
+    dateMissing ? td.dateMissing : "",
+    lengthMissing > 0 ? td.lengthMissing(lengthMissing) : "",
+    growerMissing > 0 ? td.growerMissing(growerMissing) : "",
+  ].filter(Boolean);
+  const importDisabled = mixReparsing || sendCount === 0 || importBlockers.length > 0;
+  const importTip = mixReparsing ? td.mixSeparateLoading
+    : importBlockers.length > 0 ? importBlockers.join("\n")
+    : sendCount === 0 ? (topUpBatch && candidateLines.length === 0 ? td.topUpNothingMissing : td.goNoneApproved)
+    : topUpBatch ? td.addMissingBtn(sendCount) : td.importBtn;
   // MBn boxes in the order, and those that stay per variety when together.
   const mixBoxCount = new Set((order?.lines ?? []).filter(isMbLine).map(l => l.nm_box)).size;
   // Named, not counted: a bare number left the user looking for a difference
@@ -1604,10 +2088,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   // from the same approval/match state used to build the request, cross-
   // referenced against the result's errors/skipped_unmatched (stock_entries_ok's
   // shape isn't reliably typed, so success is inferred by elimination instead).
-  const doneLineStatuses = useMemo((): { line: DeliveryLine; status: DoneLineStatus; message: string }[] => {
-    if (!importResult) return [];
-    return computeLineStatuses(activeLines, importResult, lineEdits, approvedKeys);
-  }, [activeLines, importResult, lineEdits, approvedKeys]);
+  // Not memoised: `portal` is worked out afresh on every render anyway.
+  const doneLineStatuses = importResult
+    ? computeLineStatuses(activeLines, importResult, lineEdits, approvedKeys, portal?.inPortal, lineLength)
+    : [];
 
   type AllTourStep = TourStep & { tourStage: "idle" | "shipment" | "preview" | "done" };
 
@@ -1638,6 +2122,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         setLineEdits({});
         setShowOnlyUnmatched(false);
         setShowOnlyUnapproved(false);
+        setIssueFilter(null);
         setSortCol(null);
         setColFilters({});
         setApprovedKeys(preApproved);
@@ -1660,32 +2145,47 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const stepActions: ((() => void) | null)[] = tourOpen ? [null, null, null, null] : [
     stage === "shipment" || stage === "preview" ? handleStartOver : stage === "done" ? reset : null,
     stage === "preview" ? () => setStage("shipment") : null,
-    stage === "shipment" && resolvedSupplier && customerId ? () => setStage("preview") : null,
+    stage === "shipment" && resolvedSupplier && (customerId || topUpBatch) ? () => setStage("preview") : null,
     null,
   ];
 
   return (
     <div data-di className="flex flex-col gap-5 sm:gap-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-bold text-ink">{td.title}</h2>
-          <p className="text-sm text-ink-3 mt-0.5">
-            {stage === "shipment" ? td.descShipment
-             : stage === "preview" ? td.descReview
-             : stage === "importing" ? td.descImport
-             : stage === "done" ? td.descProducts
-             : td.descUpload}
-          </p>
+      {/* The title and the tools; which step this is, the stepper says. Start
+          over sits here for every step, and clearing a supplier's match cache
+          is for admins only (user, 2026-09-30). */}
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-lg font-bold text-ink">{td.title}</h2>
+        <div className="flex items-center gap-1.5">
+          {isAdmin && stage === "preview" && (
+            <Tip content={td.clearCacheTitle}>
+              <Button
+                variant="danger"
+                size="icon"
+                onClick={handleClearCache}
+                aria-disabled={clearingCache}
+                aria-label={td.clearCacheTitle}
+                className="border-dashed border-taupe/70"
+              >
+                {clearingCache ? <LoaderCircle className="size-4 animate-spin" /> : <Eraser className="size-4" />}
+              </Button>
+            </Tip>
+          )}
+          {(stage === "shipment" || stage === "preview") && (
+            <Tip content={td.startOver}>
+              <Button size="icon" onClick={handleStartOver} aria-label={td.startOver}>
+                <RotateCcw className="size-4" />
+              </Button>
+            </Tip>
+          )}
+          {stage !== "importing" && (
+            <Tip content={td.tourOpenBtn}>
+              <Button size="icon" onClick={openTour} aria-label={td.tourOpenBtn}>
+                <CircleQuestionMark className="size-4" />
+              </Button>
+            </Tip>
+          )}
         </div>
-        {stage !== "importing" && (
-          <button
-            onClick={openTour}
-            title={td.tourOpenBtn}
-            className="flex-shrink-0 w-7 h-7 rounded-full border border-border text-ink-3 hover:text-emerald hover:border-emerald/50 text-xs font-bold transition-colors flex items-center justify-center"
-          >
-            ?
-          </button>
-        )}
       </div>
 
       {tourOpen && (
@@ -1699,7 +2199,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       )}
 
       {isTourMode && (
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blush/30 border border-blush text-xs text-brick">
           <span>🎯</span>
           <span>{td.tourDemoMode}</span>
         </div>
@@ -1716,61 +2216,185 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── PARSING ── */}
       {stage === "parsing" && (
         <div className="flex flex-col items-center gap-5 py-8">
-          <div className="relative flex items-center justify-center">
-            <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
-            </svg>
-            <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
-              <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
-            </svg>
+          {layoutDraftId == null ? (
+            <>
+              <div className="relative flex items-center justify-center">
+                <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
+                </svg>
+                <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
+                  <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
+                </svg>
+              </div>
+              <p className="text-sm font-semibold text-ink">{td.parsing}</p>
+            </>
+          ) : (
+            <>
+              {/* The money counted as the tokens go (user, 2026-09-30). */}
+              <LayoutDraftMeter usd={draftSpend} catchUpMs={LAYOUT_DRAFT_POLL_MS} spentLabel={td.layoutSpent} />
+              <p className="text-sm font-semibold text-ink text-center max-w-sm">{td.layoutDrafting}</p>
+              {/* Stops the model on the server and clears what it made; the
+                  invoice stays saved for IT (user, 2026-09-28). */}
+              <Button onClick={cancelLayoutDraft}>
+                <X className="size-4" />
+                {td.layoutDraftCancel}
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* A PDF no layout reads: it is saved for IT, and a temporary layout
+          may be drafted now, within a daily limit — waiting for IT is what
+          the dialog recommends (user, 2026-09-28). Kept short, with the
+          price rounded well up (user, 2026-09-30). */}
+      {unknownLayout && (() => {
+        const left = unknownLayout.drafts_left_today ?? 0;
+        const perDay = unknownLayout.drafts_per_day ?? 0;
+        const saved = unknownLayout.invoice_id != null;
+        const available = saved && unknownLayout.drafting_available !== false;
+        const canTry = available && left > 0;
+        return (
+          <Popup
+            title={td.unknownLayoutTitle}
+            onClose={() => setUnknownLayout(null)}
+            className={`inset-x-4 top-1/2 -translate-y-1/2 max-w-md mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}
+          >
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-brick">
+                  <TriangleAlert className="size-5" />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <p className="text-sm font-bold text-brick">{td.unknownLayoutTitle}</p>
+                  <p className="text-xs text-ink-3">{saved ? td.unknownLayoutBody : td.unknownLayoutNotSaved}</p>
+                  {available && !canTry && (
+                    <p className="text-xs font-medium text-ink">{td.unknownLayoutNoneLeft(perDay)}</p>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2 justify-end flex-wrap">
+                <Button autoFocus variant="emphasis" onClick={() => setUnknownLayout(null)}>
+                  {td.unknownLayoutWait}
+                </Button>
+                {canTry && (
+                  <Tip content={td.unknownLayoutPaid(LAYOUT_DRAFT_PRICE_SHOWN_USD)}>
+                    <Button
+                      onClick={() => {
+                        setPaidConfirm({ invoiceId: unknownLayout.invoice_id as number, x: Math.random(), y: Math.random() });
+                        setUnknownLayout(null);
+                      }}
+                    >
+                      {td.unknownLayoutTry} · ~${LAYOUT_DRAFT_PRICE_SHOWN_USD}
+                    </Button>
+                  </Tip>
+                )}
+              </div>
+          </Popup>
+        );
+      })()}
+
+      {/* Asked once more before paying, with No suggested, and somewhere
+          else on the screen each time (user, 2026-09-30). */}
+      {paidConfirm && (
+        <Popup
+          title={td.layoutPaidConfirm}
+          role="alertdialog"
+          onClose={() => setPaidConfirm(null)}
+          className={`w-[min(20rem,calc(100%-2rem))] rounded-2xl ${POPUP_WARNING_FRAME} p-5 flex flex-col gap-4`}
+          style={{
+            // Anywhere, and always whole: moving the popup back by the
+            // same share of its own size keeps its far edge on screen.
+            left: `calc(1rem + (100% - 2rem) * ${paidConfirm.x})`,
+            top: `calc(1rem + (100% - 2rem) * ${paidConfirm.y})`,
+            transform: `translate(${-paidConfirm.x * 100}%, ${-paidConfirm.y * 100}%)`,
+          }}
+        >
+          <p className="text-sm font-bold text-brick leading-snug">{td.layoutPaidConfirm}</p>
+          <div className="flex gap-2 justify-end">
+            <Button autoFocus variant="emphasis" onClick={() => setPaidConfirm(null)}>
+              {td.layoutPaidNo}
+            </Button>
+            <Button
+              onClick={() => {
+                const id = paidConfirm.invoiceId;
+                setPaidConfirm(null);
+                startLayoutDraft(id);
+              }}
+            >
+              {td.layoutPaidYes}
+            </Button>
           </div>
-          <p className="text-sm font-semibold text-ink">{td.parsing}</p>
+        </Popup>
+      )}
+
+      {/* Already in FreshPortal. The file's first parse stopped before any
+          product search, so the user hears it at once instead of after the
+          whole review (user, 2026-09-28). Edit parses the file after all and
+          compares it with the shipment; Cancel lets the file go. */}
+      {existingFound && existingHits.length > 0 && (() => {
+        const hits = existingHits;
+        const total = existingFound.invoices_in_file ?? hits.length;
+        return (
+          <Popup
+            title={td.existsTitle}
+            dismissable={false}
+            className={`inset-x-4 top-1/2 -translate-y-1/2 max-w-md mx-auto max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}
+          >
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-brick">
+                  <Layers className="size-5" />
+                </div>
+                <div>
+                  <Tip content={total > 1 ? undefined : td.existsBody(hits[0].id_invoice, existingFound.supplier_nm || existingFound.supplier_id)}>
+                    <p className="text-sm font-bold text-brick">{td.existsTitle}</p>
+                  </Tip>
+                  {total > 1 && <p className="text-xs text-ink-3 mt-1">{td.existsSomeShort(hits.length, total)}</p>}
+                </div>
+              </div>
+              {hits.map(b => (
+                <div key={b.id} className="rounded-xl border border-border bg-muted p-3 flex flex-col gap-2 text-xs">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {b.batch_url
+                      ? <FpLink href={b.batch_url} title={td.viewBatch}>{b.number}</FpLink>
+                      : <span className="text-sm font-semibold text-ink">{b.number}</span>}
+                    {b.invoice_url && <FpIconLink href={b.invoice_url} title={td.viewInvoice} />}
+                  </div>
+                  <span className="text-ink-2">
+                    {[
+                      b.created_at ? `${td.existsCreated} ${invoiceDayLabel(b.created_at.slice(0, 10), td)}` : "",
+                      b.customer_name || td.existsOnStock,
+                      td.existsLines(b.stock_entries.length),
+                    ].filter(Boolean).join(" · ")}
+                  </span>
+                </div>
+              ))}
+              <div className="flex gap-2 justify-end">
+                <Button onClick={reset}>{t.common.cancel}</Button>
+                <Tip content={total > 1 ? td.existsSomeInFile(hits.length, total) : td.existsEditHint}>
+                  <Button autoFocus variant="primary" onClick={() => handleParse(undefined, false, "compare")}>
+                    <Plus className="size-4" />
+                    {td.existsEditBtn}
+                  </Button>
+                </Tip>
+              </div>
+          </Popup>
+        );
+      })()}
+
+      {/* Why the import brought the user back here instead of writing anything. */}
+      {notice && (stage === "shipment" || stage === "preview") && (
+        <div role="status" className="flex items-center gap-2 text-xs rounded-xl pl-3 pr-1 py-1 border text-ink bg-sand/60 border-taupe/40">
+          <Info className="size-4 text-ink-3" />
+          <span className="flex-1">{notice}</span>
+          <Button variant="ghost" size="icon-sm" onClick={() => setNotice("")} aria-label={td.closeBtn}>
+            <X className="size-3.5" />
+          </Button>
         </div>
       )}
 
       {/* ── IDLE / INPUT ── */}
       {stage === "idle" && (
         <div key="idle" className="step-enter flex flex-col gap-4">
-          {/* Multi-file error */}
-          {multiFileError && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600">
-              <span>⚠ {td.onlyOneFile}</span>
-              <button onClick={() => setMultiFileError(false)} className="ml-auto text-amber-400 hover:text-amber-600 transition-colors">✕</button>
-            </div>
-          )}
-
-          {/* Duplicate warning — centered modal */}
-          {duplicateWarning.length > 0 && (
-            <>
-              <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setDuplicateWarning([])} />
-              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-amber-500/40 bg-surface shadow-2xl p-6 flex flex-col gap-4">
-                <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xl">
-                    ⚠
-                  </div>
-                  <div>
-                    <p className="text-sm font-bold text-amber-700">{td.duplicateWarningTitle}</p>
-                    <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.duplicateWarningMsg(duplicateWarning.join(", "))}</p>
-                  </div>
-                </div>
-                <div className="flex gap-2 justify-end">
-                  <button
-                    onClick={() => setDuplicateWarning([])}
-                    className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
-                  >
-                    {t.common.cancel}
-                  </button>
-                  <button
-                    onClick={() => { setDuplicateWarning([]); handleParse(); }}
-                    className="h-9 px-5 rounded-xl text-sm font-semibold bg-amber-500 text-white hover:bg-amber-500/90 transition-colors"
-                  >
-                    {td.parseBtn}
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-
           <div
             ref={refDropZone}
             className={`border-2 border-dashed rounded-2xl p-4 transition-colors
@@ -1778,46 +2402,70 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             onDragOver={e => e.preventDefault()}
             onDrop={onDrop}
           >
-            <textarea
-              className={`w-full h-40 bg-transparent text-sm font-mono outline-none resize-none placeholder:text-ink-3/40 transition-colors
-                ${fileLoaded ? "text-ink-3/60 cursor-not-allowed select-none" : "text-ink"}`}
-              placeholder={td.pastePlaceholder}
-              value={jsonText}
-              readOnly={fileLoaded}
-              onChange={e => { if (!fileLoaded) setJsonText(e.target.value); }}
-            />
-            <div className="flex items-center justify-between mt-3">
-              <span className="text-xs text-ink-3">{td.dropHint}</span>
-              <div className="flex items-center gap-2">
-                {jsonText && (
-                  <button
-                    onClick={() => { setJsonText(""); setDuplicateWarning([]); setMultiFileError(false); setFileLoaded(false); }}
-                    className="h-7 px-3 rounded-lg text-xs font-medium text-red-500 border border-red-400/30 hover:bg-red-500/10 transition-colors"
-                  >
-                    {td.clearJson}
-                  </button>
+            {pdfFile ? (
+              <div className="w-full h-40 flex items-center justify-center">
+                <div className="inline-flex items-center gap-2 max-w-full rounded-xl bg-muted pl-3 pr-2 py-2 text-sm font-medium text-ink">
+                  <FileText className="size-4 shrink-0 text-ink-3" />
+                  <span className="truncate">{pdfFile.name}</span>
+                  <Tip content={td.pdfNote}>
+                    <span tabIndex={0} aria-label={td.pdfNote} className="inline-flex shrink-0 cursor-help text-ink-3 hover:text-ink">
+                      <Info className="size-4" />
+                    </span>
+                  </Tip>
+                </div>
+              </div>
+            ) : (
+              <textarea
+                className={`w-full h-40 bg-transparent text-sm font-mono outline-none resize-none placeholder:text-ink-3/40 transition-colors
+                  ${fileLoaded ? "text-ink-3/60 cursor-not-allowed select-none" : "text-ink"}`}
+                placeholder={td.pastePlaceholder}
+                value={jsonText}
+                readOnly={fileLoaded}
+                onChange={e => { if (!fileLoaded) setJsonText(e.target.value); }}
+              />
+            )}
+            {/* The formats it takes sit by the browse button, on the right
+                (user, 2026-09-30). */}
+            <div className="flex items-center justify-end mt-3">
+              <div className="flex items-center gap-1.5">
+                {(jsonText || pdfFile) && (
+                  <Tip content={td.clearJson}>
+                    <Button
+                      variant="danger"
+                      size="icon"
+                      aria-label={td.clearJson}
+                      onClick={() => { setJsonText(""); setPdfFile(null); setExistingFound(null); setFileLoaded(false); }}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </Tip>
                 )}
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="h-7 px-3 rounded-lg text-xs font-medium text-ink-3 border border-border hover:text-ink hover:border-emerald/40 transition-colors"
-                >
-                  {td.browseBtn}
-                </button>
+                <Tip content={td.dropHint}>
+                  <span className="inline-flex items-center gap-1.5 text-ink-3">
+                    <Upload className="size-4" />
+                    {[".json", ".txt", ".pdf"].map(ext => (
+                      <span key={ext} className="px-1.5 py-0.5 rounded-md border border-border bg-muted text-[10.5px] font-medium">{ext}</span>
+                    ))}
+                  </span>
+                </Tip>
+                <Tip content={td.browseBtn}>
+                  <Button size="icon" aria-label={td.browseBtn} onClick={() => fileInputRef.current?.click()}>
+                    <FolderOpen className="size-4" />
+                  </Button>
+                </Tip>
               </div>
             </div>
           </div>
-          <input ref={fileInputRef} type="file" accept=".json,.txt" className="hidden"
+          <input ref={fileInputRef} type="file" accept=".json,.txt,.pdf" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
 
           <div className="flex items-center justify-end gap-3">
-            <button
+            <GoButton
               ref={refParseBtn}
+              tip={td.parseBtn}
+              disabled={(!jsonText.trim() && !pdfFile) || !!existingFound}
               onClick={handleParseClick}
-              disabled={!jsonText.trim() || duplicateWarning.length > 0}
-              className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
-            >
-              {td.parseBtn}
-            </button>
+            />
           </div>
         </div>
       )}
@@ -1828,36 +2476,36 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
           {/* Supplier confirmation popup */}
           {supplierConfirmOpen && resolvedSupplier && (
-            <>
-              <div className="fixed inset-0 bg-black/60 z-[300]" />
-              <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-sm mx-auto rounded-2xl border-2 border-border bg-surface shadow-2xl p-6 flex flex-col gap-5">
+            <Popup
+              title={td.supplierConfirmTitle}
+              dismissable={false}
+              className={`inset-x-4 top-1/2 -translate-y-1/2 max-w-sm mx-auto rounded-2xl ${POPUP_FRAME} p-6 flex flex-col gap-5`}
+            >
                 <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-xl">🏭</div>
-                  <div>
-                    <p className="text-sm font-bold text-ink">{td.supplierConfirmTitle}</p>
-                    <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.supplierConfirmBody(order.tx_company)}</p>
-                    <p className="mt-2 text-sm font-semibold text-ink">{resolvedSupplier.nm_supplier}</p>
-                    <p className="text-[11px] text-ink-3">#{resolvedSupplier.fp_supplier_id}</p>
-                    <p className="mt-2 text-xs text-ink-3">{td.supplierConfirmQuestion}</p>
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-sand border border-taupe/40 flex items-center justify-center text-ink-2">
+                    <Factory className="size-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-3">{td.supplierConfirmTitle}</p>
+                    <Tip content={`${td.fileSupplierLabel}: ${order.tx_company || "—"}`}>
+                      <p className="mt-0.5 text-sm font-bold text-ink cursor-help">
+                        {resolvedSupplier.nm_supplier}
+                        <span className="ml-1.5 font-medium text-ink-3">#{resolvedSupplier.fp_supplier_id}</span>
+                      </p>
+                    </Tip>
                   </div>
                 </div>
                 <div className="flex gap-2 justify-end">
-                  <button
-                    onClick={handleChangeSupplier}
-                    className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
-                  >
+                  <Button onClick={handleChangeSupplier}>
+                    <Pencil className="size-3.5" />
                     {td.supplierConfirmChange}
-                  </button>
-                  <button
-                    autoFocus
-                    onClick={handleConfirmSupplier}
-                    className="h-9 px-5 rounded-xl text-sm font-semibold bg-emerald text-white hover:bg-emerald/90 transition-colors"
-                  >
+                  </Button>
+                  <Button autoFocus variant="primary" onClick={handleConfirmSupplier}>
+                    <Check className="size-4" />
                     {td.supplierConfirmYes}
-                  </button>
+                  </Button>
                 </div>
-              </div>
-            </>
+            </Popup>
           )}
 
           {/* Order tabs if multiple invoices */}
@@ -1880,40 +2528,39 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           <div
             ref={refShipmentPill}
             className={`card-enter rounded-2xl bg-muted p-4 relative
-              ${resolvedSupplier ? "border border-border" : "border-2 border-red-500"}`}
+              ${resolvedSupplier ? "border border-border" : "border-2 border-brick"}`}
           >
-            {/* Supplier as the file names it, and who that is in FreshPortal */}
-            <div className="flex flex-col gap-2 text-sm">
-              <div className="flex gap-2">
-                <span className="text-ink-3 shrink-0 w-28 sm:w-48">{td.fileSupplierLabel}</span>
-                <span className="font-medium text-ink">{order.tx_company || "—"}</span>
-              </div>
+            {/* The FreshPortal supplier, with the name the file gives it on
+                hover. Nothing can be imported without one, so its absence is
+                the button that picks it (user, 2026-09-30: short, the rest
+                in the tooltip). */}
+            <div className="flex items-center gap-2 text-sm flex-wrap">
+              <span className="text-ink-3 shrink-0 w-28 inline-flex items-center gap-1.5">
+                <Factory className="size-3.5" />
+                {td.supplierLabel}
+              </span>
               {resolvedSupplier ? (
-                <div className="flex gap-2 items-center">
-                  <span className="text-ink-3 shrink-0 w-28 sm:w-48">{td.fpSupplierLabel}</span>
-                  <span className="font-medium text-ink">{resolvedSupplier.nm_supplier}</span>
+                <>
+                  <Tip content={`${td.fileSupplierLabel}: ${order.tx_company || "—"}`}>
+                    <span tabIndex={0} className="font-medium text-ink cursor-help">{resolvedSupplier.nm_supplier}</span>
+                  </Tip>
                   <EditIconButton title={td.changeSupplierBtn} onClick={openSupplierPicker} />
-                </div>
+                </>
               ) : (
-                /* Nothing can be imported without a FreshPortal supplier, so
-                   the whole warning is the button that fixes it. */
-                <button
-                  onClick={openSupplierPicker}
-                  title={td.selectSupplierBtn}
-                  className="w-full flex items-center gap-3 rounded-xl border-2 border-red-500 bg-red-50 px-3 py-2.5 text-left hover:bg-red-100 transition-colors"
-                >
-                  <span className="shrink-0 w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center text-base font-bold">!</span>
-                  <span className="flex-1 min-w-0">
-                    <span className="block text-sm font-bold text-red-700">{td.supplierNoMatch}</span>
-                    <span className="block text-xs text-red-700/80 mt-0.5">{td.supplierNoMatchHint}</span>
-                  </span>
-                  <span className="shrink-0 w-8 h-8 rounded-full border-2 border-red-500 text-red-600 flex items-center justify-center">
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                      <circle cx="11" cy="11" r="7"/>
-                      <path d="M20 20l-3.5-3.5"/>
-                    </svg>
-                  </span>
-                </button>
+                <>
+                  <span className="text-ink-3 truncate">{order.tx_company || "—"}</span>
+                  <Tip content={`${td.supplierNoMatch}\n${td.supplierNoMatchHint}`}>
+                    <button
+                      onClick={openSupplierPicker}
+                      aria-label={td.selectSupplierBtn}
+                      className="inline-flex items-center gap-1.5 h-8 pl-2.5 pr-2 rounded-full border-2 border-brick bg-blush/40 text-xs font-bold text-brick hover:bg-blush/70 transition-colors"
+                    >
+                      <TriangleAlert className="size-3.5" />
+                      {td.supplierNoMatchShort}
+                      <Search className="size-3.5" />
+                    </button>
+                  </Tip>
+                </>
               )}
             </div>
 
@@ -1945,16 +2592,28 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             </div>
           </div>
 
-          {/* Assign to customer — required before continuing */}
+          {/* A shipment already in FreshPortal keeps where it went: the
+              missing products follow it, so there is no customer to pick. */}
+          {topUpBatch ? (
+          <div ref={refCustomerCard} className="card-enter rounded-2xl border-2 border-taupe/40 bg-sand/40 p-4 flex items-center gap-2 flex-wrap text-sm">
+            <Layers className="size-4 text-ink-3" />
+            {topUpBatch.batch_url
+              ? <FpLink href={topUpBatch.batch_url} title={td.topUpCardTitle(topUpBatch.number)} tone="sand">{topUpBatch.number}</FpLink>
+              : <Tip content={td.topUpCardTitle(topUpBatch.number)}><span tabIndex={0} className="font-semibold text-ink">{topUpBatch.number}</span></Tip>}
+            {topUpBatch.invoice_url && <FpIconLink href={topUpBatch.invoice_url} title={td.viewInvoice} />}
+            <span className="inline-flex items-center gap-1.5 text-ink-2">
+              <User className="size-3.5 text-ink-3" />
+              {topUpBatch.customer_name || td.existsOnStock}
+            </span>
+            <InfoTip content={topUpBatch.invoice_id ? td.topUpCardInvoice : td.topUpCardStock} />
+          </div>
+          ) : (
+          /* Assign to customer — required before continuing */
           <div ref={refCustomerCard} className="card-enter rounded-2xl border-2 border-emerald/25 bg-emerald-light p-4 flex flex-col gap-2">
             <label className="text-sm font-semibold text-emerald-dark flex items-center gap-1.5">
-              {td.customerIdLabel}
-              <span
-                title={td.customerIdTooltip}
-                className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-emerald/40 text-emerald text-[10px] leading-none cursor-help shrink-0"
-              >
-                i
-              </span>
+              <User className="size-4" />
+              {td.customerLabel}
+              <InfoTip content={td.customerIdTooltip} />
             </label>
             <SearchableSelect
               options={customerOptions}
@@ -1971,88 +2630,86 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             {customerId && customerId !== STOCK_CUSTOMER_ID && (
               <div className="flex flex-col gap-2 pt-1">
                 <label className="text-sm font-semibold text-emerald-dark flex items-center gap-1.5">
-                  {td.invoiceLabel}
-                  <span
-                    title={td.invoiceTooltip}
-                    className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-emerald/40 text-emerald text-[10px] leading-none cursor-help shrink-0"
-                  >
-                    i
-                  </span>
+                  <Receipt className="size-4" />
+                  {td.invoiceNr}
+                  <InfoTip content={td.invoiceTooltip} />
+                  {!invoicesLoading && !invoicesFailed && openInvoices.length > 0 && (
+                    <Tip content={td.openInvoicesCount(openInvoices.length)}>
+                      <span tabIndex={0} className={`ml-auto ${CHIP_BASE} ${CHIP_TONE.info}`}>
+                        {td.openInvoicesShort(openInvoices.length)}
+                      </span>
+                    </Tip>
+                  )}
                 </label>
                 {invoicesFailed ? (
                   /* The lookup failed — say so, rather than letting an empty
                      list pass for "this customer has none". */
-                  <div className="rounded-xl border-2 border-dashed border-ember/40 bg-ember/5 px-3 py-2 flex items-center justify-between gap-3">
-                    <span className="text-xs text-ember">{td.openInvoicesFailed}</span>
-                    <button
-                      onClick={retryOpenInvoices}
-                      className="h-7 px-3 shrink-0 rounded-lg text-xs font-medium border border-ember/40 text-ember hover:bg-ember/10 transition-colors"
-                    >
-                      {td.retryBtn}
-                    </button>
+                  <div className="flex items-center gap-2">
+                    <Tip content={td.openInvoicesFailed}>
+                      <span tabIndex={0} className={`${CHIP_BASE} ${CHIP_TONE.bad}`}>
+                        <TriangleAlert className="size-3.5" />
+                        {td.openInvoicesFailedShort}
+                      </span>
+                    </Tip>
+                    <Tip content={td.retryBtn}>
+                      <Button variant="danger" size="icon" onClick={retryOpenInvoices} aria-label={td.retryBtn}>
+                        <RotateCw className="size-4" />
+                      </Button>
+                    </Tip>
                   </div>
                 ) : !invoicesLoading && openInvoices.length === 0 ? (
                   /* Nothing to choose from, so no control to choose with —
                      just what is going to happen instead. */
-                  <div className="h-10 px-3 rounded-xl text-sm border-2 border-dashed border-emerald/25 bg-surface/60 text-ink-3 flex items-center">
-                    {td.noOpenInvoicesHint}
-                  </div>
-                ) : (
-                  <>
-                    <SearchableSelect
-                      options={invoiceOptions}
-                      value={invoiceId}
-                      onChange={setInvoiceId}
-                      disabled={invoicesLoading}
-                      firstNearInput
-                      placeholder={invoicesLoading ? td.loadingOpenInvoices : td.invoicePlaceholder}
-                      noMatchLabel={td.noOpenInvoicesFound}
-                      className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
-                    />
-                    <span className="text-[11px] text-ink-3">
-                      {invoicesLoading ? td.loadingOpenInvoices : td.openInvoicesCount(openInvoices.length)}
+                  <Tip content={td.noOpenInvoicesHint}>
+                    <span tabIndex={0} className={`self-start ${CHIP_BASE} ${CHIP_TONE.info}`}>
+                      <Plus className="size-3.5" />
+                      {td.newInvoiceOptionLabel}
                     </span>
-                  </>
+                  </Tip>
+                ) : (
+                  <SearchableSelect
+                    options={invoiceOptions}
+                    value={invoiceId}
+                    onChange={setInvoiceId}
+                    disabled={invoicesLoading}
+                    firstNearInput
+                    placeholder={invoicesLoading ? td.loadingOpenInvoices : td.invoicePlaceholder}
+                    noMatchLabel={td.noOpenInvoicesFound}
+                    className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
+                  />
                 )}
               </div>
             )}
           </div>
+          )}
 
-          {/* Continue to products */}
-          <div className="flex items-center justify-between gap-3">
-            <button onClick={handleStartOver} className="text-xs text-ink-3 hover:text-ink transition-colors">
-              {td.startOver}
-            </button>
-            <div className="flex flex-col items-end gap-1">
-              {!resolvedSupplier ? (
-                <span className="text-[11px] font-semibold text-red-600">{td.supplierRequiredHint}</span>
-              ) : !customerId && (
-                <span className="text-[11px] text-ember">{td.customerRequiredHint}</span>
-              )}
-              <button
-                onClick={() => setStage("preview")}
-                disabled={!resolvedSupplier || !customerId}
-                className="h-10 px-6 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
-              >
-                {td.continueToProductsBtn} →
-              </button>
-            </div>
+          {/* Continue to products; what it still waits for is its tooltip. */}
+          <div className="flex items-center justify-end gap-3">
+            <GoButton
+              icon="arrow"
+              tip={!resolvedSupplier ? td.supplierRequiredHint
+                : !customerId && !topUpBatch ? td.customerRequiredHint
+                : td.continueToProductsBtn}
+              disabled={!resolvedSupplier || (!customerId && !topUpBatch)}
+              onClick={() => setStage("preview")}
+            />
           </div>
 
           {/* Supplier picker modal */}
           {supplierPickerOpen && (
-            <>
-              <div
-                className="fixed inset-0 bg-black/60 z-[200]"
-                onClick={() => setSupplierPickerOpen(false)}
-              />
-              <div className="fixed inset-x-4 top-16 bottom-16 z-[201] max-w-md mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
+            <Popup
+              title={td.selectSupplierTitle}
+              onClose={() => setSupplierPickerOpen(false)}
+              className={`inset-x-4 top-16 bottom-16 max-w-md mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}
+            >
                 <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
                   <div>
                     <span className="text-sm font-semibold text-ink">{td.selectSupplierTitle}</span>
                     <p className="text-xs text-ink-3 mt-0.5">{td.supplierForLabel} {parseResult?.orders[activeOrderIdx]?.tx_company}</p>
                   </div>
-                  <button onClick={() => setSupplierPickerOpen(false)} className="text-xs text-ink-3 hover:text-ink">✕</button>
+                  <Button variant="ghost" size="icon-sm" onClick={() => setSupplierPickerOpen(false)} aria-label={td.closeBtn}>
+                    <X className="size-4" />
+                  </Button>
                 </div>
                 <div className="px-3 py-2 border-b border-border shrink-0">
                   <input
@@ -2060,10 +2717,10 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                     value={supplierSearch}
                     onChange={e => setSupplierSearch(e.target.value)}
                     placeholder={td.searchSupplierPlaceholder}
-                    className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
+                    className={POPUP_SEARCH_INPUT}
                   />
                 </div>
-                <div className="overflow-y-auto flex-1 bg-surface">
+                <div className="overflow-y-auto flex-1 bg-surface divide-y divide-border">
                   {supplierList.length === 0 ? (
                     <p className="text-xs text-ink-3 px-4 py-3">{td.loadingSuppliers}</p>
                   ) : (
@@ -2073,7 +2730,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         <button
                           key={s.fp_supplier_id}
                           onClick={() => handleSelectSupplier(s)}
-                          className={`w-full text-left px-4 py-2.5 text-sm border-b border-border/60 last:border-0 transition-colors
+                          className={`w-full text-left px-4 py-2.5 text-sm transition-colors
                             ${resolvedSupplier?.fp_supplier_id === s.fp_supplier_id
                               ? "bg-emerald/10 text-emerald font-medium"
                               : "bg-surface text-ink hover:bg-muted"}`}
@@ -2084,8 +2741,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       ))
                   )}
                 </div>
-              </div>
-            </>
+            </Popup>
           )}
 
         </div>
@@ -2094,209 +2750,215 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {stage === "preview" && order && (
         <div key="preview" className="step-enter flex flex-col gap-5">
 
-          {/* Back to shipment */}
-          <button
-            onClick={() => setStage("shipment")}
-            className="self-start flex items-center gap-1 text-xs text-ink-3 hover:text-ink transition-colors"
-          >
-            ← {td.backToShipmentBtn}
-          </button>
-
           {/* Partial approve confirmation modal */}
-          {partialApproveOpen && (() => {
-            const totalMatched = activeLines.filter((l: DeliveryLine) => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length;
-            const totalApproved = activeLines.filter((l: DeliveryLine) => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length;
-            return (
-              <>
-                <div className="fixed inset-0 bg-black/60 z-[300]" onClick={() => setPartialApproveOpen(false)} />
-                <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 z-[301] max-w-md mx-auto rounded-2xl border-2 border-amber-500/40 bg-surface shadow-2xl p-6 flex flex-col gap-4">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xl">⚠</div>
-                    <div>
-                      <p className="text-sm font-bold text-amber-700">{td.partialApproveTitle}</p>
-                      <p className="text-xs text-ink-3 mt-1 leading-relaxed">{td.partialApproveBody(totalApproved, totalMatched)}</p>
-                    </div>
+          {partialApproveOpen && (
+            <Popup
+              title={td.approved(approvedCandidates, matchedCandidates)}
+              onClose={() => setPartialApproveOpen(false)}
+              className={`inset-x-4 top-1/2 -translate-y-1/2 max-w-sm mx-auto rounded-2xl ${POPUP_WARNING_FRAME} p-6 flex flex-col gap-4`}
+            >
+                <div className="flex items-center gap-3">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blush/50 border border-brick/30 flex items-center justify-center text-brick">
+                    <TriangleAlert className="size-5" />
                   </div>
-                  <div className="flex gap-2 justify-end">
-                    <button
-                      autoFocus
-                      onClick={() => setPartialApproveOpen(false)}
-                      className="h-9 px-5 rounded-xl text-sm font-semibold border-2 border-emerald text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
-                    >
-                      {td.partialApproveCancel}
-                    </button>
-                    <button
-                      onClick={() => { setPartialApproveOpen(false); handleImport(true); }}
-                      className="h-9 px-4 rounded-xl text-sm font-medium border border-border text-ink-3 hover:text-ink transition-colors"
-                    >
-                      {td.partialApproveConfirm}
-                    </button>
-                  </div>
+                  <p className="text-sm font-bold text-brick">{td.approved(approvedCandidates, matchedCandidates)}</p>
                 </div>
-              </>
-            );
-          })()}
+                <div className="flex gap-2 justify-end">
+                  <Button autoFocus variant="emphasis" onClick={() => setPartialApproveOpen(false)}>
+                    {td.partialApproveCancel}
+                  </Button>
+                  <Tip content={td.partialApproveConfirm}>
+                    <Button variant="primary" onClick={() => { setPartialApproveOpen(false); handleImport(true); }} aria-label={td.partialApproveConfirm}>
+                      <Play className="size-3.5 fill-current" />
+                      {approvedCandidates}
+                    </Button>
+                  </Tip>
+                </div>
+            </Popup>
+          )}
 
-          {/* Match status */}
-          <div ref={refCatalogueStatus} className="flex items-center gap-3 text-sm flex-wrap">
-            <span className="px-2.5 py-1 rounded-full border text-xs text-emerald bg-emerald/10 border-emerald/20">
-              {matchedCount} {td.matched}
-            </span>
+          {/* Everything about the lines in one row of chips: a word or two
+              each, the sentence in the tooltip, and a click filters the
+              table to those lines (user, 2026-09-30). The banners, the
+              approve toolbar and the red hints by the button are gone. */}
+          <div ref={refCatalogueStatus} className="flex items-center gap-2 flex-wrap">
+            {/* A shipment already in FreshPortal: its lines of this file are
+                marked in the table and left out of the import. */}
+            {portal && topUpBatch && (() => {
+              const topUpTip = `${td.topUpCardTitle(topUpBatch.number)}\n${topUpBatch.invoice_id ? td.topUpCardInvoice : td.topUpCardStock}`;
+              return (
+                <>
+                  {topUpBatch.batch_url
+                    ? <FpLink href={topUpBatch.batch_url} title={topUpTip} tone="sand"><Layers className="size-3.5" />{topUpBatch.number}</FpLink>
+                    : <StatusChip tone="info" icon={<Layers className="size-3.5" />} tip={topUpTip}>{topUpBatch.number}</StatusChip>}
+                  <StatusChip
+                    tone="info"
+                    icon={<CloudCheck className="size-3.5" />}
+                    tip={[td.inPortalTooltip, portal.portalOnly > 0 ? td.topUpPortalOnly(portal.portalOnly) : ""].filter(Boolean).join("\n")}
+                  >
+                    {td.chipInPortal(portal.inPortal.size)}
+                  </StatusChip>
+                  <StatusChip
+                    tone={candidateLines.length > 0 ? "warn" : "ok"}
+                    tip={candidateLines.length === 0 ? td.topUpNothingMissing : undefined}
+                  >
+                    {td.chipMissing(candidateLines.length)}
+                  </StatusChip>
+                </>
+              );
+            })()}
+            {matchedCandidates > 0 && (
+              <StatusChip
+                tone="ok"
+                icon={<Check className="size-3.5" />}
+                pressed={showOnlyUnapproved}
+                onClick={() => setShowOnlyUnapproved(p => !p)}
+                tip={showOnlyUnapproved ? td.showAll : td.showUnapprovedOnly}
+              >
+                {td.approved(approvedCandidates, matchedCandidates)}
+              </StatusChip>
+            )}
             {unmatchedCount > 0 && (
-              <button
+              <StatusChip
+                tone="bad"
+                icon={<Ban className="size-3.5" />}
+                pressed={showOnlyUnmatched}
                 onClick={() => setShowOnlyUnmatched(p => !p)}
-                className={`px-2.5 py-1 rounded-full border text-xs font-medium transition-colors
-                  ${showOnlyUnmatched
-                    ? "bg-red-500/20 text-red-600 border-red-500/40 ring-1 ring-red-500/30"
-                    : "bg-red-500/10 text-red-500 border-red-500/20 hover:bg-red-500/20"}`}
+                tip={`${td.unmatchedWarning(unmatchedCount)}\n${showOnlyUnmatched ? td.showAll : td.clickToFilter}`}
               >
-                {unmatchedCount} {td.unmatched}
-                {showOnlyUnmatched ? " ✕" : ""}
-              </button>
+                {td.chipNoProduct(unmatchedCount)}
+              </StatusChip>
             )}
-            <div className="ml-auto flex gap-2">
-              <button
-                onClick={handleClearCache}
-                disabled={clearingCache}
-                title={td.clearCacheTitle}
-                className="h-7 px-3 rounded-lg text-xs font-medium border border-red-400/40 text-red-500 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+            {(lengthMissing > 0 || issueFilter?.kind === "length") && (
+              <StatusChip
+                tone="bad"
+                icon={<Ruler className="size-3.5" />}
+                pressed={issueFilter?.kind === "length"}
+                onClick={() => toggleIssueFilter("length")}
+                tip={`${td.lengthMissing(lengthMissing)}\n${issueFilter?.kind === "length" ? td.showAll : td.clickToFilter}`}
               >
-                {clearingCache ? td.clearingCache : td.clearCache}
-              </button>
-            </div>
-          </div>
+                {td.chipNoLength(lengthMissing)}
+              </StatusChip>
+            )}
+            {(growerMissing > 0 || issueFilter?.kind === "grower") && (
+              <StatusChip
+                tone="bad"
+                icon={<Sprout className="size-3.5" />}
+                pressed={issueFilter?.kind === "grower"}
+                onClick={() => toggleIssueFilter("grower")}
+                tip={`${td.growerMissing(growerMissing)}\n${issueFilter?.kind === "grower" ? td.showAll : td.clickToFilter}`}
+              >
+                {td.chipNoGrower(growerMissing)}
+              </StatusChip>
+            )}
+            {dateMissing && (
+              <StatusChip
+                tone="bad"
+                icon={<Calendar className="size-3.5" />}
+                onClick={() => { setStage("shipment"); setDateEditOpen(true); }}
+                tip={td.dateMissing}
+              >
+                {td.chipNoDate}
+              </StatusChip>
+            )}
 
-          {unmatchedCount > 0 && (
-            <button
-              onClick={() => setShowOnlyUnmatched(p => !p)}
-              className={`w-full text-left text-xs rounded-xl px-3 py-2 border transition-colors
-                ${showOnlyUnmatched
-                  ? "text-amber-700 bg-amber-100 border-amber-300"
-                  : "text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100"}`}
-            >
-              ⚠ {td.unmatchedWarning(unmatchedCount)}
-              <span className="ml-2 underline">{showOnlyUnmatched ? td.showAll : td.showOnlyUnmatched}</span>
-            </button>
-          )}
-
-          {/* What the parser changed or could not reconcile */}
-          {(order.warnings ?? []).map((w, i) => (
-            <div key={i} className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
-              ⚠ {w.code === "bunches_split_by_invoice_total"
-                ? td.warnBunchesSplit(w.variety, w.length, w.boxes, w.bunches_in_file, w.bunches_per_box)
+            {/* What the parser changed or could not reconcile. A layout drafted
+                automatically says so, with what it assumed, until IT has
+                checked it. */}
+            {(order.warnings ?? []).map((w, i) => {
+              if (w.code === "provisional_pdf_layout") {
+                return (
+                  <StatusChip
+                    key={i}
+                    tone="bad"
+                    icon={<TriangleAlert className="size-3.5" />}
+                    tip={
+                      <>
+                        <p>{td.warnProvisionalLayout(w.supplier)}</p>
+                        {w.assumptions.length > 0 && (
+                          <>
+                            <p className="mt-1 font-semibold">{td.provisionalAssumptions}</p>
+                            <ul className="list-disc ml-4">
+                              {w.assumptions.map((a, j) => <li key={j}>{a}</li>)}
+                            </ul>
+                          </>
+                        )}
+                      </>
+                    }
+                  >
+                    {td.chipProvisional}
+                  </StatusChip>
+                );
+              }
+              const [label, tip] = w.code === "bunches_split_by_invoice_total"
+                ? [td.chipBunchesSplit(w.variety, w.length, w.bunches_per_box),
+                   td.warnBunchesSplit(w.variety, w.length, w.boxes, w.bunches_in_file, w.bunches_per_box)]
                 : w.code === "box_count_mismatch"
-                ? td.warnBoxCountMismatch(w.invoice_boxes, w.file_boxes)
-                : td.warnInvoiceTotalMismatch(w.invoice_total.toFixed(2), w.file_total.toFixed(2))}
-            </div>
-          ))}
+                ? [td.chipBoxes(w.invoice_boxes, w.file_boxes), td.warnBoxCountMismatch(w.invoice_boxes, w.file_boxes)]
+                : [td.chipTotal(w.invoice_total.toFixed(2), w.file_total.toFixed(2)),
+                   td.warnInvoiceTotalMismatch(w.invoice_total.toFixed(2), w.file_total.toFixed(2))];
+              return <StatusChip key={i} tone="warn" icon={<TriangleAlert className="size-3.5" />} tip={tip}>{label}</StatusChip>;
+            })}
 
-          {/* Mix boxes: each variety its own line, or each box one line of a
-              mix product. Switching swaps the table's lines on the spot. */}
-          {mixBoxCount > 0 && (
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-3 flex-wrap">
-                <span className="text-xs font-semibold text-ink">{td.mixModeLabel}</span>
-                <div role="radiogroup" aria-label={td.mixModeLabel}
-                  className="inline-flex rounded-lg border border-[#C4DED0] bg-[#C4DED0]/40 p-0.5">
-                  {[false, true].map(together => (
-                    <button
-                      key={String(together)}
-                      role="radio"
-                      aria-checked={mixTogether === together}
-                      onClick={() => switchMixMode(together)}
-                      disabled={mixReparsing}
-                      className={`h-7 px-3 rounded-md text-xs font-medium transition-colors disabled:cursor-wait
-                        ${mixTogether === together
-                          ? "bg-emerald text-white shadow-sm"
-                          : "text-emerald-dark hover:bg-[#C4DED0]"}`}
-                    >
-                      {together ? td.mixModeTogether : td.mixModeSeparate}
-                    </button>
-                  ))}
-                </div>
-                {/* What the two ways do, on hover only (user, 2026-09-25). */}
-                <HoverCard
-                  className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-emerald/40 text-emerald text-[10px] font-semibold leading-none cursor-help shrink-0"
-                  content={
-                    <div className="flex flex-col gap-1.5">
-                      <p><span className="font-semibold">{td.mixModeTogether}:</span> {td.mixModeTogetherHint}</p>
-                      <p><span className="font-semibold">{td.mixModeSeparate}:</span> {td.mixModeSeparateHint}</p>
-                    </div>
-                  }
+            {/* Mix boxes: each variety its own line, or each box one line of
+                a mix product. Switching swaps the table's lines on the spot;
+                what the two ways do is on hover (user, 2026-09-25). */}
+            {mixBoxCount > 0 && (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-ink-2">{td.mixModeLabel}</span>
+                <ToggleGroup
+                  type="single"
+                  value={mixTogether ? "together" : "separate"}
+                  onValueChange={v => { if (v) switchMixMode(v === "together"); }}
+                  disabled={mixReparsing}
+                  aria-label={td.mixModeLabel}
                 >
-                  ?
-                </HoverCard>
-              </div>
-              {mixTogether && mixKeptBoxes.length > 0 && (
-                <div className="text-xs rounded-xl px-3 py-2 border text-amber-600 bg-amber-50 border-amber-200">
-                  ⚠ {td.mixKeptSeparate(mixKeptBoxes.join(", "))}
-                </div>
-              )}
-              {mixReparseError && (
-                <div className="text-xs rounded-xl px-3 py-2 border text-red-600 bg-red-50 border-red-200">
-                  {td.mixSeparateFailed}
-                  <span className="block mt-0.5 text-[11px] text-red-500/80 break-words">{mixReparseError}</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Approve toolbar */}
-          <div ref={refApproveToolbar} className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => setShowOnlyUnapproved(p => !p)}
-              title={showOnlyUnapproved ? td.showAll : td.showOnlyUnmatched}
-              className={`h-7 px-3 rounded-lg text-xs font-semibold border transition-colors
-                ${showOnlyUnapproved
-                  ? "bg-amber-500/15 border-amber-500/30 text-amber-700"
-                  : "bg-emerald/8 border-emerald/30 text-emerald hover:bg-emerald/15"}`}
-            >
-              {td.approved(
-                activeLines.filter(l => { const dk = deliveryKey(l); return !!(lineEdits[dk]?.fp_product_id ?? l.fp_product_id) && approvedKeys.has(dk); }).length,
-                activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).length
-              )}
-              {showOnlyUnapproved ? " ✕" : ""}
-            </button>
-            <button
-              onClick={() => {
-                const all = new Set(activeLines.filter(l => !!(lineEdits[deliveryKey(l)]?.fp_product_id ?? l.fp_product_id)).map(l => deliveryKey(l)));
-                setApprovedKeys(all);
-              }}
-              className="h-6 px-2 rounded-md text-[11px] border border-emerald/40 text-emerald hover:bg-emerald/8 transition-colors"
-            >
-              {td.approveAll}
-            </button>
-            <button
-              onClick={() => setApprovedKeys(new Set())}
-              className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink transition-colors"
-            >
-              {td.deselectAll}
-            </button>
-            {(tableSearch || sortCol) && (
-              <button
-                onClick={() => { setTableSearch(""); setSortCol(null); setSortDir("asc"); }}
-                className="h-6 px-2 rounded-md text-[11px] border border-border text-ink-3 hover:text-ink ml-auto transition-colors"
-              >
-                ✕ {td.resetFilter}
-              </button>
+                  <Tip content={<><span className="font-semibold">{td.mixModeSeparate}:</span> {td.mixModeSeparateHint}</>}>
+                    <ToggleGroupItem value="separate" aria-label={td.mixModeSeparate}>
+                      <Split className="size-3.5" />
+                    </ToggleGroupItem>
+                  </Tip>
+                  <Tip content={<><span className="font-semibold">{td.mixModeTogether}:</span> {td.mixModeTogetherHint}</>}>
+                    <ToggleGroupItem value="together" aria-label={td.mixModeTogether}>
+                      <Merge className="size-3.5" />
+                    </ToggleGroupItem>
+                  </Tip>
+                </ToggleGroup>
+              </span>
+            )}
+            {mixTogether && mixKeptBoxes.length > 0 && (
+              <StatusChip tone="warn" icon={<TriangleAlert className="size-3.5" />} tip={td.mixKeptSeparate(mixKeptBoxes.join(", "))}>
+                {td.chipMixKept(mixKeptBoxes.join(", "))}
+              </StatusChip>
             )}
           </div>
 
-          {/* Action buttons + search bar — above the table */}
+          {/* Search, with one ✕ that clears it along with every filter and
+              the sort; and the round import button, the number on it being
+              the lines it sends. Why it waits is its tooltip. */}
           <div ref={refActionBtns} className="flex items-center gap-3">
-            <input
-              value={tableSearch}
-              onChange={e => setTableSearch(e.target.value)}
-              placeholder={td.tableSearchPlaceholder}
-              className="flex-1 h-9 px-3 rounded-xl text-sm border border-border bg-surface outline-none focus:border-emerald/50 placeholder:text-ink-3/50 transition-colors"
-            />
-            <button
+            <div className="flex-1 min-w-0 h-10 flex items-center gap-2 pl-3 pr-1.5 rounded-xl border border-border bg-surface focus-within:border-emerald/50 transition-colors">
+              <Search className="size-4 shrink-0 text-ink-3" />
+              <input
+                value={tableSearch}
+                onChange={e => setTableSearch(e.target.value)}
+                placeholder={td.tableSearchPlaceholder}
+                className="flex-1 min-w-0 bg-transparent text-sm text-ink outline-none placeholder:text-ink-3/50"
+              />
+              {tableFiltered && (
+                <Tip content={td.clearSearch}>
+                  <Button variant="ghost" size="icon-sm" onClick={clearTableView} aria-label={td.clearSearch}>
+                    <X className="size-3.5" />
+                  </Button>
+                </Tip>
+              )}
+            </div>
+            <GoButton
+              tip={importTip}
+              count={sendCount}
+              disabled={importDisabled}
               onClick={() => handleImport()}
-              disabled={mixReparsing || !activeLines.some(l => approvedKeys.has(deliveryKey(l)))}
-              className="h-9 px-5 rounded-xl text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity whitespace-nowrap"
-            >
-              {td.importBtn}
-            </button>
+            />
           </div>
 
           {/* Product lines table */}
@@ -2309,57 +2971,77 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-muted border-b border-border">
-                  <th className="px-2 py-2 text-center font-semibold text-ink-3 w-8" title={td.colApproveTooltip}>✓</th>
+                  {/* Approves or clears every line at once; the dash when only
+                      some are ticked. */}
+                  <th ref={refApproveToolbar} className="px-2 py-2 text-center w-8">
+                    {matchedCandidates > 0 && (
+                      <Tip content={approvedCandidates === matchedCandidates ? td.deselectAll : td.approveAll}>
+                        <Checkbox
+                          aria-label={approvedCandidates === matchedCandidates ? td.deselectAll : td.approveAll}
+                          checked={approvedCandidates === 0 ? false : approvedCandidates === matchedCandidates ? true : "indeterminate"}
+                          onCheckedChange={() => setApprovedKeys(approvedCandidates === matchedCandidates
+                            ? new Set<string>()
+                            : new Set<string>(candidateLines.filter(hasProduct).map(l => deliveryKey(l))))}
+                          className="align-middle"
+                        />
+                      </Tip>
+                    )}
+                  </th>
                   <SortTh col="variety"    label={td.colVariety}    sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} className="min-w-[100px]" />
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colGrower}</th>
                   <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact className="w-[50px] max-w-[50px]" />
                   <SortTh col="boxQty"     label={<ColumnIcon icon="boxes" hint={td.colBoxQtyHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact className="w-[30px] max-w-[30px]" />
-                  <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colBoxWeight}</th>
+                  <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap"><ColumnIcon icon="weight" hint={td.colBoxWeight} /></th>
                   <th className="px-1.5 py-2 text-center font-semibold text-ink-3 whitespace-nowrap"><ColumnIcon icon="box" hint={td.colContentHint} /></th>
-                  <SortTh col="length"     label={td.colLength}     sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="length"     label={<ColumnIcon icon="ruler" hint={td.colLength} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="stemsBunch" label={<ColumnIcon icon="bunch" hint={td.colStemsBunchHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
                   <SortTh col="bunches"    label={<ColumnIcon icon="bunches" hint={td.colBunchesHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
                   <SortTh col="stemsTotal" label={<ColumnIcon icon="stem" hint={td.colStemsTotalHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
                   <SortTh col="price"      label={td.colPrice}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                   <SortTh col="total"      label={td.colTotal}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
-                  <SortTh col="match"      label={td.colMatch}      sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="match"      label={td.colMatchShort} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
                 </tr>
               </thead>
               <tbody key={showTogether ? "mix-together" : "mix-separate"} className="lines-swap">
-                {displayLines.length === 0 ? (
+                {shownLines.length === 0 ? (
                   <tr>
                     <td colSpan={14} className="px-4 py-6 text-center text-xs text-ink-3">
                       {showOnlyUnmatched ? td.showAll : "—"}
                     </td>
                   </tr>
-                ) : displayLines.map((line, i) => {
+                ) : shownLines.map((line, i) => {
                   const dk = deliveryKey(line);
                   const edit = lineEdits[dk];
-                  const boxKey = boxEditKey(line);
+                  const boxKey = lineEditKey(line);
                   const boxWeightValue = boxWeightEdits[boxKey] ?? line.nu_box_weight ?? 0;
+                  const lengthKey = boxKey;
+                  const lengthValue = lineLength(line);
+                  const lengthOk = S20_LENGTHS.has(lengthValue);
                   const displayCatName = edit?.catalogue_nm_product ?? line.catalogue_nm_product;
                   const isApproved = approvedKeys.has(dk);
                   const hasMatch = !!(edit?.fp_product_id ?? line.fp_product_id);
                   const badge = MATCH_BADGE[edit ? "cached" : line.match_method] ?? MATCH_BADGE.none;
+                  // Already in the shipment in FreshPortal: shown, not sent.
+                  const inPortal = !!portal?.inPortal.has(line);
 
                   return (
                     <tr key={i} className={`border-b border-border/60 transition-colors hover:bg-muted/50
-                      ${line.match_method === "none" && !edit ? "opacity-60" : ""}
-                      ${isApproved ? "bg-green-500/5" : ""}`}>
+                      ${inPortal ? "opacity-50" : line.match_method === "none" && !edit ? "opacity-60" : ""}
+                      ${isApproved && !inPortal ? "bg-sage/25" : ""}`}>
                       {/* Approve checkbox */}
                       <td className="px-2 py-2 text-center">
-                        {hasMatch && (
-                          <input
-                            type="checkbox"
+                        {hasMatch && !inPortal && (
+                          <Checkbox
                             checked={isApproved}
-                            onChange={e => {
+                            aria-label={td.colApproveTooltip}
+                            onCheckedChange={v => {
                               setApprovedKeys(prev => {
                                 const next = new Set(prev);
-                                if (e.target.checked) next.add(dk); else next.delete(dk);
+                                if (v === true) next.add(dk); else next.delete(dk);
                                 return next;
                               });
                             }}
-                            className="w-3.5 h-3.5 accent-emerald cursor-pointer"
+                            className="align-middle"
                           />
                         )}
                       </td>
@@ -2386,6 +3068,13 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             {line.nm_variety}
                           </HoverCard>
                         ) : line.nm_variety}
+                        {inPortal && (
+                          <Tip content={td.inPortalTooltip}>
+                            <span tabIndex={0} aria-label={td.inPortalTooltip} className="ml-1.5 inline-flex align-[-2px] text-taupe">
+                              <CloudCheck className="size-3.5" />
+                            </span>
+                          </Tip>
+                        )}
                         {displayCatName && displayCatName !== line.nm_variety && (
                           <div className="text-ink-3 font-normal">{displayCatName}</div>
                         )}
@@ -2412,18 +3101,17 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                                   {growerLabel(growerId)}
                                 </HoverCard>
                               ) : (
-                                <span className="text-red-400">{growerLabel(growerId)}</span>
+                                <span className="text-brick/80">{growerLabel(growerId)}</span>
                               )}
-                              <button
-                                onClick={() => { setEditingGrowerKey(locKey); setGrowerSearch(""); setGrowerHighlighted(0); }}
-                                title={td.editGrowerBtn}
-                                className={`transition-opacity ${growerId ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
-                              >
-                                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                                </svg>
-                              </button>
+                              <Tip content={td.editGrowerBtn}>
+                                <button
+                                  onClick={() => { setEditingGrowerKey(locKey); setGrowerSearch(""); setGrowerHighlighted(0); }}
+                                  aria-label={td.editGrowerBtn}
+                                  className={`transition-opacity ${growerId ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100" : "text-brick opacity-70 hover:opacity-100"}`}
+                                >
+                                  <Pencil className="size-3" />
+                                </button>
+                              </Tip>
                             </div>
                           </td>
                         );
@@ -2455,6 +3143,32 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                               <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[7px] text-emerald-dark">▼</span>
                             </HoverCard>
                           );
+                        })() : !isMbLine(line) ? (() => {
+                          // Each line's box is its own, like its length (user,
+                          // 2026-09-29). A code nobody has mapped arrives as
+                          // QBE and stays marked until a box is chosen.
+                          const chosen = boxEdits[boxKey];
+                          const fust = chosen ?? line.nm_box;
+                          const fusts = KNOWN_FUSTS.includes(fust) ? KNOWN_FUSTS : [fust, ...KNOWN_FUSTS];
+                          const flagged = !!line.box_guessed && !chosen;
+                          return (
+                            <Tip content={line.box_guessed ? td.boxGuessed(line.nm_box_printed ?? "") : undefined}>
+                            <span className="relative inline-flex">
+                              <select
+                                value={fust}
+                                onChange={e => { const v = e.target.value; setBoxEdits(prev => ({ ...prev, [boxKey]: v })); }}
+                                aria-label={line.box_guessed ? td.boxGuessed(line.nm_box_printed ?? "") : td.mixBoxTypeTitle}
+                                className={`appearance-none h-6 pl-1 pr-3 rounded-md border text-[10px] font-medium cursor-pointer outline-none
+                                  ${flagged
+                                    ? "bg-blush/30 text-brick border-brick/50 hover:border-brick focus:border-brick"
+                                    : "bg-muted text-ink-3 border-border hover:border-emerald focus:border-emerald"}`}
+                              >
+                                {fusts.map(code => <option key={code} value={code}>{code}</option>)}
+                              </select>
+                              <span className={`pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[7px] ${flagged ? "text-brick" : "text-ink-3"}`}>▼</span>
+                            </span>
+                            </Tip>
+                          );
                         })() : line.nm_box ? (
                           <span className={`inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-medium
                             ${isMbLine(line) ? MIX_ACCENT : "bg-muted text-ink-3 border-border"}`}>
@@ -2463,7 +3177,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         ) : "—"}
                       </td>
                       <td className="px-1.5 py-2 text-center w-[30px] max-w-[30px]">
-                        <span className="inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-semibold bg-blue-500/10 text-blue-600 border-blue-500/20">
+                        <span className="inline-flex items-center px-1 py-0.5 rounded-md border text-[10px] font-semibold bg-sand text-ink border-taupe/40">
                           ×{line.nu_physical_boxes ?? 1}
                         </span>
                       </td>
@@ -2510,7 +3224,56 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       <td className="px-1.5 py-2 text-ink-3 text-center">
                         {Math.floor(line.nu_bunches / Math.max(1, line.nu_physical_boxes ?? 1)) * line.nu_stems_bunch}
                       </td>
-                      <td className="px-3 py-2 text-ink-3">{line.nu_length > 0 ? `${line.nu_length}cm` : "—"}</td>
+                      <td className="px-3 py-2">
+                        {/* Typed in as box weight is, with no list to pick
+                            from (user, 2026-09-29). Only a Floricode S20 length
+                            is taken: one the invoice left out, or one S20 does
+                            not have, stays marked until it is set, and the
+                            shipment waits for it (user, 2026-09-28). */}
+                        <input
+                          type="number"
+                          step="1"
+                          min="5"
+                          max="900"
+                          inputMode="numeric"
+                          ref={el => { lengthInputRefs.current[i] = el; }}
+                          value={lengthValue > 0 ? lengthValue : ""}
+                          placeholder="—"
+                          title={lengthOk ? undefined : td.lengthNotS20}
+                          aria-invalid={!lengthOk}
+                          onMouseDown={e => {
+                            if (document.activeElement !== e.currentTarget) e.currentTarget.dataset.selectOnUp = "1";
+                          }}
+                          onFocus={e => e.currentTarget.select()}
+                          onMouseUp={e => {
+                            if (e.currentTarget.dataset.selectOnUp) {
+                              e.preventDefault();
+                              delete e.currentTarget.dataset.selectOnUp;
+                            }
+                          }}
+                          onChange={e => {
+                            const v = e.target.value === "" ? 0 : Math.round(Number(e.target.value));
+                            setLengthEdits(prev => ({ ...prev, [lengthKey]: v }));
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === "ArrowDown" || e.key === "Enter") {
+                              e.preventDefault();
+                              const next = lengthInputRefs.current[i + 1];
+                              next?.focus();
+                              next?.select();
+                            } else if (e.key === "ArrowUp") {
+                              e.preventDefault();
+                              const prevInput = lengthInputRefs.current[i - 1];
+                              prevInput?.focus();
+                              prevInput?.select();
+                            }
+                          }}
+                          className={`w-14 px-1.5 py-1 text-xs text-right border rounded-md outline-none transition-colors
+                            ${lengthOk
+                              ? "border-transparent bg-transparent text-ink-3 hover:border-border focus:border-emerald/50 focus:bg-surface"
+                              : "border-brick/50 bg-blush/30 text-brick placeholder:text-brick/60 focus:border-brick"}`}
+                        />
+                      </td>
                       <td className="px-1.5 py-2 text-ink-3">{line.nu_stems_bunch || "—"}</td>
                       <td className="px-1.5 py-2 font-semibold text-ink">{line.nu_bunches}</td>
                       <td className="px-1.5 py-2 text-ink-3">{line.nu_stems_total > 0 ? line.nu_stems_total.toLocaleString() : "—"}</td>
@@ -2519,27 +3282,32 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       {/* Match badge + edit button */}
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-1">
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-medium ${badge.cls}`}>
-                            {badge.label}
-                          </span>
+                          <Tip content={td[badge.tip]}>
+                            <span
+                              tabIndex={0}
+                              aria-label={td[badge.tip]}
+                              className={`inline-flex items-center justify-center gap-0.5 min-w-7 h-5 px-1.5 rounded-md border text-[11px] font-semibold ${badge.cls}`}
+                            >
+                              {badge.icon}
+                            </span>
+                          </Tip>
                           {/* A mix box's product comes from the fixed rule, so it
                               cannot be changed (user, 2026-09-25). A mix of a
                               species no rule covers has no product, and keeps
                               the button: nothing else could give it one. */}
-                          <button
-                            onClick={() => { setEditingKey(dk); setEditSearch(""); setEditModalOpen(true); }}
-                            disabled={line.match_method === "mix_box"}
-                            title={line.match_method === "mix_box" ? td.mixProductFixed : hasMatch ? td.changeMatch : td.assignFromCatalogue}
-                            className={`transition-opacity
-                              ${line.match_method === "mix_box" ? "text-ink-3 opacity-25 cursor-not-allowed"
-                                : hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100"
-                                : "text-red-400 hover:text-red-600 opacity-70 hover:opacity-100"}`}
-                          >
-                            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                            </svg>
-                          </button>
+                          <Tip content={line.match_method === "mix_box" ? td.mixProductFixed : hasMatch ? td.changeMatch : td.assignFromCatalogue}>
+                            <button
+                              onClick={() => { if (line.match_method !== "mix_box") { setEditingKey(dk); setEditSearch(""); setEditModalOpen(true); } }}
+                              aria-disabled={line.match_method === "mix_box"}
+                              aria-label={line.match_method === "mix_box" ? td.mixProductFixed : hasMatch ? td.changeMatch : td.assignFromCatalogue}
+                              className={`transition-opacity
+                                ${line.match_method === "mix_box" ? "text-ink-3 opacity-25 cursor-not-allowed"
+                                  : hasMatch ? "text-ink-3 hover:text-ink opacity-50 hover:opacity-100"
+                                  : "text-brick opacity-70 hover:opacity-100"}`}
+                            >
+                              <Pencil className="size-3" />
+                            </button>
+                          </Tip>
                         </div>
                       </td>
                     </tr>
@@ -2558,13 +3326,6 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           </div>
           );})()}
 
-          {/* Start over — bottom left, where the shipment step has it too */}
-          <div className="flex items-center justify-between gap-3">
-            <button onClick={handleStartOver} className="text-xs text-ink-3 hover:text-ink transition-colors">
-              {td.startOver}
-            </button>
-          </div>
-
           {/* Product match modal */}
           {editModalOpen && editingKey && (() => {
             const dk = editingKey;
@@ -2573,9 +3334,11 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             const currentMatchName = currentEdit?.catalogue_nm_product ?? editLine?.catalogue_nm_product ?? "";
             const matchResults = editSearchResults;
             return (
-              <>
-                <div className="fixed inset-0 bg-black/60 z-[200]" onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} />
-                <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl border border-border bg-surface shadow-2xl flex flex-col overflow-hidden">
+              <Popup
+                title={editLine ? td.editMatchTitle : td.editNoMatchTitle}
+                onClose={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }}
+                className={`inset-x-4 top-12 bottom-4 max-w-lg mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}
+              >
                   <div className="px-4 py-3 border-b border-border shrink-0">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -2593,7 +3356,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           </p>
                         )}
                       </div>
-                      <button onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} className="text-ink-3 hover:text-ink shrink-0 mt-0.5">✕</button>
+                      <Button variant="ghost" size="icon-sm" onClick={() => { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); }} aria-label={td.closeBtn}>
+                        <X className="size-4" />
+                      </Button>
                     </div>
                   </div>
                   <div className="px-3 py-2 border-b border-border shrink-0">
@@ -2604,16 +3369,16 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         onChange={e => setEditSearch(e.target.value)}
                         onKeyDown={e => { if (e.key === "Escape") { setEditModalOpen(false); setEditingKey(null); setEditSearch(""); } }}
                         placeholder={td.editSearchPlaceholder}
-                        className="w-full px-3 py-1.5 pr-8 text-sm border border-border rounded-lg bg-surface outline-none focus:border-emerald/50"
+                        className={`${POPUP_SEARCH_INPUT} pr-8`}
                       />
                       {editSearchLoading && (
-                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 border-2 border-emerald/30 border-t-emerald rounded-full animate-spin" />
                       )}
                     </div>
                   </div>
-                  <div className="overflow-y-auto flex-1">
+                  <div className="overflow-y-auto flex-1 divide-y divide-border">
                     {matchResults.length === 0 ? (
-                      <p className={`text-xs px-4 py-3 ${editSearchError ? "text-red-500" : "text-ink-3"}`}>
+                      <p className={`text-xs px-4 py-3 ${editSearchError ? "text-brick" : "text-ink-3"}`}>
                         {editSearch.trim().length < 2
                           ? td.editSearchTypeToSearch
                           : editSearchError
@@ -2634,16 +3399,22 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                             setEditingKey(null);
                             setEditSearch("");
                           }}
-                          className={`w-full text-left px-4 py-2.5 border-b border-border/60 last:border-0 transition-colors
+                          className={`w-full text-left px-4 py-2.5 flex items-baseline justify-between gap-3 transition-colors
                             ${isCurrentMatch ? "bg-emerald/8" : "bg-surface hover:bg-muted"}`}
                         >
-                          <div className={`text-sm font-medium leading-snug ${isCurrentMatch ? "text-emerald" : "text-ink"}`}>{p.nm_product}</div>
+                          <span className={`text-sm font-medium leading-snug ${isCurrentMatch ? "text-emerald" : "text-ink"}`}>{p.nm_product}</span>
+                          {/* The server lists products with a GTIN first, then
+                              the rest, each part alphabetically. */}
+                          {p.gtin && (
+                            <span className="shrink-0 text-[11px] tabular-nums text-ink-3">
+                              {td.gtinLabel} {p.gtin}
+                            </span>
+                          )}
                         </button>
                       );
                     })}
                   </div>
-                </div>
-              </>
+              </Popup>
             );
           })()}
 
@@ -2662,12 +3433,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               setGrowerEdits(prev => ({ ...prev, [locKey]: g.manufacturer_id }));
               close();
             };
+            // Framed and marked in brand green like the customer and invoice
+            // pickers (SearchableSelect), with the same keys (user, 2026-09-24).
             return (
-              <>
-                <div className="fixed inset-0 bg-black/60 z-[200]" onClick={close} />
-                {/* Framed and marked in brand green like the customer and invoice
-                    pickers (SearchableSelect), with the same keys (user, 2026-09-24). */}
-                <div className="fixed inset-x-4 top-12 bottom-4 z-[201] max-w-lg mx-auto rounded-2xl border-2 border-emerald bg-surface shadow-[0_16px_48px_rgba(17,26,20,0.35)] flex flex-col overflow-hidden">
+              <Popup
+                title={td.editGrowerTitle}
+                onClose={close}
+                className={`inset-x-4 top-12 bottom-4 max-w-lg mx-auto rounded-2xl ${POPUP_FRAME} flex flex-col overflow-hidden`}
+              >
                   <div className="px-4 py-3 border-b border-border shrink-0">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -2683,7 +3456,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           </p>
                         )}
                       </div>
-                      <button onClick={close} className="text-ink-3 hover:text-ink shrink-0 mt-0.5">✕</button>
+                      <Button variant="ghost" size="icon-sm" onClick={close} aria-label={td.closeBtn}>
+                        <X className="size-4" />
+                      </Button>
                     </div>
                   </div>
                   <div className="px-3 py-2 border-b border-border shrink-0">
@@ -2701,7 +3476,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         else if (e.key === "Escape") close();
                       }}
                       placeholder={td.growerSearchPlaceholder}
-                      className="h-10 px-3 rounded-xl text-sm font-medium border-2 border-emerald/30 bg-surface outline-none focus:border-emerald transition-colors w-full"
+                      className={POPUP_SEARCH_INPUT}
                     />
                   </div>
                   <div className="overflow-y-auto flex-1 divide-y divide-border">
@@ -2711,8 +3486,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                         {td.growersLoading}
                       </p>
                     ) : growers.length === 0 && growersError ? (
-                      <p className="text-xs px-4 py-3 text-red-500">
-                        {td.growersLoadFailed} <span className="block text-[11px] text-red-400 mt-1 break-words">{growersError}</span>
+                      <p className="text-xs px-4 py-3 text-brick">
+                        {td.growersLoadFailed} <span className="block text-[11px] text-brick/80 mt-1 break-words">{growersError}</span>
                       </p>
                     ) : found.length === 0 ? (
                       <p className="text-xs px-4 py-3 text-ink-3">{td.growersNone}</p>
@@ -2735,8 +3510,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                       );
                     })}
                   </div>
-                </div>
-              </>
+              </Popup>
             );
           })()}
 
@@ -2745,18 +3519,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
 
       {/* ── IMPORTING ── */}
       {stage === "importing" && (
-        <div key="importing" className="step-enter flex flex-col items-center gap-5 py-8">
-          <div className="relative flex items-center justify-center">
-            <svg className="animate-spin w-14 h-14 text-emerald/20" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
-            </svg>
-            <svg className="animate-spin absolute w-14 h-14 text-emerald" viewBox="0 0 24 24" fill="none" style={{ animationDuration: "0.9s" }}>
-              <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M12 2a10 10 0 0 1 10 10"/>
-            </svg>
-          </div>
-          <div className="text-center space-y-1 max-w-xs">
-            <p className="text-sm font-semibold text-ink">{td.creatingShipment}</p>
-          </div>
+        <div key="importing" className="step-enter flex flex-col items-center gap-5 py-6">
+          {/* The company runner carries the shipment over (user, 2026-09-30). */}
+          <MascotRunner label={td.creatingShipment} />
           {isAdmin && logs.length > 0 && <ProgressLog title={td.importing} logs={logs} />}
         </div>
       )}
@@ -2767,64 +3532,37 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           <div className="card-enter w-full max-w-lg bg-surface rounded-3xl border border-border shadow-lg overflow-hidden">
 
             {/* Hero band */}
-            <div className={`px-6 pt-8 pb-6 flex flex-col items-center text-center ${importResult.errors.length === 0 ? "bg-emerald/6" : "bg-amber-500/6"}`}>
+            <div className={`px-6 pt-8 pb-6 flex flex-col items-center text-center ${importResult.errors.length === 0 ? "bg-emerald/6" : "bg-blush/20"}`}>
               {/* Animated icon */}
-              <div className={`done-icon w-16 h-16 rounded-full flex items-center justify-center text-3xl mb-4 ${importResult.errors.length === 0 ? "bg-emerald text-white shadow-[0_0_24px_rgba(26,125,69,0.4)]" : "bg-amber-500 text-white shadow-[0_0_24px_rgba(245,158,11,0.4)]"}`}>
-                {importResult.errors.length === 0 ? "✓" : "!"}
+              <div className={`done-icon w-16 h-16 rounded-full flex items-center justify-center mb-4 ${importResult.errors.length === 0 ? "bg-emerald text-white shadow-[0_0_24px_rgba(26,125,69,0.4)]" : "bg-brick text-white shadow-[0_0_24px_rgba(176,58,43,0.35)]"}`}>
+                {importResult.errors.length === 0 ? <Check className="size-8" strokeWidth={2.6} /> : <TriangleAlert className="size-7" />}
               </div>
-              <h2 className={`text-lg font-bold mb-1 ${importResult.errors.length === 0 ? "text-emerald" : "text-amber-600"}`}>
-                {importResult.errors.length === 0 ? td.batchCreated : td.importPartial}
+              <h2 className={`text-lg font-bold mb-1 ${importResult.errors.length === 0 ? "text-emerald" : "text-brick"}`}>
+                {topUpBatch
+                  ? (importResult.errors.length === 0 ? td.topUpDone : td.topUpPartial)
+                  : (importResult.errors.length === 0 ? td.batchCreated : td.importPartial)}
               </h2>
-              {importResult.batch_id && (
-                <p className="text-xs text-ink-3 font-mono">{td.batchId}: <span className="font-semibold text-ink-2">{importResult.number || importResult.batch_id}</span></p>
-              )}
-              {importResult.invoice_id != null && (
-                <p className="text-xs text-ink-3 font-mono">{td.invoiceIdLabel}: <span className="font-semibold text-ink-2">{importResult.invoice_id}</span></p>
-              )}
-              {(importResult.batch_url || importResult.invoice_url) && (
-                <div className="mt-2 flex items-center gap-2 flex-wrap justify-center">
-                  {importResult.batch_url && (
-                    <a
-                      href={importResult.batch_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={td.batchUrl}
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15 transition-colors"
-                    >
-                      {td.viewBatch}
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                        <path d="M15 3h6v6"/>
-                        <path d="M10 14 21 3"/>
-                      </svg>
-                    </a>
-                  )}
+              {/* The shipment's number is its link; the invoice an icon. */}
+              {(importResult.batch_id || importResult.invoice_url) && (
+                <div className="mt-1 flex items-center gap-2 flex-wrap justify-center">
+                  {importResult.batch_url
+                    ? <FpLink href={importResult.batch_url} title={td.viewBatch}>{importResult.number || importResult.batch_id}</FpLink>
+                    : importResult.batch_id && <span className="text-sm font-mono font-semibold text-ink-2">{importResult.number || importResult.batch_id}</span>}
                   {importResult.invoice_url && (
-                    <a
+                    <FpIconLink
                       href={importResult.invoice_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium border border-blue-500/30 text-blue-600 bg-blue-500/8 hover:bg-blue-500/15 transition-colors"
-                    >
-                      {td.viewInvoice}
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                        <path d="M15 3h6v6"/>
-                        <path d="M10 14 21 3"/>
-                      </svg>
-                    </a>
+                      title={importResult.invoice_id != null ? `${td.viewInvoice} · ${importResult.invoice_id}` : td.viewInvoice}
+                    />
                   )}
                 </div>
               )}
-              {existingBatch && (
-                <p className="text-xs text-blue-500 mt-1">{td.addedToExistingBatch(existingBatch.number)}</p>
-              )}
 
-              {/* Stat chips */}
+              {/* Stat chips: an icon and a number, the word in the tooltip */}
               <div className="flex gap-2 mt-4 flex-wrap justify-center">
                 <StatChip
                   value={importResult.stock_entries_ok.length}
                   label={td.statAddedN(importResult.stock_entries_ok.length)}
+                  icon={<Check className="size-3.5" />}
                   color="emerald"
                   delay="0ms"
                 />
@@ -2832,6 +3570,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   <StatChip
                     value={importResult.errors.length}
                     label={td.statFailedN(importResult.errors.length)}
+                    icon={<CircleX className="size-3.5" />}
                     color="red"
                     delay="60ms"
                   />
@@ -2840,8 +3579,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   <StatChip
                     value={importResult.skipped_unmatched.length}
                     label={td.statSkippedN(importResult.skipped_unmatched.length)}
+                    icon={<Ban className="size-3.5" />}
                     color="amber"
                     delay="120ms"
+                  />
+                )}
+                {portal && portal.inPortal.size > 0 && (
+                  <StatChip
+                    value={portal.inPortal.size}
+                    label={td.statInPortalN(portal.inPortal.size)}
+                    icon={<CloudCheck className="size-3.5" />}
+                    color="neutral"
+                    delay="180ms"
                   />
                 )}
               </div>
@@ -2850,33 +3599,45 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
             {/* Failed lines + retry */}
             {importResult.errors.length > 0 && (
               <div className="px-6 py-4 border-t border-border">
-                <p className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">{td.statFailedN(importResult.errors.length)}</p>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <p className="text-xs font-semibold text-brick uppercase tracking-wide">{td.statFailedN(importResult.errors.length)}</p>
+                  <Tip content={retrying ? td.retryingBtn : td.retryBtn}>
+                    <Button
+                      variant="danger"
+                      size="icon"
+                      onClick={() => { if (!retrying) handleRetryFailed(); }}
+                      aria-disabled={retrying}
+                      aria-label={td.retryBtn}
+                    >
+                      {retrying ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCw className="size-4" />}
+                    </Button>
+                  </Tip>
+                </div>
                 <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
                   {importResult.errors.map((e, i) => (
-                    <div key={i} className="text-xs font-mono text-red-500">
+                    <div key={i} className="text-xs font-mono text-brick">
                       <span className="font-semibold">{e.product_number}</span>
                       {e.length ? <span className="text-ink-3"> ({e.length}cm)</span> : null}
-                      <span className="block text-red-400">{e.message}</span>
+                      <span className="block text-brick/80">{e.message}</span>
                     </div>
                   ))}
                 </div>
-                <button
-                  onClick={handleRetryFailed}
-                  disabled={retrying}
-                  className="mt-2 text-xs text-emerald underline disabled:opacity-40"
-                >
-                  {retrying ? td.retryingBtn : td.retryBtn}
-                </button>
+                {/* A retry that failed as a whole stays on this screen. */}
+                {error && (
+                  <p className="mt-1 text-[11px] text-brick break-words">
+                    {INVOICE_REQUIRED.test(error) ? td.topUpNeedsInvoice : error}
+                  </p>
+                )}
               </div>
             )}
 
             {/* Skipped (unmatched) lines */}
             {importResult.skipped_unmatched.length > 0 && (
               <div className="px-6 py-4 border-t border-border">
-                <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">{td.statSkippedN(importResult.skipped_unmatched.length)}</p>
+                <p className="text-xs font-semibold text-brick uppercase tracking-wide mb-2">{td.statSkippedN(importResult.skipped_unmatched.length)}</p>
                 <div className="max-h-32 overflow-y-auto space-y-0.5 pr-1">
                   {importResult.skipped_unmatched.map((p, i) => (
-                    <div key={i} className="text-xs font-mono text-amber-600 truncate">{p}</div>
+                    <div key={i} className="text-xs font-mono text-brick/80 truncate">{p}</div>
                   ))}
                 </div>
               </div>
@@ -2889,19 +3650,20 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 <div className="mt-2 max-h-64 overflow-y-auto space-y-1 pr-1">
                   {doneLineStatuses.map(({ line, status, message }, i) => {
                     const badge = {
-                      added:        { label: td.lineStatusAdded,        cls: "bg-emerald/10 text-emerald border-emerald/20" },
-                      failed:       { label: td.lineStatusFailed,       cls: "bg-red-500/10 text-red-500 border-red-500/20" },
-                      skipped:      { label: td.lineStatusSkipped,      cls: "bg-amber-500/10 text-amber-600 border-amber-500/20" },
+                      added:        { label: td.lineStatusAdded,        cls: "bg-sage/60 text-emerald-dark border-emerald/25" },
+                      failed:       { label: td.lineStatusFailed,       cls: "bg-blush/60 text-brick border-brick/30" },
+                      skipped:      { label: td.lineStatusSkipped,      cls: "bg-blush/30 text-brick border-blush" },
                       notApproved:  { label: td.lineStatusNotApproved,  cls: "bg-muted text-ink-3 border-border" },
+                      inPortal:     { label: td.lineStatusInPortal,     cls: "bg-sand/60 text-ink border-taupe/40" },
                     }[status];
                     return (
                       <div key={i} className="flex items-start justify-between gap-2 py-1 border-b border-border/40 last:border-0">
                         <div className="min-w-0">
                           <p className="font-medium text-ink truncate">
                             {line.nm_variety}
-                            {line.nu_length > 0 && <span className="text-ink-3 font-normal"> · {line.nu_length}cm</span>}
+                            {lineLength(line) > 0 && <span className="text-ink-3 font-normal"> · {lineLength(line)}cm</span>}
                           </p>
-                          {message && <p className="text-red-400 font-mono text-[11px] truncate">{message}</p>}
+                          {message && <p className="text-brick/80 font-mono text-[11px] truncate">{message}</p>}
                         </div>
                         <span className={`shrink-0 px-2 py-0.5 rounded-full border text-[11px] font-medium whitespace-nowrap ${badge.cls}`}>
                           {badge.label}
@@ -2913,30 +3675,31 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
               </details>
             </div>
 
-            {/* Collapsible logs */}
+            {/* The request log is for admins, as it is while importing. */}
             <div className="px-6 pb-5 pt-2 space-y-2">
-              <details className="text-xs">
-                <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.batchLog(logs.length)}</summary>
-                <div className="mt-1 bg-ground rounded-xl p-2 max-h-64 overflow-y-auto font-mono">
-                  {logs.map((l, i) => (
-                    <div
-                      key={i}
-                      className={`whitespace-pre-wrap break-all py-1.5 border-b border-border/40 last:border-0
-                        ${l.startsWith("  ⚠") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
-                    >
-                      {l}
-                    </div>
-                  ))}
-                </div>
-              </details>
+              {isAdmin && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-ink-3 hover:text-ink select-none">{td.batchLog(logs.length)}</summary>
+                  <div className="mt-1 bg-ground rounded-xl p-2 max-h-64 overflow-y-auto font-mono">
+                    {logs.map((l, i) => (
+                      <div
+                        key={i}
+                        className={`whitespace-pre-wrap break-all py-1.5 border-b border-border/40 last:border-0
+                          ${l.startsWith("  ⚠") ? "text-brick" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
+                      >
+                        {l}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
 
               <div className="flex justify-end pt-1">
-                <button
-                  onClick={reset}
-                  className="h-9 px-5 rounded-xl text-sm font-semibold border border-border text-ink-2 hover:bg-muted hover:text-ink transition-colors"
-                >
-                  {td.startOver}
-                </button>
+                <Tip content={td.newImport}>
+                  <Button variant="emphasis" size="go-sm" onClick={reset} aria-label={td.newImport}>
+                    <Plus className="size-5" strokeWidth={2.4} />
+                  </Button>
+                </Tip>
               </div>
             </div>
           </div>
@@ -2946,33 +3709,189 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
       {/* ── ERROR ── */}
       {stage === "error" && (
         <div key="error" className="step-enter flex flex-col gap-3">
-          <div className="p-4 rounded-2xl bg-red-500/8 border border-red-500/20">
-            <p className="text-sm font-semibold text-red-500">{t.common.error}</p>
-            <p className="text-xs text-red-400 mt-1 font-mono">{error}</p>
+          <div className="p-4 rounded-2xl bg-blush/40 border border-brick/30">
+            <p className="text-sm font-semibold text-brick">{t.common.error}</p>
+            {/* FreshPortal's refusal to top up a shipment, said in words the
+                user can act on; its own text stays below for whoever reports it. */}
+            {INVOICE_REQUIRED.test(error) && (
+              <div className="mt-1 flex flex-col gap-2">
+                <p className="text-sm text-ink leading-relaxed">{td.topUpNeedsInvoice}</p>
+                {topUpBatch?.batch_url && (
+                  <div><FpLink href={topUpBatch.batch_url}>{td.viewBatch}</FpLink></div>
+                )}
+              </div>
+            )}
+            <p className="text-xs text-brick/80 mt-1 font-mono">{error}</p>
           </div>
-          <button onClick={reset} className="self-end h-9 px-5 rounded-xl text-sm border border-border text-ink-3 hover:text-ink transition-colors">
+          <Button onClick={reset} className="self-end">
+            <RotateCw className="size-4" />
             {t.common.retry}
-          </button>
+          </Button>
         </div>
       )}
     </div>
   );
 }
 
-function StatChip({ value, label, color, delay }: { value: number; label: string; color: "emerald" | "red" | "amber"; delay: string }) {
+// A count on the result card: an icon and the number; the word is the tooltip.
+function StatChip({ value, label, icon, color, delay }: {
+  value: number;
+  label: string;
+  icon: React.ReactNode;
+  color: "emerald" | "red" | "amber" | "neutral";
+  delay: string;
+}) {
   const colours = {
-    emerald: "bg-emerald/10 text-emerald border-emerald/20",
-    red:     "bg-red-500/10 text-red-500 border-red-500/20",
-    amber:   "bg-amber-500/10 text-amber-600 border-amber-500/20",
+    emerald: "bg-sage/60 text-emerald-dark border-emerald/25",
+    neutral: "bg-sand/60 text-ink border-taupe/40",
+    red:     "bg-blush/60 text-brick border-brick/30",
+    amber:   "bg-blush/30 text-brick border-blush",
   };
   return (
-    <div
-      className={`stat-chip inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-semibold ${colours[color]}`}
-      style={{ animationDelay: delay }}
-    >
-      <span className="text-base font-bold">{value}</span>
-      <span className="text-xs font-normal opacity-80">{label.replace(/^\d+\s*/, "")}</span>
-    </div>
+    <Tip content={label}>
+      <div
+        tabIndex={0}
+        aria-label={label}
+        className={`stat-chip inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-semibold ${colours[color]}`}
+        style={{ animationDelay: delay }}
+      >
+        {icon}
+        <span className="text-base font-bold tabular-nums">{value}</span>
+      </div>
+    </Tip>
+  );
+}
+
+// The chips over the product table, in the system palette's roles: emerald
+// for what is sure, brick for what blocks or is wrong, sand for what is
+// neutral (user, 2026-09-25).
+const CHIP_BASE = "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border text-xs font-medium whitespace-nowrap tabular-nums transition-colors";
+const CHIP_TONE = {
+  ok:   "bg-emerald-light text-emerald-dark border-emerald/25",
+  bad:  "bg-blush/45 text-brick border-brick/30",
+  warn: "bg-blush/20 text-brick border-blush",
+  info: "bg-sand/70 text-ink border-taupe/40",
+};
+
+// One fact about the lines in a word or two, the sentence in its tooltip. A
+// chip with `onClick` filters the table to its lines and shows so pressed.
+function StatusChip({ tone, icon, tip, pressed, onClick, children }: {
+  tone: keyof typeof CHIP_TONE;
+  icon?: React.ReactNode;
+  tip?: React.ReactNode;
+  pressed?: boolean;
+  onClick?: () => void;
+  children: React.ReactNode;
+}) {
+  const cls = `${CHIP_BASE} ${CHIP_TONE[tone]}`;
+  return (
+    <Tip content={tip}>
+      {onClick ? (
+        <button
+          type="button"
+          onClick={onClick}
+          aria-pressed={pressed}
+          className={`${cls} cursor-pointer hover:brightness-95 ${pressed ? "ring-2 ring-current/40" : ""}`}
+        >
+          {icon}
+          {children}
+        </button>
+      ) : (
+        <span tabIndex={tip ? 0 : undefined} className={cls}>
+          {icon}
+          {children}
+        </span>
+      )}
+    </Tip>
+  );
+}
+
+// A step's main action: the round emerald button with an icon (user,
+// 2026-09-30), and on the review step the number of lines it sends. It stays
+// hoverable while it cannot act, so its tooltip can say what it waits for.
+function GoButton({ ref, icon = "play", count, tip, disabled, onClick }: {
+  ref?: React.Ref<HTMLButtonElement>;
+  icon?: "play" | "arrow";
+  count?: number;
+  tip: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Tip content={tip}>
+      <Button
+        ref={ref}
+        variant="go"
+        size="go"
+        aria-label={tip}
+        aria-disabled={disabled}
+        onClick={() => { if (!disabled) onClick(); }}
+      >
+        {icon === "play"
+          ? <Play className="size-5 fill-current" strokeWidth={1.5} />
+          : <ArrowRight className="size-5" strokeWidth={2.4} />}
+        {count != null && (
+          <span className={`absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full border-2 border-surface text-[11px] font-bold leading-none text-white flex items-center justify-center tabular-nums
+            ${disabled ? "bg-taupe" : "bg-emerald-dark"}`}>
+            {count}
+          </span>
+        )}
+      </Button>
+    </Tip>
+  );
+}
+
+// An "i" whose tooltip holds what a label would otherwise spell out.
+function InfoTip({ content }: { content: string }) {
+  return (
+    <Tip content={content}>
+      <span tabIndex={0} aria-label={content} className="inline-flex shrink-0 cursor-help text-emerald/70 hover:text-emerald">
+        <Info className="size-3.5" />
+      </span>
+    </Tip>
+  );
+}
+
+// Opens a shipment in FreshPortal, in a new tab: its number is the link, and
+// what it opens is the tooltip.
+function FpLink({ href, children, title, tone = "emerald" }: {
+  href: string;
+  children: React.ReactNode;
+  title?: string;
+  tone?: "emerald" | "sand";
+}) {
+  return (
+    <Tip content={title}>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-xs font-semibold border transition-colors
+          ${tone === "emerald"
+            ? "border-emerald/30 text-emerald bg-emerald/8 hover:bg-emerald/15"
+            : "border-taupe/40 text-ink bg-sand/70 hover:bg-sand"}`}
+      >
+        {children}
+        <ExternalLink className="size-3" />
+      </a>
+    </Tip>
+  );
+}
+
+// Opens an invoice in FreshPortal, in a new tab: an icon, the words in the tooltip.
+function FpIconLink({ href, title }: { href: string; title: string }) {
+  return (
+    <Tip content={title}>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={title}
+        className="inline-flex items-center justify-center size-7 rounded-full border border-taupe/40 bg-sand/70 text-ink-2 hover:bg-sand transition-colors"
+      >
+        <Receipt className="size-3.5" />
+      </a>
+    </Tip>
   );
 }
 
@@ -2989,24 +3908,16 @@ function Row({ label, value }: { label: string; value: string }) {
 // into a tick that closes it again.
 function EditIconButton({ title, onClick, active = false }: { title: string; onClick: () => void; active?: boolean }) {
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      className={`shrink-0 w-7 h-7 rounded-full border flex items-center justify-center transition-colors
-        ${active ? "border-emerald bg-emerald/10 text-emerald" : "border-border text-ink-3 hover:text-ink hover:border-emerald/40"}`}
-    >
-      {active ? (
-        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M5 12l5 5L19 7"/>
-        </svg>
-      ) : (
-        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-        </svg>
-      )}
-    </button>
+    <Tip content={title}>
+      <button
+        onClick={onClick}
+        aria-label={title}
+        className={`shrink-0 w-7 h-7 rounded-full border flex items-center justify-center transition-colors
+          ${active ? "border-emerald bg-emerald/10 text-emerald" : "border-border text-ink-3 hover:text-ink hover:border-emerald/40"}`}
+      >
+        {active ? <Check className="size-3.5" strokeWidth={2.5} /> : <Pencil className="size-3.5" />}
+      </button>
+    </Tip>
   );
 }
 
@@ -3049,16 +3960,22 @@ const COLUMN_ICONS = {
   bunches: <><path d="M7 21v-7M7 14L4 7M7 14l3-7"/><path d="M17 21v-7M17 14l-3-7M17 14l3-7"/><path d="M5.5 17.5h3M15.5 17.5h3"/></>,
   // a single stem with its flower
   stem: <><circle cx="12" cy="6" r="3"/><path d="M12 9v12"/><path d="M12 17c-3 0-5-2-5-4.5 3 0 5 2 5 4.5z"/></>,
+  // box weight: lucide's "weight" (user, 2026-09-30: headers as icons)
+  weight: <><circle cx="12" cy="5" r="3"/><path d="M6.5 8a2 2 0 0 0-1.906 1.46L2.1 18.5A2 2 0 0 0 4 21h16a2 2 0 0 0 1.925-2.54L19.4 9.5A2 2 0 0 0 17.48 8Z"/></>,
+  // length: lucide's "ruler"
+  ruler: <><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></>,
 };
 
 function ColumnIcon({ icon, hint }: { icon: keyof typeof COLUMN_ICONS; hint: string }) {
   return (
-    <HoverCard content={hint} className="inline-flex">
-      <svg role="img" aria-label={hint} className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
-        stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        {COLUMN_ICONS[icon]}
-      </svg>
-    </HoverCard>
+    <Tip content={hint}>
+      <span className="inline-flex">
+        <svg role="img" aria-label={hint} className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          {COLUMN_ICONS[icon]}
+        </svg>
+      </span>
+    </Tip>
   );
 }
 
@@ -3140,7 +4057,7 @@ function ProgressLog({ title, logs }: { title: string; logs: string[] }) {
           <div
             key={i}
             className={`whitespace-pre-wrap break-all py-1.5 border-b border-border/40 last:border-0
-              ${l.startsWith("  ⚠") || l.startsWith("Error") ? "text-amber-500" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
+              ${l.startsWith("  ⚠") || l.startsWith("Error") ? "text-brick" : l.startsWith("  ✓") ? "text-emerald" : "text-ink-3"}`}
           >
             {l}
           </div>
