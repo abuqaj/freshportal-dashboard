@@ -42,6 +42,7 @@ Three row models:
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 
 from parser_delivery_pdf import (
@@ -302,8 +303,10 @@ FLORIFRUT = LayoutSpec(
     name="florifrut",
     detect=r"FLORIFRUT",
     grid_header=("box n", "tb", "variety", "cantidad", "bunches"),
-    # BOX N°, as Mysticflowers prints it: a box count.
-    columns={"count": 0, "box": 1, "label": 2, "variety": 3, "bunches": 4,
+    # BOX N° numbers the boxes, 1 to 6 on 0001100089. It was read as a box
+    # count, like Mysticflowers', from a first invoice of one box, where the
+    # two read the same.
+    columns={"number": 0, "box": 1, "label": 2, "variety": 3, "bunches": 4,
              "stems_bunch": 5, "length": 6, "stems": 7, "rate": 8, "subtotal": 9},
     product_re="",
     row_model="boxes",
@@ -376,7 +379,7 @@ STAMPSYBOX = LayoutSpec(
 
 
 # ---------------------------------------------------------------------------
-# The "Invoice #:" program — La Rosaleda, Monterosas, Jet Fresh
+# The "Invoice #:" program — La Rosaleda, Monterosas, Jet Fresh, Royalflowers
 # ---------------------------------------------------------------------------
 # ORDER | BOX CODE | BX | BOX TYPE | VARIETIES | CM | BUNCH STEMS | BUNCH BOX |
 # STEMS BOX | UNIT PRICE | TOTAL PRICE. BX counts the row's boxes, and the
@@ -421,10 +424,18 @@ MONTEROSAS = _invoice_colon("monterosas", r"MONTEROSAS", "MONTEROSAS FARMS")
 # The invoice is Jet Fresh Flower Growers of Ecuador; FreshPortal's supplier
 # is Jet Fresh Flower Distributors.
 JET_FRESH = _invoice_colon("jet_fresh", r"JET\s+FRESH\s+FLOWER", "JET FRESH FLOWER DISTRIBUTORS")
+# Royalflowers prints from this program since it became ROYALFLOWERS S.A.S.
+# (00000161964, 2026-09-25); its 2025 invoices are ROYALFLOWERS below, so this
+# spec goes before that one. Its box summary adds a size digit to the box,
+# "QB1 5.00", which the program's pattern does not take.
+ROYALFLOWERS_SAS = dataclasses.replace(
+    _invoice_colon("royalflowers_sas", r"ROYALFLOWERS\s+S\.A\.S", "ROYALFLOWERS S.A."),
+    boxes_re=r"^[QHE]B\w*\s+(\d+)\.\d+\s*$",
+)
 
 
 # ---------------------------------------------------------------------------
-# Royalflowers S.A.
+# Royalflowers S.A. — its invoices up to 2025
 # ---------------------------------------------------------------------------
 # Qualisa's program in another version — it shares Qualisa's "Ship to
 # (Destinatario)", which is why this spec must come before QUALISA. Order |
@@ -693,21 +704,23 @@ COLIBRI = LayoutSpec(
 )
 
 
-# The "silverbook" program: Tierra Verde and Montebello. The bunches stand
-# under a column per length; the column says the length.
+# The "silverbook" program: Tierra Verde, Montebello and Laila Flowers. The
+# bunches stand under a column per length; the column says the length.
 SILVERBOOK_HEADER = {
     # Montebello prints its series first, "001001 00024404"; the number is
     # the last part (user, 2026-09-29). Tierra Verde prints only "00045564".
     "id_invoice": rx(r"INVOICE:\s*(?:\d+ )?(\d+)"),
-    "dt_invoice": rx(r"\bDATE\s+(\d{1,2}/\d{1,2}/\d{4})", date_dmy),
-    "dt_fly": rx(r"\bDATE\s+(\d{1,2}/\d{1,2}/\d{4})", date_dmy),
+    # Laila's text runs the label into the date: "DATE25/09/2026".
+    "dt_invoice": rx(r"\bDATE\s*(\d{1,2}/\d{1,2}/\d{4})", date_dmy),
+    "dt_fly": rx(r"\bDATE\s*(\d{1,2}/\d{1,2}/\d{4})", date_dmy),
     "nm_ship": rx(r"CONSIGNEE\s+(\S+)"),
     "nm_cargo": rx(r"CARRIER\s+([^\n]+?)\s*$", flags=re.IGNORECASE | re.MULTILINE),
     "tx_awb": rx(r"M\.A\.W\.B\s+([\d\- ]+?)\s+(?:DUE|$)", flags=re.IGNORECASE | re.MULTILINE),
     "tx_hawb": rx(r"H\.A\.W\.B\s+(\S+)"),
 }
+# From a thousand up the counts carry a comma: "TOT. STEMS 4,650".
 SILVERBOOK_TOTALS = (r"TOT\.BOX\s+(?P<fulls>[\d.]+)\s+SUB\s+TOTAL\s+(?P<amount>[\d,.]+)\s*\n"
-                     r"TOT\.BOUNCH\.\s+(?P<bunches>\d+)[^\n]*\nTOT\.\s*STEMS\s+(?P<stems>\d+)")
+                     r"TOT\.BOUNCH\.\s+(?P<bunches>[\d,]+)[^\n]*\nTOT\.\s*STEMS\s+(?P<stems>[\d,]+)")
 
 TIERRA_VERDE = LayoutSpec(
     name="tierra_verde",
@@ -736,6 +749,29 @@ MONTEBELLO = LayoutSpec(
     product_re="",
     row_model="boxes",
     header={"tx_company": const("MONTEBELLOFARMS CIA LTDA"), **SILVERBOOK_HEADER},
+    species="Roses",
+    totals_re=SILVERBOOK_TOTALS,
+)
+
+# Laila Flowers, invoiced by LOMCEM S.C, the name FreshPortal knows it by.
+LAILA_FLOWERS = LayoutSpec(
+    name="laila_flowers",
+    detect=r"LAILA\s+FLOWERS|LOMCEM",
+    grid_header=("#", "variedad", "un", "und", "pack"),
+    # "#" numbers the boxes. UN and UND both print 25 on every row of
+    # 00020326, and 25 times the bunches is the row's stems; UN is taken as
+    # the bunch size.
+    columns={"number": 0, "box": 1, "variety": 2, "stems_bunch": 3, "stems": 15, "rate": 16,
+             "subtotal": 17},
+    length_cols={5: 30, 6: 40, 7: 50, 8: 60, 9: 70, 10: 80, 11: 90, 12: 100, 13: 110,
+                 14: 120},
+    product_re="",
+    row_model="boxes",
+    header={
+        **SILVERBOOK_HEADER,
+        "tx_company": const("LOMCEM S.C"),
+        "nm_ship": rx(r"CONSIGNEE\s+(.+?)\s+M\.A\.W\.B", nospace),
+    },
     species="Roses",
     totals_re=SILVERBOOK_TOTALS,
 )
@@ -1413,9 +1449,9 @@ SAN_ANDRES = LayoutSpec(
 
 LAYOUTS: list[LayoutSpec] = [
     FIORENTINA, MYSTICFLOWERS, FLOREQUISA, AGROGANA, FLORIFRUT, ECOFLOR, CALINAMA, STAMPSYBOX,
-    ROSALEDA, MONTEROSAS, JET_FRESH, ROYALFLOWERS, NARANJO_ROSES, LARTISAN, HOJA_VERDE,
-    BOSQUEFLOWERS, PROTEAS_SOLANDINO, NIKITA, PALITAFLOR, COLIBRI, TIERRA_VERDE, MONTEBELLO,
-    GREENEX, PLATONOFF, FLORAROMA, BREZZA, SOL_PACIFIC, VALLE_VERDE, FLORSANI, FLORISOL,
+    ROSALEDA, MONTEROSAS, JET_FRESH, ROYALFLOWERS_SAS, ROYALFLOWERS, NARANJO_ROSES, LARTISAN,
+    HOJA_VERDE, BOSQUEFLOWERS, PROTEAS_SOLANDINO, NIKITA, PALITAFLOR, COLIBRI, TIERRA_VERDE,
+    MONTEBELLO, LAILA_FLOWERS, GREENEX, PLATONOFF, FLORAROMA, BREZZA, SOL_PACIFIC, VALLE_VERDE, FLORSANI, FLORISOL,
     TERRA_PACIFIC, AGROTERRANORTE,
     ATTAR_ROSES, AZULINA, DAVINCI, MYJ_FLOWERS, GUAISA, ROSAPRIMA, EQR_ROSES,
     ROSAS_DEL_CORAZON, UTOPIA, APOSENTOS, VITERI, DR_ECUADOR_ROSES, SAN_ANDRES,
