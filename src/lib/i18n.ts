@@ -536,6 +536,8 @@ const en = {
       `The invoice total is ${invoiceTotal}, but the boxes in the file add up to ${fileTotal}. Check the bunches per box before importing.`,
     warnBoxCountMismatch:    (invoiceBoxes: number, fileBoxes: number) =>
       `The invoice lists ${invoiceBoxes} boxes, but the file gives ${fileBoxes}. Check the boxes before importing.`,
+    warnDeliveryDateDefaulted: (date: string) =>
+      `The file gives no delivery date, so it is set to tomorrow, ${date}. Change it with the pencil at Delivery date if needed.`,
     mixModeLabel:            "Mix boxes",
     mixModeSeparate:         "Separate",
     mixModeTogether:         "Together",
@@ -1510,6 +1512,8 @@ const nl: typeof en = {
       `Het factuurtotaal is ${invoiceTotal}, maar de dozen in het bestand komen op ${fileTotal}. Controleer de bossen per doos voor het importeren.`,
     warnBoxCountMismatch:    (invoiceBoxes: number, fileBoxes: number) =>
       `De factuur vermeldt ${invoiceBoxes} dozen, maar het bestand geeft er ${fileBoxes}. Controleer de dozen voor het importeren.`,
+    warnDeliveryDateDefaulted: (date: string) =>
+      `Het bestand geeft geen aanvoerdatum, dus die staat op morgen, ${date}. Wijzig die zo nodig met het potlood bij Aanvoerdatum.`,
     mixModeLabel:            "Mixdozen",
     mixModeSeparate:         "Apart",
     mixModeTogether:         "Samen",
@@ -2443,6 +2447,8 @@ const pl: typeof en = {
       `Suma faktury to ${invoiceTotal}, a pudła w pliku dają ${fileTotal}. Sprawdź liczbę pęczków w pudłach przed importem.`,
     warnBoxCountMismatch:    (invoiceBoxes: number, fileBoxes: number) =>
       `Faktura podaje ${invoiceBoxes} pudeł, a z pliku wychodzi ${fileBoxes}. Sprawdź pudła przed importem.`,
+    warnDeliveryDateDefaulted: (date: string) =>
+      `Plik nie podaje daty dostawy, więc ustawiono jutro, ${date}. W razie potrzeby zmień ją ołówkiem przy Data dostawy.`,
     mixModeLabel:            "Mix boxy",
     mixModeSeparate:         "Osobno",
     mixModeTogether:         "Razem",
@@ -3376,6 +3382,8 @@ const es: typeof en = {
       `El total de la factura es ${invoiceTotal}, pero las cajas del archivo suman ${fileTotal}. Revise los ramos por caja antes de importar.`,
     warnBoxCountMismatch:    (invoiceBoxes: number, fileBoxes: number) =>
       `La factura indica ${invoiceBoxes} cajas, pero el archivo da ${fileBoxes}. Revise las cajas antes de importar.`,
+    warnDeliveryDateDefaulted: (date: string) =>
+      `El archivo no indica fecha de entrega, así que se fija en mañana, ${date}. Cámbiela con el lápiz en Fecha de entrega si hace falta.`,
     mixModeLabel:            "Cajas mixtas",
     mixModeSeparate:         "Por separado",
     mixModeTogether:         "Juntas",

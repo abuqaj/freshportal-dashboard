@@ -178,6 +178,8 @@ type DeliveryWarning =
   | { code: "bunches_split_by_invoice_total"; variety: string; length: number; boxes: number; bunches_in_file: number; bunches_per_box: number }
   | { code: "invoice_total_mismatch"; invoice_total: number; file_total: number }
   | { code: "box_count_mismatch"; invoice_boxes: number; file_boxes: number }
+  // The file gave no delivery date, so the server set tomorrow's (DD-MM-YYYY).
+  | { code: "delivery_date_defaulted"; date: string }
   // Read with a layout drafted automatically, which IT has not checked yet.
   | { code: "provisional_pdf_layout"; layout_id: number; supplier: string; assumptions: string[] };
 
@@ -2777,6 +2779,8 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                 ? td.warnBunchesSplit(w.variety, w.length, w.boxes, w.bunches_in_file, w.bunches_per_box)
                 : w.code === "box_count_mismatch"
                 ? td.warnBoxCountMismatch(w.invoice_boxes, w.file_boxes)
+                : w.code === "delivery_date_defaulted"
+                ? td.warnDeliveryDateDefaulted(w.date)
                 : td.warnInvoiceTotalMismatch(w.invoice_total.toFixed(2), w.file_total.toFixed(2))}
             </div>
           ))}

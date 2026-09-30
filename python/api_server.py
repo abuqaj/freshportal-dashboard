@@ -91,7 +91,7 @@ from dfg_api_client import (
     build_batch_payload, create_batch as dfg_create_batch,
     add_stock_entries as dfg_add_stock_entries,
     get_open_invoices as dfg_get_open_invoices,
-    lines_without_s20_length, lines_without_grower,
+    lines_without_s20_length, lines_without_grower, fill_missing_delivery_date,
 )
 from scraper_catalogue import fetch_supplier_list
 from scraper_fust import fetch_fust_catalogue
@@ -2785,6 +2785,8 @@ def _resolve_and_match(
     together = mix_mode != "separate"
     for order in orders:
         order.supplier_fp_id = supplier_id
+        # No delivery date in the file: tomorrow's, for the user to change.
+        fill_missing_delivery_date(order)
         # Growers before products: which mix boxes combine depends on the
         # growers, and which lines need a product search depends on that.
         resolve_growers(order, supplier_nm, grower_choices)
