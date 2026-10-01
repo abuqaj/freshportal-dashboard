@@ -2,7 +2,9 @@
 
 import { Fragment, useState, useEffect, useCallback, useRef } from "react"
 import { createPortal } from "react-dom"
+import { Download } from "lucide-react"
 import { FP_SYSTEMS } from "@/lib/systems"
+import { saveBlob } from "@/lib/save-blob"
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? ""
 
@@ -1326,14 +1328,27 @@ function CustomersTable() {
   )
 }
 
-/* ─── PDF formats ─── */
-/** PDF invoices delivery import could not read, and the temporary layouts
- *  drafted for them (python/pdf_layout_store.py). IT adds a supplier's
- *  layout with the new-delivery-json-format skill and closes the invoice
- *  here; a temporary layout is verified or rejected. "Create format" drafts
- *  one, within the same daily limit the delivery screen has. */
+/* ─── Saving a file ─── */
+const downloadBtn = "p-1 rounded-md text-ink-3 hover:text-emerald hover:bg-emerald/8 transition-colors"
+
+function KindChip({ kind }: { kind: string }) {
+  return (
+    <span className="text-[9px] font-semibold uppercase tracking-wider text-ink-3 border border-border rounded px-1 py-px">
+      {kind}
+    </span>
+  )
+}
+
+/* ─── File formats ─── */
+/** Files delivery import could not read - PDF invoices, and delivery JSON
+ *  (also sent as .txt) since 2026-10-01 - and the temporary layouts drafted
+ *  for them (python/pdf_layout_store.py). IT adds a supplier's layout or
+ *  parser with the new-delivery-json-format skill and closes the file here;
+ *  a temporary layout is verified or rejected. "Create format" drafts one,
+ *  within the same daily limit the delivery screen has. */
 interface PdfLayoutRow {
   id: number
+  kind: "pdf" | "json"
   status: "waiting" | "drafting" | "provisional" | "verified" | "rejected" | "failed" | "closed"
   supplier: string | null
   spec: Record<string, unknown> | null
@@ -1422,17 +1437,38 @@ function PdfFormatsPanel() {
     }
   }
 
-  async function openPdf(row: PdfLayoutRow) {
-    const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${row.id}/pdf`)
-    if (!res.ok) { setMessage(`Could not open the PDF (${res.status})`); return }
-    const url = URL.createObjectURL(await res.blob())
+  // A preview is a blob: link in a new tab, alive only while this page
+  // keeps it: revoked after a minute, saving from the browser's PDF viewer
+  // failed with a network error (user, 2026-10-01). Kept until the panel
+  // goes; the download button saves the file without one.
+  const previews = useRef<string[]>([])
+  useEffect(() => {
+    const urls = previews.current
+    return () => urls.forEach(url => URL.revokeObjectURL(url))
+  }, [])
+
+  async function fetchFile(row: PdfLayoutRow): Promise<Blob | null> {
+    const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${row.id}/file`)
+    if (!res.ok) { setMessage(`Could not open the file (${res.status})`); return null }
+    return res.blob()
+  }
+
+  async function openFile(row: PdfLayoutRow) {
+    const blob = await fetchFile(row)
+    if (!blob) return
+    const url = URL.createObjectURL(blob)
+    previews.current.push(url)
     window.open(url, "_blank")
-    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  }
+
+  async function downloadFile(row: PdfLayoutRow) {
+    const blob = await fetchFile(row)
+    if (blob) saveBlob(blob, row.file_name || `invoice-${row.id}.${row.kind ?? "pdf"}`)
   }
 
   function close(row: PdfLayoutRow) {
     const note = window.prompt(
-      "Close this invoice: its format has been added to pdf_layouts.py, or it is set aside. Note (optional):", "")
+      "Close this file: its format has been added in code (pdf_layouts.py, parser_delivery.py), or it is set aside. Note (optional):", "")
     if (note === null) return
     act(row, "close", { note })
   }
@@ -1490,9 +1526,15 @@ function PdfFormatsPanel() {
                 <Fragment key={row.id}>
                   <tr className="border-b border-border hover:bg-ground/40 transition-colors align-top">
                     <td className="px-4 py-3">
-                      <button onClick={() => openPdf(row)} className="text-sm font-medium text-ink hover:text-emerald underline decoration-dotted text-left">
-                        {row.file_name || `Invoice #${row.id}`}
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button onClick={() => openFile(row)} className="text-sm font-medium text-ink hover:text-emerald underline decoration-dotted text-left">
+                          {row.file_name || `Invoice #${row.id}`}
+                        </button>
+                        <KindChip kind={row.kind ?? "pdf"} />
+                        <button onClick={() => downloadFile(row)} title="Download" aria-label="Download" className={downloadBtn}>
+                          <Download size={13} />
+                        </button>
+                      </div>
                       {row.supplier && <div className="text-xs text-ink-3">{row.supplier}</div>}
                       {row.read_error && <div className="text-[11px] text-ink-3 mt-1 max-w-xs">{row.read_error}</div>}
                     </td>
@@ -1577,7 +1619,9 @@ function PdfFormatsPanel() {
                         </div>
                         {row.spec && (
                           <details className="mt-3">
-                            <summary className="cursor-pointer hover:text-ink">Layout (JSON, for pdf_layouts.py)</summary>
+                            <summary className="cursor-pointer hover:text-ink">
+                              Layout (JSON, for {row.kind === "json" ? "parser_delivery.py" : "pdf_layouts.py"})
+                            </summary>
                             <pre className="mt-1 font-mono text-[11px] bg-surface border border-border rounded-lg p-2 max-h-64 overflow-auto">
                               {JSON.stringify(row.spec, null, 2)}
                             </pre>
@@ -1598,13 +1642,13 @@ function PdfFormatsPanel() {
 
 /* ─── Main ─── */
 export default function AdminTab({ currentUsername }: { currentUsername?: string }) {
-  const [activeTab, setActiveTab] = useState<"users" | "groups" | "customers" | "pdf formats">("users")
+  const [activeTab, setActiveTab] = useState<"users" | "groups" | "customers" | "formats">("users")
 
   return (
     <div>
       <div className="px-5 py-4 border-b border-border">
         <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
-          {(["users", "groups", "customers", "pdf formats"] as const).map(tab => (
+          {(["users", "groups", "customers", "formats"] as const).map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
               className={`px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${
                 activeTab === tab ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink"

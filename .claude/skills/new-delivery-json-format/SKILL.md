@@ -138,22 +138,40 @@ chat text and could not be added. For many files at once, ask for a folder.
    delivery import on the test environment. The API and matching steps cannot
    be run locally.
 
-## PDF invoices saved in Admin, and temporary layouts
+## Files saved in Admin, and temporary layouts
 
 Since 2026-09-28 a PDF no layout reads is saved in the database, not only
-refused (`python/pdf_layout_store.py`), and shows in Admin → PDF formats.
-The person importing it may ask for a *temporary* layout, drafted by the
-model there and then (`python/pdf_layout_ai.py`), at most two a day; it is
-data, reads that supplier's invoices while provisional, and every import
-made with it carries a warning. The user's rule: formats are added by IT
-with this skill; the temporary one only bridges a night.
+refused (`python/pdf_layout_store.py`), and since 2026-10-01 so is a delivery
+JSON (or `.txt`) no parser reads: one that `parse_delivery_json` rejects,
+fails on, or reads as invoices without a single stem (a new supplier's file
+with an `invoices` key and fields of its own names). Both show in Admin →
+Formats, marked PDF or JSON. The person importing may ask for a *temporary*
+layout, drafted by the model there and then (`python/pdf_layout_ai.py`), at
+most two a day for both kinds together; it is data, reads that supplier's
+files while provisional, and every import made with it carries a warning.
+A JSON's layout is `python/json_layout.py`'s: paths to the invoices, boxes
+and products, a reader per field, the file's own totals as the check; the
+engine rewrites the file into the Elite shape and reads it with
+`_parse_invoices_format`. The user's rule: formats are added by IT with this
+skill; the temporary one only bridges a night.
 
-So an invoice may reach you from Admin rather than the chat: download it
-there ("Open PDF") and add it to the collection like any other. A temporary
-layout's JSON (Admin shows it) is a draft to start from, not a spec to copy:
-check it against the steps below like your own. Once the supplier's layout
-is in `pdf_layouts.py` and shipped, **Close** the invoice in Admin; its
-temporary layout then stops reading, and the one in code reads first anyway.
+So a file may reach you from Admin rather than the chat: download it there
+(the download icon beside its name) and add it to the collection like any
+other. A saved JSON is the file as the browser sent it, re-serialised: its
+content is the original's, its spacing is not. A temporary layout's JSON
+(Admin shows it) is a draft to start from, not a spec to copy: check it
+against the steps like your own. Once the supplier's layout is in
+`pdf_layouts.py` (a JSON's parser in `parser_delivery.py`) and shipped,
+**Close** the file in Admin; its temporary layout then stops reading, and
+the one in code reads first anyway. Closing before the code is shipped
+stops the temporary layout too, and the supplier's next file fails again.
+
+Every parse is also on record in History → Delivery import → Files
+(`python/delivery_parse_log.py`): the kind of file (pdf, txt, json), the
+outcome, and the file itself for 60 days after it was last parsed, or less
+once the kept files pass 50 MB (`DELIVERY_FILE_RETENTION_DAYS`,
+`DELIVERY_FILES_MAX_MB`). A file that imported wrongly can be downloaded
+there.
 
 ## Steps for a PDF invoice
 

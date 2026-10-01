@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
+import { Download } from "lucide-react";
 import { translations, Lang } from "@/lib/i18n";
+import { saveBlob } from "@/lib/save-blob";
 import { HistoryRow, SyncRun, AutoVbnRun, FixEntry, PhotoUploadItem } from "@/lib/types";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
@@ -129,6 +131,32 @@ export default function HistoryTab({ lang }: Props) {
   const [histDeliveryHasMore, setHistDeliveryHasMore] = useState(false);
   const [expandedDeliveryId, setExpandedDeliveryId] = useState<number | null>(null);
 
+  // Every delivery file parsed, with its kind, beside the imports
+  // (python/delivery_parse_log.py; user, 2026-10-01). The file itself can be
+  // downloaded while it is kept.
+  interface ParsedFile {
+    id: number;
+    created_at: string;
+    nm_user: string | null;
+    file_kind: "pdf" | "json" | "txt";
+    file_name: string | null;
+    file_bytes: number | null;
+    outcome: "read" | "unknown_format" | "error";
+    tx_company: string | null;
+    id_invoice: string | null;
+    nu_lines: number | null;
+    error: string | null;
+    file_kept: boolean;
+  }
+  interface FilesKept { retention_days: number; files_bytes: number; max_files_mb: number }
+  const [deliveryView, setDeliveryView]         = useState<"imports" | "files">("imports");
+  const [parsedFiles, setParsedFiles]           = useState<ParsedFile[] | null>(null);
+  const [parsedLoading, setParsedLoading]       = useState(false);
+  const [parsedOffset, setParsedOffset]         = useState(0);
+  const [parsedHasMore, setParsedHasMore]       = useState(false);
+  const [filesKept, setFilesKept]               = useState<FilesKept | null>(null);
+  const [parsedMessage, setParsedMessage]       = useState("");
+
   /** One row per invoice, not per run: kenya_box_weight_log is keyed by
    *  invoice_id and overwritten each time, so this shows the current state
    *  of every invoice the module has touched and when it was established. */
@@ -236,6 +264,40 @@ export default function HistoryTab({ lang }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [histDeliveryOffset]);
 
+  const loadParsedFiles = useCallback(async (append = false) => {
+    if (!RAILWAY) return;
+    setParsedLoading(true);
+    const offset = append ? parsedOffset : 0;
+    try {
+      const res = await fetch(`${RAILWAY}/delivery/parse-log?limit=${PAGE_SIZE}&offset=${offset}`);
+      const data = await res.json();
+      const rows: ParsedFile[] = data.parses ?? [];
+      if (append) {
+        setParsedFiles(prev => [...(prev ?? []), ...rows]);
+        setParsedOffset(offset + rows.length);
+      } else {
+        setParsedFiles(rows);
+        setParsedOffset(rows.length);
+      }
+      setParsedHasMore(data.hasMore ?? false);
+      setFilesKept(data);
+    } catch {}
+    setParsedLoading(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedOffset]);
+
+  function showDeliveryView(view: "imports" | "files") {
+    setDeliveryView(view);
+    if (view === "files" && parsedFiles === null) loadParsedFiles();
+  }
+
+  async function downloadParsedFile(row: ParsedFile) {
+    setParsedMessage("");
+    const res = await fetch(`${RAILWAY}/delivery/parse-log/${row.id}/file`);
+    if (!res.ok) { setParsedMessage(t.history.parseGone); return; }
+    saveBlob(await res.blob(), row.file_name || `delivery-${row.id}.${row.file_kind}`);
+  }
+
   const loadBoxWeightHistory = useCallback(async (append = false) => {
     if (!RAILWAY) return;
     setBoxWeightHistLoading(true);
@@ -275,6 +337,7 @@ export default function HistoryTab({ lang }: Props) {
   function handleRefresh() {
     if (historySubTab === "ops")           loadHistory();
     else if (historySubTab === "sync")      loadSyncHistory();
+    else if (historySubTab === "delivery" && deliveryView === "files") loadParsedFiles();
     else if (historySubTab === "delivery")  loadDeliveryHistory();
     else if (historySubTab === "boxweight") loadBoxWeightHistory();
     else                                    loadAutoVbnHistory();
@@ -282,7 +345,7 @@ export default function HistoryTab({ lang }: Props) {
 
   const isLoading = historySubTab === "ops" ? histLoading
     : historySubTab === "sync"      ? syncHistLoading
-    : historySubTab === "delivery"  ? deliveryHistLoading
+    : historySubTab === "delivery"  ? (deliveryView === "files" ? parsedLoading : deliveryHistLoading)
     : historySubTab === "boxweight" ? boxWeightHistLoading
     : autoVbnHistLoading;
 
@@ -682,8 +745,98 @@ export default function HistoryTab({ lang }: Props) {
           )
         )}
 
-        {/* DELIVERY IMPORT */}
+        {/* DELIVERY IMPORT: the imports, or the files parsed */}
         {historySubTab === "delivery" && (
+          <div className="px-4 sm:px-5 py-2 border-b border-border flex items-center gap-3 flex-wrap">
+            <div className="flex gap-1 bg-ground border border-border rounded-lg p-0.5">
+              {(["imports", "files"] as const).map(view => (
+                <button
+                  key={view}
+                  onClick={() => showDeliveryView(view)}
+                  className={`text-[11px] px-3 py-1 rounded-md font-medium transition-colors ${
+                    deliveryView === view ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink"
+                  }`}
+                >
+                  {view === "imports" ? t.history.delivImports : t.history.delivFiles}
+                </button>
+              ))}
+            </div>
+            {deliveryView === "files" && filesKept && (
+              <span className="text-[11px] text-ink-3">
+                {t.history.parseKept(filesKept.retention_days, (filesKept.files_bytes / 1024 / 1024).toFixed(1), filesKept.max_files_mb)}
+              </span>
+            )}
+            {deliveryView === "files" && parsedMessage && <span className="text-[11px] text-ember">{parsedMessage}</span>}
+          </div>
+        )}
+
+        {historySubTab === "delivery" && deliveryView === "files" && (
+          parsedLoading && parsedFiles === null ? (
+            <div className="flex items-center justify-center gap-2 py-12 text-ink-3 text-sm">
+              <Spinner /><span>{t.history.loading}</span>
+            </div>
+          ) : !parsedFiles || parsedFiles.length === 0 ? (
+            <div className="py-12 text-center">
+              <p className="text-sm font-medium text-ink-3">{t.history.parseEmpty}</p>
+            </div>
+          ) : (
+            <>
+              <div className="divide-y divide-border">
+                {parsedFiles.map((row, rowIdx) => {
+                  const outcome = {
+                    read:           { label: t.history.parseRead,    cls: "bg-emerald-light text-emerald" },
+                    unknown_format: { label: t.history.parseUnknown, cls: "bg-amber-50 text-amber-700" },
+                    error:          { label: t.history.parseError,   cls: "bg-ember-light text-ember" },
+                  }[row.outcome] ?? { label: row.outcome, cls: "bg-ground text-ink-3" };
+                  return (
+                    <div key={row.id} className="card-enter flex items-center gap-3 px-5 py-3"
+                      style={{ animationDelay: `${Math.min(rowIdx * 20, 300)}ms` }}>
+                      <span className="text-[9px] font-semibold uppercase tracking-wider text-ink-3 border border-border rounded px-1 py-px flex-shrink-0">
+                        {row.file_kind}
+                      </span>
+                      <span title={row.error ?? ""} className={`text-[10px] px-2 py-0.5 rounded-md font-semibold flex-shrink-0 ${outcome.cls}`}>
+                        {outcome.label}
+                      </span>
+                      <span className="text-xs text-ink truncate flex-1 min-w-0">
+                        <span className="font-medium">{row.tx_company ?? row.file_name ?? "—"}</span>
+                        {row.id_invoice && <span className="text-ink-3 ml-1">#{row.id_invoice}</span>}
+                        {row.tx_company && row.file_name && <span className="text-ink-3/60 ml-2">{row.file_name}</span>}
+                      </span>
+                      <span className="text-[11px] text-ink-3/60 flex-shrink-0 whitespace-nowrap">
+                        {new Date(row.created_at).toLocaleString(localeStr)}
+                      </span>
+                      {row.nm_user && <span className="text-[11px] text-ink-3/40 flex-shrink-0">{row.nm_user}</span>}
+                      {row.file_kept ? (
+                        <button
+                          onClick={() => downloadParsedFile(row)}
+                          title={t.history.parseDownload}
+                          aria-label={t.history.parseDownload}
+                          className="flex-shrink-0 p-1 rounded-md text-ink-3 hover:text-emerald hover:bg-emerald/8 transition-colors"
+                        >
+                          <Download size={13} />
+                        </button>
+                      ) : <span className="w-[21px] flex-shrink-0" />}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {parsedHasMore && (
+                <div className="sticky bottom-0 border-t border-border bg-surface px-5 py-3 flex justify-center">
+                  <button
+                    onClick={() => loadParsedFiles(true)}
+                    disabled={parsedLoading}
+                    className="flex items-center gap-2 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-4 py-2 bg-ground hover:bg-muted transition-colors disabled:opacity-40"
+                  >
+                    {parsedLoading ? <><Spinner /><span>{t.history.loading}</span></> : t.history.loadMore}
+                  </button>
+                </div>
+              )}
+            </>
+          )
+        )}
+
+        {historySubTab === "delivery" && deliveryView === "imports" && (
           deliveryHistLoading && deliveryHistory === null ? (
             <div className="flex items-center justify-center gap-2 py-12 text-ink-3 text-sm">
               <Spinner /><span>{t.history.loading}</span>

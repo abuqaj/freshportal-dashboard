@@ -80,9 +80,11 @@ from kenya_box_weight import (
 )
 from auth_middleware import require_permission, require_any_permission, get_token_payload
 from kb_routes import router as kb_router
-from parser_delivery import (parse_delivery_json, order_to_dict, resolve_growers, mix_box_lines,
+from parser_delivery import (order_to_dict, resolve_growers, mix_box_lines,
                              guess_unknown_boxes, DeliveryOrder, DeliveryLine)
 from parser_delivery_pdf import parse_delivery_pdf, PdfParseError, PdfUnknownLayoutError
+import delivery_parse_log
+from json_layout import JsonUnknownLayoutError, read_delivery_json, unwrap as unwrap_delivery_json
 import pdf_layout_ai
 import pdf_layout_store
 from delivery_product_match import match_order_to_products
@@ -2652,6 +2654,9 @@ class DeliveryParseRequest(BaseModel):
     mix_mode: str = "together"
     # What to do when FreshPortal already holds the shipment; see _resolve_and_match.
     existing: str = "check"
+    # The file's name: whether it was a .json or a .txt, and what a file no
+    # parser reads is saved under for IT.
+    file_name: str = ""
 
 
 def _existing_batches(orders: list[DeliveryOrder], supplier_id: str) -> list[dict | None]:
@@ -2838,37 +2843,46 @@ def _resolve_and_match(
 
 
 @app.post("/delivery/parse")
-def delivery_parse(req: DeliveryParseRequest, _: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
+def delivery_parse(req: DeliveryParseRequest, user: dict = Depends(require_any_permission("admin:manage", "delivery:import"))):
     """Parse delivery JSON, aggregate products, match against the products master DB
     (the same DB VBN Checker / Nowe produkty use) to resolve each line's
     product_number for the DFG BatchV1 API.
 
     Request body:
-      { raw_json: <the full delivery JSON>, supplier_id: "27", with_matching: true }
+      { raw_json: <the full delivery JSON>, supplier_id: "27", with_matching: true,
+        file_name: "invoice.json" }
 
     Returns aggregated DeliveryOrder(s) with match results per line.
+
+    A file no parser and no stored layout reads is saved for IT and offered
+    a temporary layout, as an unreadable PDF is (user, 2026-10-01): a 422
+    with code unknown_json_layout. Every parse goes on record
+    (delivery_parse_log), with its kind of file, .json or .txt.
     """
-    log.info("[delivery/parse] starting — supplier=%s with_matching=%s mix_mode=%s existing=%s",
-             req.supplier_id, req.with_matching, req.mix_mode, req.existing)
+    log.info("[delivery/parse] starting — file=%r supplier=%s with_matching=%s mix_mode=%s existing=%s",
+             req.file_name, req.supplier_id, req.with_matching, req.mix_mode, req.existing)
+    file_name = req.file_name or "delivery.json"
+    kind = delivery_parse_log.kind_of(file_name)
+    # The file as JSON text: what is kept and saved. The browser sends it
+    # parsed, so its own spacing is gone, its content is not.
+    content = json.dumps(req.raw_json, ensure_ascii=False, indent=2).encode("utf-8")
     try:
         try:
-            raw = req.raw_json
-            if isinstance(raw, list):
-                # Some exporters wrap the payload in an outer array — unwrap it
-                merged: dict = {}
-                for item in raw:
-                    if isinstance(item, dict):
-                        for k, v in item.items():
-                            if k in merged and isinstance(merged[k], list) and isinstance(v, list):
-                                merged[k].extend(v)
-                            else:
-                                merged.setdefault(k, v)
-                raw = merged
-            orders = parse_delivery_json(raw)
+            orders = read_delivery_json(unwrap_delivery_json(req.raw_json))
+        except JsonUnknownLayoutError as exc:
+            log.warning("[delivery/parse] %s: no parser reads it: %s", file_name, exc)
+            delivery_parse_log.record(_username(user), kind, file_name, content,
+                                      delivery_parse_log.UNKNOWN_FORMAT, error=str(exc))
+            raise HTTPException(422, _unknown_layout_detail(
+                file_name, content, user, str(exc), exc.read_error, kind="json"))
         except Exception as exc:
-            log.exception("[delivery/parse] parse_delivery_json failed")
+            log.exception("[delivery/parse] reading the JSON failed")
+            delivery_parse_log.record(_username(user), kind, file_name, content,
+                                      delivery_parse_log.ERROR, error=str(exc))
             raise HTTPException(400, f"Invalid delivery JSON: {exc}")
 
+        delivery_parse_log.record(_username(user), kind, file_name, content,
+                                  delivery_parse_log.READ, orders)
         return _resolve_and_match(orders, req.supplier_id, req.with_matching, req.mix_mode, req.existing)
     except HTTPException:
         raise
@@ -2922,6 +2936,7 @@ def delivery_parse_pdf(
                 f"{MAX_DELIVERY_PDF_BYTES // (1024 * 1024)} MB.",
             )
 
+        file_name = pdf.filename or "invoice.pdf"
         try:
             orders = parse_delivery_pdf(content)
         except PdfUnknownLayoutError as exc:
@@ -2929,18 +2944,26 @@ def delivery_parse_pdf(
             # asks the user first (pdf_layout_store). So is a known
             # supplier's invoice its layout cannot read (user, 2026-09-30).
             log.warning("[delivery/parse-pdf] %s: no layout reads it: %s", pdf.filename, exc)
+            delivery_parse_log.record(_username(user), "pdf", file_name, content,
+                                      delivery_parse_log.UNKNOWN_FORMAT, error=str(exc))
             raise HTTPException(422, _unknown_layout_detail(
-                pdf.filename or "invoice.pdf", content, user, str(exc),
+                file_name, content, user, str(exc),
                 str(exc) if exc.layout else None))
         except PdfParseError as exc:
             # Both an unknown layout and a failed checksum are the user's to
             # act on, not a server fault — the message says what to do next.
             log.warning("[delivery/parse-pdf] %s: %s", pdf.filename, exc)
+            delivery_parse_log.record(_username(user), "pdf", file_name, content,
+                                      delivery_parse_log.ERROR, error=str(exc))
             raise HTTPException(400, str(exc))
         except Exception as exc:
             log.exception("[delivery/parse-pdf] parse_delivery_pdf failed")
+            delivery_parse_log.record(_username(user), "pdf", file_name, content,
+                                      delivery_parse_log.ERROR, error=str(exc))
             raise HTTPException(400, f"Could not read this PDF: {exc}")
 
+        delivery_parse_log.record(_username(user), "pdf", file_name, content,
+                                  delivery_parse_log.READ, orders)
         return _resolve_and_match(orders, supplier_id, with_matching, mix_mode, existing)
     except HTTPException:
         raise
@@ -2954,12 +2977,12 @@ def _username(payload: dict) -> str:
 
 
 def _unknown_layout_detail(file_name: str, content: bytes, user: dict, message: str,
-                           read_error: str | None = None) -> dict:
+                           read_error: str | None = None, kind: str = "pdf") -> dict:
     """What the delivery screen needs to offer a temporary layout: the saved
-    invoice, and how many drafts today still allows."""
-    detail: dict = {"code": "unknown_pdf_layout", "message": message}
+    file (a PDF, or kind "json"), and how many drafts today still allows."""
+    detail: dict = {"code": f"unknown_{kind}_layout", "message": message}
     try:
-        row = pdf_layout_store.save_unknown(file_name, content, _username(user), read_error)
+        row = pdf_layout_store.save_unknown(file_name, content, _username(user), read_error, kind)
         detail.update({
             "invoice_id": row["id"], "status": row["status"],
             "drafts_left_today": pdf_layout_store.drafts_left_today(),
@@ -2967,7 +2990,7 @@ def _unknown_layout_detail(file_name: str, content: bytes, user: dict, message: 
             "drafting_available": bool(Config().anthropic_api_key),
         })
     except Exception as exc:
-        log.exception("[delivery/parse-pdf] could not save the unknown invoice")
+        log.exception("[delivery/parse] could not save the unknown %s file", kind)
         detail.update({"invoice_id": None, "save_error": str(exc)})
     return detail
 
@@ -3014,15 +3037,25 @@ def pdf_layout_get(layout_id: int, payload: dict = Depends(_delivery_or_admin)):
     return row if "admin:manage" in (payload.get("permissions") or []) else _layout_for_screen(row)
 
 
+def _file_response(name: str, kind: str, content: bytes) -> Response:
+    safe = "".join(c if c.isalnum() or c in " ._-#" else "_" for c in name)
+    media = {"pdf": "application/pdf", "txt": "text/plain; charset=utf-8"}.get(
+        kind, "application/json")
+    return Response(content, media_type=media,
+                    headers={"Content-Disposition": f'inline; filename="{safe}"'})
+
+
+# /pdf is the name it had while only PDFs were saved.
+@app.get("/delivery/pdf-layouts/{layout_id}/file")
 @app.get("/delivery/pdf-layouts/{layout_id}/pdf")
 def pdf_layout_file(layout_id: int, _: dict = Depends(_admin)):
-    found = pdf_layout_store.get_pdf(layout_id)
-    if found is None:
+    """The saved file, a PDF invoice or a delivery JSON."""
+    row = pdf_layout_store.get_layout(layout_id)
+    found = pdf_layout_store.get_file(layout_id)
+    if row is None or found is None:
         raise HTTPException(404, "No such invoice")
     name, content = found
-    safe = "".join(c if c.isalnum() or c in " ._-#" else "_" for c in name)
-    return Response(content, media_type="application/pdf",
-                    headers={"Content-Disposition": f'inline; filename="{safe}"'})
+    return _file_response(name, row.get("kind") or "pdf", content)
 
 
 @app.post("/delivery/pdf-layouts/{layout_id}/draft")
@@ -3041,12 +3074,12 @@ def pdf_layout_draft(layout_id: int, payload: dict = Depends(_delivery_or_admin)
         raise HTTPException(404, "No such invoice")
     except ValueError as exc:
         raise HTTPException(409, {"code": "not_waiting", "message": str(exc)})
-    found = pdf_layout_store.get_pdf(layout_id)
+    found = pdf_layout_store.get_file(layout_id)
     if found is None:
         pdf_layout_store.fail_draft(layout_id, "The saved invoice file is missing.")
         raise HTTPException(404, "The saved invoice file is missing")
     name, content = found
-    pdf_layout_ai.start(layout_id, name, content, row.get("read_error"))
+    pdf_layout_ai.start(layout_id, name, content, row.get("read_error"), row.get("kind") or "pdf")
     return _layout_for_screen(row)
 
 
@@ -3059,6 +3092,24 @@ def pdf_layout_cancel(layout_id: int, payload: dict = Depends(_delivery_or_admin
     except LookupError:
         raise HTTPException(409, {"code": "not_drafting",
                                   "message": "This invoice is not being drafted for."})
+
+
+@app.get("/delivery/parse-log")
+def delivery_parse_log_list(limit: int = 10, offset: int = 0, _: dict = Depends(_admin)):
+    """A page of the latest parses of delivery files, with the kind of each
+    file, and what the files kept for a while take (delivery_parse_log).
+    History shows it beside the delivery imports."""
+    return delivery_parse_log.recent(max(1, min(limit, 100)), max(0, offset))
+
+
+@app.get("/delivery/parse-log/{log_id}/file")
+def delivery_parse_log_file(log_id: int, _: dict = Depends(_admin)):
+    """A parsed file, while it is kept."""
+    found = delivery_parse_log.get_file(log_id)
+    if found is None:
+        raise HTTPException(404, "The file is no longer kept")
+    name, kind, content = found
+    return _file_response(name, kind, content)
 
 
 class PdfLayoutReviewRequest(BaseModel):
