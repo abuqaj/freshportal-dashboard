@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -40,6 +41,7 @@ from parser_delivery_pdf import (  # noqa: E402
     PdfChecksumError,
     PdfDoc,
     PdfParseError,
+    _clip_overflow,
     _unwrap,
     detect_pdf_layout,
     parse_with_spec,
@@ -846,6 +848,34 @@ def test_every_boxes_layout_is_found_by_its_own_name():
     for spec in LAYOUTS[:-2]:
         assert spec.row_model == "boxes"
         assert spec.totals_re or spec.totals_marker, spec.name
+
+
+class _FakePage:
+    """What _clip_overflow uses of a pdfplumber page."""
+
+    def __init__(self, chars, cells):
+        self.chars, self._cells = chars, cells
+
+    def find_tables(self):
+        return [SimpleNamespace(cells=self._cells)]
+
+    def filter(self, keep):
+        return _FakePage([c for c in self.chars if keep(c)], self._cells)
+
+
+def test_clip_overflow_drops_a_kerned_character_with_its_run():
+    """Guaisa 0269966: the mark "FRESH FROM SOURCE BV.-NL" runs on over the
+    box count beside it, and its "." is kerned 0.8 under the "V" — still the
+    same run, so it is dropped with the rest instead of starting a run of
+    its own in the neighbour's cell."""
+    def ch(text, x0, width=5.0):
+        return {"object_type": "char", "text": text, "x0": x0, "x1": x0 + width,
+                "top": 10.0, "bottom": 18.0}
+
+    box_count = ch("1", 62)  # the neighbour's own text, drawn first
+    mark = [ch("B", 40), ch("V", 45), ch(".", 49.2, 2.3), ch("-", 51.5, 2.6), ch("N", 54.1)]
+    page = _FakePage([box_count, *mark], cells=[(0, 0, 50, 30), (50, 0, 100, 30)])
+    assert "".join(c["text"] for c in _clip_overflow(page).chars) == "1BV"
 
 
 if __name__ == "__main__":

@@ -144,8 +144,10 @@ def _clip_overflow(page: Any) -> Any:
     prev = None
     for ch in page.chars:
         x, y = (ch["x0"] + ch["x1"]) / 2, (ch["top"] + ch["bottom"]) / 2
+        # Kerning tucks a character up to a point under the one before it:
+        # the "." of "BV.-NL" starts 0.8 left of where the "V" ends (Guaisa).
         same_run = (prev is not None and abs(ch["top"] - prev["top"]) < 1
-                    and -0.5 <= ch["x0"] - prev["x1"] < 3)
+                    and -1 <= ch["x0"] - prev["x1"] < 3)
         if not same_run:
             home = cell_at(x, y)
         elif home is not None and not (home[0] <= x < home[2]):

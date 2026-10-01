@@ -41,6 +41,11 @@ this skill.
   2700 = 9 boxes of 300 stems); the bunch size is in `nm_product` (`10ST`).
 - **Batch code = invoice number, exactly.** Leading zeros are never removed.
 - **Weight:** roses, and any weight above 100, send no weight.
+- **The customer and the carrier on the invoice do not matter** (user,
+  2026-10-01): the user picks the customer in the portal. Read the mark
+  (`1OZH`, `VDF`, `FRESH FROM SOURCE BV.-NL`) and the cargo agency when they
+  are there, but never require them: a row without a mark still reads
+  (Guaisa 0270761), and no pattern anchors on the customer's code.
 - **Pomarosa's grower** comes from each product's `nm_location`.
 - **A different farm is a different grower:** boxes of the same product from
   different `nm_location`s never merge into one line.
