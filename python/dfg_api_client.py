@@ -353,7 +353,7 @@ def build_stock_entry(line: DeliveryLine) -> dict[str, Any]:
     # line.nu_bunches / nu_stems_total are TOTALS across every physical box merged
     # into this line (see parser_delivery._parse_invoices_format), but the DFG API
     # wants per-box figures — "quantity" already says how many physical boxes there
-    # are, so number_of_bunches/quantity_per_pack must be per-box, not the sum
+    # are, so quantity_per_pack must be per-box, not the sum
     # (bug found 2026-08-27: a 2-box, 4-bunch/box line was sent as 8 bunches —
     # FreshPortal read it as 2 boxes × 8 bunches instead of 2 boxes × 4).
     bunches_per_box = line.nu_bunches // max(1, line.nu_physical_boxes)
@@ -368,13 +368,15 @@ def build_stock_entry(line: DeliveryLine) -> dict[str, Any]:
         "weight": line.nu_weight,
         "box_weight": line.nu_box_weight,
         "price": line.mny_rate_stem,
+        # number_of_bunches is never sent, not even empty: in FreshPortal that
+        # field holds something other than bunches per box, so the shipment's
+        # stock leaves it blank (user, 2026-10-01).
         "characteristics": {
             "length": line.nu_length,
             # FreshPortal has no equivalent data for these — always sent as fixed values
             # per explicit decision (2026-08-24).
             "quality": "AA",
             "maturity": "033",
-            "number_of_bunches": str(bunches_per_box),
             "stems_per_bunch": str(line.nu_stems_bunch),
         },
     }

@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import DeliveryTour, { TourStep } from "./DeliveryTour";
 import LayoutDraftMeter, { LAYOUT_DRAFT_PRICE_SHOWN_USD } from "./LayoutDraftMeter";
-import MascotRunner from "./MascotRunner";
+import MascotRunner, { preloadMascot } from "./MascotRunner";
 import { Tip } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -195,10 +195,10 @@ type DeliveryWarning =
   // Read with a layout drafted automatically, which IT has not checked yet.
   | { code: "provisional_pdf_layout"; layout_id: number; supplier: string; assumptions: string[] };
 
-// A PDF no layout reads: saved on the server for IT, and offered for a
-// temporary layout (python/pdf_layout_store.py).
+// A PDF no layout reads, or a JSON no parser reads: saved on the server for
+// IT, and offered for a temporary layout (python/pdf_layout_store.py).
 interface UnknownLayoutInfo {
-  code: "unknown_pdf_layout";
+  code: "unknown_pdf_layout" | "unknown_json_layout";
   message: string;
   invoice_id: number | null;
   status?: string;
@@ -750,6 +750,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   const [stage, setStage] = useState<Stage>("idle");
   const [importLogId, setImportLogId] = useState<number | null>(null);
   const [jsonText, setJsonText] = useState("");
+  // The loaded JSON's file name: the server logs whether it was a .json or a
+  // .txt, and saves an unreadable one for IT under it.
+  const [jsonFileName, setJsonFileName] = useState("");
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [activeOrderIdx, setActiveOrderIdx] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
@@ -1170,6 +1173,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
         if (!d.value) {
           setTimeout(() => {
             setJsonText(DEMO_JSON);
+            setJsonFileName("");
             setFileLoaded(true);
             setIsTourMode(true);
             setTourStep(0);
@@ -1246,6 +1250,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
   function openTour() {
     reset();
     setJsonText(DEMO_JSON);
+    setJsonFileName("");
     setFileLoaded(true);
     setIsTourMode(true);
     setTourStep(0);
@@ -1280,6 +1285,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     reader.onload = e => {
       setPdfFile(null);
       setJsonText((e.target?.result as string) || "");
+      setJsonFileName(file.name);
       setFileLoaded(true);
       autoParseRef.current = true;
     };
@@ -1352,16 +1358,18 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
           with_matching: true,
           mix_mode: mixMode,
           existing,
+          file_name: jsonFileName,
           ...(supplierIdOverride ? { supplier_id: supplierIdOverride } : {}),
         }),
       });
     }
     if (!res.ok) {
       const body = await res.text();
-      if (pdfFile && res.status === 422) {
+      if (res.status === 422) {
         try {
           const detail = JSON.parse(body).detail;
-          if (detail?.code === "unknown_pdf_layout") throw new UnknownLayoutError(detail as UnknownLayoutInfo);
+          if (detail?.code === "unknown_pdf_layout" || detail?.code === "unknown_json_layout")
+            throw new UnknownLayoutError(detail as UnknownLayoutInfo);
         } catch (e) {
           if (e instanceof UnknownLayoutError) throw e;
         }
@@ -2148,6 +2156,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     stage === "shipment" && resolvedSupplier && (customerId || topUpBatch) ? () => setStage("preview") : null,
     null,
   ];
+
+  // The runner shown while the shipment is created, fetched during review.
+  if (stage === "shipment" || stage === "preview") preloadMascot();
 
   return (
     <div data-di className="flex flex-col gap-5 sm:gap-6">

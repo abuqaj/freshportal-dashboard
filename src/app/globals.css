@@ -220,8 +220,20 @@ html, body { height: 100%; margin: 0; }
 }
 .mascot-dust { animation: mascot-dust 0.84s ease-out infinite; }
 .mascot-dust-late { animation-delay: 0.42s; }
+/* His hat sits for two strides, hops off, turns over once and lands back
+ * (user, 2026-10-01: the hat should turn). */
+@keyframes mascot-hat {
+  0%, 46% { transform: translateY(0) rotate(0deg); }
+  72%     { transform: translateY(-62%) rotate(200deg); }
+  92%     { transform: translateY(0) rotate(360deg) scaleY(0.9); }
+  100%    { transform: translateY(0) rotate(360deg); }
+}
+.mascot-hat {
+  transform-origin: 50% 60%;
+  animation: mascot-hat 1.68s ease-in-out infinite;
+}
 @media (prefers-reduced-motion: reduce) {
-  .mascot-run, .mascot-shadow, .mascot-ground, .mascot-dust { animation: none; }
+  .mascot-run, .mascot-shadow, .mascot-ground, .mascot-dust, .mascot-hat { animation: none; }
   .mascot-dust { opacity: 0; }
 }
 

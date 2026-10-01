@@ -422,8 +422,16 @@ def _invoice_colon(name: str, detect: str, company: str) -> LayoutSpec:
 ROSALEDA = _invoice_colon("rosaleda", r"FLORICOLA\s+LA\s+ROSALEDA", "FLORICOLA LA ROSALEDA S.A.")
 MONTEROSAS = _invoice_colon("monterosas", r"MONTEROSAS", "MONTEROSAS FARMS")
 # The invoice is Jet Fresh Flower Growers of Ecuador; FreshPortal's supplier
-# is Jet Fresh Flower Distributors.
-JET_FRESH = _invoice_colon("jet_fresh", r"JET\s+FRESH\s+FLOWER", "JET FRESH FLOWER DISTRIBUTORS")
+# is Jet Fresh Flower Distributors. Its STEMS BOX column is the whole row's
+# stems, BUNCH BOX each box's bunches: "2 - 3 2 QB PLAYA BLANCA [EXP] 50 25 5
+# 250" is two boxes of 5 bunches, and 50406's rows add up to its 1500 stems
+# only that way. No other farm on this program has printed a row of more than
+# one box yet, so they keep reading the column per box.
+JET_FRESH = dataclasses.replace(
+    _invoice_colon("jet_fresh", r"JET\s+FRESH\s+FLOWER", "JET FRESH FLOWER DISTRIBUTORS"),
+    columns={"number": 0, "label": 1, "count": 2, "box": 3, "variety": 4, "length": 5,
+             "stems_bunch": 6, "bunches_box": 7, "stems": 8, "rate": 9, "subtotal": 10},
+)
 # Royalflowers prints from this program since it became ROYALFLOWERS S.A.S.
 # (00000161964, 2026-09-25); its 2025 invoices are ROYALFLOWERS below, so this
 # spec goes before that one. Its box summary adds a size digit to the box,
@@ -552,6 +560,16 @@ HOJA_VERDE = LayoutSpec(
     },
     totals_marker="TOTALS",
     fulls_re=r"Number\s+in\s+(?:Fulls\s+)?([\d.]+)",
+)
+
+# Albra Roses (5080448, 2026-09-30) writes its product cell as Hoja Verde
+# does: "MONDIAL 60CM N 25ST FRB". The Alissroses spec found it by the
+# program's wording and read none of its rows.
+ALBRA_ROSES = dataclasses.replace(
+    HOJA_VERDE,
+    name="albra_roses",
+    detect=r"ALBRA\s+ROSES",
+    header={**HOJA_VERDE.header, "tx_company": const("ALBRA ROSES")},
 )
 
 
@@ -1060,7 +1078,7 @@ AZULINA = LayoutSpec(
     # 0,61 2.196,00": full boxes and pieces run together, then box type x stems.
     lines=(r"^\s*[\d.]+,\d{3}\s*(?P<count>\d+),\d{2}\s*(?P<box>[A-Z]{2})x(?P<stems_box>\d+)\s+"
            r"(?P<species>HYDRANGEA)\s+(?:(?P<qual>PREMIUM|SELECT|STANDARD)\s+)?"
-           r"(?P<variety>.+?)\s+\d{10}\s+(?P<label>\S+)\s+(?P<stems>\d+)\s+stem\s+\d+\s+"
+           r"(?P<variety>.+?)\s+\d{10}\s+(?:(?P<label>\S+)\s+)?(?P<stems>\d+)\s+stem\s+\d+\s+"
            r"(?P<rate>[\d,]+)\s+(?P<subtotal>[\d.,]+)\s*$",),
     product_re="",
     row_model="boxes",
@@ -1118,7 +1136,7 @@ MYJ_FLOWERS = LayoutSpec(
     columns={},
     # "1OZH 1 QB", then "400 20 20 KOMACHI BLANCO FANCY $0.140 $56.00":
     # stems, stems a bunch, bunches, variety and grade, price, amount.
-    lines=(r"^\S*OZ\S*\s+(?P<number>\d+)\s+(?P<box>[A-Z]{2,3})\s*$",
+    lines=(r"^(?:\S+\s+)?(?P<number>\d+)\s+(?P<box>[A-Z]{2,3})\s*$",
            r"^(?P<stems>\d+)\s+(?P<stems_bunch>\d+)\s+(?P<bunches>\d+)\s+(?P<product>.+?)\s*"
            r"\$(?P<rate>[\d.]+)\s+\$(?P<subtotal>[\d,.]+)\s*$"),
     product_re=r"^(?P<variety>.+?)(?:\s+(?P<qual>FANCY|SELECT|STANDARD?))?$",
@@ -1163,10 +1181,15 @@ GUAISA = LayoutSpec(
     grid_header=(),
     columns={},
     # "ROSE PINK COUNTRY BLUES 60CM 12,86 Kg 1OZH 1 A 100 $0.500 $50.000":
-    # colour and variety, length, weight, mark, boxes, box size, stems.
+    # colour and variety, length, weight, mark, boxes, box size, stems. A row
+    # may have no mark (0270761: "… 8,95 Kg 8 X 1000 …").
     lines=(r"^(?P<species>ROSE)\s+(?P<product>.+?)\s+(?P<length>\d+)CM\s+[\d,]+\s*Kg\s+"
-           r"(?P<label>.+?)\s+(?P<count>\d+)\s+(?P<box>[A-Z])\s+(?P<stems>\d+)\s+"
+           r"(?:(?P<label>.+?)\s+)?(?P<count>\d+)\s+(?P<box>[A-Z])\s+(?P<stems>\d+)\s+"
            r"\$(?P<rate>[\d.]+)\s+\$(?P<subtotal>[\d,.]+)\s*$",),
+    # A mark as long as "FRESH FROM SOURCE BV.-NL" runs on over the box
+    # count, box size and stems, and the text interleaves them
+    # ("SOURC1E BXV.-NL125", 0269966).
+    extract={"clip_overflow": True},
     product_re=rf"^(?:(?P<color>{KOMET_COLORS.upper()})\s+)?(?P<variety>.+)$",
     row_model="boxes",
     header={
@@ -1197,7 +1220,7 @@ ROSAPRIMA = LayoutSpec(
         # "ROS RED Freedom 70 x 250 Stem (4.32 cubes) 1OZH 4 JB 1000 $0.450 $450.00"
         # — or "ROS AST 70 x 250 …", an assorted box whose contents follow.
         r"^ROS\s+(?:(?P<color>[A-Z]{3})\s+)?(?P<variety>.+?)\s+(?P<length>\d+)\s+x\s+"
-        r"(?P<stems_box>\d+)\s+Stem\s+\([\d.]+\s+cubes\)\s+(?P<label>\S+)\s+(?P<count>\d+)\s+"
+        r"(?P<stems_box>\d+)\s+Stem\s+\([\d.]+\s+cubes\)\s+(?:(?P<label>\S+)\s+)?(?P<count>\d+)\s+"
         r"(?P<box>[A-Z]{2})\s+(?P<stems>\d+)\s+\$(?P<rate>[\d.]+)\s+\$(?P<subtotal>[\d,.]+)\s*$",
         # "ROS LAV Purple Crown 70 1 Bun. 25 St/Bun at $0.450" — per box.
         r"^ROS\s+(?:(?P<color>[A-Z]{3})\s+)?(?P<variety>.+?)\s+(?P<length>\d+)\s+"
@@ -1230,7 +1253,7 @@ EQR_ROSES = LayoutSpec(
     columns={},
     # "Roses Light Pink Pink Mondial 50 Cm x 300 Stem 1OZH 2 HB 600 $0.380 $228.00"
     lines=(r"^(?P<species>Roses?)\s+(?P<product>.+?)\s+(?P<length>\d+)\s+Cm\s+x\s+"
-           r"(?P<stems_box>\d+)\s+Stem\s+(?P<label>\S+)\s+(?P<count>\d+)\s+(?P<box>[A-Z]{2})\s+"
+           r"(?P<stems_box>\d+)\s+Stem\s+(?:(?P<label>\S+)\s+)?(?P<count>\d+)\s+(?P<box>[A-Z]{2})\s+"
            r"(?P<stems>\d+)\s+\$(?P<rate>[\d.]+)\s+\$(?P<subtotal>[\d,.]+)\s*$",),
     # "Light Pink Pink Mondial": the colour, then the variety.
     product_re=rf"^(?:(?P<color>{KOMET_COLORS})\s+)?(?P<variety>.+)$",
@@ -1250,7 +1273,7 @@ ROSAS_DEL_CORAZON = LayoutSpec(
     # "1 I QBM I 25 I 1OZH I MANDARIN GARDEN 40 CM I $0.300000 I $7.50" — the
     # piece count only on a box's first row.
     lines=(r"^(?:(?P<count>\d+)\s+)?I\s+(?P<box>[A-Z]+)\s+I\s+(?P<stems>\d+)\s+I\s+"
-           r"(?P<label>\S+)\s+I\s+(?P<variety>.+?)\s+(?P<length>\d+)\s+CM\s+I\s+"
+           r"(?:(?P<label>\S+)\s+)?I\s+(?P<variety>.+?)\s+(?P<length>\d+)\s+CM\s+I\s+"
            r"\$(?P<rate>[\d.]+)\s+I\s+\$(?P<subtotal>[\d,.]+)\s*$",),
     product_re="",
     row_model="boxes",
@@ -1324,7 +1347,7 @@ APOSENTOS = LayoutSpec(
     # colour, criterion, grade, brand, tariff, price, amount.
     lines=(r"^(?P<count>\d+)\s+(?P<box>\S+)\s+(?P<stems>\d+)\s+"
            r"(?P<species>MINI\s*CARNATIONS?|CARNATIONS?)\s+(?P<product>.+?)\s+DUTY\s+FREE\s+"
-           r"(?P<qual>\w+)\s+(?P<label>\S+)\s+CO-\d+\s+\$(?P<rate>[\d.]+)\s+"
+           r"(?P<qual>\w+)\s+(?:(?P<label>\S+)\s+)?CO-\d+\s+\$(?P<rate>[\d.]+)\s+"
            r"\$(?P<subtotal>[\d,.]+)\s*$",),
     # The colour closes the description: "LEGE PINK NOVELTY", "ZEPELIN HOT PINK".
     product_re=(r"^(?P<variety>.+?)\s+(?P<color>HOT\s+PINK|BICOLOR\s+RED|BICOLOR|NOVELTY|ORANGE|"
@@ -1452,7 +1475,7 @@ SAN_ANDRES = LayoutSpec(
 LAYOUTS: list[LayoutSpec] = [
     FIORENTINA, MYSTICFLOWERS, FLOREQUISA, AGROGANA, FLORIFRUT, ECOFLOR, CALINAMA, STAMPSYBOX,
     ROSALEDA, MONTEROSAS, JET_FRESH, ROYALFLOWERS_SAS, ROYALFLOWERS, NARANJO_ROSES, LARTISAN,
-    HOJA_VERDE, BOSQUEFLOWERS, PROTEAS_SOLANDINO, NIKITA, PALITAFLOR, COLIBRI, TIERRA_VERDE,
+    HOJA_VERDE, ALBRA_ROSES, BOSQUEFLOWERS, PROTEAS_SOLANDINO, NIKITA, PALITAFLOR, COLIBRI, TIERRA_VERDE,
     MONTEBELLO, LAILA_FLOWERS, GREENEX, PLATONOFF, FLORAROMA, BREZZA, SOL_PACIFIC, VALLE_VERDE, FLORSANI, FLORISOL,
     TERRA_PACIFIC, AGROTERRANORTE,
     ATTAR_ROSES, AZULINA, DAVINCI, MYJ_FLOWERS, GUAISA, ROSAPRIMA, EQR_ROSES,

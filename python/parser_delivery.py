@@ -1184,6 +1184,11 @@ def _parse_etiqueta_format(data: dict[str, Any]) -> list[DeliveryOrder]:
     )]
 
 
+class UnknownDeliveryJsonError(ValueError):
+    """No parser here takes the file: none of the keys the formats are
+    detected by is in it."""
+
+
 def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
     """Auto-detect format and parse delivery JSON into DeliveryOrder list.
 
@@ -1209,7 +1214,8 @@ def parse_delivery_json(data: dict[str, Any]) -> list[DeliveryOrder]:
         return _parse_factura_format(data)
     if "detalle" in data:
         return _parse_etiqueta_format(data)
-    raise ValueError("Unknown delivery JSON format: missing 'invoices', 'id_factura', or 'detalle' key")
+    raise UnknownDeliveryJsonError(
+        "Unknown delivery JSON format: missing 'invoices', 'id_factura', or 'detalle' key")
 
 
 # ---------------------------------------------------------------------------

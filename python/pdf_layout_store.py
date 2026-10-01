@@ -1,4 +1,4 @@
-"""PDF invoices no layout reads, and the layouts drafted for them.
+"""Delivery files no layout reads, and the layouts drafted for them.
 
 IT adds a new supplier's layout to pdf_layouts.py with the
 new-delivery-json-format skill; that is the normal way. This module covers
@@ -12,9 +12,14 @@ invoices from then on, and every import made with it says so on the screen.
 IT checks it in Admin and marks it *verified* or *rejected*, and *closes* an
 invoice once its layout is in pdf_layouts.py.
 
-A stored layout is data (pdf_layout_json) and is only ever run in a separate
-process with a time limit (run_isolated): a regular expression that never
-finishes stops that process, not the server.
+The same goes for a delivery JSON no parser reads (user, 2026-10-01): it is
+saved here with kind "json", within the same daily limit, and its drafted
+layout is json_layout's rather than a PDF's. IT adds its parser to
+parser_delivery.py.
+
+A stored layout is data (pdf_layout_json, json_layout) and is only ever run
+in a separate process with a time limit (run_isolated): a regular expression
+that never finishes stops that process, not the server.
 """
 from __future__ import annotations
 
@@ -36,6 +41,8 @@ log = logging.getLogger(__name__)
 
 WAITING, DRAFTING, PROVISIONAL, VERIFIED, REJECTED, FAILED, CLOSED = (
     "waiting", "drafting", "provisional", "verified", "rejected", "failed", "closed")
+# What was saved: a PDF invoice, or a delivery JSON (also one sent as .txt).
+KINDS = ("pdf", "json")
 # The layouts that read invoices.
 READING = (PROVISIONAL, VERIFIED)
 # What IT still has to look at: invoices without a layout, and drafted
@@ -58,7 +65,8 @@ ISOLATED_TIMEOUT = 30
 _DRAFT_LOCK = 7_310_428_611
 
 _table_ready = False
-_cache: tuple[float, list[dict]] | None = None
+# Per kind: when the reading layouts were read, and what they were.
+_cache: dict[str, tuple[float, list[dict]]] = {}
 _cache_lock = threading.Lock()
 
 
@@ -98,6 +106,10 @@ def ensure_table() -> None:
             # Why a known supplier's layout could not read the invoice (added
             # 2026-09-30); empty for a supplier no layout knows.
             cur.execute("ALTER TABLE pdf_layouts ADD COLUMN IF NOT EXISTS read_error TEXT")
+            # A delivery JSON's row (added 2026-10-01); the file goes in the
+            # column named pdf all the same.
+            cur.execute("ALTER TABLE pdf_layouts ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL "
+                        "DEFAULT 'pdf'")
             cur.execute("CREATE INDEX IF NOT EXISTS pdf_layouts_status_idx ON pdf_layouts(status)")
             cur.execute("CREATE INDEX IF NOT EXISTS pdf_layouts_sha_idx ON pdf_layouts(file_sha256)")
     _table_ready = True
@@ -106,12 +118,12 @@ def ensure_table() -> None:
 def _invalidate() -> None:
     global _cache
     with _cache_lock:
-        _cache = None
+        _cache = {}
 
 
 # Everything but the PDF itself, which is fetched only when someone opens it.
-_COLUMNS = ("id, status, supplier, spec, assumptions, sample, error, read_error, file_name, "
-            "model, turns, "
+_COLUMNS = ("id, kind, status, supplier, spec, assumptions, sample, error, read_error, "
+            "file_name, model, turns, "
             "input_tokens, output_tokens, cost_usd, created_by, created_at, draft_started_at, "
             "drafted_by, finished_at, reviewed_by, reviewed_at, review_note")
 
@@ -140,11 +152,15 @@ def _fail_stale(cur) -> None:
 # Saved invoices and drafting
 # ---------------------------------------------------------------------------
 
-def save_unknown(file_name: str, pdf: bytes, username: str, read_error: str | None = None) -> dict:
-    """Keep a PDF no layout reads, for IT and for drafting one; read_error
-    says why, when a known supplier's layout found it but could not read it.
-    The same file saved before is not saved again: its row comes back,
-    whatever became of it since (a rejected draft excepted)."""
+def save_unknown(file_name: str, pdf: bytes, username: str, read_error: str | None = None,
+                 kind: str = "pdf") -> dict:
+    """Keep a file no layout reads, for IT and for drafting one; read_error
+    says why, when a known supplier's layout (a known JSON format) found it
+    but could not read it. The same file saved before is not saved again:
+    its row comes back, whatever became of it since (a rejected draft
+    excepted)."""
+    if kind not in KINDS:
+        raise ValueError(f"Unknown kind of file: {kind}")
     ensure_table()
     sha = hashlib.sha256(pdf).hexdigest()
     with _conn() as conn:
@@ -159,9 +175,10 @@ def save_unknown(file_name: str, pdf: bytes, username: str, read_error: str | No
             if existing:
                 return _row(existing)
             cur.execute(f"""
-                INSERT INTO pdf_layouts (status, file_name, file_sha256, pdf, created_by, read_error)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING {_COLUMNS}
-            """, (WAITING, file_name, sha, psycopg2.Binary(pdf), username,
+                INSERT INTO pdf_layouts (status, kind, file_name, file_sha256, pdf, created_by,
+                                         read_error)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {_COLUMNS}
+            """, (WAITING, kind, file_name, sha, psycopg2.Binary(pdf), username,
                   (read_error or "")[:2000] or None))
             return _row(cur.fetchone())
 
@@ -298,13 +315,16 @@ def get_layout(layout_id: int) -> dict | None:
             return _row(cur.fetchone())
 
 
-def get_pdf(layout_id: int) -> tuple[str, bytes] | None:
+def get_file(layout_id: int) -> tuple[str, bytes] | None:
+    """The saved file and its name: a PDF, or a delivery JSON."""
     ensure_table()
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT file_name, pdf FROM pdf_layouts WHERE id = %s", (layout_id,))
+            cur.execute("SELECT file_name, pdf, kind FROM pdf_layouts WHERE id = %s", (layout_id,))
             row = cur.fetchone()
-    return (row[0] or f"invoice-{layout_id}.pdf", bytes(row[1])) if row and row[1] else None
+    if not row or not row[1]:
+        return None
+    return row[0] or f"invoice-{layout_id}.{row[2]}", bytes(row[1])
 
 
 def list_layouts(statuses: list[str] | None, limit: int = 100) -> list[dict]:
@@ -372,22 +392,25 @@ def close(layout_id: int, username: str, note: str | None) -> dict:
     return _row(row)
 
 
-def reading_layouts() -> list[dict]:
-    """The stored layouts that read invoices, newest first, so a layout drafted
-    after an older one of the same supplier failed is tried before it."""
+def reading_layouts(kind: str = "pdf") -> list[dict]:
+    """The stored layouts of this kind that read files, newest first, so a
+    layout drafted after an older one of the same supplier failed is tried
+    before it."""
     global _cache
     with _cache_lock:
-        if _cache and time.monotonic() - _cache[0] < _CACHE_SECONDS:
-            return _cache[1]
+        cached = (_cache or {}).get(kind)
+        if cached and time.monotonic() - cached[0] < _CACHE_SECONDS:
+            return cached[1]
     ensure_table()
     with _conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""SELECT id, status, supplier, spec, assumptions FROM pdf_layouts
-                           WHERE status = ANY(%s) AND spec IS NOT NULL ORDER BY id DESC""",
-                        (list(READING),))
+                           WHERE status = ANY(%s) AND kind = %s AND spec IS NOT NULL
+                           ORDER BY id DESC""",
+                        (list(READING), kind))
             rows = [dict(r) for r in cur.fetchall()]
     with _cache_lock:
-        _cache = (time.monotonic(), rows)
+        _cache = {**(_cache or {}), kind: (time.monotonic(), rows)}
     return rows
 
 
@@ -536,12 +559,25 @@ def try_layout(pdf: bytes, data: dict, max_lines: int = 80) -> dict:
     return out
 
 
+def _provisional(row: dict, orders: list) -> list:
+    """A provisional layout's orders carry a warning naming it and its
+    assumptions, which the delivery screen shows."""
+    if row["status"] == PROVISIONAL:
+        for order in orders:
+            order.warnings.append({
+                "code": "provisional_pdf_layout",
+                "layout_id": row["id"],
+                "supplier": row.get("supplier") or order.tx_company,
+                "assumptions": list(row.get("assumptions") or []),
+            })
+    return orders
+
+
 def parse_with_stored(pdf: bytes):
     """The invoice read by a stored layout, as parse_delivery_pdf returns it,
-    or None when none reads it. A provisional layout's order carries a
-    warning naming it and its assumptions, which the delivery screen shows."""
+    or None when none reads it."""
     try:
-        layouts = reading_layouts()
+        layouts = reading_layouts("pdf")
     except Exception as exc:  # no database here, or it is down: as if none stored
         log.warning("[pdf-layouts] stored layouts unavailable: %s", exc)
         return None
@@ -557,13 +593,32 @@ def parse_with_stored(pdf: bytes):
             log.info("[pdf-layouts] stored layout %s found the invoice but: %s", layout_id, message)
         return None
     row = next(r for r in layouts if r["id"] == result["id"])
-    order = result["order"]
-    if row["status"] == PROVISIONAL:
-        order.warnings.append({
-            "code": "provisional_pdf_layout",
-            "layout_id": row["id"],
-            "supplier": row.get("supplier") or order.tx_company,
-            "assumptions": list(row.get("assumptions") or []),
-        })
     log.info("[pdf-layouts] read with stored layout %s (%s)", row["id"], row["status"])
-    return [order]
+    return _provisional(row, [result["order"]])
+
+
+def parse_json_with_stored(data):
+    """A delivery JSON read by a stored layout (json_layout), as
+    parse_delivery_json returns it, or None when none reads it."""
+    try:
+        layouts = reading_layouts("json")
+    except Exception as exc:  # no database here, or it is down: as if none stored
+        log.warning("[pdf-layouts] stored JSON layouts unavailable: %s", exc)
+        return None
+    if not layouts:
+        return None
+    import json_layout
+    try:
+        result = run_isolated(json_layout.read_with_layouts, data,
+                              [(r["id"], r["spec"]) for r in layouts])
+    except (IsolatedTimeout, RuntimeError) as exc:
+        log.warning("[pdf-layouts] stored JSON layouts could not read the file: %s", exc)
+        return None
+    if result["id"] is None:
+        for layout_id, message in result["failures"]:
+            log.info("[pdf-layouts] stored JSON layout %s found the file but: %s",
+                     layout_id, message)
+        return None
+    row = next(r for r in layouts if r["id"] == result["id"])
+    log.info("[pdf-layouts] JSON read with stored layout %s (%s)", row["id"], row["status"])
+    return _provisional(row, result["orders"])

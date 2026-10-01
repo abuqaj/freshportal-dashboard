@@ -132,7 +132,7 @@ def test_a_layout_that_never_finishes_is_stopped():
 
 
 def test_an_unknown_invoice_is_refused_as_unknown_without_a_database(monkeypatch):
-    monkeypatch.setattr(store, "reading_layouts", lambda: (_ for _ in ()).throw(RuntimeError("no db")))
+    monkeypatch.setattr(store, "reading_layouts", lambda *a: (_ for _ in ()).throw(RuntimeError("no db")))
     with pytest.raises(PdfUnknownLayoutError) as exc:
         parse_delivery_pdf(INVOICE)
     assert exc.value.layout is None
@@ -310,6 +310,33 @@ def test_cancelling_stops_the_draft_and_stores_nothing(stored):
     assert len(model.sent) == 1
 
 
+def test_a_json_layout_is_drafted_the_same_way(stored):
+    """A delivery JSON no parser reads gets a layout the same way (user,
+    2026-10-01), tested against the totals the file gives."""
+    from test_json_layouts import NEW_FILE, NEW_LAYOUT
+    wrong = {**NEW_LAYOUT, "boxes": "lineas"}
+    model = _Model([("test_layout", {"layout": wrong}),
+                    ("submit_layout", {"layout": NEW_LAYOUT, "supplier": "FLORES NUEVAS S.A.",
+                                       "assumptions": ["Species Roses."]})])
+    content = json.dumps([NEW_FILE]).encode()  # an outer array, as some exporters send
+    sample = pdf_layout_ai.draft(11, "nuevas.txt", content, client=model, cancelled=lambda: False,
+                                 kind="json")
+    assert (sample["boxes"], sample["stems"], sample["amount"]) == (4, 325, 117.5)
+    layout_id, layout, supplier, assumptions, _sample, _usage = stored["finish"]
+    assert layout["name"] == "drafted_11" and layout["boxes"] == "filas"
+    first = model.sent[0]
+    assert "delivery file" in first["system"][0]["text"]
+    assert "=== FILE ===" in first["messages"][0]["content"]
+    assert '"ok": false' in model.sent[1]["messages"][-1]["content"][0]["content"]
+
+
+def test_a_saved_file_that_is_not_json_fails_the_draft(stored):
+    with pytest.raises(pdf_layout_ai.DraftError):
+        pdf_layout_ai.draft(12, "x.json", b"not json", client=_Model([]), cancelled=lambda: False,
+                            kind="json")
+    assert "not JSON" in stored["fail"][1]
+
+
 # ---------------------------------------------------------------------------
 # Storage: needs Postgres (KB_TEST_POSTGRES_URL or POSTGRES_URL), and runs in
 # a temporary schema dropped afterwards, as test_kb_install does
@@ -348,7 +375,7 @@ def db(monkeypatch):
 
     monkeypatch.setattr(store, "_conn", scoped)
     monkeypatch.setattr(store, "_table_ready", False)
-    monkeypatch.setattr(store, "_cache", None)
+    monkeypatch.setattr(store, "_cache", {})
     try:
         yield scoped
     finally:
@@ -362,7 +389,7 @@ def test_an_unknown_invoice_is_saved_once(db):
     first = store.save_unknown("a.pdf", INVOICE, "anna")
     again = store.save_unknown("a (copy).pdf", INVOICE, "piet")
     assert first["status"] == store.WAITING and again["id"] == first["id"]
-    assert store.get_pdf(first["id"]) == ("a.pdf", INVOICE)
+    assert store.get_file(first["id"]) == ("a.pdf", INVOICE)
     assert store.pending_count() == 1
 
 
@@ -410,7 +437,7 @@ def test_cancelling_clears_the_draft_but_keeps_the_invoice(db, monkeypatch):
     cancelled = store.cancel_draft(row["id"], "anna")
     assert cancelled["status"] == store.WAITING
     assert cancelled["spec"] is None and cancelled["cost_usd"] is None
-    assert store.get_pdf(row["id"]) is not None
+    assert store.get_file(row["id"]) is not None
     # A draft finishing after the cancel changes nothing.
     store.finish_draft(row["id"], GOOD, "X", [], {}, {})
     assert store.get_layout(row["id"])["status"] == store.WAITING
@@ -447,6 +474,30 @@ def test_a_draft_cut_off_by_a_restart_ends_as_failed(db):
         cur.execute("UPDATE pdf_layouts SET draft_started_at = NOW() - INTERVAL '1 hour' WHERE id = %s",
                     (row["id"],))
     assert store.get_layout(row["id"])["status"] == store.FAILED
+
+
+@needs_db
+def test_a_json_is_saved_and_read_by_its_own_kind_of_layout(db, monkeypatch):
+    from test_json_layouts import NEW_FILE, NEW_LAYOUT
+    monkeypatch.setattr(store, "MAX_DRAFTS_PER_DAY", 2)
+    content = json.dumps(NEW_FILE).encode()
+    pdf_row = store.save_unknown("a.pdf", INVOICE, "anna")
+    json_row = store.save_unknown("n.json", content, "anna", "reads no invoice", kind="json")
+    assert (json_row["kind"], pdf_row["kind"]) == ("json", "pdf")
+    assert store.get_file(json_row["id"]) == ("n.json", content)
+    # One daily limit for both kinds.
+    store.begin_draft(pdf_row["id"], "anna")
+    store.begin_draft(json_row["id"], "anna")
+    assert store.drafts_left_today() == 0
+    store.finish_draft(json_row["id"], NEW_LAYOUT, "FLORES NUEVAS S.A.", ["Species Roses."], {}, {})
+    store.finish_draft(pdf_row["id"], GOOD, "TEST FARM S.A.", [], {}, {})
+    assert [r["id"] for r in store.reading_layouts("json")] == [json_row["id"]]
+    assert [r["id"] for r in store.reading_layouts("pdf")] == [pdf_row["id"]]
+    [order] = store.parse_json_with_stored(NEW_FILE)
+    assert order.nu_stems_total == 325
+    assert order.warnings[0]["code"] == "provisional_pdf_layout"
+    # The JSON layout never reads a PDF, nor the PDF one a JSON.
+    assert store.parse_json_with_stored({"x": "TEST FARM"}) is None
 
 
 @needs_db

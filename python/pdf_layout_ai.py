@@ -1,4 +1,5 @@
-"""Drafting a temporary layout for a PDF invoice no layout reads.
+"""Drafting a temporary layout for a PDF invoice no layout reads, or for a
+delivery JSON no parser reads (user, 2026-10-01; json_layout).
 
 This stands in for IT for a night, not instead of IT (user, 2026-09-28): IT
 adds layouts with the new-delivery-json-format skill, and a drafted one is
@@ -9,7 +10,8 @@ given one tool to try a layout on the invoice and one to hand it in. The
 backend runs every try in a separate process with a time limit, and takes a
 layout only when it reads the invoice in agreement with the totals the
 invoice prints. The model reads the invoice once, to write the layout; the
-supplier's invoices after that are read by the engine alone.
+supplier's invoices after that are read by the engine alone. A JSON's
+layout is drafted the same way, against the totals the file gives.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from typing import Any
 
 import anthropic
 
+import json_layout
 import parser_delivery_pdf as engine
 import pdf_layout_store as store
 from config import config
@@ -39,6 +42,8 @@ MAX_TURNS = 8
 MAX_COST_USD = 3.0
 MAX_INVOICE_CHARS = 60_000
 MAX_TABLE_ROWS = 80
+# A JSON's lists are shown this far, and shorter when the file is long.
+JSON_LIST_ITEMS = 20
 
 # USD per million tokens (input, output, cache read). Cache writes cost
 # 1.25x input.
@@ -206,17 +211,168 @@ def invoice_prompt(file_name: str, doc: engine.PdfDoc, read_error: str | None = 
             + "\n\nWrite this supplier's layout, test it, and submit it.")
 
 
+_JSON_GUIDE = """\
+You write a *layout*: a JSON description of one supplier's delivery file,
+which is JSON itself. A fixed engine uses the layout to read that
+supplier's files into delivery lines for FreshPortal, the flower wholesale
+system of Fresh From Source (our company; marks such as 1OZH, OZHGYP, OZHD,
+VDF are ours). You never write code. You write this JSON, try it on the
+file with the test_layout tool as often as you need, and hand it in with
+submit_layout once test_layout reports ok. After that no model reads this
+supplier's files: the engine does, with your layout, for months. So
+describe the format, not this one shipment.
+
+## How the engine reads
+
+The file holds one or more invoices; an invoice holds box entries; a box
+entry holds products, or is itself the one product (one row per box). The
+engine finds them by paths, reads each field with a reader, and rewrites
+the file into the shape of our Elite format, whose parser merges equal
+boxes, labels mix boxes (a box holding more than one product) MB1, MB2 …
+and normalises box codes. So map fields; never do that merging yourself.
+
+## The layout
+
+{{
+  "name": "any",
+  "detect": "<regex>",         the supplier's own name or tax number as the file writes it
+  "invoices": "<path>",         from the top of the file to the invoices; "" when the file is one invoice
+  "boxes": "<path>",            from an invoice to its box entries
+  "products": "<path>",         from a box entry to its products; "" when each entry is one product
+  "header": {{field: reader}},   from the invoice: {header_fields}
+  "box": {{field: reader}},      from the box entry: {box_fields}
+  "product": {{field: reader}},  from the product: {product_fields}
+  "totals": {{field: reader}},   from the invoice: {total_fields}
+  "price": "stem",              what mny_rate_stem holds: "stem", "bunch" (price per bunch) or "line" (the product row's amount)
+  "bunches": "per_box",         with box.count: nu_bunches is what each box holds ("per_box") or all of them together ("per_entry")
+  "box_map": {{"code": "QBE"}},  box codes as the file writes them -> FreshPortal's
+  "decimal": "."                "," when numbers written as text use a decimal comma
+}}
+
+Required: header tx_company, id_invoice, dt_invoice, dt_fly; product
+nm_variety, nu_stems_bunch, nu_bunches, mny_rate_stem; at least one total.
+
+A path is keys joined by dots ("data.facturas"), or a list of keys for a key
+that holds a dot. A list met on the way is walked item by item, so the
+paths "invoices", "boxes", "products" reach every product. A number picks
+one item of a list.
+
+A reader is one of:
+  {{"path": "<path>", "from": "<object>", "regex": "...", "transform": "<name>"}}
+      the first non-empty value at the path. "from" is where the path
+      starts: the reader's own object by default, or one it sits in (a
+      product's reader may use "box", "invoice" or "file"; a box's
+      "invoice" or "file"; a header's or a total's "file"). regex keeps
+      group 1 (else the whole match) of the value, case-insensitively.
+  {{"const": "..."}}
+  {{"any_of": [reader, ...]}}  the first reader that finds something
+  {{"join": [reader, ...], "sep": " "}}  the values found, joined
+Transforms: {transforms}. date_iso reads YYYY-MM-DD (a time after it is
+fine), date_us MM/DD/YYYY, date_dmy DD/MM/YYYY (also - or .), date_ymd
+YYYY/MM/DD, date_text a month in words (English or Spanish). Every date must
+come out as DD-MM-YYYY, so a date always needs a transform.
+
+## Rules
+
+- detect: a regex matching the supplier's own name or tax number (RUC, NIT)
+  as the file writes it. Never key names or words of the format: many farms
+  export from the same programs, and a layout found by the program's
+  wording would read another farm's file with this farm's fields. Never our
+  own names or marks.
+- tx_company: if the supplier is one of the FreshPortal suppliers listed
+  below, under any spelling, a const with that list's name exactly;
+  otherwise the company name as the file writes it.
+- id_invoice: the invoice number exactly as written, leading zeros kept.
+  dt_fly: the flight or shipping date, else the invoice date; dt_invoice
+  the invoice date, else the shipping date.
+- Totals: the engine refuses a layout that checks no totals, and a file
+  whose lines do not add up to them. Point totals at every total the
+  invoice gives: amount, boxes (physical boxes, not full-box equivalents),
+  stems, bunches. That is what catches a supplier changing its format.
+- Quantities: nu_bunches and nu_stems_bunch are the bunches in one box and
+  the stems in one bunch. An entry standing for several identical boxes
+  gives their number with box.count, and "bunches" says whether nu_bunches
+  is per box or for all of them. A price per bunch or per row is set with
+  "price", never by reading another field as the price per stem.
+- gu_product: the product's own id or code in the file, when it has one; it
+  tells a mix box (several products in one box) from a box of one.
+- Box codes: FreshPortal takes QBE (quarter box), HBE (half box) and 1/8
+  (eighth). Codes starting QB/HB become QBE/HBE on their own; map any other
+  code with box_map only when the file itself makes plain what it is.
+- Variety: the variety name only. Take a grade, length, bunch size, colour
+  code or SKU off with a regex, or read it from its own field.
+- Species: as written; a const "Roses" for a rose farm's plain varieties
+  when the file gives none.
+- Never invent data. Put every value you set that the file does not state
+  into assumptions, one short sentence each, in English. A person checks
+  them.
+- If the file cannot be read reliably (no totals, quantities that do not add
+  up, fields whose meaning the file does not make plain), do not submit: say
+  in one paragraph why.
+
+## FreshPortal suppliers
+
+{suppliers}
+
+## The formats read in code, written as layouts
+
+A new supplier often exports from one of these programs. Their detect
+regexes are only illustrations.
+
+{examples}
+"""
+
+
+def json_system_prompt() -> str:
+    return _JSON_GUIDE.format(
+        header_fields=", ".join(json_layout.HEADER_FIELDS),
+        box_fields=", ".join(json_layout.BOX_FIELDS),
+        product_fields=", ".join(json_layout.PRODUCT_FIELDS),
+        total_fields=", ".join(json_layout.TOTAL_FIELDS),
+        transforms=", ".join(sorted(TRANSFORMS)),
+        suppliers="\n".join(sorted(k.upper() for k in _SUPPLIER_GROWER_MAP)),
+        examples="\n".join(json.dumps(e, ensure_ascii=False) for e in json_layout.EXAMPLES),
+    )
+
+
+def _preview(value: Any, items: int) -> Any:
+    """The file with every list cut to its first `items` items."""
+    if isinstance(value, dict):
+        return {k: _preview(v, items) for k, v in value.items()}
+    if isinstance(value, list):
+        shown = [_preview(v, items) for v in value[:items]]
+        if len(value) > items:
+            shown.append(f"… {len(value) - items} more items")
+        return shown
+    return value
+
+
+def json_file_prompt(file_name: str, data: Any, read_error: str | None = None) -> str:
+    for items in (JSON_LIST_ITEMS, 5, 2):
+        text = json.dumps(_preview(data, items), ensure_ascii=False, indent=1)
+        if len(text) <= MAX_INVOICE_CHARS:
+            break
+    else:
+        raise DraftError(f"The file is {len(text)} characters even with its lists cut short; "
+                         f"the most a draft reads is {MAX_INVOICE_CHARS}.")
+    # The parser of a format the file looks like says why it read nothing.
+    why = f"\n\n=== WHY NO PARSER READS IT ===\n{read_error}" if read_error else ""
+    return (f"Delivery file: {file_name}\nLists longer than {items} items show their first "
+            f"{items} and how many more there are; test_layout reads the whole file.\n\n"
+            f"=== FILE ===\n{text}{why}\n\nWrite this supplier's layout, test it, and submit it.")
+
+
 _LAYOUT_SCHEMA = {"type": "object",
-                  "description": "The layout: LayoutSpec fields as JSON, row_model \"boxes\"."}
+                  "description": "The layout, as the instructions describe it."}
 
 TOOLS = [
     {
         "name": "test_layout",
         "description": (
-            "Run the engine with a candidate layout on this invoice. Returns ok (the layout "
-            "finds the invoice and its lines agree with every printed total it checks), the "
-            "header fields, box/stem/bunch/amount totals, the printed totals it compared "
-            "against, and every line; or the error, with the rows the engine read."),
+            "Run the engine with a candidate layout on this file. Returns ok (the layout "
+            "finds the file and its lines agree with every total it checks), the header "
+            "fields, box/stem/bunch/amount totals, the totals it compared against, and every "
+            "line; or the error, with what the engine read."),
         "input_schema": {"type": "object", "properties": {"layout": _LAYOUT_SCHEMA},
                          "required": ["layout"]},
     },
@@ -225,7 +381,7 @@ TOOLS = [
         "description": (
             "Hand in the finished layout. It is tested again and taken only if test_layout "
             "would report ok. assumptions lists, one short sentence each, every value set "
-            "that the invoice does not state (an empty list if none)."),
+            "that the file does not state (an empty list if none)."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -306,16 +462,20 @@ class Usage:
                 "cost_usd": self._cost(*totals)}
 
 
-def _test(pdf: bytes, layout: Any) -> dict:
+def _run(try_layout: Any, content: Any, layout: Any) -> dict:
     if not isinstance(layout, dict):
         return {"ok": False, "error": "layout must be a JSON object"}
     try:
-        return store.run_isolated(store.try_layout, pdf, layout)
+        return store.run_isolated(try_layout, content, layout)
     except store.IsolatedTimeout:
-        return {"ok": False, "error": "the layout took too long on this invoice; a regex "
+        return {"ok": False, "error": "the layout took too long on this file; a regex "
                                       "backtracks without end — make it simpler"}
     except RuntimeError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _test(pdf: bytes, layout: Any) -> dict:
+    return _run(store.try_layout, pdf, layout)
 
 
 def _for_model(result: dict) -> str:
@@ -367,16 +527,19 @@ def _ask(client: Any, watch: _CancelWatch, usage: Usage, **params: Any) -> Any:
         return stream.get_final_message()
 
 
-def draft(layout_id: int, file_name: str, pdf: bytes, client: Any = None,
-          model: str = MODEL, cancelled=None, read_error: str | None = None) -> dict:
-    """Draft and store a layout for one invoice. Returns what the layout read;
-    raises DraftError with the reason when there is none, DraftCancelled when
-    someone cancelled it. read_error is why the supplier's own layout could
-    not read it, if it has one. `client` and `cancelled` are for tests."""
+def draft(layout_id: int, file_name: str, content: bytes, client: Any = None,
+          model: str = MODEL, cancelled=None, read_error: str | None = None,
+          kind: str = "pdf") -> dict:
+    """Draft and store a layout for one saved file, a PDF invoice or (kind
+    "json") a delivery JSON. Returns what the layout read; raises DraftError
+    with the reason when there is none, DraftCancelled when someone
+    cancelled it. read_error is why the supplier's own layout (the parser of
+    the JSON's format) could not read it, if it has one. `client` and
+    `cancelled` are for tests."""
     usage = Usage(model)
     try:
-        return _draft(layout_id, file_name, pdf, client, usage,
-                      _CancelWatch(layout_id, usage, cancelled), read_error)
+        return _draft(layout_id, file_name, content, client, usage,
+                      _CancelWatch(layout_id, usage, cancelled), read_error, kind)
     except DraftCancelled:
         log.info("[pdf-layouts] drafting %s cancelled after %d turns, %.4f USD",
                  layout_id, usage.turns, usage.cost)
@@ -390,19 +553,33 @@ def draft(layout_id: int, file_name: str, pdf: bytes, client: Any = None,
         raise DraftError(str(exc)) from exc
 
 
-def _draft(layout_id: int, file_name: str, pdf: bytes, client: Any, usage: Usage,
-           watch: _CancelWatch, read_error: str | None) -> dict:
+def _draft(layout_id: int, file_name: str, file_bytes: bytes, client: Any, usage: Usage,
+           watch: _CancelWatch, read_error: str | None, kind: str) -> dict:
     if client is None:
         if not config.anthropic_api_key:
             raise DraftError("ANTHROPIC_API_KEY is not configured on the server.")
         client = anthropic.Anthropic(api_key=config.anthropic_api_key)
-    try:
-        doc = engine.extract_pdf(pdf)
-    except engine.PdfParseError as exc:
-        raise DraftError(str(exc)) from exc
+    if kind == "json":
+        try:
+            file_data = json_layout.unwrap(json.loads(file_bytes.decode("utf-8-sig")))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise DraftError(f"The saved file is not JSON: {exc}") from exc
+        guide, prompt = json_system_prompt(), json_file_prompt(file_name, file_data, read_error)
 
-    system = [{"type": "text", "text": system_prompt(), "cache_control": {"type": "ephemeral"}}]
-    messages: list[dict] = [{"role": "user", "content": invoice_prompt(file_name, doc, read_error)}]
+        def test(layout: Any) -> dict:
+            return _run(json_layout.try_layout, file_data, layout)
+    else:
+        try:
+            doc = engine.extract_pdf(file_bytes)
+        except engine.PdfParseError as exc:
+            raise DraftError(str(exc)) from exc
+        guide, prompt = system_prompt(), invoice_prompt(file_name, doc, read_error)
+
+        def test(layout: Any) -> dict:
+            return _test(file_bytes, layout)
+
+    system = [{"type": "text", "text": guide, "cache_control": {"type": "ephemeral"}}]
+    messages: list[dict] = [{"role": "user", "content": prompt}]
     nudged = False
 
     while True:
@@ -449,7 +626,7 @@ def _draft(layout_id: int, file_name: str, pdf: bytes, client: Any, usage: Usage
             nudged = True
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": (
-                "If the invoice can be read reliably, test and submit the layout with the "
+                "If the file can be read reliably, test and submit the layout with the "
                 "tools. If it cannot, answer in one paragraph why, without calling a tool.")})
             continue
 
@@ -463,9 +640,9 @@ def _draft(layout_id: int, file_name: str, pdf: bytes, client: Any, usage: Usage
             layout = data.get("layout")
             if block.name == "test_layout":
                 results.append({"type": "tool_result", "tool_use_id": block.id,
-                                "content": _for_model(_test(pdf, layout))})
+                                "content": _for_model(test(layout))})
             elif block.name == "submit_layout":
-                result = _test(pdf, layout)
+                result = test(layout)
                 problem = _submit_problem(result, data)
                 if problem:
                     results.append({"type": "tool_result", "tool_use_id": block.id,
@@ -504,11 +681,12 @@ def _submit_problem(result: dict, data: dict) -> str:
     return ""
 
 
-def start(layout_id: int, file_name: str, pdf: bytes, read_error: str | None = None) -> None:
+def start(layout_id: int, file_name: str, content: bytes, read_error: str | None = None,
+          kind: str = "pdf") -> None:
     """Draft in the background; the row in pdf_layout_store says how it went."""
     def run() -> None:
         try:
-            draft(layout_id, file_name, pdf, read_error=read_error)
+            draft(layout_id, file_name, content, read_error=read_error, kind=kind)
         except DraftCancelled:
             pass
         except DraftError as exc:
