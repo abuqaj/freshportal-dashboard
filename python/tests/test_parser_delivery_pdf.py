@@ -202,7 +202,9 @@ def test_alissroses_per_box_quantities_reach_the_api(alis_doc):
 
     assert entry["quantity"] == 2
     assert entry["quantity_per_pack"] == 100
-    assert entry["characteristics"]["number_of_bunches"] == "4"
+    # 4 bunches per box, yet never sent: FreshPortal uses that field for
+    # something else (user, 2026-10-01).
+    assert "number_of_bunches" not in entry["characteristics"]
     assert entry["fust"] == "QBE"
 
 
@@ -399,7 +401,8 @@ def test_qualisa_counts_every_box_a_product_appears_in():
     pierrot80[0].fp_product_id = "TEST"
     entry = build_stock_entry(pierrot80[0])
     assert entry["quantity"] == 3
-    assert entry["characteristics"]["number_of_bunches"] == "1"
+    assert entry["quantity_per_pack"] == 10
+    assert "number_of_bunches" not in entry["characteristics"]
     assert entry["fust"] == "QBE"
 
 

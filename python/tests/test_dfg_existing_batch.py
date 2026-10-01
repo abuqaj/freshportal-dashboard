@@ -97,6 +97,22 @@ def test_top_up_sends_the_batch_invoice(monkeypatch):
     assert result.invoice_url.endswith("/INV_ID/88123/")
 
 
+def test_no_stock_line_sends_number_of_bunches(monkeypatch):
+    """In FreshPortal number_of_bunches holds something other than bunches per
+    box, so neither the new shipment nor the top-up may fill it, not even
+    with an empty value (user, 2026-10-01)."""
+    sent = _capture_post(monkeypatch, {"batch": {"id": 116972}, "errors": []})
+    dfg_api_client.add_stock_entries(CFG, 116972, "31", [_line(nu_bunches=4, nu_stems_bunch=25)], invoice_id=88123)
+    order = SimpleNamespace(supplier_fp_id="31", tx_company="Florecal", id_invoice="F1",
+                            dt_fly="02-10-2026", lines=[_line(nu_bunches=4, nu_stems_bunch=25)])
+    new_batch = dfg_api_client.build_batch_payload(order)
+
+    for entry in sent[0]["json"]["stock_entries"] + new_batch["stock_entries"]:
+        assert "number_of_bunches" not in entry["characteristics"]
+        assert entry["quantity_per_pack"] == 100
+        assert entry["characteristics"]["stems_per_bunch"] == "25"
+
+
 def test_top_up_without_a_known_invoice_still_sends_the_key(monkeypatch):
     sent = _capture_post(monkeypatch, {"batch": {"id": 116972}, "errors": []})
     dfg_api_client.add_stock_entries(CFG, 116972, "31", [_line()])
