@@ -575,7 +575,9 @@ ALBRA_ROSES = dataclasses.replace(
 # Pomarosa (5061969, 2026-10-01), invoiced from its farm Inversiones Ponte
 # Tresa. Its grid names the farm of every row in Loc. ("TESSA-R2", wrapped
 # after the hyphen), which is the nm_location its JSON carries and what
-# resolves its grower. No species is printed: it grows roses.
+# resolves its grower: TESSA-R2 is Inversiones Pontetresa, as the header
+# says, though the farm summary under the grid prints TESSA-P (user,
+# 2026-10-03). No species is printed: it grows roses.
 POMAROSA = LayoutSpec(
     name="pomarosa",
     detect=r"POMAROSA\s+LIMITED\s+PARTNERSHIP",
@@ -1290,8 +1292,7 @@ ROSAPRIMA = LayoutSpec(
     species="Roses",
     # A box of one variety prints stems only; its assorted boxes say 25 a
     # bunch. Since 1144561 (2026-09-30) its boxes also hold 96 or 72 stems,
-    # which 25 does not divide: taken as bunches of 12, an assumption to
-    # confirm (24 divides them too).
+    # which 25 does not divide: those are bunches of 12 (user, 2026-10-03).
     stems_bunch=25,
     stems_bunch_also=(12,),
     totals_re=KOMET_TOTALS + r",[^\n]*FBE's:\s*(?P<fulls>[\d.]+)",
