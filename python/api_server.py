@@ -60,6 +60,8 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_price_trend_by_length, get_bi_price_vs_length, get_bi_price_elasticity,
                get_bi_supplier_price_comparison, get_bi_supplier_volatility,
                get_bi_supplier_market_deviation, get_bi_seasonality, get_bi_event_impact,
+               get_bi_overview, get_bi_offer_daily, get_bi_offer_vs_sale, get_bi_offer_price_match,
+               get_bi_sell_through, get_bi_sellout_speed, get_bi_idle_lots,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags,
                search_vbn_catalog, get_vbn_catalog_product, get_vbn_catalog_status,
                get_vbn_catalog_history, vbn_catalog_has_rows)
@@ -1019,13 +1021,15 @@ def bi_sync_price_elasticity(
     end_date: str,
     bucket: str = "week",
     customer_id: str | None = None,
+    length: int | None = None,
     _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
-    """Elastyczność cenowa — one point per week/day (price vs volume), plus
-    the Pearson correlation between them as a headline figure."""
+    """Elastyczność cenowa — one point per week/day (stem price vs stems),
+    the log-log elasticity, and whether there is enough data to trust it.
+    Pass `length` to fit one length; holiday weeks are left out of the fit."""
     if bucket not in ("week", "day"):
         raise HTTPException(400, "bucket must be 'week' or 'day'")
-    return get_bi_price_elasticity(product_id, start_date, end_date, bucket, customer_id)
+    return get_bi_price_elasticity(product_id, start_date, end_date, bucket, customer_id, length)
 
 
 # ── Analysis Tool: "Dostawcy" (2026-09-03) ─────────────────────────────────
@@ -1093,6 +1097,66 @@ def bi_sync_event_impact(
     selling window vs a LOCAL baseline (non-event days within +/-45 days of
     the window), not that year's overall average."""
     return get_bi_event_impact(product_id, customer_id=customer_id)
+
+
+# ── Analysis Tool: overview and the webshop's offer (2026-10-03) ──────────
+
+_ANALYSIS = require_any_permission("admin:manage", "analysis:view")
+
+
+@app.get("/bi-sync/overview")
+def bi_sync_overview(start_date: str, end_date: str, customer_id: str | None = None,
+                     _: dict = Depends(_ANALYSIS)):
+    """Stems, value, stem price and lines for the period and for the period
+    of equal length before it, a daily series, top products and suppliers."""
+    return get_bi_overview(start_date, end_date, customer_id)
+
+
+@app.get("/bi-sync/offer-daily")
+def bi_sync_offer_daily(start_date: str, end_date: str, product_id: str | None = None,
+                        _: dict = Depends(_ANALYSIS)):
+    """Lots and stems online per day and lots sold out that day, from the
+    day the offer was first recorded."""
+    return get_bi_offer_daily(start_date, end_date, product_id)
+
+
+@app.get("/bi-sync/offer-vs-sale")
+def bi_sync_offer_vs_sale(product_id: str, start_date: str, end_date: str,
+                          _: dict = Depends(_ANALYSIS)):
+    """Median offer (OZH group) price and OZEDS sale price per length and day
+    for one product."""
+    return get_bi_offer_vs_sale(product_id, start_date, end_date)
+
+
+@app.get("/bi-sync/offer-price-match")
+def bi_sync_offer_price_match(start_date: str, end_date: str, product_id: str | None = None,
+                              _: dict = Depends(_ANALYSIS)):
+    """How OZEDS sales compare with the offer price of the lot they came
+    from: shares at, below and above it, and a histogram in cents."""
+    return get_bi_offer_price_match(start_date, end_date, product_id)
+
+
+@app.get("/bi-sync/sell-through")
+def bi_sync_sell_through(start_date: str, end_date: str, group_by: str = "product",
+                         product_id: str | None = None, _: dict = Depends(_ANALYSIS)):
+    """Sell-through (sold / (sold + left)) per product, supplier or length."""
+    if group_by not in ("product", "supplier", "length"):
+        raise HTTPException(400, "group_by must be 'product', 'supplier' or 'length'")
+    return get_bi_sell_through(start_date, end_date, group_by, product_id)
+
+
+@app.get("/bi-sync/sellout-speed")
+def bi_sync_sellout_speed(start_date: str, end_date: str, _: dict = Depends(_ANALYSIS)):
+    """Hours from the start of sale to sold out, per listing, by product."""
+    return get_bi_sellout_speed(start_date, end_date)
+
+
+@app.get("/bi-sync/idle-lots")
+def bi_sync_idle_lots(start_date: str, end_date: str, min_days: int = 3,
+                      _: dict = Depends(_ANALYSIS)):
+    """Listings online for at least `min_days` days with stems left and no
+    sale at all."""
+    return get_bi_idle_lots(start_date, end_date, max(1, min_days))
 
 
 # ── Kenya: box-weight correction (2026-09-09) ──────────────────────────────

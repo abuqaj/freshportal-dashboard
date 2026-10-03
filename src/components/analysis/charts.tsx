@@ -1,622 +1,360 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
-// Chart primitives for the Analysis Tool. Dependency-free SVG/HTML — no
-// charting library, deliberately (see AnalysisTool.tsx). Split out of that
-// file 2026-09-03 when the second batch of analyses landed and it stopped
-// being readable as one module.
+import { cn } from "@/lib/utils";
 
-// User-specified palette (fixed order — 2026-09-03). Assigned by position,
-// never cycled per-render, so a series keeps its color as filters change.
+// The Analysis Tool's own chart forms — the ones Tremor has no component for.
+// Lines, areas and grouped bars come from src/components/tremor (2026-10-03);
+// what is here is a ranking with its figures beside the bars, sell-through
+// on a fixed 0–100% scale, one dot per lot on an hours axis, a log-log
+// scatter with its fitted line, a histogram of cents and bars diverging from
+// zero. Every word arrives as a prop or a formatter.
+
+// The system palette, in the order the user gave it (2026-09-03). Chart
+// series take their colours from tremor/chartUtils.ts, which uses the four
+// of these that stay apart on white; the pale steps are for fills.
 export const LINE_COLORS = ["#B03A2B", "#F7C4BC", "#1A7D45", "#C4DED0", "#E4E1D8", "#8E8B81", "#000000"];
 
-// Semantic pair for the diverging chart — from the same palette.
-export const COLOR_ABOVE = "#B03A2B";  // above market = expensive
-export const COLOR_BELOW = "#1A7D45";  // below market = cheap
-export const COLOR_NEUTRAL = "#8E8B81";
+// ── Ranking ─────────────────────────────────────────────────────────────────
+// A sorted list reads as a ranking at a glance (FT Visual Vocabulary,
+// "ranking"); bars start at zero, and the figures sit in aligned columns so
+// they can be compared without measuring bar lengths.
 
-// Reserved for the line in focus: black is the highest-contrast step in the
-// palette and reads clearly against the blurred context lines.
-export const HIGHLIGHT_COLOR = "#000000";
+export interface RankRow { key: string; label: string; value: number; sub?: string; extra?: string }
 
-// Every user-visible word in this module arrives as a prop — the chart
-// primitives have no access to `lang`, so hardcoding copy here would make
-// the module untranslatable. `locale` is a BCP-47 tag used for date and
-// number formatting, so dates don't render in the browser's language while
-// the rest of the UI is in the user's (2026-09-07).
-export function shortDay(iso: string, locale?: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(locale, { month: "short", day: "numeric" });
-}
-
-/** Full date including the year — always used in tooltips, where there is
- *  room and ambiguity is unacceptable. */
-export function fullDay(iso: string, locale?: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
-}
-
-/** Axis labeller chosen from the actual span of the data: past roughly a
- *  year, a bare day+month is ambiguous across years and day-level precision
- *  is meaningless at that zoom, so switch to month + year (2026-09-03). */
-function makeDayLabeller(days: string[], locale?: string): (iso: string) => string {
-  const short = (iso: string) => shortDay(iso, locale);
-  if (days.length < 2) return short;
-  const first = new Date(days[0]).getTime();
-  const last = new Date(days[days.length - 1]).getTime();
-  if (isNaN(first) || isNaN(last)) return short;
-  const spanDays = (last - first) / 86_400_000;
-  if (spanDays <= 300) return short;
-  return (iso: string) => {
-    const d = new Date(iso);
-    return isNaN(d.getTime()) ? iso : d.toLocaleDateString(locale, { month: "short", year: "numeric" });
-  };
-}
-
-/** Build a "01".."12" -> localized month-abbreviation labeller from the
- *  caller's translated month names. */
-export function makeMonthLabel(months: string[]): (m: string) => string {
-  return (m: string) => months[Number(m) - 1] ?? m;
-}
-
-export function fmtPrice(v: number | null | undefined): string {
-  return v == null ? "—" : `$${v.toFixed(3)}`;
-}
-
-export function fmtNum(v: number | null | undefined, locale?: string): string {
-  return v == null ? "—" : Math.round(v).toLocaleString(locale);
-}
-
-export function fmtPct(v: number | null | undefined): string {
-  return v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`;
-}
-
-export interface SeriesPoint {
-  day: string;
-  value: number;
-  quantity: number;
-}
-
-export interface Series {
-  key: string;
-  label: string;
-  points: SeriesPoint[];
-}
-
-function Empty({ text }: { text?: string }) {
-  return <p className="text-xs text-ink-3 px-1 py-10 text-center">{text ?? ""}</p>;
-}
-
-/** Absolutely-positioned tooltip; coordinates are % of the chart box so it
- *  tracks correctly as the responsive SVG scales. */
-function Tip({ leftPct, topPct, children }: { leftPct: number; topPct: number; children: React.ReactNode }) {
+export function RankBars({ rows, format, valueHeader, extraHeader, onSelect, selectTip }: {
+  rows: RankRow[];
+  format: (v: number) => string;
+  valueHeader?: string;
+  extraHeader?: string;
+  onSelect?: (row: RankRow) => void;
+  selectTip?: string;
+}) {
+  const max = Math.max(...rows.map(r => Math.abs(r.value)), 0) || 1;
+  const hasExtra = rows.some(r => r.extra != null);
+  const cols = hasExtra ? "grid-cols-[minmax(0,1fr)_minmax(4.5rem,auto)_minmax(4rem,auto)]" : "grid-cols-[minmax(0,1fr)_minmax(4.5rem,auto)]";
   return (
-    <div
-      className="pointer-events-none absolute z-10 rounded-lg bg-ink text-white text-xs px-2.5 py-1.5 shadow-lg whitespace-nowrap"
-      style={{ left: `${leftPct}%`, top: `${topPct}%`, transform: "translate(-50%, -130%)" }}
-    >
-      {children}
+    <div className="flex flex-col gap-1">
+      {(valueHeader || extraHeader) && (
+        <div className={cn("grid items-center gap-3 px-1 text-[10px] font-semibold uppercase tracking-wide text-ink-3", cols)}>
+          <span />
+          <span className="text-right">{valueHeader}</span>
+          {hasExtra && <span className="text-right">{extraHeader}</span>}
+        </div>
+      )}
+      {rows.map(r => {
+        const Row = onSelect ? "button" : "div";
+        return (
+          <Row
+            key={r.key}
+            type={onSelect ? "button" : undefined}
+            title={onSelect ? selectTip : undefined}
+            onClick={onSelect ? () => onSelect(r) : undefined}
+            className={cn(
+              "group grid items-center gap-3 rounded-lg px-1 py-0.5 text-left outline-none",
+              cols,
+              onSelect && "cursor-pointer hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-emerald/40",
+            )}
+          >
+            <div className="relative h-8 min-w-0">
+              <div
+                className={cn("absolute inset-y-0 left-0 rounded-md bg-sage transition-[width]", onSelect && "group-hover:bg-emerald/25")}
+                style={{ width: `${Math.max(1.5, (Math.abs(r.value) / max) * 100)}%` }}
+              />
+              <span className="absolute inset-y-0 left-2 right-2 flex items-center truncate text-sm text-ink" title={r.label}>
+                {r.label}
+              </span>
+            </div>
+            <span className="text-right text-sm font-semibold tabular-nums text-ink">
+              {format(r.value)}
+              {r.sub && <span className="block text-[11px] font-normal text-ink-3">{r.sub}</span>}
+            </span>
+            {hasExtra && <span className="text-right text-xs tabular-nums text-ink-2">{r.extra ?? ""}</span>}
+          </Row>
+        );
+      })}
     </div>
   );
 }
 
-function Legend({ items, highlightKey }: { items: { key: string; label: string; color: string }[]; highlightKey?: string }) {
+// ── Sell-through ────────────────────────────────────────────────────────────
+// A share of 0–100%, so every bar is drawn against the same full track —
+// unlike a ranking scaled to its largest value.
+
+export interface ProgressRow { key: string; label: string; pct: number; sub: string; extra?: string }
+
+export function ProgressRows({ rows, formatPct, subHeader, extraHeader }: {
+  rows: ProgressRow[];
+  formatPct: (v: number) => string;
+  subHeader?: string;
+  extraHeader?: string;
+}) {
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-2 px-2">
-      {items.map(it => (
-        <span
-          key={it.key}
-          className={`inline-flex items-center gap-1.5 text-xs ${highlightKey === it.key ? "text-ink font-semibold" : "text-ink-3"}`}
-        >
-          <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-border" style={{ background: it.color }} />
-          {it.label}
-        </span>
+    <div className="flex flex-col gap-2">
+      <div className="grid grid-cols-[minmax(0,1fr)_3.5rem_minmax(5.5rem,auto)_minmax(3.5rem,auto)] gap-3 px-1 text-[10px] font-semibold uppercase tracking-wide text-ink-3">
+        <span /><span /><span className="text-right">{subHeader}</span><span className="text-right">{extraHeader}</span>
+      </div>
+      {rows.map(r => (
+        <div key={r.key} className="grid grid-cols-[minmax(0,1fr)_3.5rem_minmax(5.5rem,auto)_minmax(3.5rem,auto)] items-center gap-3 px-1">
+          <div className="min-w-0">
+            <div className="truncate text-sm text-ink" title={r.label}>{r.label}</div>
+            <div className="mt-1 h-2 overflow-hidden rounded-full bg-sage/45">
+              <div className="h-full rounded-full bg-emerald" style={{ width: `${Math.min(100, Math.max(0, r.pct))}%` }} />
+            </div>
+          </div>
+          <span className="text-right text-sm font-semibold tabular-nums text-ink">{formatPct(r.pct)}</span>
+          <span className="text-right text-xs tabular-nums text-ink-2">{r.sub}</span>
+          <span className="text-right text-xs tabular-nums text-ink-3">{r.extra ?? ""}</span>
+        </div>
       ))}
     </div>
   );
 }
 
-// ── Multi-series line chart ────────────────────────────────────────────────
-// x = shared ordered category (day, or month for seasonality), evenly spaced
-// by position rather than by real date gaps. The tooltip is React-driven
-// rather than an SVG <title>: a transparent-filled hit circle receives no
-// pointer events under the default `pointer-events: visiblePainted`, which
-// is why the original <title> tooltip silently never fired (fixed 2026-09-03
-// via pointerEvents="all").
-export function MultiLineChart({
-  series,
-  highlightKey,
-  height = 320,
-  xLabel,
-  tipLabel,
-  formatValue = fmtPrice,
-  showQuantity = true,
-  locale,
-  emptyText,
-  soldLabel,
-}: {
-  series: Series[];
-  highlightKey?: string;
-  height?: number;
-  /** Axis labeller. Omit for date data — the span picks the format itself. */
-  xLabel?: (v: string) => string;
-  /** Tooltip labeller; defaults to a full date including the year. */
-  tipLabel?: (v: string) => string;
-  formatValue?: (v: number | null | undefined) => string;
-  showQuantity?: boolean;
-  locale?: string;
-  emptyText?: string;
-  /** Translated "{n} boxes sold" line in the tooltip. */
-  soldLabel?: (n: string) => string;
+// ── Hours to sell out ───────────────────────────────────────────────────────
+// One dot per lot that sold out, on an hours axis that gives the first day
+// most of the room (0–6–12–24–48–96–168 h, evenly spaced), and a bar at the
+// median. A strip plot keeps every lot visible where a box plot would hide
+// how few there are (Data to Viz, "do boxplots hide information").
+
+const HOUR_TICKS = [0, 6, 12, 24, 48, 96, 168];
+
+function hourPos(h: number): number {
+  const last = HOUR_TICKS.length - 1;
+  if (h >= HOUR_TICKS[last]) return 100;
+  for (let i = 0; i < last; i++) {
+    if (h <= HOUR_TICKS[i + 1]) {
+      const f = (h - HOUR_TICKS[i]) / (HOUR_TICKS[i + 1] - HOUR_TICKS[i]);
+      return ((i + Math.max(0, f)) / last) * 100;
+    }
+  }
+  return 100;
+}
+
+export interface StripRow { key: string; label: string; hours: number[]; median: number | null; side: string }
+
+export function DotStrip({ rows, hourLabel, dotTip }: {
+  rows: StripRow[];
+  hourLabel: (h: number) => string;
+  dotTip: (h: number) => string;
 }) {
-  const [hover, setHover] = useState<{ x: number; y: number; series: Series; point: SeriesPoint } | null>(null);
-  const nonEmpty = series.filter(s => s.points.length > 0);
-  if (!nonEmpty.length) return <Empty text={emptyText} />;
-
-  // The focused line is drawn in the palette's strongest colour rather than
-  // whatever its position yields. Position 4 is #C4DED0, the palest step —
-  // handing the line that most needs to stand out the one least able to
-  // (reported 2026-09-07). Context lines keep their own index colour, and
-  // the strong colour is skipped for them so nothing collides with it.
-  const colorFor = (si: number, key: string): string => {
-    if (!highlightKey) return LINE_COLORS[si % LINE_COLORS.length];
-    if (key === highlightKey) return HIGHLIGHT_COLOR;
-    const pool = LINE_COLORS.filter(c => c !== HIGHLIGHT_COLOR);
-    return pool[si % pool.length];
-  };
-
-  const allDays = Array.from(new Set(nonEmpty.flatMap(s => s.points.map(p => p.day)))).sort();
-  const axisLabel = xLabel ?? makeDayLabeller(allDays, locale);
-  const tooltipLabel = tipLabel ?? xLabel ?? ((d: string) => fullDay(d, locale));
-  const allValues = nonEmpty.flatMap(s => s.points.map(p => p.value));
-  const dataMax = Math.max(...allValues);
-  const dataMin = Math.min(...allValues);
-  // Fit the data rather than pinning the axis to zero. A line encodes
-  // position, not magnitude-from-baseline (unlike a bar, where a non-zero
-  // baseline lies), and forcing 0 into a price axis of $0.40–$0.55 squashed
-  // every series into a flat band near the top where no movement was
-  // readable. Zero is still included when the data itself sits near it, so
-  // volume-style series keep a natural floor (2026-09-03).
-  const pad = (dataMax - dataMin) * 0.08 || Math.abs(dataMax) * 0.1 || 1;
-  const maxV = dataMax + pad;
-  const minV = dataMin - pad <= 0 || dataMin < (dataMax - dataMin) * 0.5 ? Math.min(0, dataMin) : dataMin - pad;
-  const range = maxV - minV || 1;
-
-  const width = 1000;
-  const padL = 56, padR = 12, padT = 16, padB = 28;
-  const plotW = width - padL - padR;
-  const plotH = height - padT - padB;
-
-  const xFor = (day: string) => {
-    const idx = allDays.indexOf(day);
-    return padL + (allDays.length <= 1 ? plotW / 2 : (idx / (allDays.length - 1)) * plotW);
-  };
-  const yFor = (v: number) => padT + plotH - ((v - minV) / range) * plotH;
-
-  const yTickCount = 6;
-  const yTicks = Array.from({ length: yTickCount }, (_, i) => minV + (range * i) / (yTickCount - 1));
-
-  // Up to 8 evenly-spaced labels — denser than first/mid/last, which was
-  // unreadable over a multi-year range.
-  const xTickCount = Math.min(8, allDays.length);
-  const xTickIdx = Array.from(new Set(
-    Array.from({ length: xTickCount }, (_, i) => Math.round((i / Math.max(1, xTickCount - 1)) * (allDays.length - 1)))
-  ));
-
+  const cols = "grid-cols-[minmax(0,11rem)_minmax(0,1fr)_minmax(5rem,auto)]";
   return (
-    <div className="relative">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height }}>
-        {yTicks.map((v, i) => (
-          <g key={i}>
-            <line x1={padL} x2={width - padR} y1={yFor(v)} y2={yFor(v)} className="stroke-border" strokeWidth={1} />
-            <text x={2} y={yFor(v) + 3} fontSize={10} className="fill-ink-3">{formatValue(v)}</text>
-          </g>
-        ))}
-        {xTickIdx.map(i => (
-          <text key={i} x={xFor(allDays[i])} y={height - 6} fontSize={10} textAnchor="middle" className="fill-ink-3">
-            {axisLabel(allDays[i])}
-          </text>
-        ))}
-        {/* Painted dimmed-first so the highlighted line always sits on top,
-            while its COLOUR still comes from its own index — otherwise the
-            line in focus would be drawn under its context lines. */}
-        {nonEmpty
-          .map((s, si) => ({ s, si }))
-          .sort((a, b) => Number(highlightKey === a.s.key) - Number(highlightKey === b.s.key))
-          .map(({ s, si }) => {
-          const isHighlighted = highlightKey === s.key;
-          const isDimmed = !!highlightKey && !isHighlighted;
-          const color = colorFor(si, s.key);
-          const d = s.points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(p.day)} ${yFor(p.value)}`).join(" ");
-          return (
-            <g
-              key={s.key}
-              opacity={isDimmed ? 0.45 : 1}
-              // Only the context lines get a filter. The highlighted line is
-              // left perfectly crisp: a drop-shadow glow on it read as blur —
-              // the whole chart looked out of focus, the focused line worst of
-              // all, because the halo is widest on the thickest stroke
-              // (reported 2026-09-07). Emphasis now comes from a solid colour,
-              // a heavier stroke and a casing, not from a filter.
-              style={isDimmed ? { filter: "blur(1.6px)" } : undefined}
-            >
-              {isHighlighted && (
-                // Surface-coloured casing: separates the focused line from the
-                // blurred ones behind it without softening its own edge.
-                <path d={d} fill="none" stroke="var(--color-surface, #fff)" strokeWidth={8} strokeLinecap="round" />
-              )}
-              <path d={d} fill="none" stroke={color} strokeWidth={isHighlighted ? 3.5 : 2} strokeLinecap="round" />
-              {/* Points (and their hit targets) only on the line in focus —
-                  hovering a blurred context line would report a value the
-                  reader can't even see clearly. */}
-              {!isDimmed && s.points.map((p, i) => (
-                <g key={i}>
-                  <circle cx={xFor(p.day)} cy={yFor(p.value)} r={isHighlighted ? 4.5 : 3} fill={color} />
-                  <circle
-                    cx={xFor(p.day)}
-                    cy={yFor(p.value)}
-                    r={10}
-                    fill="transparent"
-                    pointerEvents="all"
-                    onMouseEnter={() => setHover({ x: xFor(p.day), y: yFor(p.value), series: s, point: p })}
-                    onMouseLeave={() => setHover(null)}
-                  />
-                </g>
-              ))}
-            </g>
-          );
-        })}
-      </svg>
-      {hover && (
-        <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
-          <div className="font-semibold">{hover.series.label}</div>
-          <div>{tooltipLabel(hover.point.day)} · {formatValue(hover.point.value)}</div>
-          {showQuantity && soldLabel && <div>{soldLabel(fmtNum(hover.point.quantity, locale))}</div>}
-        </Tip>
-      )}
-      <Legend
-        items={nonEmpty.map((s, si) => ({ key: s.key, label: s.label, color: colorFor(si, s.key) }))}
-        highlightKey={highlightKey}
-      />
+    <div className="flex flex-col gap-1.5">
+      <div className={cn("grid gap-3 px-1", cols)}>
+        <span />
+        <div className="relative h-4 text-[10px] tabular-nums text-ink-3">
+          {HOUR_TICKS.map(h => (
+            <span key={h} className="absolute -translate-x-1/2" style={{ left: `${hourPos(h)}%` }}>
+              {h === HOUR_TICKS[HOUR_TICKS.length - 1] ? `${hourLabel(h)}+` : hourLabel(h)}
+            </span>
+          ))}
+        </div>
+        <span />
+      </div>
+      {rows.map(r => (
+        <div key={r.key} className={cn("grid items-center gap-3 rounded-lg px-1 py-1 hover:bg-muted/40", cols)}>
+          <span className="truncate text-sm text-ink" title={r.label}>{r.label}</span>
+          <div className="relative h-7">
+            {HOUR_TICKS.map(h => (
+              <span key={h} className="absolute inset-y-1 w-px bg-muted" style={{ left: `${hourPos(h)}%` }} />
+            ))}
+            <span className="absolute inset-x-0 top-1/2 h-px bg-border" />
+            {r.hours.map((h, i) => (
+              <span
+                key={i}
+                title={dotTip(h)}
+                className="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-emerald/75 ring-2 ring-surface"
+                style={{ left: `${hourPos(h)}%` }}
+              />
+            ))}
+            {r.median != null && (
+              <span
+                title={dotTip(r.median)}
+                className="absolute top-1/2 h-5 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink"
+                style={{ left: `${hourPos(r.median)}%` }}
+              />
+            )}
+          </div>
+          <span className="text-right text-xs tabular-nums text-ink-2">{r.side}</span>
+        </div>
+      ))}
     </div>
   );
 }
 
-// ── Scatter ───────────────────────────────────────────────────────────────
-// For the price-elasticity cloud: one dot per period, x = price, y = volume.
-// A time series can't show this relationship — the question is how the two
-// measures move against each other, not against the calendar.
-export interface ScatterPoint {
-  period: string;
-  price: number;
-  quantity: number;
+// ── Log-log scatter (price elasticity) ──────────────────────────────────────
+// One dot per week, both axes logarithmic, so a constant elasticity is a
+// straight line and its slope is the number in the headline. Weeks left out
+// of the fit (holidays) are drawn hollow, not hidden.
+
+export interface ScatterDot { period: string; price: number; quantity: number; excluded?: boolean }
+
+function logTicks(lo: number, hi: number, count = 5): number[] {
+  const a = Math.log(lo), b = Math.log(hi);
+  return Array.from({ length: count }, (_, i) => Math.exp(a + ((b - a) * i) / (count - 1)));
 }
 
-export function ScatterChart({
-  points,
-  height = 320,
-  xAxisLabel,
-  yAxisLabel,
-  locale,
-  emptyText,
-  boxesLabel,
-}: {
-  points: ScatterPoint[];
-  height?: number;
-  xAxisLabel?: string;
-  yAxisLabel?: string;
-  locale?: string;
-  emptyText?: string;
-  /** Translated "{n} boxes" fragment in the tooltip. */
-  boxesLabel?: (n: string) => string;
+export function LogScatter({ points, elasticity, intercept, formatPrice, formatStems, formatPeriod, xLabel, yLabel, excludedLabel }: {
+  points: ScatterDot[];
+  elasticity: number | null;
+  intercept: number | null;
+  formatPrice: (v: number) => string;
+  formatStems: (v: number) => string;
+  formatPeriod: (iso: string) => string;
+  xLabel: string;
+  yLabel: string;
+  excludedLabel: string;
 }) {
-  const [hover, setHover] = useState<{ x: number; y: number; p: ScatterPoint } | null>(null);
-  if (!points.length) return <Empty text={emptyText} />;
+  const [hover, setHover] = useState<ScatterDot | null>(null);
+  const valid = useMemo(() => points.filter(p => p.price > 0 && p.quantity > 0), [points]);
+  const geo = useMemo(() => {
+    if (!valid.length) return null;
+    const xs = valid.map(p => Math.log(p.price)), ys = valid.map(p => Math.log(p.quantity));
+    const pad = (lo: number, hi: number) => { const d = (hi - lo) * 0.08 || 0.1; return [lo - d, hi + d]; };
+    const [x0, x1] = pad(Math.min(...xs), Math.max(...xs));
+    const [y0, y1] = pad(Math.min(...ys), Math.max(...ys));
+    return { x0, x1, y0, y1 };
+  }, [valid]);
+  if (!geo) return null;
 
-  const width = 1000;
-  const padL = 62, padR = 16, padT = 16, padB = 42;
-  const plotW = width - padL - padR;
-  const plotH = height - padT - padB;
-
-  const xs = points.map(p => p.price);
-  const ys = points.map(p => p.quantity);
-  const xMin = Math.min(...xs), xMax = Math.max(...xs);
-  const yMin = 0, yMax = Math.max(...ys);
-  const xRange = xMax - xMin || 1;
-  const yRange = yMax - yMin || 1;
-
-  const xFor = (v: number) => padL + ((v - xMin) / xRange) * plotW;
-  const yFor = (v: number) => padT + plotH - ((v - yMin) / yRange) * plotH;
-
-  const tickCount = 6;
-  const yTicks = Array.from({ length: tickCount }, (_, i) => yMin + (yRange * i) / (tickCount - 1));
-  const xTicks = Array.from({ length: tickCount }, (_, i) => xMin + (xRange * i) / (tickCount - 1));
+  // Room on the left for the stem ticks and the rotated axis title, on the
+  // right for the last price label centred on the edge.
+  const W = 640, H = 300, L = 78, R = 34, T = 12, B = 40;
+  const px = (price: number) => L + ((Math.log(price) - geo.x0) / (geo.x1 - geo.x0)) * (W - L - R);
+  const py = (q: number) => T + (1 - (Math.log(q) - geo.y0) / (geo.y1 - geo.y0)) * (H - T - B);
+  const xTicks = logTicks(Math.exp(geo.x0), Math.exp(geo.x1));
+  const yTicks = logTicks(Math.exp(geo.y0), Math.exp(geo.y1));
+  const line = elasticity != null && intercept != null
+    ? [geo.x0, geo.x1].map(lx => ({ x: L + ((lx - geo.x0) / (geo.x1 - geo.x0)) * (W - L - R), y: py(Math.exp(intercept + elasticity * lx)) }))
+    : null;
 
   return (
     <div className="relative">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height }}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label={`${yLabel} / ${xLabel}`}>
+        <defs>
+          <clipPath id="elasticity-plot"><rect x={L} y={T} width={W - L - R} height={H - T - B} /></clipPath>
+        </defs>
         {yTicks.map((v, i) => (
-          <g key={i}>
-            <line x1={padL} x2={width - padR} y1={yFor(v)} y2={yFor(v)} className="stroke-border" strokeWidth={1} />
-            <text x={2} y={yFor(v) + 3} fontSize={10} className="fill-ink-3">{fmtNum(v, locale)}</text>
+          <g key={`y${i}`}>
+            <line x1={L} x2={W - R} y1={py(v)} y2={py(v)} className="stroke-muted" strokeWidth={1} />
+            <text x={L - 8} y={py(v) + 3} textAnchor="end" fontSize={11} className="fill-ink-3">{formatStems(v)}</text>
           </g>
         ))}
         {xTicks.map((v, i) => (
-          <text key={i} x={xFor(v)} y={height - 18} fontSize={10} textAnchor="middle" className="fill-ink-3">
-            {fmtPrice(v)}
-          </text>
+          <text key={`x${i}`} x={px(v)} y={H - B + 16} textAnchor="middle" fontSize={11} className="fill-ink-3">{formatPrice(v)}</text>
         ))}
-        <text x={padL + plotW / 2} y={height - 3} fontSize={10} textAnchor="middle" className="fill-ink-3">{xAxisLabel}</text>
-        <text x={10} y={padT - 4} fontSize={10} className="fill-ink-3">{yAxisLabel}</text>
-        {points.map((p, i) => (
-          <circle
-            key={i}
-            cx={xFor(p.price)}
-            cy={yFor(p.quantity)}
-            r={hover?.p === p ? 7 : 5}
-            fill={LINE_COLORS[0]}
-            fillOpacity={0.65}
-            stroke={LINE_COLORS[0]}
-            pointerEvents="all"
-            onMouseEnter={() => setHover({ x: xFor(p.price), y: yFor(p.quantity), p })}
-            onMouseLeave={() => setHover(null)}
-          />
-        ))}
-      </svg>
-      {hover && (
-        <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
-          <div className="font-semibold">{shortDay(hover.p.period, locale)}</div>
-          <div>{fmtPrice(hover.p.price)}{boxesLabel ? ` · ${boxesLabel(fmtNum(hover.p.quantity, locale))}` : ""}</div>
-        </Tip>
-      )}
-    </div>
-  );
-}
-
-// ── Grouped vertical bars ─────────────────────────────────────────────────
-// x = an ordinal category (stem length, holiday), one bar per series within
-// each group. Handles negative values with a real zero baseline, so the
-// event-impact lifts read correctly in both directions.
-export function GroupedBarChart({
-  categories,
-  series,
-  height = 300,
-  formatValue = fmtPrice,
-  showValueLabels = true,
-  emptyText,
-}: {
-  categories: string[];
-  /** `meta` is an optional per-bar note shown in the tooltip — used to state
-   *  how much data a figure rests on, so a striking number can be judged. */
-  series: { key: string; label: string; values: (number | null)[]; meta?: (string | null)[] }[];
-  height?: number;
-  formatValue?: (v: number | null | undefined) => string;
-  showValueLabels?: boolean;
-  emptyText?: string;
-}) {
-  const [hover, setHover] = useState<{ x: number; y: number; cat: string; label: string; value: number; meta?: string | null } | null>(null);
-  const all = series.flatMap(s => s.values).filter((v): v is number => v != null);
-  if (!categories.length || !all.length) return <Empty text={emptyText} />;
-
-  const width = 1000;
-  const padL = 56, padR = 12, padT = 20, padB = 40;
-  const plotW = width - padL - padR;
-  const plotH = height - padT - padB;
-
-  const maxV = Math.max(0, ...all);
-  const minV = Math.min(0, ...all);
-  const range = maxV - minV || 1;
-  const yFor = (v: number) => padT + plotH - ((v - minV) / range) * plotH;
-  const zeroY = yFor(0);
-
-  const groupW = plotW / categories.length;
-  const innerW = groupW * 0.72;
-
-  const yTickCount = 6;
-  const yTicks = Array.from({ length: yTickCount }, (_, i) => minV + (range * i) / (yTickCount - 1));
-  const labelsFit = showValueLabels && categories.length * series.length <= 20;
-
-  return (
-    <div className="relative">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height }}>
-        {yTicks.map((v, i) => (
+        <text x={L + (W - L - R) / 2} y={H - 4} textAnchor="middle" fontSize={11} className="fill-ink-2">{xLabel}</text>
+        <text x={12} y={T + (H - T - B) / 2} textAnchor="middle" fontSize={11} className="fill-ink-2" transform={`rotate(-90 12 ${T + (H - T - B) / 2})`}>{yLabel}</text>
+        {line && (
+          <line x1={line[0].x} y1={line[0].y} x2={line[1].x} y2={line[1].y} className="stroke-ink" strokeWidth={2} strokeLinecap="round" clipPath="url(#elasticity-plot)" />
+        )}
+        {valid.map((p, i) => (
           <g key={i}>
-            <line x1={padL} x2={width - padR} y1={yFor(v)} y2={yFor(v)} className="stroke-border" strokeWidth={1} />
-            <text x={2} y={yFor(v) + 3} fontSize={10} className="fill-ink-3">{formatValue(v)}</text>
+            <circle
+              cx={px(p.price)} cy={py(p.quantity)} r={p.excluded ? 4.5 : 5.5}
+              className={p.excluded ? "fill-surface stroke-taupe" : "fill-emerald stroke-surface"}
+              strokeWidth={p.excluded ? 1.5 : 2}
+              fillOpacity={p.excluded ? 1 : 0.8}
+            />
+            <circle
+              cx={px(p.price)} cy={py(p.quantity)} r={12} fill="transparent" pointerEvents="all"
+              onMouseEnter={() => setHover(p)} onMouseLeave={() => setHover(null)}
+            />
           </g>
         ))}
-        {minV < 0 && <line x1={padL} x2={width - padR} y1={zeroY} y2={zeroY} stroke="currentColor" className="text-ink-3" strokeWidth={1.5} />}
-        {categories.map((cat, ci) => {
-          const groupCenter = padL + groupW * (ci + 0.5);
-          // Lay out only the series that actually have a value here, so a
-          // category covered by one year alone renders centred instead of
-          // offset to wherever that series happens to sit in the legend.
-          // Colour still follows the series index, so a year keeps its
-          // identity across groups (2026-09-07).
-          const present = series
-            .map((s, si) => ({ s, si, v: s.values[ci], meta: s.meta?.[ci] ?? null }))
-            .filter((e): e is { s: typeof series[number]; si: number; v: number; meta: string | null } => e.v != null);
-          const barW = innerW / Math.max(1, present.length);
-          return (
-            <g key={cat}>
-              {present.map((e, idx) => {
-                const x = groupCenter - innerW / 2 + idx * barW;
-                const y = e.v >= 0 ? yFor(e.v) : zeroY;
-                const h = Math.max(1, Math.abs(yFor(e.v) - zeroY));
-                const color = LINE_COLORS[e.si % LINE_COLORS.length];
-                return (
-                  <g key={e.s.key}>
-                    <rect
-                      x={x + 1}
-                      y={y}
-                      width={Math.max(1, barW - 2)}
-                      height={h}
-                      rx={3}
-                      fill={color}
-                      stroke="var(--color-surface, #fff)"
-                      strokeWidth={1}
-                      pointerEvents="all"
-                      onMouseEnter={() => setHover({ x: x + barW / 2, y, cat, label: e.s.label, value: e.v, meta: e.meta })}
-                      onMouseLeave={() => setHover(null)}
-                    />
-                    {labelsFit && (
-                      <text
-                        x={x + barW / 2}
-                        y={e.v >= 0 ? y - 4 : y + h + 11}
-                        fontSize={9}
-                        textAnchor="middle"
-                        className="fill-ink-3"
-                      >
-                        {formatValue(e.v)}
-                      </text>
-                    )}
-                  </g>
-                );
-              })}
-              <text x={groupCenter} y={height - 22} fontSize={11} textAnchor="middle" className="fill-ink">{cat}</text>
-            </g>
-          );
-        })}
       </svg>
       {hover && (
-        <Tip leftPct={(hover.x / width) * 100} topPct={(hover.y / height) * 100}>
-          <div className="font-semibold">{hover.cat}</div>
-          <div>{hover.label}: {formatValue(hover.value)}</div>
-          {hover.meta && <div className="opacity-75">{hover.meta}</div>}
-        </Tip>
-      )}
-      {series.length > 1 && (
-        <Legend items={series.map((s, si) => ({ key: s.key, label: s.label, color: LINE_COLORS[si % LINE_COLORS.length] }))} />
+        <div
+          className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-[120%] rounded-lg bg-ink px-2.5 py-1.5 text-xs text-white shadow-lg"
+          style={{ left: `${(px(hover.price) / W) * 100}%`, top: `${(py(hover.quantity) / H) * 100}%` }}
+        >
+          <div className="font-semibold">{formatPeriod(hover.period)}{hover.excluded ? ` · ${excludedLabel}` : ""}</div>
+          <div className="tabular-nums">{formatPrice(hover.price)} · {formatStems(hover.quantity)}</div>
+        </div>
       )}
     </div>
   );
 }
 
-// ── Horizontal bars (ranking) ─────────────────────────────────────────────
-// HTML rather than SVG: long supplier names need real text truncation and
-// wrapping behaviour, which is painful in SVG and free here. Bars are always
-// 0-based — a truncated bar axis exaggerates small differences.
-export function HBarChart({
-  points,
-  format = fmtPrice,
-  color = COLOR_BELOW,
-  emptyText,
-  valueHeader,
-  volumeHeader,
-  locale,
-}: {
-  points: { label: string; value: number; sublabel?: string; volume?: number }[];
-  format?: (v: number | null | undefined) => string;
-  color?: string;
-  emptyText?: string;
-  valueHeader?: string;
-  volumeHeader?: string;
-  locale?: string;
-}) {
-  if (!points.length) return <Empty text={emptyText} />;
-  const max = Math.max(...points.map(p => Math.abs(p.value))) || 1;
-  // Volume gets its own aligned, scannable column rather than being tacked
-  // onto the value as fine print — on a price ranking, "how much did they
-  // actually sell" decides whether a cheap average is even meaningful
-  // (requested 2026-09-03).
-  const hasVolume = points.some(p => p.volume != null);
-  const cols = hasVolume
-    ? "grid-cols-[minmax(0,11rem)_1fr_auto_auto]"
-    : "grid-cols-[minmax(0,11rem)_1fr_auto]";
+// ── Histogram of cents ──────────────────────────────────────────────────────
+// Sale price minus offer price minus transport, in one-cent bins: the middle
+// bar is "sold at the offer price", left of it a discount, right of it a
+// surcharge. Position carries the sign; colour repeats it.
 
+export function DeviationHistogram({ bins, formatStems, binTip, edgeLabels }: {
+  bins: { cents: number; stems: number }[];
+  formatStems: (v: number) => string;
+  binTip: (cents: number, stems: string) => string;
+  edgeLabels: [string, string];
+}) {
+  const max = Math.max(...bins.map(b => b.stems), 0) || 1;
   return (
     <div className="flex flex-col gap-1.5">
-      {(valueHeader || hasVolume) && (
-        <div className={`grid ${cols} items-center gap-3 text-[10px] uppercase tracking-wide text-ink-3`}>
-          <span />
-          <span />
-          <span className="text-right">{valueHeader ?? ""}</span>
-          {hasVolume && <span className="text-right min-w-[5.5rem]">{volumeHeader ?? ""}</span>}
-        </div>
-      )}
-      {points.map((p, i) => (
-        <div key={i} className={`grid ${cols} items-center gap-3 text-xs`}>
-          <span className="truncate text-ink" title={p.label}>{p.label}</span>
-          <div className="h-5 bg-muted rounded-md overflow-hidden">
-            <div
-              className="h-full rounded-md transition-[width]"
-              style={{ width: `${Math.max(1, (Math.abs(p.value) / max) * 100)}%`, background: color }}
-            />
-          </div>
-          <span className="text-ink tabular-nums font-medium whitespace-nowrap text-right">
-            {format(p.value)}
-            {p.sublabel && <span className="block text-ink-3 font-normal text-[10px]">{p.sublabel}</span>}
-          </span>
-          {hasVolume && (
-            <span className="text-ink tabular-nums whitespace-nowrap text-right min-w-[5.5rem]">
-              {fmtNum(p.volume, locale)}
-            </span>
-          )}
-        </div>
-      ))}
+      <div className="flex h-36 items-end gap-[2px] border-b border-border">
+        {bins.map(b => (
+          <div
+            key={b.cents}
+            title={binTip(b.cents, formatStems(b.stems))}
+            className={cn(
+              "flex-1 rounded-t-[3px]",
+              b.cents < 0 ? "bg-brick" : b.cents > 0 ? "bg-taupe" : "bg-emerald",
+              b.stems === 0 && "opacity-0",
+            )}
+            style={{ height: `${Math.max(b.stems > 0 ? 2 : 0, (b.stems / max) * 100)}%` }}
+          />
+        ))}
+      </div>
+      <div className="flex justify-between text-[10px] tabular-nums text-ink-3">
+        <span>{edgeLabels[0]}</span><span>−5</span><span className="font-semibold text-ink-2">0</span><span>+5</span><span>{edgeLabels[1]}</span>
+      </div>
     </div>
   );
 }
 
-// ── Diverging bars ────────────────────────────────────────────────────────
-// Bars grow left/right from a shared zero line, colored by sign. The sign is
-// the whole point of the market-deviation view ("dearer or cheaper than
-// everyone else"), so it carries a color as well as a direction.
-export function DivergingBarChart({
-  points,
-  format = fmtPct,
-  emptyText,
-  aboveLabel,
-  belowLabel,
-}: {
-  points: { label: string; value: number; sublabel?: string }[];
-  format?: (v: number | null | undefined) => string;
-  emptyText?: string;
-  aboveLabel?: string;
-  belowLabel?: string;
-}) {
-  if (!points.length) return <Empty text={emptyText} />;
-  const max = Math.max(...points.map(p => Math.abs(p.value))) || 1;
+// ── Diverging bars ──────────────────────────────────────────────────────────
+// Bars grow left or right of a shared zero: right of it dearer than the
+// market (brick), left of it cheaper (emerald). The side already says which,
+// so the colour is a second cue, not the only one.
 
+export function DivergingBars({ rows, format, aboveLabel, belowLabel }: {
+  rows: { key: string; label: string; value: number; sub?: ReactNode }[];
+  format: (v: number) => string;
+  aboveLabel: string;
+  belowLabel: string;
+}) {
+  const max = Math.max(...rows.map(r => Math.abs(r.value)), 0) || 1;
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-4 text-xs text-ink-3 pl-[11.5rem]">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full" style={{ background: COLOR_BELOW }} />{belowLabel}
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full" style={{ background: COLOR_ABOVE }} />{aboveLabel}
-        </span>
+    <div className="flex flex-col gap-1.5">
+      <div className="grid grid-cols-[minmax(0,10rem)_1fr_minmax(5rem,auto)] gap-3 px-1 text-[11px] text-ink-3">
+        <span />
+        <div className="flex justify-between">
+          <span className="inline-flex items-center gap-1"><span className="size-2 rounded-full bg-emerald" />{belowLabel}</span>
+          <span className="inline-flex items-center gap-1">{aboveLabel}<span className="size-2 rounded-full bg-brick" /></span>
+        </div>
+        <span />
       </div>
-      <div className="flex flex-col gap-1.5">
-        {points.map((p, i) => {
-          const pct = (Math.abs(p.value) / max) * 50; // half-width each side
-          const positive = p.value >= 0;
-          return (
-            <div key={i} className="grid grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-xs">
-              <span className="truncate text-ink" title={p.label}>{p.label}</span>
-              <div className="relative h-5 bg-muted rounded-md">
-                <div className="absolute inset-y-0 left-1/2 w-px bg-border" />
-                <div
-                  className="absolute inset-y-0 rounded-md"
-                  style={{
-                    background: positive ? COLOR_ABOVE : COLOR_BELOW,
-                    left: positive ? "50%" : `${50 - pct}%`,
-                    width: `${Math.max(0.5, pct)}%`,
-                  }}
-                />
-              </div>
-              <span className="text-ink tabular-nums font-medium whitespace-nowrap">
-                {format(p.value)}
-                {p.sublabel && <span className="text-ink-3 font-normal ml-1.5">{p.sublabel}</span>}
-              </span>
+      {rows.map(r => {
+        const half = (Math.abs(r.value) / max) * 50;
+        const up = r.value >= 0;
+        return (
+          <div key={r.key} className="grid grid-cols-[minmax(0,10rem)_1fr_minmax(5rem,auto)] items-center gap-3 rounded-lg px-1 py-0.5 hover:bg-muted/40">
+            <span className="truncate text-sm text-ink" title={r.label}>{r.label}</span>
+            <div className="relative h-6">
+              <div className="absolute inset-y-0 left-1/2 w-px bg-border" />
+              <div
+                className={cn("absolute inset-y-1 rounded-md", up ? "bg-brick" : "bg-emerald")}
+                style={{ left: up ? "50%" : `${50 - half}%`, width: `${Math.max(0.6, half)}%` }}
+              />
             </div>
-          );
-        })}
-      </div>
+            <span className="text-right text-sm font-semibold tabular-nums text-ink">
+              {format(r.value)}
+              {r.sub && <span className="block text-[11px] font-normal text-ink-3">{r.sub}</span>}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
