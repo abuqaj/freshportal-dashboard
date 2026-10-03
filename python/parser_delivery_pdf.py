@@ -619,6 +619,10 @@ class LayoutSpec:
     stems_bunch  the bunch size when the invoice does not print it. Only for
                  a supplier whose bunch size is fixed; everywhere else a row
                  that does not say is refused.
+    stems_bunch_also  further bunch sizes, tried in turn for a row where
+                 stems_bunch does not make whole bunches in each box: the
+                 first that does is taken (Rosaprima packs 25, or 12 in a box
+                 of 96 stems)
     decimal      "," for an invoice printing decimal commas
     split_uneven  a block of one product whose bunches do not divide between
                  its boxes is taken as boxes of one bunch more and one fewer,
@@ -676,6 +680,7 @@ class LayoutSpec:
     mix_names: tuple[tuple[str, str], ...] = ()
     label_joins_variety: str = ""
     stems_bunch: int = 0
+    stems_bunch_also: tuple[int, ...] = ()
     decimal: str = "."
     items_per_box: bool = False
     split_uneven: bool = False
@@ -737,6 +742,10 @@ class LayoutSpec:
             re.compile(pattern)
         if self.box_fill < 0:
             raise ValueError(f"{self.name}: box_fill cannot be negative")
+        if self.stems_bunch_also and (not self.stems_bunch
+                                      or any(s < 1 for s in self.stems_bunch_also)):
+            raise ValueError(f"{self.name}: stems_bunch_also needs a stems_bunch to try "
+                             f"first, and whole bunch sizes")
 
 
 # ---------------------------------------------------------------------------
@@ -1164,7 +1173,7 @@ def _row_products(fields: dict[str, Any], spec: LayoutSpec, num: Callable[[str],
             stems = n("stems") * scale or n("stems_box") * count
         if not stems_bunch and bunches and stems:
             stems_bunch = stems / bunches
-        stems_bunch = stems_bunch or spec.stems_bunch
+        stems_bunch = stems_bunch or _default_bunch(spec, stems / count)
         if not bunches and stems and stems_bunch:
             bunches = stems / stems_bunch
         where = f"{spec.name} layout, {variety} {length}"
@@ -1194,11 +1203,19 @@ def _row_products(fields: dict[str, Any], spec: LayoutSpec, num: Callable[[str],
         products.append(_Product(
             variety=variety, species=species, length=int(length), stems_bunch=stems_bunch,
             bunches=bunches, rate=round(rate, 6), nm_product=re.sub(r"\s+", " ", nm_product),
-            location=(fields.get("location") or "").strip(),
+            # A farm code wrapped after its hyphen ("TESSA-" / "R2") is one code.
+            location=re.sub(r"(?<=\w)-\s+(?=\w)", "-", fields.get("location") or "").strip(),
             weight=round(n("grams") / 1000, 4), qual=(fields.get("qual") or "").strip(),
             named=bool(named),
         ))
     return products
+
+
+def _default_bunch(spec: LayoutSpec, stems_per_box: float) -> int:
+    """The bunch size of a row printing none: stems_bunch, or the first of
+    stems_bunch_also that makes whole bunches of one box's stems."""
+    return next((size for size in (spec.stems_bunch, *spec.stems_bunch_also)
+                 if size and stems_per_box and stems_per_box % size == 0), spec.stems_bunch)
 
 
 class _Blank(dict):
@@ -1535,6 +1552,10 @@ def _parse_boxes(doc: PdfDoc, spec: LayoutSpec) -> DeliveryOrder:
 # A line total is stems × a rate printed to four decimals; rounding at that
 # scale can move the invoice total by a cent or two.
 _AMOUNT_TOLERANCE = 0.05
+# Full boxes printed to two decimals round an eighth: 7.875 is "7.88"
+# (Rosaprima 1144561). The smallest box is an eighth, so a box read wrongly
+# still moves the count by 0.125.
+_FULLS_TOLERANCE = 0.006
 
 
 def _check_totals(printed: dict, order: DeliveryOrder, layout: str,
@@ -1556,7 +1577,7 @@ def _check_totals(printed: dict, order: DeliveryOrder, layout: str,
     bunches = sum(l.nu_bunches for l in order.lines)
     if printed.get("bunches") and printed["bunches"] != bunches:
         problems.append(f"bunches: invoice says {printed['bunches']}, parsed {bunches}")
-    if printed.get("fulls") and fulls is not None and abs(printed["fulls"] - fulls) > 0.001:
+    if printed.get("fulls") and fulls is not None and abs(printed["fulls"] - fulls) > _FULLS_TOLERANCE:
         problems.append(f"full boxes: invoice says {printed['fulls']:g}, parsed {fulls:g}")
     if problems:
         raise PdfChecksumError(

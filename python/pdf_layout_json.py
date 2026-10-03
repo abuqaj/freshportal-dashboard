@@ -58,6 +58,7 @@ _REGEX_FIELDS = {"detect", "product_re", "box_re", "totals_re", "location_block"
 _BOOL_FIELDS = {"merge_across_boxes", "lengths_from_header", "items_per_box", "split_uneven",
                 "block_row_is_summary"}
 _INT_FIELDS = {"stems_bunch", "totals_col", "box_fill"}
+_INT_LIST_FIELDS = {"stems_bunch_also"}
 _STR_DICT_FIELDS = {"cell_re", "header_columns", "box_map", "species_map"}
 # Lists of [regex, name] pairs, and of [row field, regex, name] triples.
 _PAIR_FIELDS = {"species_rules", "mix_names"}
@@ -261,6 +262,11 @@ def spec_from_dict(data: Any) -> LayoutSpec:
             if not isinstance(value, int) or isinstance(value, bool):
                 raise _fail(name, "must be a whole number")
             kwargs[name] = value
+        elif name in _INT_LIST_FIELDS:
+            if not isinstance(value, list) or not all(
+                    isinstance(v, int) and not isinstance(v, bool) for v in value):
+                raise _fail(name, "must be a list of whole numbers")
+            kwargs[name] = tuple(value)
         elif name == "extract":
             if not isinstance(value, dict):
                 raise _fail(name, "must be an object")
