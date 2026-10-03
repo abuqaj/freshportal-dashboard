@@ -572,6 +572,38 @@ ALBRA_ROSES = dataclasses.replace(
     header={**HOJA_VERDE.header, "tx_company": const("ALBRA ROSES")},
 )
 
+# Pomarosa (5061969, 2026-10-01), invoiced from its farm Inversiones Ponte
+# Tresa. Its grid names the farm of every row in Loc. ("TESSA-R2", wrapped
+# after the hyphen), which is the nm_location its JSON carries and what
+# resolves its grower: TESSA-R2 is Inversiones Pontetresa, as the header
+# says, though the farm summary under the grid prints TESSA-P (user,
+# 2026-10-03). No species is printed: it grows roses.
+POMAROSA = LayoutSpec(
+    name="pomarosa",
+    detect=r"POMAROSA\s+LIMITED\s+PARTNERSHIP",
+    grid_header=("boxes", "boxt", "loc", "description", "bun/box"),
+    # Order is the order number, not a box number. Bun/Box is per box and
+    # Stems the row's: Price times Stems is its Total.
+    columns={"count": 0, "box": 2, "location": 3, "variety": 4, "length": 5,
+             "bunches_box": 6, "stems": 7, "rate": 8, "subtotal": 9, "label": 10},
+    product_re="",
+    row_model="boxes",
+    header={
+        **ALIS_PROGRAM_HEADER,
+        "tx_company": const("POMAROSA LIMITED PARTNERSHIP"),
+        "id_invoice": any_of(kv("invoice number"), rx(r"Invoice\s+Number\s+(\d+)")),
+        "dt_invoice": kv("invoice date", date_us),
+        "dt_fly": kv("fly date", date_us),
+        "tx_awb": rx(r"^AWB\s+([\d\- ]+?)\s*$", flags=re.IGNORECASE | re.MULTILINE),
+    },
+    species="Roses",
+    # "1 TOTALS 5 125 $62.50": boxes, stems and amount are checked. Its
+    # bunches are not: with one box a row, it does not show whether they sum
+    # Bun/Box or the bunches of every box.
+    totals_marker="TOTALS",
+    fulls_re=r"Number\s+in\s+(?:Fulls\s+)?([\d.]+)",
+)
+
 
 # ---------------------------------------------------------------------------
 # Farms with a template of their own, read from a ruled grid
@@ -794,6 +826,20 @@ LAILA_FLOWERS = LayoutSpec(
     # Its "Mixtas" boxes are the mixed box product (user, 2026-09-30).
     variety_rules=(("variety", r"^Mixtas$", "Rosa Ec Mix in Box"),),
     totals_re=SILVERBOOK_TOTALS,
+)
+# Laila's other printout (00020505, 2026-09-30): "# BOX | BOX T | VARIEDAD |
+# UNxB | X | UND", a column more before the lengths, and UND printed 0. Its
+# other invoices of that day are the printout above, so this one goes first
+# and is told apart by its UNxB.
+LAILA_FLOWERS_UNXB = dataclasses.replace(
+    LAILA_FLOWERS,
+    name="laila_flowers_unxb",
+    detect=r"(?:LAILA\s+FLOWERS|LOMCEM)(?s:.*)\bUNxB\b",
+    grid_header=("#", "variedad", "unxb", "und", "pack"),
+    columns={"number": 0, "box": 1, "variety": 2, "stems_bunch": 3, "stems": 16, "rate": 17,
+             "subtotal": 18},
+    length_cols={6: 30, 7: 40, 8: 50, 9: 60, 10: 70, 11: 80, 12: 90, 13: 100, 14: 110,
+                 15: 120},
 )
 
 GREENEX = LayoutSpec(
@@ -1219,11 +1265,12 @@ ROSAPRIMA = LayoutSpec(
     lines=(
         # "ROS RED Freedom 70 x 250 Stem (4.32 cubes) 1OZH 4 JB 1000 $0.450 $450.00"
         # — or "ROS AST 70 x 250 …", an assorted box whose contents follow.
-        r"^ROS\s+(?:(?P<color>[A-Z]{3})\s+)?(?P<variety>.+?)\s+(?P<length>\d+)\s+x\s+"
+        # Garden roses are "GAR CRM Fatima Gardens 60 x 96 Stem …" (1144561).
+        r"^(?:ROS|(?P<species>GAR))\s+(?:(?P<color>[A-Z]{3})\s+)?(?P<variety>.+?)\s+(?P<length>\d+)\s+x\s+"
         r"(?P<stems_box>\d+)\s+Stem\s+\([\d.]+\s+cubes\)\s+(?:(?P<label>\S+)\s+)?(?P<count>\d+)\s+"
         r"(?P<box>[A-Z]{2})\s+(?P<stems>\d+)\s+\$(?P<rate>[\d.]+)\s+\$(?P<subtotal>[\d,.]+)\s*$",
         # "ROS LAV Purple Crown 70 1 Bun. 25 St/Bun at $0.450" — per box.
-        r"^ROS\s+(?:(?P<color>[A-Z]{3})\s+)?(?P<variety>.+?)\s+(?P<length>\d+)\s+"
+        r"^(?:ROS|(?P<species>GAR))\s+(?:(?P<color>[A-Z]{3})\s+)?(?P<variety>.+?)\s+(?P<length>\d+)\s+"
         r"(?P<bunches>\d+)\s+Bun\.\s+(?P<stems_bunch>\d+)\s+St/Bun\s+at\s+\$(?P<rate>[\d.]+)\s*$",
     ),
     product_re="",
@@ -1238,11 +1285,16 @@ ROSAPRIMA = LayoutSpec(
                          cases=(("parfum", "ROSAPRIMA PFC"),), default="ROSAPRIMA COLORIGINZ",
                          flags=re.IGNORECASE | re.MULTILINE),
     },
-    # 8 JB are 4.00 full boxes, and 11 QB with 3 QL are 3.50.
-    box_map={"JB": "HBE", "QL": "QBE"},
+    # 8 JB are 4.00 full boxes, and 11 QB with 3 QL are 3.50. 27 QB, 4 QL
+    # and 1 EB are 7.88 (1144561): EB is an eighth.
+    box_map={"JB": "HBE", "QL": "QBE", "EB": "1/8"},
+    species_map={"GAR": "Garden Roses"},
     species="Roses",
-    # A box of one variety prints stems only; its assorted boxes say 25 a bunch.
+    # A box of one variety prints stems only; its assorted boxes say 25 a
+    # bunch. Since 1144561 (2026-09-30) its boxes also hold 96 or 72 stems,
+    # which 25 does not divide: those are bunches of 12 (user, 2026-10-03).
     stems_bunch=25,
+    stems_bunch_also=(12,),
     totals_re=KOMET_TOTALS + r",[^\n]*FBE's:\s*(?P<fulls>[\d.]+)",
 )
 
@@ -1475,8 +1527,8 @@ SAN_ANDRES = LayoutSpec(
 LAYOUTS: list[LayoutSpec] = [
     FIORENTINA, MYSTICFLOWERS, FLOREQUISA, AGROGANA, FLORIFRUT, ECOFLOR, CALINAMA, STAMPSYBOX,
     ROSALEDA, MONTEROSAS, JET_FRESH, ROYALFLOWERS_SAS, ROYALFLOWERS, NARANJO_ROSES, LARTISAN,
-    HOJA_VERDE, ALBRA_ROSES, BOSQUEFLOWERS, PROTEAS_SOLANDINO, NIKITA, PALITAFLOR, COLIBRI, TIERRA_VERDE,
-    MONTEBELLO, LAILA_FLOWERS, GREENEX, PLATONOFF, FLORAROMA, BREZZA, SOL_PACIFIC, VALLE_VERDE, FLORSANI, FLORISOL,
+    HOJA_VERDE, ALBRA_ROSES, POMAROSA, BOSQUEFLOWERS, PROTEAS_SOLANDINO, NIKITA, PALITAFLOR, COLIBRI,
+    TIERRA_VERDE, MONTEBELLO, LAILA_FLOWERS_UNXB, LAILA_FLOWERS, GREENEX, PLATONOFF, FLORAROMA, BREZZA, SOL_PACIFIC, VALLE_VERDE, FLORSANI, FLORISOL,
     TERRA_PACIFIC, AGROTERRANORTE,
     ATTAR_ROSES, AZULINA, DAVINCI, MYJ_FLOWERS, GUAISA, ROSAPRIMA, EQR_ROSES,
     ROSAS_DEL_CORAZON, UTOPIA, APOSENTOS, VITERI, DR_ECUADOR_ROSES, SAN_ANDRES,

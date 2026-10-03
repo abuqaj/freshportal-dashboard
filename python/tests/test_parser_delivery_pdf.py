@@ -614,6 +614,29 @@ def test_boxes_refuse_an_invoice_whose_totals_are_not_found():
     assert "totals" in str(exc.value)
 
 
+def test_full_boxes_printed_to_two_decimals_are_a_rounding():
+    """A quarter and an eighth are 0.375 full boxes, printed 0,38 (Rosaprima
+    1144561 prints 7.88 for 7.875); a box of the wrong size is still refused."""
+    spec = dataclasses.replace(_NUMBERED, boxes_re="", fulls_re=r"FULL\s+BOXES\s+([\d,]+)")
+    rows = [["1", "Q", "MONDIAL", "4", "25", "60", "100", "0,400", "40,000"],
+            ["2", "E", "TARA", "2", "25", "60", "50", "0,400", "20,000"]]
+    doc = _numbered_doc(rows, 6, 150, "60,00")
+    order = parse_with_spec(PdfDoc(text=doc.text + "FULL BOXES 0,38\n", tables=doc.tables), spec)
+    assert order.nu_boxes == 2
+    with pytest.raises(PdfChecksumError) as exc:
+        parse_with_spec(PdfDoc(text=doc.text + "FULL BOXES 0,50\n", tables=doc.tables), spec)
+    assert "full boxes" in str(exc.value)
+
+
+def test_a_farm_code_wrapped_after_its_hyphen_is_one_code():
+    """Pomarosa 5061969 prints each row's farm in a narrow Loc. column, which
+    wraps "TESSA-R2" after its hyphen; the code resolves the grower."""
+    spec = dataclasses.replace(_NUMBERED, columns={**_NUMBERED.columns, "location": 9})
+    rows = [["1", "Q", "QUICKSAND", "5", "25", "50", "125", "0,500", "62,500", "TESSA- R2"]]
+    [line] = parse_with_spec(_numbered_doc(rows, 5, 125, "62,50", boxes_q=1), spec).lines
+    assert line.nm_location == "TESSA-R2"
+
+
 def test_boxes_check_the_printed_box_count():
     rows = [["1", "Q", "MONDIAL", "4", "25", "60", "100", "0,400", "40,000"]]
     with pytest.raises(PdfChecksumError) as exc:
@@ -682,6 +705,21 @@ def test_text_mode_assorted_box_takes_its_contents():
     assert (freedom.nm_box, freedom.nu_physical_boxes, freedom.nu_bunches,
             freedom.nu_stems_bunch) == ("HBE", 4, 40, 25)
     assert order.nu_boxes == 6
+
+
+def test_a_second_bunch_size_where_the_first_makes_no_whole_bunches():
+    """Rosaprima 1144561: a box of 100 stems is bunches of 25, one of 96 is
+    not; 384 stems in 4 boxes are 96 a box."""
+    text = ("INVOICE 1144561\nDATE 30/09/2026\n"
+            "ROS WHT Akito 50 x 100 Stem 1 QB 100 $0.550 $55.00\n"
+            "ROS WHT Playa Blanca 60 x 96 Stem 4 QB 384 $0.880 $337.92\n"
+            "Total stems: 484 Amount $392.92")
+    with pytest.raises(PdfChecksumError):
+        parse_with_spec(PdfDoc(text=text), _ASSORTED)
+    spec = dataclasses.replace(_ASSORTED, stems_bunch_also=(12,))
+    lines = parse_with_spec(PdfDoc(text=text), spec).lines
+    assert {l.nm_variety: (l.nu_stems_bunch, l.nu_bunches) for l in lines} == {
+        "Akito": (25, 4), "Playa Blanca": (12, 32)}
 
 
 def test_length_columns_give_the_length():
