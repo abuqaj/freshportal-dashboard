@@ -1,11 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { MousePointerClick } from "lucide-react";
-
 import { DivergingBars, RankBars } from "./charts";
 import {
-  Chip, EmptyState, LengthChips, Loadable, Panel, Segmented,
+  Chip, LengthChips, Loadable, Panel, PickProduct, Segmented,
   api, useAnalysis, useFetch,
 } from "./shared";
 import type { Deviation, SupplierPrice, Volatility } from "./types";
@@ -57,7 +55,7 @@ export function SuppliersTab() {
           alignRight: [1, 2, 3, 4],
         } : null}
       >
-        {!productId ? <EmptyState icon={MousePointerClick} text={t.pickProduct} /> : (
+        {!productId ? <PickProduct /> : (
           <Loadable q={comparison} height="h-56" isEmpty={d => !d.points.length}>
             {d => (
               <RankBars

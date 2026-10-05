@@ -3,6 +3,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
+import { Tip } from "@/components/ui/tooltip";
 
 // The Analysis Tool's own chart forms — the ones Tremor has no component for.
 // Lines, areas and grouped bars come from src/components/tremor (2026-10-03);
@@ -132,17 +133,37 @@ function hourPos(h: number): number {
   return 100;
 }
 
-export interface StripRow { key: string; label: string; hours: number[]; median: number | null; side: string }
+export interface StripRow {
+  key: string;
+  label: string;
+  dots: { hours: number; tip: string }[];
+  median: number | null;
+  medianText: string;
+  share: string;
+  shareTip: string;
+}
 
-export function DotStrip({ rows, hourLabel, dotTip }: {
+/** Laid out as the user picked on the 2026-10-05 demo (variant A): a key
+ *  above, labelled columns for the median and the sold-out share, and the
+ *  axis said in words — dots and a bare "2/41" were not readable alone. The
+ *  share is a button when `onShare` is given: it opens that product's lots. */
+export function DotStrip({ rows, hourLabel, legend, headers, axisLabel, medianTip, onShare }: {
   rows: StripRow[];
   hourLabel: (h: number) => string;
-  dotTip: (h: number) => string;
+  legend: { lot: string; median: string };
+  headers: { median: string; share: string };
+  axisLabel: string;
+  medianTip: (text: string) => string;
+  onShare?: (key: string) => void;
 }) {
-  const cols = "grid-cols-[minmax(0,11rem)_minmax(0,1fr)_minmax(5rem,auto)]";
+  const cols = "grid-cols-[minmax(0,11rem)_minmax(0,1fr)_4.5rem_5rem]";
   return (
     <div className="flex flex-col gap-1.5">
-      <div className={cn("grid gap-3 px-1", cols)}>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 px-1 text-xs text-ink-2">
+        <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-emerald/75" />{legend.lot}</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-3.5 w-[3px] rounded-full bg-ink" />{legend.median}</span>
+      </div>
+      <div className={cn("grid items-end gap-3 px-1", cols)}>
         <span />
         <div className="relative h-4 text-[10px] tabular-nums text-ink-3">
           {HOUR_TICKS.map(h => (
@@ -151,7 +172,8 @@ export function DotStrip({ rows, hourLabel, dotTip }: {
             </span>
           ))}
         </div>
-        <span />
+        <span className="text-right text-[10px] font-semibold uppercase tracking-wide text-ink-3">{headers.median}</span>
+        <span className="text-right text-[10px] font-semibold uppercase tracking-wide text-ink-3">{headers.share}</span>
       </div>
       {rows.map(r => (
         <div key={r.key} className={cn("grid items-center gap-3 rounded-lg px-1 py-1 hover:bg-muted/40", cols)}>
@@ -161,25 +183,40 @@ export function DotStrip({ rows, hourLabel, dotTip }: {
               <span key={h} className="absolute inset-y-1 w-px bg-muted" style={{ left: `${hourPos(h)}%` }} />
             ))}
             <span className="absolute inset-x-0 top-1/2 h-px bg-border" />
-            {r.hours.map((h, i) => (
-              <span
-                key={i}
-                title={dotTip(h)}
-                className="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-emerald/75 ring-2 ring-surface"
-                style={{ left: `${hourPos(h)}%` }}
-              />
+            {r.dots.map((d, i) => (
+              <Tip key={i} content={d.tip}>
+                <span
+                  className="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 cursor-default rounded-full bg-emerald/75 ring-2 ring-surface"
+                  style={{ left: `${hourPos(d.hours)}%` }}
+                />
+              </Tip>
             ))}
             {r.median != null && (
-              <span
-                title={dotTip(r.median)}
-                className="absolute top-1/2 h-5 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink"
-                style={{ left: `${hourPos(r.median)}%` }}
-              />
+              <Tip content={medianTip(r.medianText)}>
+                <span
+                  className="absolute top-1/2 h-5 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink"
+                  style={{ left: `${hourPos(r.median)}%` }}
+                />
+              </Tip>
             )}
           </div>
-          <span className="text-right text-xs tabular-nums text-ink-2">{r.side}</span>
+          <span className="text-right text-sm font-semibold tabular-nums text-ink">{r.medianText}</span>
+          <Tip content={r.shareTip}>
+            {onShare ? (
+              <button
+                type="button"
+                onClick={() => onShare(r.key)}
+                className="cursor-pointer justify-self-end rounded-md px-1.5 py-0.5 text-right text-xs tabular-nums text-emerald-dark underline decoration-dotted underline-offset-2 outline-none hover:bg-sage/50 focus-visible:ring-2 focus-visible:ring-emerald/40"
+              >
+                {r.share}
+              </button>
+            ) : (
+              <span className="text-right text-xs tabular-nums text-ink-2">{r.share}</span>
+            )}
+          </Tip>
         </div>
       ))}
+      <p className="pt-1 text-center text-[11px] text-ink-3">{axisLabel}</p>
     </div>
   );
 }

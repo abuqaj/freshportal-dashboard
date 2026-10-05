@@ -3660,7 +3660,8 @@ def get_bi_offer_daily(start_date: str, end_date: str, product_id: str | None = 
                     SELECT o.day::text AS day,
                            COUNT(*) AS lots,
                            COALESCE(SUM(o.quantity_available_first), 0) AS stems,
-                           COUNT(*) FILTER (WHERE o.sold_out_at::date = o.day) AS sold_out
+                           COUNT(*) FILTER (WHERE o.sold_out_at::date = o.day
+                                            AND COALESCE(o.quantity_available_first, 0) > 0) AS sold_out
                     FROM online o
                     LEFT JOIN bi_stock_entry_dim d ON d.stock_entry_id = o.stock_entry_id
                     WHERE TRUE {product_clause}
@@ -3843,7 +3844,7 @@ def get_bi_sell_through(start_date: str, end_date: str, group_by: str = "product
                            SUM(s.sold) AS sold,
                            SUM(GREATEST(COALESCE(l.quantity_available_last, 0), 0)) AS left_over,
                            COUNT(*) AS listings,
-                           COUNT(*) FILTER (WHERE l.sold_out_at IS NOT NULL) AS sold_out
+                           COUNT(*) FILTER (WHERE {_SOLD_OUT_IN_RANGE}) AS sold_out
                     FROM listings l
                     JOIN sold s ON s.stock_entry_id = l.stock_entry_id AND s.state_since = l.state_since
                     JOIN bi_stock_entry_dim d ON d.stock_entry_id = l.stock_entry_id
@@ -3882,6 +3883,26 @@ def get_bi_sell_through(start_date: str, end_date: str, group_by: str = "product
         return {"rows": [], "total": None, "data_from": None}
 
 
+# A listing sold out in the range (alias `l`, params %(start)s/%(end)s) when
+# it started with stems in our record and ran out inside the range. A lot
+# first seen already at zero ran out before we watched it — on the first
+# export, the day before recording began — and counted as "sold out after
+# 0 h" until 2026-10-05.
+_SOLD_OUT_IN_RANGE = """
+    (l.sold_out_at IS NOT NULL AND COALESCE(l.quantity_available_first, 0) > 0
+     AND l.sold_out_at::date BETWEEN %(start)s::date AND %(end)s::date)
+"""
+
+# Hours from the start of a listing's sale to the moment it ran out: from
+# when it was listed, or from 05:00 on its window's first day if that is later
+# (buying starts in Amsterdam at 05:00). NULL unless it sold out in the range.
+_SELLOUT_HOURS = f"""
+    CASE WHEN {_SOLD_OUT_IN_RANGE} THEN GREATEST(0, EXTRACT(EPOCH FROM (
+        l.sold_out_at - GREATEST(l.state_since, l.available_from + interval '5 hours'))) / 3600)
+    END
+"""
+
+
 def get_bi_sellout_speed(start_date: str, end_date: str, max_products: int = 12) -> dict:
     """Czas do wyprzedania — for each listing that sold out, the hours from
     the start of its sale (when it was listed, or 05:00 on the window's first
@@ -3890,7 +3911,9 @@ def get_bi_sellout_speed(start_date: str, end_date: str, max_products: int = 12)
     share of its listings that sold out at all. Only products with at least
     one sold-out listing — the most sold-out first, then listed fastest
     median first; a product that never ran out has no dot to show, and on
-    the first real data most did not (2026-10-03)."""
+    the first real data most did not (2026-10-03). `lots` names each
+    sold-out listing's supplier and length, for the dot's tooltip (user,
+    2026-10-05: which supplier sold out)."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
@@ -3900,31 +3923,34 @@ def get_bi_sellout_speed(start_date: str, end_date: str, max_products: int = 12)
                     return {"products": [], "data_from": data_from}
                 cur.execute(f"""
                     WITH listings AS ({_OFFER_LISTINGS})
-                    SELECT d.product_id,
-                           CASE WHEN l.sold_out_at IS NULL THEN NULL ELSE GREATEST(0, EXTRACT(EPOCH FROM (
-                               l.sold_out_at - GREATEST(l.state_since, l.available_from + interval '5 hours'))) / 3600)
-                           END AS hours
+                    SELECT d.product_id, d.supplier_id, d.length, {_SELLOUT_HOURS} AS hours
                     FROM listings l
                     JOIN bi_stock_entry_dim d ON d.stock_entry_id = l.stock_entry_id
                     WHERE d.product_id IS NOT NULL
                 """, {"start": start, "end": end})
                 per_product: dict[str, list] = {}
                 for r in cur.fetchall():
-                    per_product.setdefault(r["product_id"], []).append(
-                        None if r["hours"] is None else round(float(r["hours"]), 1))
-                sold_out = {p: sum(1 for h in hours if h is not None) for p, hours in per_product.items()}
+                    per_product.setdefault(r["product_id"], []).append(r)
+                sold_out = {p: sum(1 for r in rows if r["hours"] is not None) for p, rows in per_product.items()}
                 chosen = sorted((p for p in per_product if sold_out[p]),
                                 key=lambda p: (-sold_out[p], -len(per_product[p])))[:max_products]
                 names = _product_labels(cur, chosen)
+                suppliers = _supplier_labels(cur, list({r["supplier_id"] for p in chosen for r in per_product[p]
+                                                        if r["supplier_id"]}))
 
         out = []
         for pid in chosen:
-            hours = sorted(h for h in per_product[pid] if h is not None)
+            lots = sorted(
+                ({"hours": round(float(r["hours"]), 1),
+                  "supplier": suppliers.get(r["supplier_id"]) or r["supplier_id"], "length": r["length"]}
+                 for r in per_product[pid] if r["hours"] is not None),
+                key=lambda lot: lot["hours"])
+            hours = [lot["hours"] for lot in lots]
             mid = len(hours) // 2
             median = (hours[mid] if len(hours) % 2 else (hours[mid - 1] + hours[mid]) / 2) if hours else None
             out.append({
                 "product_id": pid, "label": names.get(pid) or pid,
-                "hours": hours, "median_hours": median,
+                "hours": hours, "lots": lots, "median_hours": median,
                 "listings": len(per_product[pid]), "sold_out": len(hours),
             })
         out.sort(key=lambda r: (r["median_hours"] is None, r["median_hours"] or 0))
@@ -3934,10 +3960,15 @@ def get_bi_sellout_speed(start_date: str, end_date: str, max_products: int = 12)
         return {"products": [], "data_from": None}
 
 
-def get_bi_idle_lots(start_date: str, end_date: str, min_days: int = 3, limit: int = 50) -> dict:
+def get_bi_idle_lots(start_date: str, end_date: str, min_days: int = 3, limit: int = 50,
+                     exclude_suppliers: list[str] | None = None) -> dict:
     """Leżaki — listings online for at least `min_days` days of the range,
     still holding stems, from which nothing at all was sold while listed.
-    Longest-idle first."""
+    Longest-idle first.
+
+    `exclude_suppliers` leaves those suppliers out before the limit is
+    applied, so hiding a supplier whose lots are listed half a year ahead
+    and rarely managed (user, 2026-10-05) brings the next idle lots in."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
@@ -3961,6 +3992,7 @@ def get_bi_idle_lots(start_date: str, end_date: str, min_days: int = 3, limit: i
                     JOIN bi_stock_entry_dim d ON d.stock_entry_id = sp.stock_entry_id
                     WHERE sp.days_online >= %(min_days)s
                       AND COALESCE(sp.quantity_available_last, 0) > 0
+                      AND (d.supplier_id IS NULL OR NOT (d.supplier_id = ANY(%(exclude)s::text[])))
                       AND NOT EXISTS (
                           SELECT 1 FROM bi_order_lines ol
                           WHERE ol.created_from_stock_entry_id = sp.stock_entry_id
@@ -3969,7 +4001,8 @@ def get_bi_idle_lots(start_date: str, end_date: str, min_days: int = 3, limit: i
                       )
                     ORDER BY sp.days_online DESC, sp.quantity_available_last DESC
                     LIMIT %(limit)s
-                """, {"start": start, "end": end, "min_days": min_days, "limit": limit})
+                """, {"start": start, "end": end, "min_days": min_days, "limit": limit,
+                      "exclude": list(exclude_suppliers or [])})
                 rows = cur.fetchall()
                 products = _product_labels(cur, list({r["product_id"] for r in rows if r["product_id"]}))
                 suppliers = _supplier_labels(cur, list({r["supplier_id"] for r in rows if r["supplier_id"]}))
@@ -3979,6 +4012,7 @@ def get_bi_idle_lots(start_date: str, end_date: str, min_days: int = 3, limit: i
                 {
                     "stock_entry_id": r["stock_entry_id"],
                     "product": products.get(r["product_id"]) or r["product_id"],
+                    "supplier_id": r["supplier_id"],
                     "supplier": suppliers.get(r["supplier_id"]) or r["supplier_id"],
                     "length": r["length"],
                     "price": round(float(r["group_price"]), 4) if r["group_price"] is not None else None,
@@ -3995,6 +4029,104 @@ def get_bi_idle_lots(start_date: str, end_date: str, min_days: int = 3, limit: i
     except Exception as exc:
         logger.warning("get_bi_idle_lots: %s", exc)
         return {"rows": [], "min_days": min_days, "data_from": None}
+
+
+def get_bi_sold_out_lots(start_date: str, end_date: str, product_id: str | None = None, limit: int = 300) -> dict:
+    """Wyprzedane — every listing that ran out in the range: which product
+    and supplier, when, and how many hours after its sale started (user,
+    2026-10-05: which product sold out). Newest first."""
+    try:
+        ensure_bi_tables()
+        product_clause = "AND d.product_id = %(product)s" if product_id else ""
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                start, end, data_from = _clip_to_offer_history(cur, start_date, end_date)
+                if data_from is None or start > end:
+                    return {"rows": [], "data_from": data_from}
+                cur.execute(f"""
+                    WITH listings AS ({_OFFER_LISTINGS})
+                    SELECT l.stock_entry_id, d.product_id, d.supplier_id, d.length, l.group_price,
+                           l.sold_out_at, l.quantity_available_first AS stems, {_SELLOUT_HOURS} AS hours
+                    FROM listings l
+                    JOIN bi_stock_entry_dim d ON d.stock_entry_id = l.stock_entry_id
+                    WHERE {_SOLD_OUT_IN_RANGE}
+                      {product_clause}
+                    ORDER BY l.sold_out_at DESC
+                    LIMIT %(limit)s
+                """, {"start": start, "end": end, "product": product_id, "limit": limit})
+                rows = cur.fetchall()
+                products = _product_labels(cur, list({r["product_id"] for r in rows if r["product_id"]}))
+                suppliers = _supplier_labels(cur, list({r["supplier_id"] for r in rows if r["supplier_id"]}))
+        return {
+            "rows": [
+                {
+                    "stock_entry_id": r["stock_entry_id"],
+                    "product": products.get(r["product_id"]) or r["product_id"],
+                    "supplier": suppliers.get(r["supplier_id"]) or r["supplier_id"],
+                    "length": r["length"],
+                    "price": round(float(r["group_price"]), 4) if r["group_price"] is not None else None,
+                    "sold_out_at": r["sold_out_at"].isoformat(sep=" ") if r["sold_out_at"] else None,
+                    "hours": round(float(r["hours"]), 1) if r["hours"] is not None else None,
+                    "stems": float(r["stems"] or 0),
+                }
+                for r in rows
+            ],
+            "data_from": data_from,
+        }
+    except Exception as exc:
+        logger.warning("get_bi_sold_out_lots: %s", exc)
+        return {"rows": [], "data_from": None}
+
+
+def get_bi_product_listings(product_id: str, start_date: str, end_date: str) -> dict:
+    """Every listing of one product in the range, for the "2 of 41" in Time
+    to sell out (user, 2026-10-05: which lots, which supplier): supplier,
+    length, offer price, window, stems sold from it while listed (every
+    customer) against what it was offered with, and when and how fast it
+    sold out. Sold-out listings first, fastest first; then the rest."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                start, end, data_from = _clip_to_offer_history(cur, start_date, end_date)
+                if data_from is None or start > end:
+                    return {"rows": [], "data_from": data_from}
+                cur.execute(f"""
+                    WITH listings AS ({_OFFER_LISTINGS})
+                    SELECT l.stock_entry_id, d.supplier_id, d.length, l.group_price,
+                           l.available_from, l.available_until,
+                           CASE WHEN {_SOLD_OUT_IN_RANGE} THEN l.sold_out_at END AS sold_out_at,
+                           l.quantity_available_last AS stems_left, {_SELLOUT_HOURS} AS hours,
+                           (SELECT COALESCE(SUM({_stems("ol")}), 0) FROM bi_order_lines ol
+                             WHERE ol.created_from_stock_entry_id = l.stock_entry_id
+                               AND ol.creation_date_time::timestamp >= l.state_since
+                               AND (l.state_until IS NULL OR ol.creation_date_time::timestamp < l.state_until)) AS sold
+                    FROM listings l
+                    JOIN bi_stock_entry_dim d ON d.stock_entry_id = l.stock_entry_id
+                    WHERE d.product_id = %(product)s
+                """, {"start": start, "end": end, "product": product_id})
+                rows = cur.fetchall()
+                suppliers = _supplier_labels(cur, list({r["supplier_id"] for r in rows if r["supplier_id"]}))
+        out = [
+            {
+                "stock_entry_id": r["stock_entry_id"],
+                "supplier": suppliers.get(r["supplier_id"]) or r["supplier_id"],
+                "length": r["length"],
+                "price": round(float(r["group_price"]), 4) if r["group_price"] is not None else None,
+                "available_from": r["available_from"].isoformat() if r["available_from"] else None,
+                "available_until": r["available_until"].isoformat() if r["available_until"] else None,
+                "sold_out_at": r["sold_out_at"].isoformat(sep=" ") if r["sold_out_at"] else None,
+                "hours": round(float(r["hours"]), 1) if r["hours"] is not None else None,
+                "sold": float(r["sold"] or 0),
+                "offered": float(r["sold"] or 0) + max(0.0, float(r["stems_left"] or 0)),
+            }
+            for r in rows
+        ]
+        out.sort(key=lambda r: (r["hours"] is None, r["hours"] or 0, r["available_from"] or ""))
+        return {"rows": out, "data_from": data_from}
+    except Exception as exc:
+        logger.warning("get_bi_product_listings: %s", exc)
+        return {"rows": [], "data_from": None}
 
 
 # ---------------------------------------------------------------------------

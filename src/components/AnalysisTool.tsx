@@ -104,23 +104,20 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
       value: p.product_id,
       label: p.description || p.product_id,
       meta: p.row_count ? fmt.int(p.row_count) : t.inOffer,
+      count: p.row_count,
     })),
     [productsQ.data, fmt, t],
   );
 
-  // The product opens on the best seller. A product that falls out of the
-  // (date-scoped) list goes back to it; "all products", once chosen, stays.
-  const [productId, setProductIdRaw] = useState("");
-  const chosenAll = useRef(false);
-  const setProductId = useCallback((id: string) => { chosenAll.current = id === ""; setProductIdRaw(id); }, []);
+  // "All products" until one is picked (user, 2026-10-05: the offer's
+  // sold-out list should show every product, not only the best seller). A
+  // tab that cannot show anything without a product — Prices — uses the
+  // best seller until one is picked. A product that falls out of the
+  // (date-scoped) list goes back to all.
+  const [chosenProduct, setProductId] = useState("");
   useEffect(() => {
-    if (!products.length) return;
-    setProductIdRaw(prev => {
-      if (prev && products.some(p => p.value === prev)) return prev;
-      return prev === "" && chosenAll.current ? "" : products[0].value;
-    });
-  }, [products]);
-  const productLabel = products.find(p => p.value === productId)?.label ?? productId;
+    if (chosenProduct && products.length && !products.some(p => p.value === chosenProduct)) setProductId("");
+  }, [products, chosenProduct]);
 
   const [salesSeed, setSalesSeed] = useState<{ supplierId?: string } | null>(null);
   const clearSalesSeed = useCallback(() => setSalesSeed(null), []);
@@ -129,11 +126,14 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
     setTab(next);
   }, []);
 
+  const current = TABS.find(x => x.id === tab)!;
+  const productId = chosenProduct || (current.product === "required" ? (products[0]?.value ?? "") : "");
+  const productLabel = products.find(p => p.value === productId)?.label ?? productId;
+
   const ctx: AnalysisContextValue = {
     t, fmt, locale, start, end, customerId, productId, productLabel, products,
     setProductId, goTo, salesSeed, clearSalesSeed, tick,
   };
-  const current = TABS.find(x => x.id === tab)!;
 
   return (
     <AnalysisProvider value={ctx}>
