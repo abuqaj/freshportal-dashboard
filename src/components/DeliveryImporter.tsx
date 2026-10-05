@@ -1973,9 +1973,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     reset();
   }
 
+  // A header click sorts ascending, then descending, and a third click goes
+  // back to the file's own order (user, 2026-10-05).
   function handleSortCol(col: string) {
-    if (sortCol === col) {
-      setSortDir(d => d === "asc" ? "desc" : "asc");
+    if (sortCol === col && sortDir === "asc") {
+      setSortDir("desc");
+    } else if (sortCol === col) {
+      setSortCol(null);
+      setSortDir("asc");
     } else {
       setSortCol(col);
       setSortDir("asc");
@@ -3002,9 +3007,9 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                   <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap">{td.colGrower}</th>
                   <SortTh col="box"        label={td.colBox}        sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact className="w-[50px] max-w-[50px]" />
                   <SortTh col="boxQty"     label={<ColumnIcon icon="boxes" hint={td.colBoxQtyHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact className="w-[30px] max-w-[30px]" />
-                  <th className="px-3 py-2 text-left font-semibold text-ink-3 whitespace-nowrap"><ColumnIcon icon="weight" hint={td.colBoxWeight} /></th>
+                  <th className="px-3 py-2 text-center font-semibold text-ink-3 whitespace-nowrap"><ColumnIcon icon="weight" hint={td.colBoxWeight} /></th>
                   <th className="px-1.5 py-2 text-center font-semibold text-ink-3 whitespace-nowrap"><ColumnIcon icon="box" hint={td.colContentHint} /></th>
-                  <SortTh col="length"     label={<ColumnIcon icon="ruler" hint={td.colLength} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} />
+                  <SortTh col="length"     label={<ColumnIcon icon="ruler" hint={td.colLength} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} align="center" />
                   <SortTh col="stemsBunch" label={<ColumnIcon icon="bunch" hint={td.colStemsBunchHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
                   <SortTh col="bunches"    label={<ColumnIcon icon="bunches" hint={td.colBunchesHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
                   <SortTh col="stemsTotal" label={<ColumnIcon icon="stem" hint={td.colStemsTotalHint} />} sortCol={sortCol} sortDir={sortDir} onSort={handleSortCol} compact />
@@ -3192,7 +3197,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                           ×{line.nu_physical_boxes ?? 1}
                         </span>
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 text-center">
                         {/* The first click selects the whole value, so typing replaces it;
                             the mouseup would otherwise drop the selection and place a caret. */}
                         <input
@@ -3228,14 +3233,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                               prevInput?.select();
                             }
                           }}
-                          className="w-16 px-1.5 py-1 text-xs text-right border border-transparent rounded-md bg-transparent
+                          className="w-16 px-1.5 py-1 text-xs text-center border border-transparent rounded-md bg-transparent
                                      hover:border-border focus:border-emerald/50 focus:bg-surface outline-none transition-colors"
                         />
                       </td>
                       <td className="px-1.5 py-2 text-ink-3 text-center">
                         {Math.floor(line.nu_bunches / Math.max(1, line.nu_physical_boxes ?? 1)) * line.nu_stems_bunch}
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 text-center">
                         {/* Typed in as box weight is, with no list to pick
                             from (user, 2026-09-29). Only a Floricode S20 length
                             is taken: one the invoice left out, or one S20 does
@@ -3279,7 +3284,7 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
                               prevInput?.select();
                             }
                           }}
-                          className={`w-14 px-1.5 py-1 text-xs text-right border rounded-md outline-none transition-colors
+                          className={`w-14 px-1.5 py-1 text-xs text-center border rounded-md outline-none transition-colors
                             ${lengthOk
                               ? "border-transparent bg-transparent text-ink-3 hover:border-border focus:border-emerald/50 focus:bg-surface"
                               : "border-brick/50 bg-blush/30 text-brick placeholder:text-brick/60 focus:border-brick"}`}
@@ -3935,22 +3940,26 @@ function EditIconButton({ title, onClick, active = false }: { title: string; onC
 // `compact` is for narrow columns: less padding, and the sort arrows only
 // while the column is the one sorted by.
 function SortTh({
-  col, label, sortCol, sortDir, onSort, compact, className = "",
+  col, label, sortCol, sortDir, onSort, compact, align = "left", className = "",
 }: {
   col: string; label: React.ReactNode; sortCol: string | null; sortDir: "asc" | "desc"; onSort: (col: string) => void;
-  compact?: boolean; className?: string;
+  compact?: boolean; align?: "left" | "center"; className?: string;
 }) {
   const active = sortCol === col;
   return (
     <th
-      className={`${compact ? "px-1.5" : "px-3"} py-2 text-left font-semibold text-ink-3 whitespace-nowrap cursor-pointer select-none hover:text-ink transition-colors ${className}`}
+      className={`${compact ? "px-1.5" : "px-3"} py-2 ${align === "center" ? "text-center" : "text-left"} font-semibold text-ink-3 whitespace-nowrap cursor-pointer select-none hover:text-ink transition-colors ${className}`}
       onClick={() => onSort(col)}
+      aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
     >
-      <span className="inline-flex items-center gap-1">
+      {/* A click sorts; no arrows invite it, they only crowded the header
+          (user, 2026-10-05). The sorted column shows its direction beside
+          the label, so the label stays over its values. */}
+      <span className="relative inline-flex items-center">
         {label}
-        {(!compact || active) && (
-          <span className={`text-[9px] ${active ? "text-emerald" : "opacity-30"}`}>
-            {active ? (sortDir === "asc" ? "▲" : "▼") : "▲▼"}
+        {active && (
+          <span className="absolute left-full ml-0.5 text-[9px] text-emerald">
+            {sortDir === "asc" ? "▲" : "▼"}
           </span>
         )}
       </span>

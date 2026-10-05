@@ -1467,11 +1467,16 @@ def ensure_delivery_import_log() -> None:
 # price is customer-specific and OZEDS is the agreed reference customer.
 #
 # All price fields (bi_stock_entry_daily.price/price_plus/retail_price/cost,
-# bi_order_lines.supplier_price/store_price) are assumed EUR for now — the
-# source export doesn't carry a currency field. The `currency` column exists
-# so a future switch to USD doesn't require silently reinterpreting old rows:
-# it defaults to 'EUR' today and can be set explicitly once the ingestion
-# code has an actual per-row currency to write (2026-08-31).
+# bi_order_lines.supplier_price/store_price) are EUR, per stem. For the
+# purchase price that was checked against the export's own currency fields
+# (2026-10-03): every offer lot carries supplier_currency_id = 2 (USD) and a
+# `rate`, and price × rate comes out as a round USD quote (0.354332 × 1.1289
+# = 0.40) on 7,118 of 7,594 lots, so `price` is the grower's USD price already
+# converted to EUR; order_line.supplier_price is round in USD for all 871
+# lines of the 2026-09-25 export at one of the rates in force, i.e. converted
+# at the rate of its day. Nothing needs converting here. The `currency`
+# column stays so a lot booked in another base currency would not have to
+# reinterpret old rows (2026-08-31).
 # ---------------------------------------------------------------------------
 
 _bi_tables_ensured = False
@@ -2076,18 +2081,18 @@ def get_bi_offers_online_daily_series(days: int = 30) -> list[dict]:
 
 
 def get_bi_order_lines_daily_series(days: int = 30) -> list[dict]:
-    """order_lines (OZEDS, already filtered — see bi_sync.py) count and
-    revenue per creation day, most recent `days` days with data — first
+    """order_lines (OZEDS, already filtered — see bi_sync.py) count, stems
+    and revenue per creation day, most recent `days` days with data — first
     chart data for the Analysis Tool."""
     try:
         ensure_bi_tables()
         with _conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT creation_date_time::date::text AS day,
                            COUNT(*) AS count,
-                           SUM(quantity) AS total_quantity,
-                           SUM(quantity * store_price) AS revenue
+                           SUM({_stems()}) AS total_quantity,
+                           SUM({_stems()} * store_price) AS revenue
                     FROM bi_order_lines
                     WHERE creation_date_time IS NOT NULL
                     GROUP BY creation_date_time::date
@@ -2136,6 +2141,30 @@ def _customer_scope(customer_id: str | None, alias: str = "") -> tuple[str, list
         return "", []
     prefix = f"{alias}." if alias else ""
     return f"AND {prefix}customer_id = %s", [customer_id]
+
+
+# Volume is counted in STEMS and every price is per stem — the user's
+# reference unit (2026-10-03: "stem price is always the best reference").
+# order_line.quantity is a number of BOXES and quantity_per_pack the stems
+# in each box (100 or 125 for most roses, 96–250 overall), while store_price
+# and supplier_price are already per stem: quantity × quantity_per_pack ×
+# price matches invoice.total_price on 86% of invoices in the 2026-09-09
+# export. Until then volume was SUM(quantity), which counted a 250-stem box
+# the same as a 100-stem one, and "revenue" was quantity × store_price, a box
+# count times a stem price — about 100 times too low.
+def _stems(alias: str = "") -> str:
+    """SQL expression for the stems on a bi_order_lines row."""
+    prefix = f"{alias}." if alias else ""
+    return f"({prefix}quantity * {prefix}quantity_per_pack)"
+
+
+def _stem_weighted(price_col: str = "store_price", alias: str = "") -> str:
+    """SQL aggregate for a per-stem price weighted by stems — see the
+    VOLUME-WEIGHTED note further down for why it is never a plain AVG."""
+    prefix = f"{alias}." if alias else ""
+    stems = _stems(alias)
+    return (f"COALESCE(SUM({prefix}{price_col} * {stems}) / NULLIF(SUM({stems}), 0), "
+            f"AVG({prefix}{price_col}))")
 
 
 def get_bi_customers_for_picker(start_date: str | None = None, end_date: str | None = None) -> list[dict]:
@@ -2361,7 +2390,7 @@ def get_bi_sales_by_supplier(
 ) -> dict:
     """Multi-series sale-price-over-time for one supplier — one line per
     product (top `max_series` by row count), x=day, y=avg store_price.
-    Each point also carries total_quantity sold that day, for the tooltip."""
+    Each point also carries the stems sold that day, for the tooltip."""
     try:
         ensure_bi_tables()
         customer_clause, customer_params = _customer_scope(customer_id)
@@ -2383,7 +2412,7 @@ def get_bi_sales_by_supplier(
 
                 cur.execute(f"""
                     SELECT product_id, creation_date_time::date::text AS day,
-                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
+                           {_stem_weighted()} AS avg_price, SUM({_stems()}) AS total_quantity
                     FROM bi_order_lines
                     WHERE supplier_id = %s AND product_id = ANY(%s)
                       AND creation_date_time::date BETWEEN %s AND %s
@@ -2440,8 +2469,8 @@ def get_bi_top_products_for_supplier(
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
                     SELECT product_id,
-                           COALESCE(SUM(quantity), 0) AS total_quantity,
-                           COALESCE(SUM(store_price * quantity), 0) AS total_value,
+                           COALESCE(SUM({_stems()}), 0) AS total_quantity,
+                           COALESCE(SUM(store_price * {_stems()}), 0) AS total_value,
                            COUNT(*) AS line_count
                     FROM bi_order_lines
                     WHERE supplier_id = %s AND product_id IS NOT NULL
@@ -2481,7 +2510,7 @@ def get_bi_sales_by_product(
     """Multi-series sale-price-over-time for one product (optionally scoped
     to one length — otherwise averaged across every length sold) — one line
     per supplier (top `max_series` by row count), x=day, y=avg store_price.
-    Each point also carries total_quantity sold that day, for the tooltip."""
+    Each point also carries the stems sold that day, for the tooltip."""
     try:
         ensure_bi_tables()
         length_clause = "AND length = %s" if length is not None else ""
@@ -2512,7 +2541,7 @@ def get_bi_sales_by_product(
                 params_rows += [top_suppliers, start_date, end_date] + customer_params
                 cur.execute(f"""
                     SELECT supplier_id, creation_date_time::date::text AS day,
-                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
+                           {_stem_weighted()} AS avg_price, SUM({_stems()}) AS total_quantity
                     FROM bi_order_lines
                     WHERE product_id = %s {length_clause} AND supplier_id = ANY(%s)
                       AND creation_date_time::date BETWEEN %s AND %s
@@ -2582,7 +2611,7 @@ def get_bi_sales_overview(
 
                 cur.execute(f"""
                     SELECT {id_col} AS id, creation_date_time::date::text AS day,
-                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
+                           {_stem_weighted()} AS avg_price, SUM({_stems()}) AS total_quantity
                     FROM bi_order_lines
                     WHERE {id_col} = ANY(%s) AND creation_date_time::date BETWEEN %s AND %s
                       {customer_clause}
@@ -2636,16 +2665,17 @@ def get_bi_sales_overview(
 # Each function returns the shape its chart form needs, so the frontend
 # does no reshaping.
 #
-# Every displayed price is VOLUME-WEIGHTED:
-#     COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0),
+# Every displayed price is VOLUME-WEIGHTED, by stems (_stem_weighted):
+#     COALESCE(SUM(store_price * stems) / NULLIF(SUM(stems), 0),
 #              AVG(store_price))
 # A plain AVG(store_price) averages order LINES, so a line for 1 box counts
 # as much as a line for 500. On a day of 4 lines where 105 of 108 boxes went
 # at ~0.51 and two small lines went at ~0.89, the unweighted mean plots
 # $0.700 against a realised $0.519 — a 35% overstatement of the price we
-# actually got (found 2026-09-07). The COALESCE keeps the old behaviour as a
-# fallback for rows with no usable quantity, so a missing quantity blanks
-# nothing out. Do not "simplify" these back to AVG.
+# actually got (found 2026-09-07). Weighting by boxes (until 2026-10-03)
+# still let a 100-stem box count as much as a 250-stem one. The COALESCE
+# keeps the old behaviour as a fallback for rows with no usable quantity, so
+# a missing quantity blanks nothing out. Do not "simplify" these back to AVG.
 #
 # The one intentional exception is get_bi_supplier_volatility: it measures
 # the dispersion of price POINTS, so weighting by volume would answer a
@@ -2697,7 +2727,7 @@ def get_bi_price_trend_by_length(
 
                 cur.execute(f"""
                     SELECT length, creation_date_time::date::text AS day,
-                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price, SUM(quantity) AS total_quantity
+                           {_stem_weighted()} AS avg_price, SUM({_stems()}) AS total_quantity
                     FROM bi_order_lines
                     WHERE product_id = %s AND length = ANY(%s) AND store_price IS NOT NULL
                       AND creation_date_time::date BETWEEN %s AND %s
@@ -2754,9 +2784,9 @@ def get_bi_price_vs_length(
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
                     SELECT length,
-                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price,
-                           AVG(supplier_price) AS avg_supplier_price,
-                           SUM(quantity) AS total_quantity,
+                           {_stem_weighted()} AS avg_price,
+                           {_stem_weighted("supplier_price")} AS avg_supplier_price,
+                           SUM({_stems()}) AS total_quantity,
                            COUNT(*) AS line_count
                     FROM bi_order_lines
                     WHERE product_id = %s AND length IS NOT NULL AND store_price IS NOT NULL
@@ -2786,55 +2816,6 @@ def get_bi_price_vs_length(
         return {"points": []}
 
 
-def get_bi_price_elasticity(
-    product_id: str, start_date: str, end_date: str, bucket: str = "week",
-    customer_id: str | None = None,
-) -> dict:
-    """Elastyczność cenowa — one point per week (or day): avg price vs total
-    volume sold. Scatter-shaped; a downward-sloping cloud means demand
-    reacts to price. Returns a Pearson correlation as the headline figure.
-
-    Weekly buckets by default: daily points are dominated by order-arrival
-    noise rather than by price response.
-    """
-    try:
-        ensure_bi_tables()
-        trunc = "day" if bucket == "day" else "week"
-        customer_clause, customer_params = _customer_scope(customer_id)
-        with _conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(f"""
-                    SELECT date_trunc('{trunc}', creation_date_time)::date::text AS period,
-                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price,
-                           SUM(quantity) AS total_quantity
-                    FROM bi_order_lines
-                    WHERE product_id = %s AND store_price IS NOT NULL AND store_price > 0
-                      AND creation_date_time::date BETWEEN %s AND %s
-                      {customer_clause}
-                    GROUP BY 1
-                    HAVING SUM(quantity) > 0
-                    ORDER BY 1
-                """, [product_id, start_date, end_date] + customer_params)
-                rows = cur.fetchall()
-
-        points = [
-            {
-                "period": r["period"],
-                "price": round(float(r["avg_price"]), 4),
-                "quantity": float(r["total_quantity"] or 0),
-            }
-            for r in rows
-        ]
-        return {
-            "points": points,
-            "correlation": _pearson([p["price"] for p in points], [p["quantity"] for p in points]),
-            "bucket": trunc,
-        }
-    except Exception as exc:
-        logger.warning("get_bi_price_elasticity: %s", exc)
-        return {"points": [], "correlation": None, "bucket": bucket}
-
-
 def get_bi_supplier_price_comparison(
     product_id: str, start_date: str, end_date: str, length: int | None = None, limit: int = 15,
     customer_id: str | None = None,
@@ -2856,10 +2837,10 @@ def get_bi_supplier_price_comparison(
                 cur.execute(f"""
                     SELECT ol.supplier_id,
                            COALESCE(s.name, ol.supplier_id) AS name,
-                           COALESCE(SUM(ol.store_price * ol.quantity) / NULLIF(SUM(ol.quantity), 0), AVG(ol.store_price)) AS avg_price,
+                           {_stem_weighted(alias="ol")} AS avg_price,
                            MIN(ol.store_price) AS min_price,
                            MAX(ol.store_price) AS max_price,
-                           SUM(ol.quantity) AS total_quantity,
+                           SUM({_stems("ol")}) AS total_quantity,
                            COUNT(*) AS line_count
                     FROM bi_order_lines ol
                     LEFT JOIN bi_suppliers s ON s.supplier_id = ol.supplier_id
@@ -3028,7 +3009,7 @@ def get_bi_supplier_market_deviation(
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
                     WITH lines AS (
-                        SELECT supplier_id, product_id, length, store_price, quantity
+                        SELECT supplier_id, product_id, length, store_price, quantity, quantity_per_pack
                         FROM bi_order_lines
                         WHERE supplier_id IS NOT NULL AND store_price IS NOT NULL
                           AND store_price > 0
@@ -3037,10 +3018,10 @@ def get_bi_supplier_market_deviation(
                           {customer_clause}
                     ),
                     market AS (
-                        SELECT product_id, length, COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS market_price
+                        SELECT product_id, length, {_stem_weighted()} AS market_price
                         FROM lines
                         GROUP BY product_id, length
-                        HAVING SUM(quantity) > 0 AND AVG(store_price) > 0
+                        HAVING SUM({_stems()}) > 0 AND AVG(store_price) > 0
                     ),
                     joined AS (
                         SELECT l.supplier_id, l.store_price, m.market_price
@@ -3112,8 +3093,8 @@ def get_bi_seasonality(product_id: str | None = None, customer_id: str | None = 
                 cur.execute(f"""
                     SELECT EXTRACT(YEAR FROM creation_date_time)::int AS year,
                            EXTRACT(MONTH FROM creation_date_time)::int AS month,
-                           SUM(quantity) AS total_quantity,
-                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price
+                           SUM({_stems()}) AS total_quantity,
+                           {_stem_weighted()} AS avg_price
                     FROM bi_order_lines
                     WHERE creation_date_time IS NOT NULL {product_clause} {customer_clause}
                     GROUP BY 1, 2
@@ -3260,8 +3241,8 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45, 
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(f"""
                     SELECT creation_date_time::date AS day,
-                           SUM(quantity) AS total_quantity,
-                           COALESCE(SUM(store_price * quantity) / NULLIF(SUM(quantity), 0), AVG(store_price)) AS avg_price
+                           SUM({_stems()}) AS total_quantity,
+                           {_stem_weighted()} AS avg_price
                     FROM bi_order_lines
                     WHERE creation_date_time IS NOT NULL {product_clause} {customer_clause}
                     GROUP BY 1
@@ -3354,6 +3335,645 @@ def get_bi_event_impact(product_id: str | None = None, baseline_days: int = 45, 
     except Exception as exc:
         logger.warning("get_bi_event_impact: %s", exc)
         return {"events": []}
+
+
+def _in_event_or_holiday_peak(d: date) -> bool:
+    """A day inside an event's selling window or a known non-event peak —
+    the days get_bi_event_impact keeps out of its baselines."""
+    return (any(_in_md_range(d, start, end) for _, start, end in _BI_EVENTS)
+            or any(_in_md_range(d, start, end) for start, end in _BI_BASELINE_EXCLUDE))
+
+
+def log_log_fit(points: list[tuple[float, float]]) -> dict | None:
+    """Least-squares fit of ln(stems) = a + b·ln(price) over (price, stems)
+    pairs. b is the price elasticity: the % change in stems sold for a 1%
+    change in price (−1.5 means a 1% rise sells 1.5% fewer stems). None
+    when it is undefined: fewer than 3 points, or a price that never moved."""
+    import math
+
+    pairs = [(math.log(p), math.log(q)) for p, q in points if p > 0 and q > 0]
+    n = len(pairs)
+    if n < 3:
+        return None
+    mx = sum(x for x, _ in pairs) / n
+    my = sum(y for _, y in pairs) / n
+    sxx = sum((x - mx) ** 2 for x, _ in pairs)
+    if sxx == 0:
+        return None
+    sxy = sum((x - mx) * (y - my) for x, y in pairs)
+    syy = sum((y - my) ** 2 for _, y in pairs)
+    b = sxy / sxx
+    return {
+        "elasticity": round(b, 3),
+        "intercept": round(my - b * mx, 6),
+        "r2": round(sxy * sxy / (sxx * syy), 3) if syy else None,
+    }
+
+
+# Below this the elasticity is shown as "too little data" rather than a
+# number (mcpanalytics price-elasticity guide, adopted 2026-10-03): at least
+# 30 weekly observations, and a price that moved at least 10% over them —
+# with less, the slope mostly measures noise.
+ELASTICITY_MIN_WEEKS = 30
+ELASTICITY_MIN_PRICE_RANGE_PCT = 10.0
+
+
+def get_bi_price_elasticity(
+    product_id: str, start_date: str, end_date: str, bucket: str = "week",
+    customer_id: str | None = None, length: int | None = None,
+) -> dict:
+    """Elastyczność cenowa — one point per week (or day): stem-weighted
+    price vs stems sold, and the elasticity as the slope of a log-log fit.
+
+    Replaced the plain Pearson correlation on 2026-10-03, which said whether
+    price and volume moved together but not by how much. Following the
+    guide the user picked, the fit
+      * runs per length when one is given — across lengths a 40 cm and an
+        80 cm rose are different goods at different prices, and the mix moves;
+      * leaves out weeks touching a holiday window or the December peak
+        (_BI_EVENTS, _BI_BASELINE_EXCLUDE), where the season drives price and
+        volume up together and would read as "dearer sells more";
+      * is only called reliable from ELASTICITY_MIN_WEEKS points and a price
+        range of ELASTICITY_MIN_PRICE_RANGE_PCT.
+    Excluded weeks still come back, flagged, so the chart can show them.
+    """
+    try:
+        ensure_bi_tables()
+        trunc = "day" if bucket == "day" else "week"
+        customer_clause, customer_params = _customer_scope(customer_id)
+        length_clause = "AND length = %s" if length is not None else ""
+        params: list = [product_id, start_date, end_date]
+        if length is not None:
+            params.append(length)
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT date_trunc('{trunc}', creation_date_time)::date AS period,
+                           {_stem_weighted()} AS avg_price,
+                           SUM({_stems()}) AS total_quantity
+                    FROM bi_order_lines
+                    WHERE product_id = %s AND store_price IS NOT NULL AND store_price > 0
+                      AND creation_date_time::date BETWEEN %s AND %s
+                      {length_clause}
+                      {customer_clause}
+                    GROUP BY 1
+                    HAVING SUM({_stems()}) > 0
+                    ORDER BY 1
+                """, params + customer_params)
+                rows = cur.fetchall()
+
+        span = 1 if trunc == "day" else 7
+        points = []
+        for r in rows:
+            first: date = r["period"]
+            excluded = any(_in_event_or_holiday_peak(first + timedelta(days=i)) for i in range(span))
+            points.append({
+                "period": first.isoformat(),
+                "price": round(float(r["avg_price"]), 4),
+                "quantity": float(r["total_quantity"] or 0),
+                "excluded": excluded,
+            })
+
+        kept = [p for p in points if not p["excluded"]]
+        prices = [p["price"] for p in kept]
+        price_range_pct = round((max(prices) / min(prices) - 1) * 100, 1) if prices and min(prices) > 0 else None
+        fit = log_log_fit([(p["price"], p["quantity"]) for p in kept])
+        return {
+            "points": points,
+            "correlation": _pearson([p["price"] for p in kept], [p["quantity"] for p in kept]),
+            "elasticity": fit["elasticity"] if fit else None,
+            "intercept": fit["intercept"] if fit else None,
+            "r2": fit["r2"] if fit else None,
+            "periods": len(kept),
+            "price_range_pct": price_range_pct,
+            "reliable": bool(fit) and len(kept) >= ELASTICITY_MIN_WEEKS
+                        and (price_range_pct or 0) >= ELASTICITY_MIN_PRICE_RANGE_PCT,
+            "min_periods": ELASTICITY_MIN_WEEKS,
+            "min_price_range_pct": ELASTICITY_MIN_PRICE_RANGE_PCT,
+            "bucket": trunc,
+        }
+    except Exception as exc:
+        logger.warning("get_bi_price_elasticity: %s", exc)
+        return {"points": [], "correlation": None, "elasticity": None, "intercept": None, "r2": None,
+                "periods": 0, "price_range_pct": None, "reliable": False,
+                "min_periods": ELASTICITY_MIN_WEEKS, "min_price_range_pct": ELASTICITY_MIN_PRICE_RANGE_PCT,
+                "bucket": bucket}
+
+
+# ---------------------------------------------------------------------------
+# Analysis Tool — overview and the webshop's offer (2026-10-03).
+#
+# The offer views read bi_offer_states (what was online and at what OZH
+# group price, recorded since 2026-09-25) joined to each lot's product,
+# length and supplier in bi_stock_entry_dim. Sales are tied to the listing
+# they came from: order_line.created_from_stock_entry_id is the OFFER lot
+# itself — 871 of 871 lines in the 2026-09-25 export pointed at a type 5 or
+# 4 lot — and a sale belongs to the lot's state in force at its creation.
+#
+# The group price is what OZEDS (customer 12) sees before transport, which
+# its invoice adds per stem (about 0.009 €, bi_sync.py). So offer-versus-sale
+# always compares with customer 12's sales, whatever customer the rest of
+# the screen is scoped to. Sell-through and idle lots count every customer's
+# sales, because they are about stock leaving the lot, not about price.
+# ---------------------------------------------------------------------------
+
+# OZEDS, the customer whose price the group price is (bi_sync.REFERENCE_CUSTOMER_ID;
+# not imported from there, since bi_sync imports this module).
+_REFERENCE_CUSTOMER_ID = "12"
+OFFER_TRANSPORT_PER_STEM = 0.009
+# A sale within this much of the group price plus transport was sold at the
+# offer price; the rest are discounts or surcharges.
+OFFER_PRICE_TOLERANCE = 0.005
+
+# Every lot online on each day of [start, end] — the range form of
+# _OFFERS_ONLINE_ON_DAY, with the same rules: a state counts for a day when
+# it was in force at any moment of it, listed, with the day inside its
+# window; of two such states on one day the later wins. One row per
+# (day, lot). The test suite checks the two agree.
+_OFFERS_ONLINE_ON_DAYS = """
+    SELECT DISTINCT ON (days.day, s.stock_entry_id) days.day::date AS day, s.*
+    FROM generate_series(%(start)s::date, %(end)s::date, interval '1 day') AS days(day)
+    JOIN (
+        SELECT *, LEAD(state_since) OVER (PARTITION BY stock_entry_id ORDER BY state_since) AS state_until
+        FROM bi_offer_states
+    ) s
+      ON s.state_since < days.day::date + 1
+     AND (s.state_until IS NULL OR s.state_until > days.day::date)
+     AND s.listed
+     AND s.available_from <= days.day::date
+     AND s.available_until >= days.day::date
+    ORDER BY days.day, s.stock_entry_id, s.state_since DESC
+"""
+
+# Each listing (a listed state) with the moment the lot's next state began.
+_OFFER_LISTINGS = """
+    SELECT * FROM (
+        SELECT *, LEAD(state_since) OVER (PARTITION BY stock_entry_id ORDER BY state_since) AS state_until
+        FROM bi_offer_states
+    ) s
+    WHERE s.listed
+      AND s.available_from <= %(end)s::date
+      AND s.available_until >= %(start)s::date
+"""
+
+
+def _offer_data_from(cur) -> date | None:
+    """First day the offer was recorded. Earlier days cannot be rebuilt (the
+    export only knows each lot's latest window), and a lot's first state may
+    start before it — when its window opened — so days before this are
+    dropped rather than shown half-counted. A superseded state is never
+    updated again, so its synced_at stays the time it was first stored."""
+    cur.execute("SELECT MIN(synced_at)::date AS d FROM bi_offer_states")
+    row = cur.fetchone()
+    value = row["d"] if isinstance(row, dict) else (row[0] if row else None)
+    return value
+
+
+def _clip_to_offer_history(cur, start_date: str, end_date: str) -> tuple[str, str, str | None]:
+    data_from = _offer_data_from(cur)
+    if data_from is None:
+        return start_date, end_date, None
+    start = max(date.fromisoformat(start_date), data_from)
+    return start.isoformat(), end_date, data_from.isoformat()
+
+
+def _supplier_labels(cur, supplier_ids: list[str]) -> dict[str, str]:
+    if not supplier_ids:
+        return {}
+    cur.execute("SELECT supplier_id, name FROM bi_suppliers WHERE supplier_id = ANY(%s)", (supplier_ids,))
+    return {r["supplier_id"]: r["name"] for r in cur.fetchall() if r["name"]}
+
+
+def get_bi_overview(start_date: str, end_date: str, customer_id: str | None = None) -> dict:
+    """The overview tab: stems, value, stem price and lines for the period,
+    the same for the period of equal length just before it, a daily series,
+    and the top products and suppliers by stems."""
+    try:
+        ensure_bi_tables()
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+        days = (end - start).days + 1
+        prev_start, prev_end = start - timedelta(days=days), start - timedelta(days=1)
+        customer_clause, customer_params = _customer_scope(customer_id)
+
+        def totals(cur, lo: date, hi: date) -> dict:
+            cur.execute(f"""
+                SELECT COALESCE(SUM({_stems()}), 0) AS stems,
+                       COALESCE(SUM({_stems()} * store_price), 0) AS value,
+                       {_stem_weighted()} AS price,
+                       COUNT(*) AS lines,
+                       COUNT(DISTINCT product_id) AS products
+                FROM bi_order_lines
+                WHERE creation_date_time::date BETWEEN %s AND %s {customer_clause}
+            """, [lo.isoformat(), hi.isoformat()] + customer_params)
+            r = cur.fetchone()
+            return {
+                "stems": float(r["stems"] or 0),
+                "value": round(float(r["value"] or 0), 2),
+                "price": round(float(r["price"]), 4) if r["price"] is not None else None,
+                "lines": r["lines"],
+                "products": r["products"],
+            }
+
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                current = totals(cur, start, end)
+                previous = totals(cur, prev_start, prev_end)
+                cur.execute(f"""
+                    SELECT creation_date_time::date::text AS day,
+                           SUM({_stems()}) AS stems,
+                           SUM({_stems()} * store_price) AS value
+                    FROM bi_order_lines
+                    WHERE creation_date_time::date BETWEEN %s AND %s {customer_clause}
+                    GROUP BY 1 ORDER BY 1
+                """, [start_date, end_date] + customer_params)
+                daily = [{"day": r["day"], "stems": float(r["stems"] or 0), "value": round(float(r["value"] or 0), 2)}
+                         for r in cur.fetchall()]
+
+                def top(col: str) -> list[dict]:
+                    cur.execute(f"""
+                        SELECT {col} AS id, SUM({_stems()}) AS stems, SUM({_stems()} * store_price) AS value
+                        FROM bi_order_lines
+                        WHERE {col} IS NOT NULL AND creation_date_time::date BETWEEN %s AND %s {customer_clause}
+                        GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 6
+                    """, [start_date, end_date] + customer_params)
+                    return [dict(r) for r in cur.fetchall()]
+
+                products = top("product_id")
+                suppliers = top("supplier_id")
+                product_names = _product_labels(cur, [r["id"] for r in products])
+                supplier_names = _supplier_labels(cur, [r["id"] for r in suppliers])
+
+        def ranked(rows: list[dict], names: dict[str, str]) -> list[dict]:
+            return [{"key": r["id"], "label": names.get(r["id"]) or r["id"],
+                     "stems": float(r["stems"] or 0), "value": round(float(r["value"] or 0), 2)} for r in rows]
+
+        return {
+            "current": current,
+            "previous": previous,
+            "previous_range": [prev_start.isoformat(), prev_end.isoformat()],
+            "daily": daily,
+            "top_products": ranked(products, product_names),
+            "top_suppliers": ranked(suppliers, supplier_names),
+        }
+    except Exception as exc:
+        logger.warning("get_bi_overview: %s", exc)
+        return {"current": None, "previous": None, "previous_range": None, "daily": [],
+                "top_products": [], "top_suppliers": []}
+
+
+def get_bi_offer_daily(start_date: str, end_date: str, product_id: str | None = None) -> dict:
+    """Lots and stems online per day, and how many lots sold out that day.
+    Days before the offer was first recorded are left out (see
+    _offer_data_from); a day with nothing online is reported as zero."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                start, end, data_from = _clip_to_offer_history(cur, start_date, end_date)
+                if data_from is None or start > end:
+                    return {"days": [], "data_from": data_from}
+                product_clause = "AND d.product_id = %(product)s" if product_id else ""
+                cur.execute(f"""
+                    WITH online AS ({_OFFERS_ONLINE_ON_DAYS})
+                    SELECT o.day::text AS day,
+                           COUNT(*) AS lots,
+                           COALESCE(SUM(o.quantity_available_first), 0) AS stems,
+                           COUNT(*) FILTER (WHERE o.sold_out_at::date = o.day) AS sold_out
+                    FROM online o
+                    LEFT JOIN bi_stock_entry_dim d ON d.stock_entry_id = o.stock_entry_id
+                    WHERE TRUE {product_clause}
+                    GROUP BY 1
+                """, {"start": start, "end": end, "product": product_id})
+                by_day = {r["day"]: r for r in cur.fetchall()}
+
+        out = []
+        d = date.fromisoformat(start)
+        while d <= date.fromisoformat(end):
+            r = by_day.get(d.isoformat())
+            out.append({
+                "day": d.isoformat(),
+                "lots": r["lots"] if r else 0,
+                "stems": float(r["stems"]) if r else 0.0,
+                "sold_out": r["sold_out"] if r else 0,
+            })
+            d += timedelta(days=1)
+        return {"days": out, "data_from": data_from}
+    except Exception as exc:
+        logger.warning("get_bi_offer_daily: %s", exc)
+        return {"days": [], "data_from": None}
+
+
+def get_bi_offer_vs_sale(product_id: str, start_date: str, end_date: str, max_lengths: int = 6) -> dict:
+    """Cena z oferty a cena sprzedaży — for one product, per length and day:
+    the median OZH group price of the lots online that day, and customer
+    12's stem-weighted sale price. Only from the day the offer was recorded;
+    before it there is nothing to compare with. Up to `max_lengths` lengths,
+    the best-selling ones, in length order."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                start, end, data_from = _clip_to_offer_history(cur, start_date, end_date)
+                if data_from is None or start > end:
+                    return {"lengths": [], "data_from": data_from, "transport": OFFER_TRANSPORT_PER_STEM}
+                cur.execute(f"""
+                    WITH online AS ({_OFFERS_ONLINE_ON_DAYS})
+                    SELECT o.day::text AS day, d.length,
+                           percentile_cont(0.5) WITHIN GROUP (ORDER BY o.group_price) AS offer,
+                           COUNT(*) AS lots
+                    FROM online o
+                    JOIN bi_stock_entry_dim d ON d.stock_entry_id = o.stock_entry_id
+                    WHERE d.product_id = %(product)s AND d.length IS NOT NULL AND o.group_price IS NOT NULL
+                    GROUP BY 1, 2
+                """, {"start": start, "end": end, "product": product_id})
+                offers = cur.fetchall()
+                cur.execute(f"""
+                    SELECT creation_date_time::date::text AS day, length,
+                           {_stem_weighted()} AS sale, SUM({_stems()}) AS stems
+                    FROM bi_order_lines
+                    WHERE product_id = %(product)s AND customer_id = %(customer)s
+                      AND length IS NOT NULL AND store_price > 0
+                      AND creation_date_time::date BETWEEN %(start)s AND %(end)s
+                    GROUP BY 1, 2
+                """, {"start": start, "end": end, "product": product_id, "customer": _REFERENCE_CUSTOMER_ID})
+                sales = cur.fetchall()
+
+        by_length: dict[int, dict[str, dict]] = {}
+        weight: dict[int, float] = {}
+        for r in offers:
+            day = by_length.setdefault(r["length"], {}).setdefault(r["day"], {"day": r["day"]})
+            day["offer"] = round(float(r["offer"]), 4)
+            day["offer_lots"] = r["lots"]
+            weight[r["length"]] = weight.get(r["length"], 0.0) + 0.001 * r["lots"]
+        for r in sales:
+            day = by_length.setdefault(r["length"], {}).setdefault(r["day"], {"day": r["day"]})
+            day["sale"] = round(float(r["sale"]), 4)
+            day["sale_stems"] = float(r["stems"] or 0)
+            weight[r["length"]] = weight.get(r["length"], 0.0) + float(r["stems"] or 0)
+
+        chosen = sorted(sorted(weight, key=lambda ln: -weight[ln])[:max_lengths])
+        return {
+            "lengths": [
+                {"length": ln, "points": [by_length[ln][k] for k in sorted(by_length[ln])]}
+                for ln in chosen
+            ],
+            "data_from": data_from,
+            "transport": OFFER_TRANSPORT_PER_STEM,
+        }
+    except Exception as exc:
+        logger.warning("get_bi_offer_vs_sale: %s", exc)
+        return {"lengths": [], "data_from": None, "transport": OFFER_TRANSPORT_PER_STEM}
+
+
+def get_bi_offer_price_match(start_date: str, end_date: str, product_id: str | None = None) -> dict:
+    """Sprzedaż poza ceną z oferty — every customer-12 sale set against the
+    group price of the lot it came from, in force when it was ordered:
+    deviation = store_price − group_price − transport. Within
+    ±OFFER_PRICE_TOLERANCE counts as sold at the offer price. Shares are by
+    stems; `bins` is a histogram of the deviation in 1-cent steps, the
+    outermost bins holding everything beyond ±10 cents."""
+    try:
+        ensure_bi_tables()
+        product_clause = "AND ol.product_id = %(product)s" if product_id else ""
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                start, end, data_from = _clip_to_offer_history(cur, start_date, end_date)
+                if data_from is None or start > end:
+                    return {"lines": 0, "data_from": data_from, "bins": []}
+                cur.execute(f"""
+                    SELECT ol.store_price - st.group_price AS diff, {_stems("ol")} AS stems
+                    FROM bi_order_lines ol
+                    JOIN LATERAL (
+                        SELECT s.group_price FROM bi_offer_states s
+                        WHERE s.stock_entry_id = ol.created_from_stock_entry_id
+                          AND s.state_since <= ol.creation_date_time::timestamp
+                        ORDER BY s.state_since DESC LIMIT 1
+                    ) st ON st.group_price IS NOT NULL
+                    WHERE ol.customer_id = %(customer)s AND ol.store_price > 0
+                      AND ol.creation_date_time::date BETWEEN %(start)s AND %(end)s
+                      {product_clause}
+                """, {"start": start, "end": end, "product": product_id, "customer": _REFERENCE_CUSTOMER_ID})
+                rows = [(float(r["diff"]) - OFFER_TRANSPORT_PER_STEM, float(r["stems"] or 0)) for r in cur.fetchall()]
+
+        if not rows:
+            return {"lines": 0, "data_from": data_from, "bins": []}
+        total = sum(s for _, s in rows) or 1.0
+        at_offer = sum(s for dv, s in rows if abs(dv) <= OFFER_PRICE_TOLERANCE)
+        below = sum(s for dv, s in rows if dv < -OFFER_PRICE_TOLERANCE)
+        devs = sorted(dv for dv, _ in rows)
+        mid = len(devs) // 2
+        median = devs[mid] if len(devs) % 2 else (devs[mid - 1] + devs[mid]) / 2
+        bins = []
+        for cents in range(-10, 11):
+            lo, hi = cents / 100 - 0.005, cents / 100 + 0.005
+            stems = sum(s for dv, s in rows
+                        if (lo <= dv < hi) or (cents == -10 and dv < lo) or (cents == 10 and dv >= hi))
+            bins.append({"cents": cents, "stems": stems})
+        return {
+            "lines": len(rows),
+            "stems": total,
+            "at_offer_pct": round(at_offer / total * 100, 1),
+            "below_pct": round(below / total * 100, 1),
+            "above_pct": round((total - at_offer - below) / total * 100, 1),
+            "median_deviation": round(median, 4),
+            "tolerance": OFFER_PRICE_TOLERANCE,
+            "transport": OFFER_TRANSPORT_PER_STEM,
+            "bins": bins,
+            "data_from": data_from,
+        }
+    except Exception as exc:
+        logger.warning("get_bi_offer_price_match: %s", exc)
+        return {"lines": 0, "data_from": None, "bins": []}
+
+
+_SELL_THROUGH_GROUPS = {"product": "d.product_id", "supplier": "d.supplier_id", "length": "d.length::text"}
+
+
+def get_bi_sell_through(start_date: str, end_date: str, group_by: str = "product",
+                        product_id: str | None = None, limit: int = 20) -> dict:
+    """Sell-through per product, supplier or length, over the listings that
+    overlap the range: sold / (sold + left) × 100 (Shopify's definition).
+    Sold is the stems of every sale made from the lot while that listing was
+    in force; left is the lot's last known quantity. Counting the sales
+    rather than first − last quantity keeps a lot that was topped up from
+    reading as more than sold out."""
+    try:
+        ensure_bi_tables()
+        group_col = _SELL_THROUGH_GROUPS.get(group_by, "d.product_id")
+        product_clause = "AND d.product_id = %(product)s" if product_id else ""
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                start, end, data_from = _clip_to_offer_history(cur, start_date, end_date)
+                if data_from is None or start > end:
+                    return {"rows": [], "total": None, "data_from": data_from}
+                cur.execute(f"""
+                    WITH listings AS ({_OFFER_LISTINGS}),
+                    sold AS (
+                        SELECT l.stock_entry_id, l.state_since, COALESCE(SUM({_stems("ol")}), 0) AS sold
+                        FROM listings l
+                        LEFT JOIN bi_order_lines ol
+                          ON ol.created_from_stock_entry_id = l.stock_entry_id
+                         AND ol.creation_date_time::timestamp >= l.state_since
+                         AND (l.state_until IS NULL OR ol.creation_date_time::timestamp < l.state_until)
+                        GROUP BY l.stock_entry_id, l.state_since
+                    )
+                    SELECT {group_col} AS key,
+                           SUM(s.sold) AS sold,
+                           SUM(GREATEST(COALESCE(l.quantity_available_last, 0), 0)) AS left_over,
+                           COUNT(*) AS listings,
+                           COUNT(*) FILTER (WHERE l.sold_out_at IS NOT NULL) AS sold_out
+                    FROM listings l
+                    JOIN sold s ON s.stock_entry_id = l.stock_entry_id AND s.state_since = l.state_since
+                    JOIN bi_stock_entry_dim d ON d.stock_entry_id = l.stock_entry_id
+                    WHERE {group_col} IS NOT NULL {product_clause}
+                    GROUP BY 1
+                """, {"start": start, "end": end, "product": product_id})
+                rows = cur.fetchall()
+                keys = [r["key"] for r in rows]
+                if group_by == "supplier":
+                    names = _supplier_labels(cur, keys)
+                elif group_by == "length":
+                    names = {k: f"{k} cm" for k in keys}
+                else:
+                    names = _product_labels(cur, keys)
+
+        out = []
+        for r in rows:
+            sold, left = float(r["sold"] or 0), float(r["left_over"] or 0)
+            if sold + left <= 0:
+                continue
+            out.append({
+                "key": r["key"], "label": names.get(r["key"]) or r["key"],
+                "sold": sold, "left": left, "offered": sold + left,
+                "pct": round(sold / (sold + left) * 100, 1),
+                "listings": r["listings"], "sold_out": r["sold_out"],
+            })
+        out.sort(key=lambda r: -r["offered"])
+        sold_all = sum(r["sold"] for r in out)
+        offered_all = sum(r["offered"] for r in out)
+        total = {"sold": sold_all, "offered": offered_all,
+                 "pct": round(sold_all / offered_all * 100, 1) if offered_all else None,
+                 "listings": sum(r["listings"] for r in out), "sold_out": sum(r["sold_out"] for r in out)}
+        return {"rows": out[:limit], "total": total, "data_from": data_from}
+    except Exception as exc:
+        logger.warning("get_bi_sell_through: %s", exc)
+        return {"rows": [], "total": None, "data_from": None}
+
+
+def get_bi_sellout_speed(start_date: str, end_date: str, max_products: int = 12) -> dict:
+    """Czas do wyprzedania — for each listing that sold out, the hours from
+    the start of its sale (when it was listed, or 05:00 on the window's first
+    day if later — buying starts then) to the moment it reached zero. Per
+    product: every listing's hours (for a dot per lot), the median, and the
+    share of its listings that sold out at all. Only products with at least
+    one sold-out listing — the most sold-out first, then listed fastest
+    median first; a product that never ran out has no dot to show, and on
+    the first real data most did not (2026-10-03)."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                start, end, data_from = _clip_to_offer_history(cur, start_date, end_date)
+                if data_from is None or start > end:
+                    return {"products": [], "data_from": data_from}
+                cur.execute(f"""
+                    WITH listings AS ({_OFFER_LISTINGS})
+                    SELECT d.product_id,
+                           CASE WHEN l.sold_out_at IS NULL THEN NULL ELSE GREATEST(0, EXTRACT(EPOCH FROM (
+                               l.sold_out_at - GREATEST(l.state_since, l.available_from + interval '5 hours'))) / 3600)
+                           END AS hours
+                    FROM listings l
+                    JOIN bi_stock_entry_dim d ON d.stock_entry_id = l.stock_entry_id
+                    WHERE d.product_id IS NOT NULL
+                """, {"start": start, "end": end})
+                per_product: dict[str, list] = {}
+                for r in cur.fetchall():
+                    per_product.setdefault(r["product_id"], []).append(
+                        None if r["hours"] is None else round(float(r["hours"]), 1))
+                sold_out = {p: sum(1 for h in hours if h is not None) for p, hours in per_product.items()}
+                chosen = sorted((p for p in per_product if sold_out[p]),
+                                key=lambda p: (-sold_out[p], -len(per_product[p])))[:max_products]
+                names = _product_labels(cur, chosen)
+
+        out = []
+        for pid in chosen:
+            hours = sorted(h for h in per_product[pid] if h is not None)
+            mid = len(hours) // 2
+            median = (hours[mid] if len(hours) % 2 else (hours[mid - 1] + hours[mid]) / 2) if hours else None
+            out.append({
+                "product_id": pid, "label": names.get(pid) or pid,
+                "hours": hours, "median_hours": median,
+                "listings": len(per_product[pid]), "sold_out": len(hours),
+            })
+        out.sort(key=lambda r: (r["median_hours"] is None, r["median_hours"] or 0))
+        return {"products": out, "data_from": data_from}
+    except Exception as exc:
+        logger.warning("get_bi_sellout_speed: %s", exc)
+        return {"products": [], "data_from": None}
+
+
+def get_bi_idle_lots(start_date: str, end_date: str, min_days: int = 3, limit: int = 50) -> dict:
+    """Leżaki — listings online for at least `min_days` days of the range,
+    still holding stems, from which nothing at all was sold while listed.
+    Longest-idle first."""
+    try:
+        ensure_bi_tables()
+        with _conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                start, end, data_from = _clip_to_offer_history(cur, start_date, end_date)
+                if data_from is None or start > end:
+                    return {"rows": [], "data_from": data_from}
+                cur.execute(f"""
+                    WITH listings AS ({_OFFER_LISTINGS}),
+                    spans AS (
+                        SELECT l.*,
+                               LEAST(COALESCE(l.state_until::date, %(end)s::date), l.available_until,
+                                     %(end)s::date, CURRENT_DATE)
+                               - GREATEST(l.state_since::date, l.available_from, %(start)s::date) + 1 AS days_online
+                        FROM listings l
+                    )
+                    SELECT sp.stock_entry_id, d.product_id, d.supplier_id, d.length,
+                           sp.group_price, sp.days_online, sp.quantity_available_last AS stems,
+                           sp.quantity_per_pack, sp.available_from, sp.available_until
+                    FROM spans sp
+                    JOIN bi_stock_entry_dim d ON d.stock_entry_id = sp.stock_entry_id
+                    WHERE sp.days_online >= %(min_days)s
+                      AND COALESCE(sp.quantity_available_last, 0) > 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bi_order_lines ol
+                          WHERE ol.created_from_stock_entry_id = sp.stock_entry_id
+                            AND ol.creation_date_time::timestamp >= sp.state_since
+                            AND (sp.state_until IS NULL OR ol.creation_date_time::timestamp < sp.state_until)
+                      )
+                    ORDER BY sp.days_online DESC, sp.quantity_available_last DESC
+                    LIMIT %(limit)s
+                """, {"start": start, "end": end, "min_days": min_days, "limit": limit})
+                rows = cur.fetchall()
+                products = _product_labels(cur, list({r["product_id"] for r in rows if r["product_id"]}))
+                suppliers = _supplier_labels(cur, list({r["supplier_id"] for r in rows if r["supplier_id"]}))
+
+        return {
+            "rows": [
+                {
+                    "stock_entry_id": r["stock_entry_id"],
+                    "product": products.get(r["product_id"]) or r["product_id"],
+                    "supplier": suppliers.get(r["supplier_id"]) or r["supplier_id"],
+                    "length": r["length"],
+                    "price": round(float(r["group_price"]), 4) if r["group_price"] is not None else None,
+                    "days_online": r["days_online"],
+                    "stems": float(r["stems"] or 0),
+                    "stems_per_box": float(r["quantity_per_pack"]) if r["quantity_per_pack"] else None,
+                    "available_until": r["available_until"].isoformat() if r["available_until"] else None,
+                }
+                for r in rows
+            ],
+            "min_days": min_days,
+            "data_from": data_from,
+        }
+    except Exception as exc:
+        logger.warning("get_bi_idle_lots: %s", exc)
+        return {"rows": [], "min_days": min_days, "data_from": None}
 
 
 # ---------------------------------------------------------------------------

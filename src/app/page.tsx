@@ -292,7 +292,7 @@ const MODULE_WIDTH: Record<Tab, string> = {
   photos:    "max-w-5xl",
   admin:     "max-w-5xl",
   delivery:  "max-w-7xl",
-  analysis:  "max-w-4xl",
+  analysis:  "max-w-7xl",
   boxweight: "max-w-6xl",
   supplier:  "max-w-4xl",
   knowledge: "max-w-6xl",

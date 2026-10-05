@@ -1,972 +1,287 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, useRef, type ReactNode } from "react";
-import { Lang, translations } from "@/lib/i18n";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { useSession } from "next-auth/react";
 import {
-  MultiLineChart, ScatterChart, GroupedBarChart, HBarChart, DivergingBarChart,
-  Series, ScatterPoint, fmtPrice, fmtNum, fmtPct, makeMonthLabel,
-  COLOR_ABOVE,
-} from "./analysis/charts";
+  CalendarDays, CalendarRange, Clock, DatabaseZap, Gauge, LayoutDashboard, LoaderCircle,
+  Package, Store, Tag, TrendingUp, Truck, TriangleAlert, Users,
+} from "lucide-react";
 
-const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
+import { Lang, translations } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tip } from "@/components/ui/tooltip";
+import {
+  ALL_CUSTOMERS, AnalysisProvider, Chip, Combobox, LOCALES, REFERENCE_CUSTOMER,
+  addDays, api, isoDay, makeFormat, useAnalysis, useFetch,
+  type AnalysisContextValue, type PickerItem, type Tab,
+} from "./analysis/shared";
+import { OverviewTab } from "./analysis/OverviewTab";
+import { OfferTab } from "./analysis/OfferTab";
+import { TurnoverTab } from "./analysis/TurnoverTab";
+import { SalesTab } from "./analysis/SalesTab";
+import { PricesTab } from "./analysis/PricesTab";
+import { SuppliersTab } from "./analysis/SuppliersTab";
+import { SeasonTab } from "./analysis/SeasonTab";
+import { SyncDialog } from "./analysis/SyncDialog";
+import type { SyncHistory } from "./analysis/types";
 
-const CTRL = "h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50 transition-colors";
+// Analysis Tool — webshop sales, the offer and its prices, per stem.
+// Rebuilt 2026-10-03 on Tremor charts and shadcn/ui pieces in the system
+// palette: one filter row scopes every tab (period, customer, product), each
+// analysis sits in its own panel with a short title and its explanation
+// behind an ⓘ, and the data sync is an admin's icon, not a panel everyone
+// scrolls past. Tabs follow the questions the data can answer (FT Visual
+// Vocabulary): the overview, what was offered, how it sold through, sales
+// over time, prices, suppliers, and the season.
 
-// BCP-47 tags for date/number formatting, so figures don't render in the
-// browser's language while the rest of the UI is in the user's (2026-09-07).
-const LOCALES: Record<Lang, string> = { en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" };
+type Preset = "7" | "30" | "90" | "365" | "custom";
 
-interface BiStats {
-  stock_entry_dim_count?: number;
-  offer_state_count?: number;
-  offers_online_today?: number;
-  order_lines_count?: number;
-  invoice_customer_count?: number;
-}
-
-interface BiSyncRun {
-  status: string;
-  error: string | null;
-  stock_entries_seen: number | null;
-  order_lines_seen: number | null;
-  mutation_from: string | null;
-  messages?: string[];
-}
-
-interface ProductPickerItem { product_id: string; description: string | null; row_count: number }
-interface SupplierPickerItem { supplier_id: string; name: string | null; row_count: number }
-interface CustomerPickerItem { customer_id: string; name: string | null; row_count: number }
-
-interface TopProductPoint {
-  product_id: string; label: string;
-  quantity: number; value: number; line_count: number;
-}
-
-interface LengthPoint {
-  length: number;
-  avg_price: number;
-  avg_supplier_price: number | null;
-  spread_pct: number | null;
-  quantity: number;
-  line_count: number;
-}
-
-interface SupplierPricePoint {
-  supplier_id: string; name: string; avg_price: number;
-  min_price: number; max_price: number; quantity: number; line_count: number;
-}
-
-interface VolatilityPoint {
-  supplier_id: string; name: string; cv_pct: number | null;
-  avg_price: number | null; line_count: number; product_count: number;
-}
-
-interface DeviationPoint {
-  supplier_id: string; name: string; deviation_pct: number;
-  avg_price: number; market_price: number; line_count: number;
-}
-
-interface SeasonalityYear {
-  year: number;
-  months: { month: number; quantity: number; price: number | null }[];
-}
-
-interface EventImpact {
-  event: string;
-  years: {
-    year: number;
-    volume_lift_pct: number | null;
-    price_lift_pct: number | null;
-    event_typical_quantity: number | null;
-    baseline_typical_quantity: number | null;
-    event_days: number;
-    baseline_days: number;
-  }[];
-}
-
-/** Shared shape of the two supplier charts that drop low-volume suppliers. */
-interface ScopedResult<T> {
-  points: T[];
-  total_suppliers?: number;
-  excluded?: number;
-}
-
-type Copy = (typeof translations)["en"]["analysis"];
-
-type ViewMode = "supplier" | "product" | "customer";
-
-/** Customer scope meaning "don't filter". Matches BI_ALL_CUSTOMERS in db.py.
- *  Sale price is customer-specific, so this deliberately isn't the default —
- *  see REFERENCE_CUSTOMER. */
-const ALL_CUSTOMERS = "__all__";
-/** OZEDS — what bi_order_lines held exclusively until ingest widened on
- *  2026-09-09. Kept as the opening scope so every chart still means what it
- *  meant before other customers started landing in the table. */
-const REFERENCE_CUSTOMER = "12";
-type Tab = "sales" | "price" | "suppliers" | "seasonality";
-type Metric = "quantity" | "price";
-/** Ranking basis for the supplier's top-products chart. Volume and revenue
- *  regularly disagree — a cheap high-turnover product tops one and not the
- *  other — so this is a toggle, not a chosen default. */
-type RankMetric = "quantity" | "value";
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function defaultMutationDate(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
-
-/** Build an API URL, dropping empty/null params so optional filters simply
- *  don't appear rather than being sent as "". */
-function api(path: string, params: Record<string, string | number | null | undefined> = {}): string {
-  const url = new URL(`${RAILWAY}${path}`);
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== null && v !== undefined && v !== "") url.searchParams.set(k, String(v));
-  }
-  return url.toString();
-}
-
-/** Fetch-on-url-change. `url === null` means "not needed right now" (inactive
- *  tab, or a required picker still empty) and clears the data without a
- *  request. `tick` forces a refetch after a sync lands. */
-function useFetch<T>(url: string | null, tick = 0): { data: T | null; loading: boolean } {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(false);
-  useEffect(() => {
-    if (!url) { setData(null); setLoading(false); return; }
-    let cancelled = false;
-    setLoading(true);
-    fetch(url)
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (!cancelled) setData(d); })
-      .catch(() => { if (!cancelled) setData(null); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [url, tick]);
-  return { data, loading };
-}
-
-function Card({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
-      <div>
-        <p className="text-sm font-semibold text-ink">{title}</p>
-        {hint && <p className="text-xs text-ink-3 mt-0.5">{hint}</p>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Loading({ when, text }: { when: boolean; text: string }) {
-  return when ? <p className="text-xs text-ink-3">{text}</p> : null;
-}
-
-/** Plain-language reading of the price/volume correlation — the number alone
- *  invites over-reading a weak signal as a demand curve. */
-function elasticityVerdict(c: number | null, t: Copy): string {
-  if (c == null) return t.verdictTooFew;
-  if (c <= -0.5) return t.verdictStrongNeg;
-  if (c <= -0.2) return t.verdictModNeg;
-  if (c < 0.2) return t.verdictNone;
-  return t.verdictPos;
-}
+const TABS: { id: Tab; icon: ComponentType<{ className?: string }>; label: (t: typeof translations.en.analysis) => string; product?: "required" | "optional" }[] = [
+  { id: "overview", icon: LayoutDashboard, label: t => t.tabOverview },
+  { id: "offer", icon: Store, label: t => t.tabOffer, product: "optional" },
+  { id: "turnover", icon: Gauge, label: t => t.tabTurnover },
+  { id: "sales", icon: TrendingUp, label: t => t.tabSales },
+  { id: "prices", icon: Tag, label: t => t.tabPrices, product: "required" },
+  { id: "suppliers", icon: Truck, label: t => t.tabSuppliers, product: "optional" },
+  { id: "season", icon: CalendarDays, label: t => t.tabSeason, product: "optional" },
+];
 
 export default function AnalysisTool({ lang }: { lang: Lang }) {
   const t = translations[lang].analysis;
   const locale = LOCALES[lang];
-  const monthLbl = useMemo(() => makeMonthLabel(t.months), [t]);
+  const fmt = useMemo(() => makeFormat(locale), [locale]);
+  const { data: session } = useSession();
+  const isAdmin = ((session?.user as { permissions?: string[] } | undefined)?.permissions ?? []).includes("admin:manage");
 
-  const [tab, setTab] = useState<Tab>("sales");
-
-  // ── Data pipeline ───────────────────────────────────────────────────────
-  const [mutationDate, setMutationDate] = useState(defaultMutationDate());
-  const [stats, setStats] = useState<BiStats | null>(null);
-  const [latestRun, setLatestRun] = useState<BiSyncRun | null>(null);
-  const [syncStarting, setSyncStarting] = useState(false);
-  // Backend's live is_bi_sync_running() flag — not derived from latestRun.status,
-  // which flips back to "ok" between days of a multi-day backfill and would
-  // drop the poll loop mid-run (found 2026-09-02).
-  const [serverRunning, setServerRunning] = useState(false);
-  // Bumped when a sync finishes, to refetch every picker/chart.
-  const [refreshTick, setRefreshTick] = useState(0);
-
-  const loadBiHistory = useCallback(async () => {
-    try {
-      const res = await fetch(api("/bi-sync/history", { limit: 1 }));
-      if (!res.ok) return;
-      const data = await res.json();
-      setStats(data.stats ?? null);
-      setLatestRun(data.history?.[0] ?? null);
-      setServerRunning(!!data.running);
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => { loadBiHistory(); }, [loadBiHistory]);
-
-  useEffect(() => {
-    if (!serverRunning) return;
-    const poll = setInterval(loadBiHistory, 4000);
-    return () => clearInterval(poll);
-  }, [serverRunning, loadBiHistory]);
-
-  // Sync just finished -> refresh everything downstream once.
-  const prevRunning = usePrevious(serverRunning);
-  useEffect(() => {
-    if (prevRunning && !serverRunning) setRefreshTick(n => n + 1);
-  }, [prevRunning, serverRunning]);
-
-  async function runBiSync() {
-    setSyncStarting(true);
-    try {
-      await fetch(api("/bi-sync/run-range", { start_date: mutationDate, end_date: todayIso() }), { method: "POST" });
-      await loadBiHistory();
-    } finally {
-      setSyncStarting(false);
-    }
-  }
-
-  // ── Shared filters ──────────────────────────────────────────────────────
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 90);
-    return d.toISOString().slice(0, 10);
-  });
-  const [endDate, setEndDate] = useState(() => todayIso());
+  const [tab, setTab] = useState<Tab>("overview");
+  const today = isoDay(new Date());
+  const [preset, setPreset] = useState<Preset>("30");
+  const [custom, setCustom] = useState({ start: addDays(today, -29), end: today });
+  const start = preset === "custom" ? custom.start : addDays(today, -(Number(preset) - 1));
+  const end = preset === "custom" ? custom.end : today;
   const [customerId, setCustomerId] = useState(REFERENCE_CUSTOMER);
 
-  // Unscoped by customer on purpose — the selector must be able to offer
-  // customers other than the one currently selected.
-  const { data: customersData } = useFetch<{ customers: CustomerPickerItem[] }>(
-    api("/bi-sync/customers", { start_date: startDate, end_date: endDate }), refreshTick);
-  const customers = customersData?.customers ?? [];
-
-  const { data: suppliersData } = useFetch<{ suppliers: SupplierPickerItem[] }>(
-    api("/bi-sync/suppliers", { limit: 200, start_date: startDate, end_date: endDate, customer_id: customerId }), refreshTick);
-  const { data: productsData } = useFetch<{ products: ProductPickerItem[] }>(
-    api("/bi-sync/products", { limit: 300, start_date: startDate, end_date: endDate, customer_id: customerId }), refreshTick);
-  const suppliers = suppliersData?.suppliers ?? [];
-  const products = productsData?.products ?? [];
-
-  // The analysis tabs all key off one product; keeping it separate from the
-  // sales tab's own picker means switching tabs never silently rewrites the
-  // other tab's selection.
-  const [analysisProductId, setAnalysisProductId] = useState("");
-  // Keep the selection only while it's still in the (date-filtered) list,
-  // otherwise fall to the top seller. Clearing to "" without re-selecting
-  // left the picker blank after narrowing the date range, because the effect
-  // doesn't re-run until `products` changes again (fixed 2026-09-03).
+  // ── Data freshness and the sync ──────────────────────────────────────────
+  const [history, setHistory] = useState<SyncHistory | null>(null);
+  const [tick, setTick] = useState(0);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await fetch(api("/bi-sync/history", { limit: 5 }));
+      if (res.ok) setHistory(await res.json());
+    } catch { /* the chip just stays as it was */ }
+  }, []);
+  const running = !!history?.running;
   useEffect(() => {
-    setAnalysisProductId(prev =>
-      prev && products.some(p => p.product_id === prev) ? prev : (products[0]?.product_id ?? ""));
+    loadHistory();
+    const id = setInterval(loadHistory, running ? 4000 : 120_000);
+    return () => clearInterval(id);
+  }, [loadHistory, running]);
+  // A sync that just finished refreshes every chart once.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !running) setTick(n => n + 1);
+    wasRunning.current = running;
+  }, [running]);
+
+  const lastOk = history?.history?.find(h => h.status === "ok" && h.finished_at) ?? null;
+  const lastFailed = history?.history?.[0]?.status === "error";
+
+  // ── Pickers ──────────────────────────────────────────────────────────────
+  const customers = useFetch<{ customers: { customer_id: string; name: string | null; row_count: number }[] }>(
+    api("/bi-sync/customers", { start_date: start, end_date: end }), tick);
+  const customerItems: PickerItem[] = (customers.data?.customers ?? []).map(c => ({ value: c.customer_id, label: c.name || c.customer_id, meta: fmt.int(c.row_count) }));
+
+  const productsQ = useFetch<{ products: { product_id: string; description: string | null; row_count: number }[] }>(
+    api("/bi-sync/products", { limit: 300, start_date: start, end_date: end, customer_id: customerId }), tick);
+  const products: PickerItem[] = useMemo(
+    () => (productsQ.data?.products ?? []).map(p => ({ value: p.product_id, label: p.description || p.product_id, meta: fmt.int(p.row_count) })),
+    [productsQ.data, fmt],
+  );
+
+  // The product opens on the best seller. A product that falls out of the
+  // (date-scoped) list goes back to it; "all products", once chosen, stays.
+  const [productId, setProductIdRaw] = useState("");
+  const chosenAll = useRef(false);
+  const setProductId = useCallback((id: string) => { chosenAll.current = id === ""; setProductIdRaw(id); }, []);
+  useEffect(() => {
+    if (!products.length) return;
+    setProductIdRaw(prev => {
+      if (prev && products.some(p => p.value === prev)) return prev;
+      return prev === "" && chosenAll.current ? "" : products[0].value;
+    });
   }, [products]);
+  const productLabel = products.find(p => p.value === productId)?.label ?? productId;
 
-  const productLabel = useMemo(
-    () => products.find(p => p.product_id === analysisProductId)?.description || analysisProductId,
-    [products, analysisProductId],
-  );
+  const [salesSeed, setSalesSeed] = useState<{ supplierId?: string } | null>(null);
+  const clearSalesSeed = useCallback(() => setSalesSeed(null), []);
+  const goTo = useCallback((next: Tab, seed?: { supplierId?: string }) => {
+    if (seed) setSalesSeed(seed);
+    setTab(next);
+  }, []);
 
-  const productPicker = (
-    <select value={analysisProductId} onChange={e => setAnalysisProductId(e.target.value)} className={`${CTRL} max-w-md`}>
-      <option value="">{t.selectProduct}</option>
-      {products.map(p => (
-        <option key={p.product_id} value={p.product_id}>{p.description || p.product_id} ({p.row_count})</option>
-      ))}
-    </select>
-  );
-
-  const customerPicker = (
-    <div>
-      <label className="block text-[11px] text-ink-3 mb-1">{t.customerScope}</label>
-      <select value={customerId} onChange={e => setCustomerId(e.target.value)} className={`${CTRL} max-w-xs`}>
-        <option value={ALL_CUSTOMERS}>{t.allCustomers}</option>
-        {/* The list is date-scoped, so a customer with no sales in the current
-            range drops out of it. Without this the select would render blank
-            while still filtering by that customer — looking broken rather than
-            explaining itself. */}
-        {customerId !== ALL_CUSTOMERS && !customers.some(c => c.customer_id === customerId) && (
-          <option value={customerId}>{customerId} (0)</option>
-        )}
-        {customers.map(c => (
-          <option key={c.customer_id} value={c.customer_id}>{c.name || c.customer_id} ({c.row_count})</option>
-        ))}
-      </select>
-    </div>
-  );
-
-  const dateRange = (
-    <>
-      <div>
-        <label className="block text-[11px] text-ink-3 mb-1">{t.dateFrom}</label>
-        <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className={CTRL} />
-      </div>
-      <div>
-        <label className="block text-[11px] text-ink-3 mb-1">{t.dateTo}</label>
-        <input type="date" value={endDate} min={startDate} onChange={e => setEndDate(e.target.value)} className={CTRL} />
-      </div>
-      {customerPicker}
-    </>
-  );
-
-  // Price series from more than one customer are not comparable — each
-  // customer has its own webshop price list, so an "all customers" average
-  // is a blend of price regimes rather than a price. Volume-shaped charts
-  // are fine; this warns on the ones that aren't.
-  const mixedCustomerWarning = customerId === ALL_CUSTOMERS
-    ? <p className="text-xs text-amber-600">{t.mixedCustomerWarning}</p>
-    : null;
-
-  // ── Tab: Sales ──────────────────────────────────────────────────────────
-  const [viewMode, setViewMode] = useState<ViewMode>("supplier");
-  const [primaryId, setPrimaryId] = useState("");
-  const [highlightKey, setHighlightKey] = useState("");
-  const [salesLength, setSalesLength] = useState("");
-
-  useEffect(() => { setPrimaryId(""); setHighlightKey(""); }, [viewMode]);
-  useEffect(() => {
-    if (viewMode === "customer") return;
-    const ids = viewMode === "supplier" ? suppliers.map(s => s.supplier_id) : products.map(p => p.product_id);
-    if (ids.length) setPrimaryId(prev => (prev && !ids.includes(prev)) ? "" : prev);
-  }, [viewMode, suppliers, products]);
-  useEffect(() => { setSalesLength(""); }, [primaryId]);
-
-  // Date-scoped: offering a length that only sold outside the active range
-  // would render an empty chart with nothing explaining why.
-  const { data: salesLengths } = useFetch<{ lengths: number[] }>(
-    viewMode === "product" && primaryId
-      ? api("/bi-sync/product-lengths", { product_id: primaryId, start_date: startDate, end_date: endDate, customer_id: customerId })
-      : null, refreshTick);
-
-  // Drop a length that the (date-scoped) list no longer offers — otherwise
-  // narrowing the dates leaves a stale filter selected and the chart comes
-  // back empty with no visible reason. Must sit after the fetch above:
-  // `salesLengths` is a const, so referencing it earlier is a temporal
-  // dead zone error, not just a lint nit.
-  useEffect(() => {
-    const ls = salesLengths?.lengths;
-    if (!ls) return;
-    setSalesLength(prev => (prev && !ls.includes(Number(prev)) ? "" : prev));
-  }, [salesLengths]);
-
-  // No selection yet -> a top-N overview rather than a blank panel. "customer"
-  // mode is overview-only: there is no per-customer drill-down endpoint, and
-  // the customer scope selector above already is the per-customer view.
-  const salesUrl = primaryId && viewMode !== "customer"
-    ? api(`/bi-sync/${viewMode === "supplier" ? "sales-by-supplier" : "sales-by-product"}`, {
-        [viewMode === "supplier" ? "supplier_id" : "product_id"]: primaryId,
-        start_date: startDate, end_date: endDate,
-        length: viewMode === "product" ? salesLength : null,
-        customer_id: customerId,
-      })
-    : api("/bi-sync/sales-overview", { group_by: viewMode, start_date: startDate, end_date: endDate, customer_id: customerId });
-  const { data: salesData, loading: salesLoading } = useFetch<{ series: Series[] }>(
-    tab === "sales" ? salesUrl : null, refreshTick);
-
-  // "What did this supplier actually move most" — the price chart above
-  // ranks its series by order-line count, which answers a different question.
-  const [rankMetric, setRankMetric] = useState<RankMetric>("quantity");
-  const { data: topProductsData, loading: topProductsLoading } = useFetch<{ points: TopProductPoint[] }>(
-    tab === "sales" && viewMode === "supplier" && primaryId
-      ? api("/bi-sync/supplier-top-products", {
-          supplier_id: primaryId, start_date: startDate, end_date: endDate,
-          metric: rankMetric, customer_id: customerId,
-        })
-      : null, refreshTick);
-
-  const salesSeries = salesData?.series ?? [];
-  useEffect(() => {
-    const keys = salesSeries.map(s => s.key);
-    setHighlightKey(prev => (prev && !keys.includes(prev)) ? "" : prev);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [salesData]);
-
-  // Highlighted line + top 3 others for comparison; top 5 when nothing is
-  // highlighted. Sourced from the already-fetched series, so the highlight
-  // picker costs no extra request and is inherently limited to entities that
-  // actually co-sold with the primary selection.
-  const highlighted = salesSeries.find(s => s.key === highlightKey);
-  const others = highlighted ? salesSeries.filter(s => s.key !== highlightKey).slice(0, 3) : salesSeries.slice(0, 5);
-  const displaySeries = highlighted ? [...others, highlighted] : others;
-
-  // ── Tab: Price & profitability ──────────────────────────────────────────
-  const priceActive = tab === "price" && !!analysisProductId;
-  const { data: trendData, loading: trendLoading } = useFetch<{ series: Series[] }>(
-    priceActive ? api("/bi-sync/price-trend-by-length", { product_id: analysisProductId, start_date: startDate, end_date: endDate, customer_id: customerId }) : null, refreshTick);
-  const { data: lengthData, loading: lengthLoading } = useFetch<{ points: LengthPoint[] }>(
-    priceActive ? api("/bi-sync/price-vs-length", { product_id: analysisProductId, start_date: startDate, end_date: endDate, customer_id: customerId }) : null, refreshTick);
-  const { data: elasticityData, loading: elasticityLoading } = useFetch<{ points: ScatterPoint[]; correlation: number | null }>(
-    priceActive ? api("/bi-sync/price-elasticity", { product_id: analysisProductId, start_date: startDate, end_date: endDate, customer_id: customerId }) : null, refreshTick);
-
-  const lengthPoints = lengthData?.points ?? [];
-  const lengthCats = lengthPoints.map(p => `${p.length}cm`);
-  const hasCostData = lengthPoints.some(p => p.avg_supplier_price != null);
-
-  // ── Tab: Suppliers ──────────────────────────────────────────────────────
-  const [comparisonLength, setComparisonLength] = useState("");
-  useEffect(() => { setComparisonLength(""); }, [analysisProductId]);
-
-  const suppliersActive = tab === "suppliers";
-  const { data: analysisLengths } = useFetch<{ lengths: number[] }>(
-    suppliersActive && analysisProductId
-      ? api("/bi-sync/product-lengths", { product_id: analysisProductId, start_date: startDate, end_date: endDate, customer_id: customerId })
-      : null, refreshTick);
-  // Same stale-filter guard as the sales tab's length select.
-  useEffect(() => {
-    const ls = analysisLengths?.lengths;
-    if (!ls) return;
-    setComparisonLength(prev => (prev && !ls.includes(Number(prev)) ? "" : prev));
-  }, [analysisLengths]);
-  const { data: comparisonData, loading: comparisonLoading } = useFetch<{ points: SupplierPricePoint[] }>(
-    suppliersActive && analysisProductId
-      ? api("/bi-sync/supplier-price-comparison", { product_id: analysisProductId, start_date: startDate, end_date: endDate, length: comparisonLength, customer_id: customerId })
-      : null, refreshTick);
-
-  // Volatility and market deviation work with or without a product filter —
-  // a scope toggle rather than a hard requirement.
-  const [supplierScopeAll, setSupplierScopeAll] = useState(false);
-  const supplierScopeId = supplierScopeAll ? null : analysisProductId;
-  const { data: volatilityData, loading: volatilityLoading } = useFetch<ScopedResult<VolatilityPoint>>(
-    suppliersActive ? api("/bi-sync/supplier-volatility", { start_date: startDate, end_date: endDate, product_id: supplierScopeId, customer_id: customerId }) : null, refreshTick);
-  const { data: deviationData, loading: deviationLoading } = useFetch<ScopedResult<DeviationPoint>>(
-    suppliersActive ? api("/bi-sync/supplier-market-deviation", { start_date: startDate, end_date: endDate, product_id: supplierScopeId, customer_id: customerId }) : null, refreshTick);
-
-  /** "Showing N of M — the rest have too few lines" — otherwise a ranking
-   *  that silently shrinks from 15 suppliers to 3 looks like a bug. */
-  function excludedNote(d: ScopedResult<unknown> | null): ReactNode {
-    if (!d?.excluded) return null;
-    return (
-      <p className="text-xs text-ink-3">
-        {t.excludedNote(String(d.points.length), String(d.total_suppliers ?? 0), String(d.excluded))}
-      </p>
-    );
-  }
-
-  // ── Tab: Seasonality ────────────────────────────────────────────────────
-  const [seasonScopeAll, setSeasonScopeAll] = useState(true);
-  const [seasonMetric, setSeasonMetric] = useState<Metric>("quantity");
-  const seasonProductId = seasonScopeAll ? null : analysisProductId;
-  const seasonActive = tab === "seasonality";
-  const { data: seasonData, loading: seasonLoading } = useFetch<{ years: SeasonalityYear[] }>(
-    seasonActive ? api("/bi-sync/seasonality", { product_id: seasonProductId, customer_id: customerId }) : null, refreshTick);
-  const { data: eventData, loading: eventLoading } = useFetch<{ events: EventImpact[] }>(
-    seasonActive ? api("/bi-sync/event-impact", { product_id: seasonProductId, customer_id: customerId }) : null, refreshTick);
-
-  // One line per year, x = month, so the same months stack on top of each
-  // other and a repeating pattern is visible at a glance. Only months the
-  // backend actually returned — it no longer pads absent months to zero,
-  // because a month with nothing synced is a gap, not a month with no sales.
-  const seasonSeries: Series[] = useMemo(() => (seasonData?.years ?? []).map(y => ({
-    key: String(y.year),
-    label: String(y.year),
-    points: y.months
-      .filter(m => (seasonMetric === "quantity" ? m.quantity > 0 : m.price != null))
-      .map(m => ({
-        day: String(m.month).padStart(2, "0"),
-        value: seasonMetric === "quantity" ? m.quantity : (m.price ?? 0),
-        quantity: m.quantity,
-      })),
-  })), [seasonData, seasonMetric]);
-
-  const [eventMetric, setEventMetric] = useState<Metric>("quantity");
-  const eventChart = useMemo(() => {
-    const events = eventData?.events ?? [];
-    const years = Array.from(new Set(events.flatMap(e => e.years.map(y => y.year)))).sort();
-    return {
-      // `e.event` is a language-neutral key from the API (db.py _BI_EVENTS),
-      // not display copy — fall back to the raw key if a new event lands
-      // before its translation does.
-      categories: events.map(e => t.eventNames[e.event] ?? e.event),
-      series: years.map(year => ({
-        key: String(year),
-        label: String(year),
-        values: events.map(e => {
-          const row = e.years.find(y => y.year === year);
-          if (!row) return null;
-          return eventMetric === "quantity" ? row.volume_lift_pct : row.price_lift_pct;
-        }),
-        // How much data each bar rests on — a striking lift computed from a
-        // handful of covered days deserves to be read with suspicion.
-        meta: events.map(e => {
-          const row = e.years.find(y => y.year === year);
-          return row ? t.eventCoverage(String(row.event_days), String(row.baseline_days)) : null;
-        }),
-      })),
-    };
-  }, [eventData, eventMetric, t]);
-
-  const TABS: { id: Tab; label: string }[] = [
-    { id: "sales", label: t.tabSales },
-    { id: "price", label: t.tabPrice },
-    { id: "suppliers", label: t.tabSuppliers },
-    { id: "seasonality", label: t.tabSeasonality },
-  ];
-
-  // An empty product list is not the same as "you haven't picked one yet" —
-  // before the 2026-09-03 sync fix every order_line was stored with a NULL
-  // product_id, so the list stays empty until the range is re-synced.
-  const needProduct = products.length ? (
-    <p className="text-xs text-ink-3 py-6 text-center">{t.pickProductAbove}</p>
-  ) : (
-    <p className="text-xs text-ink-3 py-6 text-center max-w-xl mx-auto">{t.noProductsInRange}</p>
-  );
+  const ctx: AnalysisContextValue = {
+    t, fmt, locale, start, end, customerId, productId, productLabel, products,
+    setProductId, goTo, salesSeed, clearSalesSeed, tick,
+  };
+  const current = TABS.find(x => x.id === tab)!;
 
   return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h2 className="text-lg font-bold text-ink">{t.title}</h2>
-        <p className="text-sm text-ink-3 mt-0.5">{t.subtitle}</p>
-      </div>
-
-      {/* Ingestion — also runs automatically once a day (api_server.py
-          _daily_bi_sync). The button is for manual/backfill runs. */}
-      <div className="rounded-2xl border-2 border-emerald/25 bg-emerald-light p-4 flex flex-col gap-3">
-        <div>
-          <p className="text-sm font-semibold text-emerald-dark">{t.pipelineTitle}</p>
-          <p className="text-xs text-ink-3 mt-0.5">{t.pipelineDesc}</p>
-        </div>
-        <div className="flex items-end gap-3 flex-wrap">
-          <div>
-            <label className="block text-[11px] text-ink-3 mb-1">{t.syncFrom}</label>
-            <input type="date" value={mutationDate} onChange={e => setMutationDate(e.target.value)} className={CTRL} />
+    <AnalysisProvider value={ctx}>
+      <div className="flex flex-col gap-4">
+        <header className="flex flex-wrap items-start gap-3">
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold tracking-tight text-ink">{t.title}</h2>
+            <p className="mt-0.5 text-sm text-ink-3">{t.subtitle}</p>
           </div>
-          <button
-            onClick={runBiSync}
-            disabled={syncStarting || serverRunning}
-            className="h-9 px-4 rounded-lg text-sm font-semibold text-white bg-emerald disabled:opacity-40 transition-opacity"
-          >
-            {syncStarting || serverRunning ? t.syncing : t.runSync}
-          </button>
-          {stats && (
-            <span className="text-xs text-ink-3">
-              {fmtNum(stats.stock_entry_dim_count ?? 0, locale)} {t.statStockEntries} ·{" "}
-              {t.statOnlineToday(fmtNum(stats.offers_online_today ?? 0, locale))} ·{" "}
-              {fmtNum(stats.order_lines_count ?? 0, locale)} {t.statOrderLines} ·{" "}
-              {fmtNum(stats.invoice_customer_count ?? 0, locale)} {t.statInvoiceMaps}
-            </span>
-          )}
-        </div>
-        {latestRun?.error && (
-          <p className="text-xs text-red-500 font-mono whitespace-pre-wrap break-all">{latestRun.error}</p>
-        )}
-        {!!latestRun?.messages?.length && (
-          <details className="text-xs">
-            <summary className="cursor-pointer text-ink-3 hover:text-ink">
-              {t.lastRunLog(latestRun.mutation_from ?? "?", latestRun.status)}
-            </summary>
-            <div className="mt-1 bg-muted rounded-lg p-2 max-h-56 overflow-y-auto font-mono whitespace-pre-wrap break-all text-ink-3">
-              {latestRun.messages.map((m, i) => <div key={i}>{m}</div>)}
-            </div>
-          </details>
-        )}
-      </div>
-
-      {/* Wraps to further rows instead of scrolling horizontally — a scroll
-          container hides tabs off-screen with no affordance. */}
-      <div className="flex flex-wrap gap-2">
-        {TABS.map(tb => (
-          <button
-            key={tb.id}
-            onClick={() => setTab(tb.id)}
-            className={`px-4 h-9 rounded-lg text-sm font-medium whitespace-nowrap border transition-colors ${
-              tab === tb.id
-                ? "bg-emerald text-white border-emerald"
-                : "border-border text-ink-3 hover:text-ink"
-            }`}
-          >
-            {tb.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ── Sales ────────────────────────────────────────────────────────── */}
-      {tab === "sales" && (
-        <Card
-          title={t.salesTitle}
-          hint={t.salesHint(viewMode === "supplier" ? t.salesKindSupplier : viewMode === "product" ? t.salesKindProduct : t.salesKindCustomer)}
-        >
-          <div className="flex items-end gap-3 flex-wrap">
-            {dateRange}
-            <div className="flex rounded-lg border border-border overflow-hidden">
-              {(["supplier", "product", "customer"] as ViewMode[]).map(m => (
-                <button
-                  key={m}
-                  onClick={() => setViewMode(m)}
-                  className={`h-9 px-3 text-sm font-medium transition-colors ${viewMode === m ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
-                >
-                  {m === "supplier" ? t.bySupplier : m === "product" ? t.byProduct : t.byCustomer}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 flex-wrap">
-            {viewMode !== "customer" && (
-              <select value={primaryId} onChange={e => setPrimaryId(e.target.value)} className={`${CTRL} max-w-md`}>
-                <option value="">{viewMode === "supplier" ? t.allSuppliersTop : t.allProductsTop}</option>
-                {viewMode === "supplier"
-                  ? suppliers.map(s => <option key={s.supplier_id} value={s.supplier_id}>{s.name || s.supplier_id} ({s.row_count})</option>)
-                  : products.map(p => <option key={p.product_id} value={p.product_id}>{p.description || p.product_id} ({p.row_count})</option>)}
-              </select>
-            )}
-
-            {viewMode === "product" && primaryId && !!(salesLengths?.lengths ?? []).length && (
-              <select value={salesLength} onChange={e => setSalesLength(e.target.value)} className={CTRL}>
-                <option value="">{t.allLengths}</option>
-                {(salesLengths?.lengths ?? []).map(l => <option key={l} value={l}>{l}cm</option>)}
-              </select>
-            )}
-
-            {!!salesSeries.length && (
-              <select value={highlightKey} onChange={e => setHighlightKey(e.target.value)} className={`${CTRL} max-w-md`}>
-                <option value="">{t.highlightLine}</option>
-                {salesSeries.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
-              </select>
+          <div className="ml-auto flex items-center gap-2">
+            {running ? (
+              <Chip tone="info" icon={LoaderCircle}>{t.syncRunning}</Chip>
+            ) : lastFailed ? (
+              <Chip tone="warn" icon={TriangleAlert} tip={history?.history?.[0]?.error ?? undefined}>{t.syncError}</Chip>
+            ) : lastOk?.finished_at ? (
+              <Chip tone="good" icon={Clock} tip={t.dataAtTip(fmt.dateTime(lastOk.finished_at))}>
+                {t.dataAt(lastOk.finished_at.slice(0, 10) === today ? fmt.time(lastOk.finished_at) : fmt.dateTime(lastOk.finished_at))}
+              </Chip>
+            ) : null}
+            {isAdmin && (
+              <Tip content={t.syncOpen}>
+                <Button variant="outline" size="icon" onClick={() => setSyncOpen(true)} aria-label={t.syncOpen}>
+                  <DatabaseZap className="size-4" />
+                </Button>
+              </Tip>
             )}
           </div>
+        </header>
 
-          <Loading when={salesLoading} text={t.loading} />
-          {!salesLoading && !salesSeries.length && <p className="text-xs text-ink-3">{t.noSalesInRange}</p>}
-          {!!displaySeries.length && (
-            <MultiLineChart
-              series={displaySeries}
-              highlightKey={highlightKey}
-              locale={locale}
-              emptyText={t.noDataRange}
-              soldLabel={t.soldBoxes}
-            />
-          )}
-        </Card>
-      )}
-
-      {/* ── Top products for the selected supplier ───────────────────────── */}
-      {tab === "sales" && viewMode === "supplier" && !!primaryId && (
-        <Card title={t.topProductsTitle} hint={t.topProductsHint}>
-          <div className="flex rounded-lg border border-border overflow-hidden self-start">
-            {(["quantity", "value"] as RankMetric[]).map(m => (
+        <nav role="tablist" aria-label={t.title} className="flex flex-wrap gap-1 rounded-2xl bg-muted p-1">
+          {TABS.map(x => {
+            const Icon = x.icon;
+            const active = x.id === tab;
+            return (
               <button
-                key={m}
-                onClick={() => setRankMetric(m)}
-                className={`h-9 px-3 text-sm font-medium transition-colors ${rankMetric === m ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
-              >
-                {m === "quantity" ? t.rankByQuantity : t.rankByValue}
-              </button>
-            ))}
-          </div>
-          <Loading when={topProductsLoading} text={t.loading} />
-          <HBarChart
-            points={(topProductsData?.points ?? []).map(p => ({
-              label: p.label,
-              // The unranked figure sits in the sublabel: volume and revenue
-              // order differently often enough that showing only one invites
-              // reading it as both.
-              value: rankMetric === "quantity" ? p.quantity : p.value,
-              sublabel: rankMetric === "quantity" ? fmtPrice(p.value) : `${fmtNum(p.quantity, locale)} ${t.boxes}`,
-              volume: p.line_count,
-            }))}
-            format={v => (rankMetric === "quantity" ? fmtNum(v ?? 0, locale) : fmtPrice(v))}
-            valueHeader={rankMetric === "quantity" ? t.boxes : t.rankByValue}
-            volumeHeader={t.linesCol}
-            locale={locale}
-            emptyText={t.noSalesInRange}
-          />
-        </Card>
-      )}
-
-      {/* ── Price & profitability ────────────────────────────────────────── */}
-      {tab === "price" && (
-        <>
-          <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
-            <div className="flex items-end gap-3 flex-wrap">
-              {dateRange}
-              {productPicker}
-            </div>
-            {mixedCustomerWarning}
-          </div>
-
-          <Card title={t.trendTitle} hint={t.trendHint(productLabel || t.selectProduct)}>
-            <Loading when={trendLoading} text={t.loading} />
-            {!analysisProductId ? needProduct : (
-              <MultiLineChart
-                series={trendData?.series ?? []}
-                locale={locale}
-                emptyText={t.noDataRange}
-                soldLabel={t.soldBoxes}
-              />
-            )}
-          </Card>
-
-          <Card title={t.lengthTitle} hint={t.lengthHint}>
-            <Loading when={lengthLoading} text={t.loading} />
-            {!analysisProductId ? needProduct : (
-              <>
-                <GroupedBarChart
-                  categories={lengthCats}
-                  series={[
-                    { key: "sale", label: t.seriesSalePrice, values: lengthPoints.map(p => p.avg_price) },
-                    // Only offered when at least one length actually has a
-                    // purchase price. supplier_price can be entirely absent
-                    // from the export, and an all-null series would still
-                    // claim a legend entry and a color while drawing nothing.
-                    ...(hasCostData
-                      ? [{ key: "cost", label: t.seriesCostPrice, values: lengthPoints.map(p => p.avg_supplier_price) }]
-                      : []),
-                  ]}
-                  formatValue={fmtPrice}
-                  height={280}
-                  emptyText={t.noDataRange}
-                />
-                {!hasCostData && !!lengthPoints.length && (
-                  <p className="text-xs text-ink-3">{t.noCostData}</p>
+                key={x.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(x.id)}
+                className={cn(
+                  "inline-flex h-9 items-center gap-1.5 rounded-xl px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-emerald/40",
+                  active ? "bg-surface text-emerald-dark shadow-[0_1px_3px_rgba(17,26,20,0.12)]" : "text-ink-3 hover:bg-surface/60 hover:text-ink",
                 )}
-                <p className="text-xs text-ink-3 pt-2 border-t border-border">
-                  {t.marginNoteA} <strong>{t.marginNoteNo}</strong> {t.marginNoteB}
-                  <code className="mx-1 font-mono">customer_stock_item_commission</code>
-                  {t.marginNoteC} <code className="font-mono">cost = 1</code>
-                  {t.marginNoteD}
-                </p>
-              </>
-            )}
-          </Card>
-
-          <Card
-            title={t.elasticityTitle}
-            hint={
-              <>
-                <strong>{t.whatItShows}</strong> {t.elasticityWhat}
-                <br />
-                <strong>{t.howToRead}</strong> {t.elasticityHow}
-                <br />
-                <strong>{t.whatToUse}</strong> {t.elasticityUse}
-              </>
-            }
-          >
-            <Loading when={elasticityLoading} text={t.loading} />
-            {!analysisProductId ? needProduct : (
-              <>
-                <div className="flex items-baseline gap-3 flex-wrap">
-                  <span className="text-2xl font-bold text-ink tabular-nums">
-                    {elasticityData?.correlation != null ? elasticityData.correlation.toFixed(2) : "—"}
-                  </span>
-                  <span className="text-xs text-ink-3">
-                    {t.correlationLabel} · {elasticityVerdict(elasticityData?.correlation ?? null, t)}
-                  </span>
-                </div>
-                <ScatterChart
-                  points={elasticityData?.points ?? []}
-                  xAxisLabel={t.avgWeekPrice}
-                  yAxisLabel={t.boxes}
-                  locale={locale}
-                  emptyText={t.noDataRange}
-                  boxesLabel={t.soldBoxes}
-                />
-              </>
-            )}
-          </Card>
-        </>
-      )}
-
-      {/* ── Suppliers ────────────────────────────────────────────────────── */}
-      {tab === "suppliers" && (
-        <>
-          <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
-            <div className="flex items-end gap-3 flex-wrap">
-              {dateRange}
-              {productPicker}
-            </div>
-            {mixedCustomerWarning}
-          </div>
-
-          <Card title={t.comparisonTitle} hint={t.comparisonHint(productLabel || t.selectProduct)}>
-            <div className="flex items-center gap-3 flex-wrap">
-              {!!(analysisLengths?.lengths ?? []).length && (
-                <select value={comparisonLength} onChange={e => setComparisonLength(e.target.value)} className={CTRL}>
-                  <option value="">{t.allLengths}</option>
-                  {(analysisLengths?.lengths ?? []).map(l => <option key={l} value={l}>{l}cm</option>)}
-                </select>
-              )}
-            </div>
-            <Loading when={comparisonLoading} text={t.loading} />
-            {!analysisProductId ? needProduct : (
-              <HBarChart
-                points={(comparisonData?.points ?? []).map(p => ({
-                  label: p.name,
-                  value: p.avg_price,
-                  sublabel: `${fmtPrice(p.min_price)}–${fmtPrice(p.max_price)}`,
-                  volume: p.quantity,
-                }))}
-                format={fmtPrice}
-                valueHeader={t.avgPriceMinMax}
-                volumeHeader={t.boxes}
-                locale={locale}
-                emptyText={t.noDataRange}
-              />
-            )}
-          </Card>
-
-          <div className="rounded-2xl border border-border p-4 flex flex-col gap-2">
-            <p className="text-xs text-ink-3 max-w-3xl">
-              <strong>{t.scopeHeading}</strong>{" "}
-              <em>{t.scopeSelected}</em> {t.scopeSelectedDesc(productLabel || t.selectProduct)}
-              <em>{t.scopeAll}</em> {t.scopeAllDesc}
-            </p>
-            <div className="flex rounded-lg border border-border overflow-hidden w-fit">
-              <button
-                onClick={() => setSupplierScopeAll(false)}
-                disabled={!analysisProductId}
-                className={`h-9 px-3 text-sm font-medium transition-colors disabled:opacity-40 ${!supplierScopeAll ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
               >
-                {t.scopeSelected}
+                <Icon className="size-4" />
+                {x.label(t)}
               </button>
-              <button
-                onClick={() => setSupplierScopeAll(true)}
-                className={`h-9 px-3 text-sm font-medium transition-colors ${supplierScopeAll ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
-              >
-                {t.scopeAll}
-              </button>
-            </div>
-          </div>
+            );
+          })}
+        </nav>
 
-          <Card title={t.volatilityTitle} hint={t.volatilityHint}>
-            <Loading when={volatilityLoading} text={t.loading} />
-            <HBarChart
-              points={(volatilityData?.points ?? []).map(p => ({
-                label: p.name,
-                value: p.cv_pct ?? 0,
-                sublabel: `${fmtPrice(p.avg_price)} · ${p.product_count}`,
-                volume: p.line_count,
-              }))}
-              format={v => (v == null ? "—" : `${v.toFixed(1)}%`)}
-              color={COLOR_ABOVE}
-              valueHeader={t.volatilityCol}
-              volumeHeader={t.linesCol}
-              locale={locale}
-              emptyText={t.volatilityEmpty}
-            />
-            {excludedNote(volatilityData)}
-          </Card>
-
-          <Card title={t.deviationTitle} hint={t.deviationHint}>
-            <Loading when={deviationLoading} text={t.loading} />
-            <DivergingBarChart
-              points={(deviationData?.points ?? []).map(p => ({
-                label: p.name,
-                value: p.deviation_pct,
-                sublabel: `${fmtPrice(p.avg_price)} vs ${fmtPrice(p.market_price)} ${t.marketWord} · ${fmtNum(p.line_count, locale)} ${t.linesWord}`,
-              }))}
-              aboveLabel={t.aboveMarket}
-              belowLabel={t.belowMarket}
-              emptyText={t.deviationEmpty}
-            />
-            {excludedNote(deviationData)}
-          </Card>
-        </>
-      )}
-
-      {/* ── Seasonality & demand ─────────────────────────────────────────── */}
-      {tab === "seasonality" && (
-        <>
-          <div className="rounded-2xl border border-border p-4 flex flex-col gap-3">
-            <p className="text-xs text-ink-3 max-w-3xl">
-              {t.seasonNoteA} <strong>{t.seasonNoteWhole}</strong>{t.seasonNoteB}{" "}
-              <strong>{t.seasonNoteGap}</strong> {t.seasonNoteC}
-            </p>
-            <div className="flex items-end gap-3 flex-wrap">
-              {customerPicker}
-              <div className="flex rounded-lg border border-border overflow-hidden">
-                <button
-                  onClick={() => setSeasonScopeAll(true)}
-                  className={`h-9 px-3 text-sm font-medium transition-colors ${seasonScopeAll ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
-                >
-                  {t.scopeAll}
-                </button>
-                <button
-                  onClick={() => setSeasonScopeAll(false)}
-                  disabled={!analysisProductId}
-                  className={`h-9 px-3 text-sm font-medium transition-colors disabled:opacity-40 ${!seasonScopeAll ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
-                >
-                  {t.scopeSelected}
-                </button>
-              </div>
-              {!seasonScopeAll && productPicker}
-            </div>
-          </div>
-
-          <Card title={t.seasonalityTitle} hint={t.seasonalityHint}>
-            <div className="flex rounded-lg border border-border overflow-hidden w-fit">
-              {(["quantity", "price"] as Metric[]).map(m => (
-                <button
-                  key={m}
-                  onClick={() => setSeasonMetric(m)}
-                  className={`h-9 px-3 text-sm font-medium transition-colors ${seasonMetric === m ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
-                >
-                  {m === "quantity" ? t.metricVolume : t.metricPrice}
-                </button>
-              ))}
-            </div>
-            <Loading when={seasonLoading} text={t.loading} />
-            <MultiLineChart
-              series={seasonSeries}
-              xLabel={monthLbl}
-              tipLabel={monthLbl}
-              formatValue={seasonMetric === "quantity" ? (v => fmtNum(v, locale)) : fmtPrice}
-              showQuantity={seasonMetric === "price"}
-              locale={locale}
-              emptyText={t.noDataRange}
-              soldLabel={t.soldBoxes}
-            />
-          </Card>
-
-          <Card
-            title={t.eventsTitle}
-            hint={
-              <>
-                <strong>{t.whatItShows}</strong> {t.eventsWhat}
-                <br />
-                <strong>{t.eventsWindowsLabel}</strong> {t.eventsWindows}
-                <br />
-                <strong>{t.eventsBaselineLabel}</strong> {t.eventsBaseline}
-              </>
-            }
+        <div className="flex flex-wrap items-center gap-2">
+          <ToggleGroup
+            type="single"
+            aria-label={t.period}
+            value={preset === "custom" ? "" : preset}
+            onValueChange={v => { if (v) setPreset(v as Preset); }}
           >
-            <div className="flex rounded-lg border border-border overflow-hidden w-fit">
-              {(["quantity", "price"] as Metric[]).map(m => (
-                <button
-                  key={m}
-                  onClick={() => setEventMetric(m)}
-                  className={`h-9 px-3 text-sm font-medium transition-colors ${eventMetric === m ? "bg-emerald text-white" : "text-ink-3 hover:text-ink"}`}
-                >
-                  {m === "quantity" ? t.metricVolume : t.metricPrice}
-                </button>
-              ))}
-            </div>
-            <Loading when={eventLoading} text={t.loading} />
-            <GroupedBarChart
-              categories={eventChart.categories}
-              series={eventChart.series}
-              formatValue={fmtPct}
-              height={300}
-              emptyText={t.noDataRange}
+            {(["7", "30", "90"] as const).map(n => (
+              <ToggleGroupItem key={n} value={n}>{t.periodDays(Number(n))}</ToggleGroupItem>
+            ))}
+            <ToggleGroupItem value="365">{t.periodYear}</ToggleGroupItem>
+          </ToggleGroup>
+          <RangePicker
+            start={start}
+            end={end}
+            active={preset === "custom"}
+            onApply={(s, e) => { setCustom({ start: s, end: e }); setPreset("custom"); }}
+          />
+          <Combobox
+            label={t.customer}
+            icon={Users}
+            items={customerItems}
+            value={customerId === ALL_CUSTOMERS ? "" : customerId}
+            onChange={v => setCustomerId(v || ALL_CUSTOMERS)}
+            allLabel={t.allCustomers}
+            className="w-52"
+          />
+          {customerId === ALL_CUSTOMERS && <Chip tone="warn" icon={TriangleAlert} tip={t.mixedPricesTip}>{t.mixedPrices}</Chip>}
+          {current.product && (
+            <Combobox
+              label={t.product}
+              icon={Package}
+              items={products}
+              value={productId}
+              onChange={setProductId}
+              allLabel={current.product === "optional" ? t.allProducts : undefined}
+              placeholder={t.product}
+              className="w-72"
             />
-          </Card>
+          )}
+        </div>
 
-          <div className="rounded-2xl border border-border border-dashed p-4">
-            <p className="text-sm font-semibold text-ink">{t.forecastTitle}</p>
-            <p className="text-xs text-ink-3 mt-1">{t.forecastBody}</p>
-          </div>
-        </>
-      )}
-    </div>
+        <div role="tabpanel" className="min-w-0">
+          {tab === "overview" && <OverviewTab />}
+          {tab === "offer" && <OfferTab />}
+          {tab === "turnover" && <TurnoverTab />}
+          {tab === "sales" && <SalesTab />}
+          {tab === "prices" && <PricesTab />}
+          {tab === "suppliers" && <SuppliersTab />}
+          {tab === "season" && <SeasonTab />}
+        </div>
+
+        {syncOpen && isAdmin && (
+          <SyncDialog history={history} onClose={() => setSyncOpen(false)} onStarted={loadHistory} />
+        )}
+      </div>
+    </AnalysisProvider>
   );
 }
 
-/** Previous value across renders — used to detect the running -> finished
- *  edge of a sync, so downstream charts refetch exactly once when it lands. */
-function usePrevious<T>(value: T): T | undefined {
-  const ref = useRef<T | undefined>(undefined);
-  useEffect(() => { ref.current = value; }, [value]);
-  return ref.current;
+/** The custom period: a calendar button showing the active range, opening
+ *  two dates and an apply button. */
+function RangePicker({ start, end, active, onApply }: {
+  start: string; end: string; active: boolean; onApply: (start: string, end: string) => void;
+}) {
+  const { t, fmt } = useAnalysis();
+  const [open, setOpen] = useState(false);
+  const [from, setFrom] = useState(start);
+  const [to, setTo] = useState(end);
+  useEffect(() => { if (open) { setFrom(start); setTo(end); } }, [open, start, end]);
+  const valid = !!from && !!to && from <= to;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <Tip content={t.periodCustom}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-sm tabular-nums outline-none transition-colors focus-visible:ring-2 focus-visible:ring-emerald/40",
+              active ? "border-emerald bg-emerald text-white" : "border-border bg-surface text-ink hover:border-emerald/40",
+            )}
+          >
+            <CalendarRange className="size-4" />
+            {fmt.day(start)} – {fmt.day(end)}
+          </button>
+        </PopoverTrigger>
+      </Tip>
+      <PopoverContent className="flex w-64 flex-col gap-3 p-3">
+        <label className="flex flex-col gap-1 text-[11px] text-ink-3">
+          {t.dateFrom}
+          <input id="analysis-range-from" type="date" value={from} max={to} onChange={e => setFrom(e.target.value)}
+            className="h-9 rounded-xl border border-border bg-surface px-3 text-sm text-ink outline-none focus:border-emerald/50" />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-ink-3">
+          {t.dateTo}
+          <input id="analysis-range-to" type="date" value={to} min={from} onChange={e => setTo(e.target.value)}
+            className="h-9 rounded-xl border border-border bg-surface px-3 text-sm text-ink outline-none focus:border-emerald/50" />
+        </label>
+        <Button variant="primary" size="sm" disabled={!valid} onClick={() => { onApply(from, to); setOpen(false); }}>
+          {t.apply}
+        </Button>
+      </PopoverContent>
+    </Popover>
+  );
 }
