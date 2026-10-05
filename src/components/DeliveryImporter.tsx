@@ -1973,9 +1973,14 @@ export default function DeliveryImporter({ lang }: { lang: Lang }) {
     reset();
   }
 
+  // A header click sorts ascending, then descending, and a third click goes
+  // back to the file's own order (user, 2026-10-05).
   function handleSortCol(col: string) {
-    if (sortCol === col) {
-      setSortDir(d => d === "asc" ? "desc" : "asc");
+    if (sortCol === col && sortDir === "asc") {
+      setSortDir("desc");
+    } else if (sortCol === col) {
+      setSortCol(null);
+      setSortDir("asc");
     } else {
       setSortCol(col);
       setSortDir("asc");
