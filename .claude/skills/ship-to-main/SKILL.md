@@ -24,15 +24,46 @@ Ask which case this is before doing anything, unless the user already said:
 
 ## Whole branch: merge
 
-1. In a separate checkout or worktree of `main`, `git merge test_1`.
-2. Resolve nothing blind: a conflict here usually means an earlier
-   cherry-pick already put that change on `main` (see the caution below).
-   It can also be a product decision: on 2026-09-22 `main` kept "Stock"
-   without the invoice picker on purpose, and `test_1` had the picker. Ask
-   the user which should win; never pick a side.
-3. `git push origin main`. **Never force-push.** `main` is not a
-   fast-forward of `test_1`, so a force-push drops commits.
-4. Return to `test_1` and confirm it is unchanged.
+Done once so far, on 2026-09-30 (`46dcade`): 79 commits were waiting, and
+the merge conflicted in 10 files.
+
+1. `git worktree add ../main-ship main`, as for a part (below); the main
+   checkout stays on `test_1`.
+2. In the worktree, `git merge --no-commit --no-ff test_1`. `--no-commit`
+   matters most when nothing conflicts: a plain `git merge` would then
+   commit at once, with `.claude/` in it (step 4).
+3. Resolve nothing blind. Read every conflict first: usually an earlier
+   cherry-pick put an older form of the change on `main` and `test_1` holds
+   the newer one, and then `test_1`'s side is right (all 10 files on
+   2026-09-30; see the caution below). It can also be a product decision: on
+   2026-09-22 `main` kept "Stock" without the invoice picker on purpose, and
+   `test_1` had the picker. Ask the user which should win; never pick a
+   side. Ask as well, before going on, about anything on `test_1` that
+   production would meet for the first time: a paid call, a module that
+   writes to the real portal, a path never tried on real data.
+   `git merge --abort` undoes the attempt.
+4. **Take `.claude/` out before committing.** The merge brings the skills
+   along, and they must not reach `main`: `git rm -r -f .claude` (`-f`,
+   because the merge added the files). It has to be done at every merge.
+5. **Compare with `test_1`:** `git diff --stat test_1` should now list only
+   `.claude/`. An automatic merge can double a block that both branches
+   added: on 2026-09-30 `globals.css` came out 7 lines longer that way and
+   was taken from `test_1` (`git checkout test_1 -- <file>`). Any other
+   difference is something only `main` had; say what it is and ask whether
+   it stays.
+6. Run the checks as in step 3 of "Part of it" below: both scripts copied
+   back in, left uncommitted, the **Branch** check failing by design.
+7. `git commit`, then `git push origin main`. **Never force-push.** `main`
+   is not a fast-forward of `test_1`, so a force-push drops commits.
+8. Delete the two copied scripts, `git worktree remove ../main-ship`, and
+   confirm `test_1` is unchanged.
+9. Report the merge commit, what the user decided in step 3, what was taken
+   from `test_1` by hand, and **the environment variables production may
+   lack** for what just arrived: `git diff main^1 main -- .env.example`
+   shows the ones the merge brought. Say which the code requires and which
+   are only recommended. When the user shares a service's variable list,
+   also name what must not be there: `DEV_ALLOW_TOKEN_ENDPOINT` hands out an
+   admin token without a login (`.env.example`: "Never set on Railway").
 
 ## Part of it: a separate worktree
 
@@ -76,6 +107,9 @@ After a cherry-pick, the same change exists on `main` and on `test_1` as two
 different commits. The next merge of `test_1` into `main` can conflict in
 exactly those files. Say so in the report every time part of a change is
 shipped, so whoever merges later knows why the conflict is there.
+
+A whole-branch merge clears it: afterwards `main` is `test_1` without
+`.claude/`, and shipments stop conflicting until the next partial one.
 
 ## Never
 
