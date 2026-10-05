@@ -1122,15 +1122,19 @@ AZULINA = LayoutSpec(
     columns={},
     # "30,000120,00QBx30 HYDRANGEA PREMIUM WHITE 0603190125 1OZH 3600 stem 3600
     # 0,61 2.196,00": full boxes and pieces run together, then box type x stems.
+    # Since invoice 3721 (2026-10-05) a QUALITY column follows the description
+    # ("WHITE 18CM-PRM"); it is left out of the variety, which the proforma
+    # printed without it.
     lines=(r"^\s*[\d.]+,\d{3}\s*(?P<count>\d+),\d{2}\s*(?P<box>[A-Z]{2})x(?P<stems_box>\d+)\s+"
            r"(?P<species>HYDRANGEA)\s+(?:(?P<qual>PREMIUM|SELECT|STANDARD)\s+)?"
-           r"(?P<variety>.+?)\s+\d{10}\s+(?:(?P<label>\S+)\s+)?(?P<stems>\d+)\s+stem\s+\d+\s+"
-           r"(?P<rate>[\d,]+)\s+(?P<subtotal>[\d.,]+)\s*$",),
+           r"(?P<variety>.+?)(?:\s+\d+CM-[A-Z]+)?\s+\d{10}\s+(?:(?P<label>\S+)\s+)?"
+           r"(?P<stems>\d+)\s+stem\s+\d+\s+(?P<rate>[\d,]+)\s+(?P<subtotal>[\d.,]+)\s*$",),
     product_re="",
     row_model="boxes",
     header={
         "tx_company": const("AZULINA FLOWERS S.A.S."),
-        "id_invoice": rx(r"PROFORMA\s+(\d+)"),
+        # "PROFORMA 3040" on the proforma, "INVOICE 3721" on the invoice.
+        "id_invoice": rx(r"(?:PROFORMA|INVOICE)\s+(\d+)"),
         "dt_invoice": rx(r"\b(\d{1,2}[A-Z]{3}\d{4})\b", date_text),
         "dt_fly": rx(r"\b(\d{1,2}[A-Z]{3}\d{4})\b", date_text),
         "nm_cargo": rx(r"FREIGHT\s+FORWARDER\s*\n[^\n]*?\s*((?:LOGIZTIK|ALIANZA)[^\n]*)$",
@@ -1142,8 +1146,11 @@ AZULINA = LayoutSpec(
     # Hydrangeas are sold by the stem.
     stems_bunch=1,
     decimal=",",
-    # "SUBTOTAL 4.438,50" and under it "54,5 6.540": full boxes and stems.
-    totals_re=r"SUBTOTAL\s+(?P<amount>[\d.,]+)\s*\n\s*(?P<fulls>[\d,]+)\s+(?P<stems>[\d.]+)\s*$",
+    # "BXS UNTS" and under it "54,5 6.540": full boxes and stems. The
+    # proforma prints "SUBTOTAL 4.438,50" on the BXS line, the invoice three
+    # lines further down, so the amount is looked for ahead of the BXS line.
+    totals_re=(r"BXS\s+UNTS(?=[\s\S]*?\bSUBTOTAL\s+(?P<amount>[\d.,]+))[^\n]*\n"
+               r"\s*(?P<fulls>[\d,]+)\s+(?P<stems>[\d.]+)\s*$"),
 )
 
 DAVINCI = LayoutSpec(
