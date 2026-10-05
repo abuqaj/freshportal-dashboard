@@ -288,7 +288,16 @@ export function Segmented<V extends string>({ value, onChange, items, label }: {
   return (
     <ToggleGroup type="single" value={value} aria-label={label} onValueChange={v => { if (v) onChange(v as V); }}>
       {items.map(it => (
-        <ToggleGroupItem key={it.value} value={it.value} disabled={it.disabled} aria-label={it.tip ?? (typeof it.label === "string" ? it.label : it.value)}>
+        <ToggleGroupItem
+          key={it.value}
+          value={it.value}
+          disabled={it.disabled}
+          aria-label={it.tip ?? (typeof it.label === "string" ? it.label : it.value)}
+          // The shared item shows a busy cursor when disabled (delivery
+          // import disables it while loading); here disabled means "not
+          // available now", so it greys out instead (user, 2026-10-05).
+          className="disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+        >
           <Tip content={it.tip}><span>{it.label}</span></Tip>
         </ToggleGroupItem>
       ))}
@@ -297,8 +306,10 @@ export function Segmented<V extends string>({ value, onChange, items, label }: {
 }
 
 /** Searchable picker for long lists (products, suppliers, customers). */
-export function Combobox({ items, value, onChange, allLabel, placeholder, icon: Icon, className, label }: {
+export function Combobox({ items, value, onChange, allLabel, placeholder, icon: Icon, className, label, emptyText }: {
   items: PickerItem[];
+  /** Said when the list itself is empty, rather than "nothing found". */
+  emptyText?: string;
   value: string;
   onChange: (v: string) => void;
   /** Offered as the first entry, with value "", when "none chosen" is valid. */
@@ -315,7 +326,7 @@ export function Combobox({ items, value, onChange, allLabel, placeholder, icon: 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = q ? items.filter(i => i.label.toLowerCase().includes(q)) : items;
-    return list.slice(0, 200);
+    return list.slice(0, 400);
   }, [items, query]);
   const choose = (v: string) => { onChange(v); setOpen(false); setQuery(""); };
   const text = selected?.label ?? (value ? value : (allLabel ?? placeholder ?? ""));
@@ -355,7 +366,7 @@ export function Combobox({ items, value, onChange, allLabel, placeholder, icon: 
           {shown.map(i => (
             <PickerRow key={i.value} label={i.label} meta={i.meta} active={i.value === value} onClick={() => choose(i.value)} />
           ))}
-          {!shown.length && <p className="px-3 py-6 text-center text-xs text-ink-3">{t.noMatch}</p>}
+          {!shown.length && <p className="px-3 py-6 text-center text-xs text-ink-3">{items.length ? t.noMatch : (emptyText ?? t.noMatch)}</p>}
         </div>
       </PopoverContent>
     </Popover>
@@ -436,6 +447,7 @@ export function KpiCard({ icon: Icon, label, value, exact, delta, sub, spark, on
             index="x"
             categories={["v"]}
             colors={["emerald"]}
+            connectNulls
             className="h-10 w-24 shrink-0"
           />
         )}

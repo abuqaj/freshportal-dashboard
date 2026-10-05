@@ -863,13 +863,15 @@ def bi_sync_products(
     start_date: str | None = None,
     end_date: str | None = None,
     customer_id: str | None = None,
+    with_offer: bool = False,
     _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Product picker for the "by product" sales chart. Pass supplier_id +
     start_date/end_date to narrow it to only products that supplier sold in
     that range (cascading filter after picking a supplier in the "by
-    supplier" chart) — omit them for the full unscoped product list."""
-    return {"products": get_bi_products_only_picker(limit, supplier_id, start_date, end_date, customer_id)}
+    supplier" chart) — omit them for the full unscoped product list.
+    `with_offer` adds the products online in the range that sold nothing."""
+    return {"products": get_bi_products_only_picker(limit, supplier_id, start_date, end_date, customer_id, with_offer)}
 
 
 @app.get("/bi-sync/product-lengths")

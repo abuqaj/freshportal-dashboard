@@ -209,6 +209,19 @@ def test_idle_lots_are_listed_lots_with_stems_and_no_sale(db):
     assert [(r["stock_entry_id"], r["days_online"], r["stems"]) for r in rows] == [("700002", 6, 300)]
 
 
+def test_product_picker_also_finds_products_on_offer_that_sold_nothing(db):
+    # A fourth lot of another product, online the same days, never bought.
+    d = lot("700003", 50, "0,600", 400, "2026-09-27", product_id="888888", description="Alstroemeria Unsold")
+    db.upsert_bi_stock_entry_dim([d])
+    state = offer_state_from_row(d)
+    current = db.get_bi_offer_current_states([state["stock_entry_id"]])
+    db.apply_bi_offer_state_changes(*plan_offer_state_changes(current, [state], datetime(2026, 9, 30)))
+    sold_only = db.get_bi_products_only_picker(300, None, *WEEK, "12")
+    assert [p["product_id"] for p in sold_only] == [PRODUCT]
+    picker = db.get_bi_products_only_picker(300, None, *WEEK, "12", with_offer=True)
+    assert [(p["product_id"], p["row_count"], p["offered"]) for p in picker] == [(PRODUCT, 3, True), ("888888", 0, True)]
+
+
 def test_overview_compares_with_the_period_before(db):
     overview = db.get_bi_overview("2026-09-25", "2026-09-27", customer_id="12")
     assert overview["current"]["stems"] == 600

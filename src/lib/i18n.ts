@@ -721,6 +721,8 @@ const en = {
     allProducts: "All products",
     search: "Search…",
     noMatch: "Nothing found",
+    inOffer: "in offer",
+    noProducts: "No products in this period",
 
     loading: "Loading…",
     noData: "No data for this selection",
@@ -1731,6 +1733,8 @@ const nl: typeof en = {
     allProducts: "Alle producten",
     search: "Zoeken…",
     noMatch: "Niets gevonden",
+    inOffer: "in aanbod",
+    noProducts: "Geen producten in deze periode",
 
     loading: "Laden…",
     noData: "Geen gegevens voor deze selectie",
@@ -2739,6 +2743,8 @@ const pl: typeof en = {
     allProducts: "Wszystkie produkty",
     search: "Szukaj…",
     noMatch: "Nic nie znaleziono",
+    inOffer: "w ofercie",
+    noProducts: "Brak produktów w tym okresie",
 
     loading: "Wczytywanie…",
     noData: "Brak danych dla tego wyboru",
@@ -3747,6 +3753,8 @@ const es: typeof en = {
     allProducts: "Todos los productos",
     search: "Buscar…",
     noMatch: "Sin resultados",
+    inOffer: "en oferta",
+    noProducts: "Sin productos en este periodo",
 
     loading: "Cargando…",
     noData: "Sin datos para esta selección",

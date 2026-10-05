@@ -2253,12 +2253,18 @@ def get_bi_products_only_picker(
     start_date: str | None = None,
     end_date: str | None = None,
     customer_id: str | None = None,
+    with_offer: bool = False,
 ) -> list[dict]:
     """Product picker for the "by product" chart — count = sold order_lines
     in [start_date, end_date] for the scoped customer, so it updates with
     the date range picker (requested by the user 2026-09-02, mirrors
     get_bi_suppliers_for_picker). Optionally scoped to one supplier
     (cascading — only products that supplier sold in the range).
+
+    `with_offer` also lists the products that were online in the webshop in
+    the range but sold nothing there, with row_count 0 and `offered` true,
+    after the sold ones. Without it a product on offer that nobody bought
+    could not be found in the picker at all (user, 2026-10-05).
 
     Falls back to an unscoped, all-time bi_stock_entry_dim count only if no
     date range is given at all — defensive; the UI always passes one.
@@ -2286,15 +2292,30 @@ def get_bi_products_only_picker(
                         ORDER BY row_count DESC
                         LIMIT %s
                     """, params)
-                    rows = cur.fetchall()
+                    rows = [dict(r) for r in cur.fetchall()]
+                    offered: set[str] = set()
+                    if with_offer:
+                        cur.execute(f"""
+                            WITH listings AS ({_OFFER_LISTINGS})
+                            SELECT DISTINCT d.product_id
+                            FROM listings l
+                            JOIN bi_stock_entry_dim d ON d.stock_entry_id = l.stock_entry_id
+                            WHERE d.product_id IS NOT NULL
+                        """, {"start": start_date, "end": end_date})
+                        offered = {r["product_id"] for r in cur.fetchall()}
+                    sold = {r["product_id"] for r in rows}
+                    rows += [{"product_id": pid, "row_count": 0} for pid in sorted(offered - sold)]
                     product_ids = [r["product_id"] for r in rows]
                     if not product_ids:
                         return []
                     labels = _product_labels(cur, product_ids)
-                    return [
-                        {"product_id": r["product_id"], "description": labels.get(r["product_id"]), "row_count": r["row_count"]}
+                    out = [
+                        {"product_id": r["product_id"], "description": labels.get(r["product_id"]),
+                         "row_count": r["row_count"], "offered": r["product_id"] in offered}
                         for r in rows
                     ]
+                    # Offered-only products by name, after the sold ones.
+                    return out[:len(sold)] + sorted(out[len(sold):], key=lambda r: (r["description"] or r["product_id"]).lower())
 
                 cur.execute("""
                     SELECT product_id, MAX(description) AS description, COUNT(*) AS row_count

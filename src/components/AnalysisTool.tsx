@@ -95,11 +95,17 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
     api("/bi-sync/customers", { start_date: start, end_date: end }), tick);
   const customerItems: PickerItem[] = (customers.data?.customers ?? []).map(c => ({ value: c.customer_id, label: c.name || c.customer_id, meta: fmt.int(c.row_count) }));
 
+  // Products sold in the period, then those online in it that sold nothing
+  // — a product on offer that nobody bought must still be findable.
   const productsQ = useFetch<{ products: { product_id: string; description: string | null; row_count: number }[] }>(
-    api("/bi-sync/products", { limit: 300, start_date: start, end_date: end, customer_id: customerId }), tick);
+    api("/bi-sync/products", { limit: 300, start_date: start, end_date: end, customer_id: customerId, with_offer: "true" }), tick);
   const products: PickerItem[] = useMemo(
-    () => (productsQ.data?.products ?? []).map(p => ({ value: p.product_id, label: p.description || p.product_id, meta: fmt.int(p.row_count) })),
-    [productsQ.data, fmt],
+    () => (productsQ.data?.products ?? []).map(p => ({
+      value: p.product_id,
+      label: p.description || p.product_id,
+      meta: p.row_count ? fmt.int(p.row_count) : t.inOffer,
+    })),
+    [productsQ.data, fmt, t],
   );
 
   // The product opens on the best seller. A product that falls out of the
@@ -217,6 +223,7 @@ export default function AnalysisTool({ lang }: { lang: Lang }) {
               onChange={setProductId}
               allLabel={current.product === "optional" ? t.allProducts : undefined}
               placeholder={t.product}
+              emptyText={productsQ.loading ? t.loading : t.noProducts}
               className="w-72"
             />
           )}
