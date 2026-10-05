@@ -65,13 +65,34 @@ export interface SellThrough {
 }
 
 export interface SelloutSpeed {
-  products: { product_id: string; label: string; hours: number[]; median_hours: number | null; listings: number; sold_out: number }[];
+  products: {
+    product_id: string; label: string; hours: number[];
+    lots: { hours: number; supplier: string | null; length: number | null }[];
+    median_hours: number | null; listings: number; sold_out: number;
+  }[];
+  data_from: string | null;
+}
+
+export interface SoldOutLots {
+  rows: {
+    stock_entry_id: string; product: string; supplier: string | null; length: number | null;
+    price: number | null; sold_out_at: string | null; hours: number | null; stems: number;
+  }[];
+  data_from: string | null;
+}
+
+export interface ProductListings {
+  rows: {
+    stock_entry_id: string; supplier: string | null; length: number | null; price: number | null;
+    available_from: string | null; available_until: string | null; sold_out_at: string | null;
+    hours: number | null; sold: number; offered: number;
+  }[];
   data_from: string | null;
 }
 
 export interface IdleLots {
   rows: {
-    stock_entry_id: string; product: string; supplier: string; length: number | null;
+    stock_entry_id: string; product: string; supplier_id: string | null; supplier: string; length: number | null;
     price: number | null; days_online: number; stems: number; stems_per_box: number | null; available_until: string | null;
   }[];
   min_days: number;

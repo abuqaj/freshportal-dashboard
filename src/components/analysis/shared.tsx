@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
-import { ArrowDownRight, ArrowUpRight, Check, ChevronsUpDown, Info, Minus, Search, Table2, ChartColumn } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Check, ChevronsUpDown, Info, Minus, MousePointerClick, Search, Table2, ChartColumn, X } from "lucide-react";
 
 import type { Lang, translations } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -123,7 +123,7 @@ export function dayLabeller(fmt: Fmt, days: string[]): (iso: string) => string {
 
 // ── Context ─────────────────────────────────────────────────────────────────
 
-export interface PickerItem { value: string; label: string; meta?: string }
+export interface PickerItem { value: string; label: string; meta?: string; /** Lines sold, where it matters. */ count?: number }
 
 export interface AnalysisContextValue {
   t: Copy;
@@ -183,6 +183,43 @@ export function Chip({ tone = "neutral", icon: Icon, children, tip }: {
     </span>
   );
   return <Tip content={tip}>{chip}</Tip>;
+}
+
+/** A chip for a filter that is on, with an ✕ that takes it off. */
+export function DismissChip({ children, onDismiss, label }: { children: ReactNode; onDismiss: () => void; label: string }) {
+  return (
+    <span className={cn("inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-full border pl-2 pr-1 text-[11px] font-medium", TONES.good)}>
+      {children}
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label={label}
+        className="inline-flex size-4 cursor-pointer items-center justify-center rounded-full outline-none hover:bg-emerald/15 focus-visible:ring-2 focus-visible:ring-emerald/40"
+      >
+        <X className="size-3" />
+      </button>
+    </span>
+  );
+}
+
+/** For a panel that needs one product while "all products" is chosen: the
+ *  best sellers one click away, besides the picker above. */
+export function PickProduct() {
+  const { t, products, setProductId } = useAnalysis();
+  const top = products.filter(p => (p.count ?? 0) > 0).slice(0, 5);
+  return (
+    <div className="flex flex-col items-center gap-3 py-10 text-center">
+      <MousePointerClick className="size-6 text-taupe" />
+      <p className="max-w-sm text-sm text-ink-3">{top.length ? t.pickProductOr : t.pickProduct}</p>
+      {!!top.length && (
+        <div className="flex flex-wrap justify-center gap-2">
+          {top.map(p => (
+            <Button key={p.value} variant="outline" size="sm" onClick={() => setProductId(p.value)}>{p.label}</Button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Skeleton({ className }: { className?: string }) {
@@ -288,7 +325,16 @@ export function Segmented<V extends string>({ value, onChange, items, label }: {
   return (
     <ToggleGroup type="single" value={value} aria-label={label} onValueChange={v => { if (v) onChange(v as V); }}>
       {items.map(it => (
-        <ToggleGroupItem key={it.value} value={it.value} disabled={it.disabled} aria-label={it.tip ?? (typeof it.label === "string" ? it.label : it.value)}>
+        <ToggleGroupItem
+          key={it.value}
+          value={it.value}
+          disabled={it.disabled}
+          aria-label={it.tip ?? (typeof it.label === "string" ? it.label : it.value)}
+          // The shared item shows a busy cursor when disabled (delivery
+          // import disables it while loading); here disabled means "not
+          // available now", so it greys out instead (user, 2026-10-05).
+          className="disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+        >
           <Tip content={it.tip}><span>{it.label}</span></Tip>
         </ToggleGroupItem>
       ))}
@@ -297,8 +343,10 @@ export function Segmented<V extends string>({ value, onChange, items, label }: {
 }
 
 /** Searchable picker for long lists (products, suppliers, customers). */
-export function Combobox({ items, value, onChange, allLabel, placeholder, icon: Icon, className, label }: {
+export function Combobox({ items, value, onChange, allLabel, placeholder, icon: Icon, className, label, emptyText }: {
   items: PickerItem[];
+  /** Said when the list itself is empty, rather than "nothing found". */
+  emptyText?: string;
   value: string;
   onChange: (v: string) => void;
   /** Offered as the first entry, with value "", when "none chosen" is valid. */
@@ -315,7 +363,7 @@ export function Combobox({ items, value, onChange, allLabel, placeholder, icon: 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = q ? items.filter(i => i.label.toLowerCase().includes(q)) : items;
-    return list.slice(0, 200);
+    return list.slice(0, 400);
   }, [items, query]);
   const choose = (v: string) => { onChange(v); setOpen(false); setQuery(""); };
   const text = selected?.label ?? (value ? value : (allLabel ?? placeholder ?? ""));
@@ -355,7 +403,7 @@ export function Combobox({ items, value, onChange, allLabel, placeholder, icon: 
           {shown.map(i => (
             <PickerRow key={i.value} label={i.label} meta={i.meta} active={i.value === value} onClick={() => choose(i.value)} />
           ))}
-          {!shown.length && <p className="px-3 py-6 text-center text-xs text-ink-3">{t.noMatch}</p>}
+          {!shown.length && <p className="px-3 py-6 text-center text-xs text-ink-3">{items.length ? t.noMatch : (emptyText ?? t.noMatch)}</p>}
         </div>
       </PopoverContent>
     </Popover>
@@ -436,6 +484,7 @@ export function KpiCard({ icon: Icon, label, value, exact, delta, sub, spark, on
             index="x"
             categories={["v"]}
             colors={["emerald"]}
+            connectNulls
             className="h-10 w-24 shrink-0"
           />
         )}

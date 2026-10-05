@@ -62,6 +62,7 @@ from db import (get_products_by_vbn, get_product_count, get_last_sync,
                get_bi_supplier_market_deviation, get_bi_seasonality, get_bi_event_impact,
                get_bi_overview, get_bi_offer_daily, get_bi_offer_vs_sale, get_bi_offer_price_match,
                get_bi_sell_through, get_bi_sellout_speed, get_bi_idle_lots,
+               get_bi_sold_out_lots, get_bi_product_listings,
                get_dfg_customers, set_dfg_customer_flag, set_all_dfg_customer_flags,
                search_vbn_catalog, get_vbn_catalog_product, get_vbn_catalog_status,
                get_vbn_catalog_history, vbn_catalog_has_rows)
@@ -863,13 +864,15 @@ def bi_sync_products(
     start_date: str | None = None,
     end_date: str | None = None,
     customer_id: str | None = None,
+    with_offer: bool = False,
     _: dict = Depends(require_any_permission("admin:manage", "analysis:view")),
 ):
     """Product picker for the "by product" sales chart. Pass supplier_id +
     start_date/end_date to narrow it to only products that supplier sold in
     that range (cascading filter after picking a supplier in the "by
-    supplier" chart) — omit them for the full unscoped product list."""
-    return {"products": get_bi_products_only_picker(limit, supplier_id, start_date, end_date, customer_id)}
+    supplier" chart) — omit them for the full unscoped product list.
+    `with_offer` adds the products online in the range that sold nothing."""
+    return {"products": get_bi_products_only_picker(limit, supplier_id, start_date, end_date, customer_id, with_offer)}
 
 
 @app.get("/bi-sync/product-lengths")
@@ -1152,11 +1155,28 @@ def bi_sync_sellout_speed(start_date: str, end_date: str, _: dict = Depends(_ANA
 
 
 @app.get("/bi-sync/idle-lots")
-def bi_sync_idle_lots(start_date: str, end_date: str, min_days: int = 3,
+def bi_sync_idle_lots(start_date: str, end_date: str, min_days: int = 3, exclude_suppliers: str = "",
                       _: dict = Depends(_ANALYSIS)):
     """Listings online for at least `min_days` days with stems left and no
-    sale at all."""
-    return get_bi_idle_lots(start_date, end_date, max(1, min_days))
+    sale at all. `exclude_suppliers` is a comma-separated list of supplier
+    ids to leave out."""
+    exclude = [s.strip() for s in exclude_suppliers.split(",") if s.strip()]
+    return get_bi_idle_lots(start_date, end_date, max(1, min_days), exclude_suppliers=exclude)
+
+
+@app.get("/bi-sync/sold-out-lots")
+def bi_sync_sold_out_lots(start_date: str, end_date: str, product_id: str | None = None,
+                          _: dict = Depends(_ANALYSIS)):
+    """Every listing that sold out in the range: product, supplier, when,
+    and how many hours after its sale started."""
+    return get_bi_sold_out_lots(start_date, end_date, product_id)
+
+
+@app.get("/bi-sync/product-listings")
+def bi_sync_product_listings(product_id: str, start_date: str, end_date: str,
+                             _: dict = Depends(_ANALYSIS)):
+    """Every listing of one product in the range, sold-out ones first."""
+    return get_bi_product_listings(product_id, start_date, end_date)
 
 
 # ── Kenya: box-weight correction (2026-09-09) ──────────────────────────────

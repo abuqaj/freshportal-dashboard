@@ -204,9 +204,65 @@ def test_hours_to_sell_out_count_from_five_in_the_morning(db):
     assert (product["median_hours"], product["listings"], product["sold_out"]) == (17.0, 3, 2)
 
 
+def test_sold_out_lots_say_what_ran_out_when_and_how_fast(db):
+    rows = db.get_bi_sold_out_lots(*WEEK)["rows"]
+    assert [(r["stock_entry_id"], r["sold_out_at"], r["hours"], r["stems"]) for r in rows] == [
+        ("549595", "2026-09-26 09:00:00", 28.0, 500),
+        ("700001", "2026-09-25 11:00:00", 6.0, 200),
+    ]
+    assert db.get_bi_sold_out_lots("2026-09-25", "2026-09-25")["rows"][0]["stock_entry_id"] == "700001"
+
+
+def test_a_products_listings_sold_out_first_with_what_sold(db):
+    rows = db.get_bi_product_listings(PRODUCT, *WEEK)["rows"]
+    assert [(r["stock_entry_id"], r["hours"], r["sold"], r["offered"]) for r in rows] == [
+        ("700001", 6.0, 200, 200), ("549595", 28.0, 500, 500), ("700002", None, 0, 300),
+    ]
+
+
+def test_sell_out_dots_name_supplier_and_length(db):
+    lots = db.get_bi_sellout_speed(*WEEK)["products"][0]["lots"]
+    assert lots == [{"hours": 6.0, "supplier": "93", "length": 70}, {"hours": 28.0, "supplier": "93", "length": 60}]
+
+
+def test_idle_lots_leave_out_hidden_suppliers(db):
+    assert db.get_bi_idle_lots(*WEEK, min_days=3, exclude_suppliers=["93"])["rows"] == []
+    assert len(db.get_bi_idle_lots(*WEEK, min_days=3, exclude_suppliers=["12345"])["rows"]) == 1
+
+
+def test_a_lot_first_seen_empty_is_not_a_sell_out(db):
+    # Found on real data: a lot already at 0 stems when first recorded ran
+    # out before we watched it, and showed as "sold out after 0 h".
+    e = lot("700004", 60, "0,700", 0, "2026-09-27")
+    db.upsert_bi_stock_entry_dim([e])
+    state = offer_state_from_row(e)
+    db.apply_bi_offer_state_changes(*plan_offer_state_changes(
+        db.get_bi_offer_current_states([state["stock_entry_id"]]), [state], datetime(2026, 9, 30)))
+    assert [r["stock_entry_id"] for r in db.get_bi_sold_out_lots(*WEEK)["rows"]] == ["549595", "700001"]
+    speed = db.get_bi_sellout_speed(*WEEK)["products"][0]
+    assert (speed["sold_out"], speed["listings"], speed["hours"]) == (2, 4, [6.0, 28.0])
+    assert db.get_bi_sell_through(*WEEK, group_by="product")["rows"][0]["sold_out"] == 2
+    listing = next(r for r in db.get_bi_product_listings(PRODUCT, *WEEK)["rows"] if r["stock_entry_id"] == "700004")
+    assert (listing["sold_out_at"], listing["hours"]) == (None, None)
+    assert next(d for d in db.get_bi_offer_daily(*WEEK)["days"] if d["day"] == "2026-09-25")["sold_out"] == 1
+
+
 def test_idle_lots_are_listed_lots_with_stems_and_no_sale(db):
     rows = db.get_bi_idle_lots(*WEEK, min_days=3)["rows"]
     assert [(r["stock_entry_id"], r["days_online"], r["stems"]) for r in rows] == [("700002", 6, 300)]
+
+
+def test_product_picker_also_finds_products_on_offer_that_sold_nothing(db):
+    # A fourth lot of another product, online the same days, never bought.
+    d = lot("700003", 50, "0,600", 400, "2026-09-27", product_id="888888", description="Alstroemeria Unsold")
+    db.upsert_bi_stock_entry_dim([d])
+    state = offer_state_from_row(d)
+    current = db.get_bi_offer_current_states([state["stock_entry_id"]])
+    db.apply_bi_offer_state_changes(*plan_offer_state_changes(current, [state], datetime(2026, 9, 30)))
+    sold_only = db.get_bi_products_only_picker(300, None, *WEEK, "12")
+    assert [p["product_id"] for p in sold_only] == [PRODUCT]
+    picker = db.get_bi_products_only_picker(300, None, *WEEK, "12", with_offer=True)
+    assert [(p["product_id"], p["row_count"], p["offered"]) for p in picker] == [(PRODUCT, 3, True), ("888888", 0, True)]
 
 
 def test_overview_compares_with_the_period_before(db):

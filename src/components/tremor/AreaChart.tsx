@@ -496,6 +496,8 @@ interface AreaChartProps extends React.HTMLAttributes<HTMLDivElement> {
   enableLegendSlider?: boolean
   tickGap?: number
   connectNulls?: boolean
+  /** Dashed line across the days a series has no value (dashboard addition). */
+  bridgeGaps?: boolean
   xAxisLabel?: string
   yAxisLabel?: string
   type?: "default" | "stacked" | "percent"
@@ -526,6 +528,7 @@ const AreaChart = React.forwardRef<HTMLDivElement, AreaChartProps>(
       maxValue,
       allowDecimals = true,
       connectNulls = false,
+      bridgeGaps = false,
       className,
       onValueChange,
       enableLegendSlider = false,
@@ -816,6 +819,38 @@ const AreaChart = React.forwardRef<HTMLDivElement, AreaChartProps>(
                 }
               />
             ) : null}
+            {/* Dashboard addition (2026-10-05): a dashed line across the
+                days a series has no value, drawn under it, so a day without
+                sales is neither drawn as zero nor leaves the line in pieces.
+                Out of the legend and the tooltip. An Area without fill, not a
+                Line: Recharts' AreaChart draws only its Area children. */}
+            {bridgeGaps
+              ? categories.map((category) => (
+                  <Area
+                    key={`${category}-bridge`}
+                    fill="none"
+                    fillOpacity={0}
+                    className={cx(
+                      getColorClassName(
+                        categoryColors.get(category) as AvailableChartColorsKeys,
+                        "stroke",
+                      ),
+                    )}
+                    strokeOpacity={0.55}
+                    strokeDasharray="4 4"
+                    strokeWidth={1.5}
+                    type="linear"
+                    dataKey={category}
+                    stroke=""
+                    dot={false}
+                    activeDot={false}
+                    legendType="none"
+                    tooltipType="none"
+                    isAnimationActive={false}
+                    connectNulls
+                  />
+                ))
+              : null}
             {categories.map((category) => {
               const categoryId = `${areaId}-${category.replace(/[^a-zA-Z0-9]/g, "")}`
               return (

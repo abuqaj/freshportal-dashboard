@@ -34,8 +34,9 @@ export function OverviewTab() {
   const byDay = useMemo(() => new Map((ov.data?.daily ?? []).map(d => [d.day, d])), [ov.data]);
   const label = dayLabeller(fmt, days);
   const series = metric === "stems" ? t.metricStems : t.metricValue;
-  // Every day of the range, a gap where nothing was synced: a missing day
-  // is unknown, and a line drawn straight across it would invent sales.
+  // Every day of the range. A day without sales has no value rather than a
+  // zero — a gap in the data looks the same and is not a zero — and the
+  // chart bridges it with a dashed line (user, 2026-10-05: no holes).
   const chartData = days.map(d => ({ date: label(d), iso: d, [series]: byDay.get(d)?.[metric] ?? null }));
   const spark = (key: Metric) => days.map(d => ({ x: d, v: byDay.get(d)?.[key] ?? null }));
 
@@ -114,6 +115,7 @@ export function OverviewTab() {
               valueFormatter={v => (metric === "stems" ? fmt.compact(v) : fmt.moneyCompact(v))}
               showLegend={false}
               yAxisWidth={64}
+              bridgeGaps
               customTooltip={DailyTip}
             />
           )}

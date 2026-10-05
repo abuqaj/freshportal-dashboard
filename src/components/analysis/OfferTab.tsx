@@ -1,17 +1,17 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { CalendarClock, MousePointerClick } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { CalendarClock, CircleCheck } from "lucide-react";
 
 import { BarChart, type TooltipProps as BarTooltipProps } from "@/components/tremor/BarChart";
 import { LineChart } from "@/components/tremor/LineChart";
 import { cn } from "@/lib/utils";
 import { DeviationHistogram } from "./charts";
 import {
-  Chip, EmptyState, Loadable, Panel, Segmented, TooltipBox,
-  api, dayLabeller, useAnalysis, useFetch,
+  Chip, DataTable, DismissChip, EmptyState, Loadable, Panel, PickProduct, Segmented, TooltipBox,
+  api, dayLabeller, useAnalysis, useFetch, type Query,
 } from "./shared";
-import type { OfferDaily, OfferVsSale, PriceMatch } from "./types";
+import type { OfferDaily, OfferVsSale, PriceMatch, SoldOutLots } from "./types";
 
 // Oferta: what was online, at what price, and whether it sold at that price
 // (bi_offer_states, recorded since 2026-09-25). Days before the recording
@@ -116,13 +116,15 @@ export function OfferTab() {
         </Panel>
       </div>
 
+      <SoldOutPanel daily={daily} />
+
       <Panel
         title={productId ? `${t.offerVsSale} · ${productLabel}` : t.offerVsSale}
         tip={t.offerVsSaleTip}
         badge={<SinceChip iso={vs.data?.data_from ?? dataFrom} />}
       >
         {!productId ? (
-          <EmptyState icon={MousePointerClick} text={t.pickProduct} />
+          <PickProduct />
         ) : (
           <Loadable q={vs} height="h-64" isEmpty={d => !d.lengths.length}>
             {d => <OfferVsSaleGrid data={d} />}
@@ -191,5 +193,94 @@ function OfferVsSaleGrid({ data }: { data: OfferVsSale }) {
         })}
       </div>
     </div>
+  );
+}
+
+/** Wyprzedane: one bar per day, the lots that ran out that day — not the lots
+ *  online, against which a handful of sell-outs never showed (user,
+ *  2026-10-05) — and below it the lots themselves. Clicking a day narrows the
+ *  list to it; clicking it again, or the chip's ✕, shows every day. */
+function SoldOutPanel({ daily }: { daily: Query<OfferDaily> }) {
+  const { t, fmt, start, end, productId, productLabel, tick } = useAnalysis();
+  const lots = useFetch<SoldOutLots>(api("/bi-sync/sold-out-lots", { start_date: start, end_date: end, product_id: productId }), tick);
+  const [day, setDay] = useState("");
+  // Tremor keeps the clicked bar highlighted on its own; a new key drops it
+  // when the day is cleared from the chip instead of from the chart.
+  const [chartKey, setChartKey] = useState(0);
+  useEffect(() => { setDay(""); }, [start, end, productId]);
+  const clearDay = () => { setDay(""); setChartKey(k => k + 1); };
+
+  const days = daily.data?.days ?? [];
+  const label = dayLabeller(fmt, days.map(d => d.day));
+  const data = days.map(d => ({ date: label(d.day), iso: d.day, [t.soldOutToday]: d.sold_out, lots: d.lots }));
+  const rows = (lots.data?.rows ?? []).filter(r => !day || r.sold_out_at?.slice(0, 10) === day);
+
+  const DayTip = ({ active, payload }: BarTooltipProps) => {
+    if (!active || !payload?.length) return null;
+    const row = payload[0].payload as { iso: string; lots: number };
+    const sold = Number(payload[0].value ?? 0);
+    return (
+      <TooltipBox
+        title={fmt.dayLong(row.iso)}
+        rows={[
+          { color: "bg-emerald", label: t.soldOutToday, value: fmt.int(sold) },
+          { label: t.lotsOnline, value: fmt.int(row.lots), muted: true },
+          { label: t.shareOfOnline, value: row.lots ? fmt.pct((sold / row.lots) * 100) : "—", muted: true },
+        ]}
+      />
+    );
+  };
+
+  return (
+    <Panel
+      title={productId ? `${t.soldOutToday} · ${productLabel}` : t.soldOutToday}
+      tip={t.soldOutTip}
+      badge={<>
+        <SinceChip iso={daily.data?.data_from} />
+        {day && <DismissChip onDismiss={clearDay} label={t.allDays}>{fmt.day(day)}</DismissChip>}
+        {!!rows.length && <Chip tone="warn">{fmt.int(rows.length)}</Chip>}
+      </>}
+    >
+      <Loadable q={daily} height="h-44" isEmpty={d => !d.days.length}>
+        {() => (
+          <BarChart
+            key={chartKey}
+            className="h-44"
+            data={data}
+            index="date"
+            categories={[t.soldOutToday]}
+            colors={["emerald"]}
+            valueFormatter={v => fmt.int(v)}
+            allowDecimals={false}
+            showLegend={false}
+            yAxisWidth={40}
+            onValueChange={v => setDay(v && typeof v.iso === "string" ? v.iso : "")}
+            customTooltip={DayTip}
+          />
+        )}
+      </Loadable>
+      <Loadable
+        q={lots}
+        height="h-40"
+        isEmpty={() => !rows.length}
+        empty={<EmptyState icon={CircleCheck} text={t.noSoldOut} className="h-32" />}
+      >
+        {() => (
+          <DataTable
+            headers={[t.colProduct, t.colSupplier, t.colLength, t.colPrice, t.colSoldOutAt, t.colAfter, t.colStems]}
+            rows={rows.map(r => [
+              r.product,
+              r.supplier ?? "—",
+              r.length != null ? `${r.length} cm` : "—",
+              fmt.price(r.price),
+              r.sold_out_at ? `${fmt.day(r.sold_out_at)} ${r.sold_out_at.slice(11, 16)}` : "—",
+              r.hours != null ? t.hoursShort(r.hours < 10 ? r.hours : Math.round(r.hours)) : "—",
+              fmt.int(r.stems),
+            ])}
+            alignRight={[2, 3, 4, 5, 6]}
+          />
+        )}
+      </Loadable>
+    </Panel>
   );
 }
