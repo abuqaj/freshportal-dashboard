@@ -427,8 +427,10 @@ def _is_grid_header(row: list[str], wanted: list[str]) -> bool:
     return all(any(w in c.lower() for c in row) for w in wanted)
 
 
-def _grid_rows(doc: PdfDoc, header_cells: tuple[str, ...]) -> list[list[str]]:
-    """Every data row of the product grid, in printed order, across pages.
+def _grid_tables(doc: PdfDoc, header_cells: tuple[str, ...]
+                 ) -> list[tuple[list[str], list[list[str]]]]:
+    """The product grid's tables in printed order, across pages: each one's
+    header row and data rows.
 
     The grid is found by its header row, searched for anywhere in a table
     rather than only at the top. Where an invoice's address boxes share their
@@ -438,25 +440,33 @@ def _grid_rows(doc: PdfDoc, header_cells: tuple[str, ...]) -> list[list[str]]:
     refused as having no product table at all).
 
     A table with no header but the same column count is a continuation of the
-    grid — invoices reprint the header on each page, but not always.
+    grid — invoices reprint the header on each page, but not always — and
+    comes with the header printed last.
     """
     wanted = [h.lower() for h in header_cells]
     width = 0
-    rows: list[list[str]] = []
+    header: list[str] = []
+    tables: list[tuple[list[str], list[list[str]]]] = []
 
     for table in doc.tables:
         header_at = next((i for i, r in enumerate(table)
                           if _is_grid_header(r, wanted)), None)
         if header_at is not None:
             width = width or len(table[header_at])
+            header = table[header_at]
             body = table[header_at + 1:]
         elif width and len(table[0]) == width:
             body = table
         else:
             continue
-        rows.extend(r for r in body if not _is_grid_header(r, wanted))
+        tables.append((header, [r for r in body if not _is_grid_header(r, wanted)]))
 
-    return rows
+    return tables
+
+
+def _grid_rows(doc: PdfDoc, header_cells: tuple[str, ...]) -> list[list[str]]:
+    """Every data row of the product grid, in printed order, across pages."""
+    return [row for _, body in _grid_tables(doc, header_cells) for row in body]
 
 
 def _key_values(doc: PdfDoc) -> dict[str, str]:
@@ -502,9 +512,11 @@ GRID_FIELDS = ("count", "box", "species", "product", "length",
 #                columns ("B I" 2, "B F" 3)
 #   grams        the weight of one stem in grams ("40 GR"), which goes to
 #                FreshPortal as the line's weight in kg
+#   bunch_grams  the weight of one bunch in grams, read only for a species
+#                that bunch_grams_species names
 ROW_FIELDS = GRID_FIELDS + ("number", "variety", "color", "stems_bunch", "bunches_box",
                             "stems_box", "rate_bunch", "location", "qual", "label",
-                            "number_last", "grams")
+                            "number_last", "grams", "bunch_grams")
 
 # How much of a full box each box code is, for checking the full-box
 # equivalent an invoice prints ("TOTAL FULL BOXES 9.125").
@@ -616,6 +628,10 @@ class LayoutSpec:
     label_joins_variety  regex; a variety matching it is only half a name
                  without its box label ("MIX COLOR" boxed as "BICO HOT"), so
                  the label is added to it
+    bunch_grams_species  regex on the species: a row of one that matches is
+                 named by its bunch weight, "Xlence" of 1000 g as "Xlence 1000
+                 gr", as FreshPortal names its gypsophila; and a stem's share
+                 of that weight goes as the line's weight
     stems_bunch  the bunch size when the invoice does not print it. Only for
                  a supplier whose bunch size is fixed; everywhere else a row
                  that does not say is refused.
@@ -679,6 +695,7 @@ class LayoutSpec:
     variety_rules: tuple[tuple[str, str, str], ...] = ()
     mix_names: tuple[tuple[str, str], ...] = ()
     label_joins_variety: str = ""
+    bunch_grams_species: str = ""
     stems_bunch: int = 0
     stems_bunch_also: tuple[int, ...] = ()
     decimal: str = "."
@@ -1153,6 +1170,16 @@ def _row_products(fields: dict[str, Any], spec: LayoutSpec, num: Callable[[str],
     def n(name: str) -> float:
         return num(fields.get(name) or "")
 
+    # FreshPortal has "Gypso Xlence 1000 gr." and "Gypso Xlence 750 gr.", and
+    # a match is keyed by the variety alone, so the weight is in the variety
+    # (Florsani 002001000634396).
+    bunch_grams = 0
+    if (spec.bunch_grams_species and not named
+            and re.search(spec.bunch_grams_species, species, re.IGNORECASE)):
+        bunch_grams = int(round(n("bunch_grams")))
+    weighed = f" {bunch_grams} gr" if bunch_grams else ""
+    variety += weighed
+
     if "_lengths" in fields:
         variants = [(length, num(value)) for length, value in fields["_lengths"] if num(value) > 0]
         if not variants:
@@ -1199,13 +1226,15 @@ def _row_products(fields: dict[str, Any], spec: LayoutSpec, num: Callable[[str],
         values = {**{k: v for k, v in fields.items() if isinstance(v, str)},
                   "variety": variety, "length": length, "stems_bunch": stems_bunch}
         nm_product = (spec.nm_product.format_map(_Blank(values)).strip() if spec.nm_product
-                      else (fields.get("product") or variety))
+                      else (fields.get("product") + weighed if fields.get("product")
+                            else variety))
+        grams = n("grams") or bunch_grams / stems_bunch
         products.append(_Product(
             variety=variety, species=species, length=int(length), stems_bunch=stems_bunch,
             bunches=bunches, rate=round(rate, 6), nm_product=re.sub(r"\s+", " ", nm_product),
             # A farm code wrapped after its hyphen ("TESSA-" / "R2") is one code.
             location=re.sub(r"(?<=\w)-\s+(?=\w)", "-", fields.get("location") or "").strip(),
-            weight=round(n("grams") / 1000, 4), qual=(fields.get("qual") or "").strip(),
+            weight=round(grams / 1000, 4), qual=(fields.get("qual") or "").strip(),
             named=bool(named),
         ))
     return products
@@ -1453,15 +1482,12 @@ def _printed_totals(doc: PdfDoc, spec: LayoutSpec, num: Callable[[str], float],
     return {k: v for k, v in printed.items() if v}
 
 
-def _resolve_columns(doc: PdfDoc, spec: LayoutSpec) -> LayoutSpec:
+def _resolve_columns(spec: LayoutSpec, header: list[str]) -> LayoutSpec:
     """The spec with header_columns and lengths_from_header turned into
-    column indexes, from this invoice's own header row."""
-    if not (spec.header_columns or spec.lengths_from_header):
-        return spec
-    wanted = [h.lower() for h in spec.grid_header]
-    header = next((row for table in doc.tables for row in table
-                   if _is_grid_header(row, wanted)), None)
-    if header is None:
+    column indexes, from one table's own header row. Each table of the grid
+    is read by its own: a page can print a column the others do not
+    (Agrogana's 0000299013 adds an empty one on the page of its TOTAL row)."""
+    if not (spec.header_columns or spec.lengths_from_header) or not header:
         return spec
     columns = dict(spec.columns)
     for name, pattern in spec.header_columns.items():
@@ -1481,7 +1507,6 @@ def _resolve_columns(doc: PdfDoc, spec: LayoutSpec) -> LayoutSpec:
 
 def _parse_boxes(doc: PdfDoc, spec: LayoutSpec) -> DeliveryOrder:
     num = _num_comma if spec.decimal == "," else _num
-    spec = _resolve_columns(doc, spec)
     from_grid: dict = {}
     if spec.lines:
         rows = _text_rows(doc, spec)
@@ -1492,31 +1517,34 @@ def _parse_boxes(doc: PdfDoc, spec: LayoutSpec) -> DeliveryOrder:
                 f"`python -m pdf_layouts <file.pdf>` to compare."
             )
     else:
-        grid = _grid_rows(doc, spec.grid_header)
-        if not grid:
+        tables = _grid_tables(doc, spec.grid_header)
+        if not any(body for _, body in tables):
             raise PdfParseError(
                 f"{spec.name} layout: the product table was not found in this PDF. "
                 f"Expected a table with {', '.join(spec.grid_header)} in its header; "
                 f"the PDF has {_table_shapes(doc)}. Run "
                 f"`python -m pdf_layouts <file.pdf>` to see what it actually contains."
             )
-        marker_col = spec.totals_col if spec.totals_col >= 0 else spec.columns.get(
-            "product", spec.columns.get("variety"))
         rows = []
-        for row in grid:
-            if (spec.totals_marker and marker_col is not None and marker_col < len(row)
-                    and row[marker_col].strip().upper().startswith(spec.totals_marker.upper())):
-                def cell(name: str) -> str:
-                    idx = spec.columns.get(name)
-                    return row[idx] if idx is not None and idx < len(row) else ""
-                from_grid = {"boxes": int(round(num(cell("count")))),
-                             "bunches": int(round(num(cell("bunches")))),
-                             "stems": int(round(num(cell("stems")))),
-                             "amount": num(cell("subtotal"))}
-                continue
-            fields = _table_row_fields(row, spec)
-            if fields is not None:
-                rows.append(fields)
+        for header, grid in tables:
+            table_spec = _resolve_columns(spec, header)
+            marker_col = table_spec.totals_col if table_spec.totals_col >= 0 else (
+                table_spec.columns.get("product", table_spec.columns.get("variety")))
+            for row in grid:
+                if (spec.totals_marker and marker_col is not None and marker_col < len(row)
+                        and row[marker_col].strip().upper().startswith(
+                            spec.totals_marker.upper())):
+                    def cell(name: str) -> str:
+                        idx = table_spec.columns.get(name)
+                        return row[idx] if idx is not None and idx < len(row) else ""
+                    from_grid = {"boxes": int(round(num(cell("count")))),
+                                 "bunches": int(round(num(cell("bunches")))),
+                                 "stems": int(round(num(cell("stems")))),
+                                 "amount": num(cell("subtotal"))}
+                    continue
+                fields = _table_row_fields(row, table_spec)
+                if fields is not None:
+                    rows.append(fields)
 
     blocks, last_box = _read_box_blocks(rows, spec, num)
     if not blocks:

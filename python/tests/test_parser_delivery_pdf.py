@@ -855,6 +855,41 @@ def test_stem_weight_in_grams_goes_as_kilograms():
     assert line.nu_weight == 0.04
 
 
+def test_a_weighed_species_is_named_by_its_bunch_weight():
+    """Florsani's gypsophila: FreshPortal has Gypso Xlence 1000 gr. and 750
+    gr., so the bunch weight is in the variety, and a stem's share of it is
+    the line's weight; Lepidium's printed weight is neither (user, 2026-10-06)."""
+    spec = dataclasses.replace(
+        _NUMBERED, columns={**_NUMBERED.columns, "species": 9, "bunch_grams": 10},
+        bunch_grams_species=r"^Gypsophila$")
+    rows = [["1", "H", "XLENCE", "12", "25", "80", "300", "0,300", "90,000", "Gypsophila", "1000"],
+            ["2", "H", "XLENCE", "14", "25", "80", "350", "0,260", "91,000", "Gypsophila", "750"],
+            ["3", "H", "LEPIDIUM", "14", "25", "70", "350", "0,250", "87,500", "Lepidium", "750"]]
+    order = parse_with_spec(_numbered_doc(rows, 40, 1000, "268,50", boxes_h=3), spec)
+    got = sorted((l.nm_variety, l.nu_weight) for l in order.lines)
+    assert got == [("Lepidium", 0.0), ("Xlence 1000 Gr", 0.04), ("Xlence 750 Gr", 0.03)]
+
+
+def test_header_columns_are_found_on_each_page():
+    """Agrogana prints an empty column after VARIETY only on the page of its
+    TOTAL row, so its QUANT moves one column between pages (0000299013)."""
+    spec = dataclasses.replace(
+        _NUMBERED, columns={"number": 0, "box": 1},
+        header_columns={"variety": r"^VARIETY$", "bunches": r"^BUNCHES$",
+                        "stems_bunch": r"^ST/BUNCH$", "length": r"^LENGTH$",
+                        "stems": r"^STEMS$", "rate": r"^PRICE$", "subtotal": r"^TOTAL$"})
+    page_1 = [_NUMBERED_HEADER,
+              ["01", "H", "FREEDOM", "10", "25", "60", "250", "0,340", "85,000"]]
+    page_2 = [["BOX", "TB", "VARIETY", "", "BUNCHES", "ST/BUNCH", "LENGTH", "STEMS", "PRICE",
+               "TOTAL"],
+              ["02", "Q", "EXPLORER", "", "4", "25", "60", "100", "0,340", "34,000"],
+              ["", "TOTAL", "", "14", "", "", "", "350", "", "119,00"]]
+    text = _numbered_doc([], 14, 350, "119,00", boxes_q=1, boxes_h=1).text
+    order = parse_with_spec(PdfDoc(text=text, tables=[page_1, page_2]), spec)
+    got = sorted((l.nm_variety, l.nm_box, l.nu_bunches) for l in order.lines)
+    assert got == [("Explorer", "QBE", 4), ("Freedom", "HBE", 10)]
+
+
 @pytest.mark.parametrize("raw, expected", [
     ("0,360", 0.36), ("$ 1285,00", 1285.0), ("4.438,50", 4438.5), ("2,851.200", 2851.2),
     ("4.00", 4.0), ("0.300", 0.3), ("6.540", 6540.0), ("12075", 12075.0), ("", 0.0),

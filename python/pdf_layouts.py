@@ -282,17 +282,29 @@ AGROGANA = LayoutSpec(
     name="agrogana",
     detect=r"AGROGANA",
     grid_header=("box", "tb", "variety", "quant", "stems per"),
-    columns={"number": 0, "box": 1, "label": 2, "variety": 4, "bunches": 6,
-             "stems_bunch": 7, "length": 8, "stems": 9, "rate": 10, "subtotal": 11},
+    # Only the page with the TOTAL row prints an empty column after VARIETY,
+    # so on 0000299013 page 1 has QUANT in column 5 and page 2 in column 6:
+    # the columns are found by their headers, on each page.
+    columns={"number": 0, "box": 1, "label": 2},
+    header_columns={"variety": r"^VARIETY$", "bunches": r"^QUANT", "stems_bunch": r"^STEMS\s+PER",
+                    "length": r"^LENGT", "stems": r"^STEMS$", "rate": r"^PRICE",
+                    "subtotal": r"^TOTAL$"},
     product_re="",
     row_model="boxes",
     header={"tx_company": const("AGROGANA S.A."), **FARM_INFO_HEADER},
     box_map=LETTER_BOXES,
     species="Roses",
-    # Boxes labelled MIX CALIDO are the farm's warm bicolour mix, MIX RED its
-    # red mix, whatever varieties it lists (user, 2026-09-29, 0000294844).
+    # A box's label is the product, whatever varieties it lists: MIX CALIDO
+    # the farm's warm bicolour mix (user, 2026-09-29, 0000294844). The rest
+    # as the user entered 0000299013 in FreshPortal (2026-10-06): MIX HOT
+    # (Cotton Candy) is warm bicolour too, and MIX RED is Rosa Ec Red, not
+    # the "Rosa Ec Mix Red" first answered.
     variety_rules=(("label", r"^MIX\s+CALIDO$", "Rosa Ec Bicolor Warm"),
-                   ("label", r"^MIX\s+RED$", "Rosa Ec Mix Red")),
+                   ("label", r"^MIX\s+HOT$", "Rosa Ec Bicolor Warm"),
+                   ("label", r"^MIX\s+FRIO$", "Rosa Ec Bicolor Cold"),
+                   ("label", r"^MIX\s+HOT\s+PINK$", "Rosa Ec Hot Pink"),
+                   ("label", r"^MIX\s+RED$", "Rosa Ec Red"),
+                   ("label", r"^MIX\s+WHITE$", "Rosa Ec White")),
     decimal=",",
     totals_re=FARM_INFO_TOTALS,
     boxes_re=FARM_INFO_BOXES,
@@ -984,10 +996,15 @@ FLORSANI = LayoutSpec(
     name="florsani",
     detect=r"1792059232001",
     grid_header=("pcs", "box type", "description", "bunch box", "stems bunch"),
-    columns={"count": 0, "box": 1, "label": 2, "product": 3, "color": 4, "length": 6,
-             "bunches_box": 7, "stems_bunch": 8, "rate": 9, "stems": 10, "subtotal": 11},
+    columns={"count": 0, "box": 1, "label": 2, "product": 3, "color": 4, "bunch_grams": 5,
+             "length": 6, "bunches_box": 7, "stems_bunch": 8, "rate": 9, "stems": 10,
+             "subtotal": 11},
     # "Ornithogalum White Star": the genus, then the variety.
     product_re=r"^(?P<species>\S+)\s+(?P<variety>.+)$",
+    # Weigth is a bunch's grams. FreshPortal names gypsophila by it ("Gypso
+    # Xlence 1000 gr.", 40 g a stem), not Lepidium's 750 (user, 2026-10-06,
+    # 002001000634396).
+    bunch_grams_species=r"^Gypsophila$",
     row_model="boxes",
     header={
         "tx_company": const("FLORSANI"),
@@ -1001,8 +1018,9 @@ FLORSANI = LayoutSpec(
     },
     # 17 "HE" and 5 "EB" make 9.125 full boxes: HE is a half, EB an eighth.
     box_map={"HE": "HBE", "EB": "1/8"},
-    # Its totals row has no label: "750 288 35 6,450 1,662.50".
-    totals_re=(r"^\d+\s+(?P<bunches>\d+)\s+\d+\s+(?P<stems>[\d,]+)\s+"
+    # Its totals row has no label: "750 288 35 6,450 1,662.50", and from
+    # 2,500 g on its weights group thousands (002001000634396).
+    totals_re=(r"^[\d,]+\s+(?P<bunches>[\d,]+)\s+[\d,]+\s+(?P<stems>[\d,]+)\s+"
                r"(?P<amount>[\d,]+\.\d{2})\s*$"),
     boxes_re=r"TOTAL\s+PIECES:\s*(\d+)",
     fulls_re=r"TOTAL\s+FULL\s+BOXES:\s*([\d.]+)",
