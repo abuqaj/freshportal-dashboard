@@ -52,9 +52,11 @@ MAX_READER_DEPTH = 3
 _REQUIRED = ("name", "detect", "grid_header", "columns", "product_re", "row_model", "header")
 _STR_FIELDS = {"name", "detect", "product_re", "row_model", "nm_product", "box_re", "totals_re",
                "totals_marker", "location_block", "location_re", "lines_from", "lines_to",
-               "default_box", "species", "label_joins_variety", "decimal", "boxes_re", "fulls_re"}
+               "default_box", "species", "label_joins_variety", "bunch_grams_species", "decimal",
+               "boxes_re", "fulls_re"}
 _REGEX_FIELDS = {"detect", "product_re", "box_re", "totals_re", "location_block", "location_re",
-                 "lines_from", "lines_to", "label_joins_variety", "boxes_re", "fulls_re"}
+                 "lines_from", "lines_to", "label_joins_variety", "bunch_grams_species",
+                 "boxes_re", "fulls_re"}
 _BOOL_FIELDS = {"merge_across_boxes", "lengths_from_header", "items_per_box", "split_uneven",
                 "block_row_is_summary"}
 _INT_FIELDS = {"stems_bunch", "totals_col", "box_fill"}
