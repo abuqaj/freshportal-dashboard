@@ -26,16 +26,35 @@ this skill.
 - **Packaging codes:** FreshPortal receives only `QBE`, `HBE`, `1/8`, `ECPS`
   (`KNOWN_BOXES`) or a mix box label `MB1`, `MB2`…; any code starting with
   `QB` becomes `QBE` and with `HB` becomes `HBE` (`QB ROSALEDA`, `QB3
-  ALSTRO`, `HB XL 1`). Mix box logic stays as it is. Utopia Farms writes one
-  letter: `Q` is `QBE`, `H` is `HBE`, `E` is `1/8`. A code nobody has mapped
-  goes as `QBE` and the screen offers the known ones instead (user,
-  2026-09-29): do not map a box by guesswork, leave it unmapped.
+  ALSTRO`, `HB XL 1`). Utopia Farms writes one letter: `Q` is `QBE`, `H` is
+  `HBE`, `E` is `1/8`. A code nobody has mapped goes as `QBE` and the screen
+  offers the known ones instead (user, 2026-09-29): do not map a box by
+  guesswork, leave it unmapped.
+- **A mix box is one line per variety, labelled with its box.** A box
+  holding several products gives each its own line, with `nm_box` `MB1`,
+  `MB2`… (numbered through the invoice) and `nm_box_type` the box's own code
+  (`QBE`, `HBE`). The reader stops there. Since 2026-09-25 the review step
+  sends mix boxes **together** by default (`mix_mode`, on both parse
+  endpoints): `mix_box_lines()` in `python/parser_delivery.py` makes each box
+  one line of `ROEMIBO` (roses, tinted ones too) or `ALSMIXF`
+  (alstroemeria), a mix of anything else without a product, in the box's
+  code at the average price per stem, and identical boxes one line with a
+  box count; a box whose lines share one `mix_name` goes by that name (see
+  "Named mixes"). A box whose varieties differ in length or grower, or whose
+  stems do not divide evenly into its bunches, keeps its per-variety lines.
+  Without `nm_box_type` a combined box goes as `QBE`.
 - **Named mixes:** a supplier's own mix ("MIX CALIDO", "Carnation mix") is
   the catalogue mix product the user names, set with the spec's
   `variety_rules` / `mix_names`; such lines keep grades and runs of boxes
   apart, so each can get its own length. So does any line the invoice
   prints no length for: the length, and the box, are set per line on the
   screen, and often they are what tells two lines apart (user, 2026-09-29).
+- **Length is a Floricode S20 value** (the user, 2026-09-28). Where the file
+  prints no length, the reader leaves `nu_length` at 0 and the review screen
+  asks for it. Creating a shipment, or adding to one, is refused while a
+  line's length is missing or not in `S20_LENGTHS`
+  (`python/dfg_api_client.py`), so a JSON length such as 71 blocks the
+  shipment until it is corrected.
 - **Utopia Farms** sends one box entry per row of boxes: `nu_bunches` is the
   number of boxes and `nu_stems_bunch` the stems of the whole row (Q, 9,
   2700 = 9 boxes of 300 stems); the bunch size is in `nm_product` (`10ST`).
@@ -78,9 +97,11 @@ payload (`_resolve_and_match()` in `python/api_server.py`), so a reader's only
 job is to produce the right `DeliveryOrder` and `DeliveryLine`s.
 
 When a supplier can send both, JSON carries more. A PDF has no box weight
-(`nu_box_weight` goes as 0), no stem weight, no product GUIDs, and no farm
-per line: `nm_location` is read only from a summary naming a single
-warehouse, and it decides the grower for Pomarosa and Tessa.
+(`nu_box_weight` goes as 0), no stem weight and no product GUIDs, and
+usually no farm per line: `nm_location` is read from a summary naming a
+single warehouse, and it decides the grower for Pomarosa and Tessa. Where an
+invoice does print each row's farm, the spec reads it as a column:
+Pomarosa's `Loc.` (`"location"` in its `columns`, since 2026-10-03).
 
 ## JSON formats that exist today
 
@@ -236,10 +257,10 @@ there.
    shape (the real invoices stay out of git; the collection is the
    supplier-by-supplier check).
 6. **Ship** with `ship-to-test`, then ask the user to upload the PDF in
-   delivery import on the test environment. PDF reading is on `test_1` only:
-   on 2026-09-23 the user sent the invoice picker to `main` without it (it
-   brings `pdfplumber` to Railway). Carry a PDF change to `main` only when the
-   user asks for that.
+   delivery import on the test environment. Production reads PDFs too since
+   2026-09-30, when the whole of `test_1` was merged into `main`; a change
+   reaches `main` with the next such merge, made only when the user asks for
+   it (`ship-to-main`).
 
 ## A .docx delivery
 
