@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { useSession, signOut } from "next-auth/react";
+import { useState, useEffect, useCallback } from "react";
+import { useSession } from "next-auth/react";
 import { translations, Lang } from "@/lib/i18n";
 import { SyncStatus } from "@/lib/types";
-import LanguageSwitcher from "@/components/LanguageSwitcher";
 import VbnChecker from "@/components/VbnChecker";
 import ProductCreator from "@/components/ProductCreator";
 import PhotoUploader from "@/components/PhotoUploader";
@@ -17,727 +16,43 @@ import KenyaSupplier from "@/components/KenyaSupplier";
 import KnowledgeBase from "@/components/KnowledgeBase";
 import { FP_SYSTEMS, FPSystem } from "@/lib/systems";
 import { useSystem } from "@/contexts/SystemContext";
+import TopBar from "@/components/shell/TopBar";
+import ModuleStrip from "@/components/shell/ModuleStrip";
+import SystemSelector from "@/components/shell/SystemSelector";
+import Hub from "@/components/shell/Hub";
+import ModuleFrame from "@/components/shell/ModuleFrame";
+import CommandPalette, { type PaletteItem } from "@/components/shell/CommandPalette";
+import { MODULES, SYSTEM_TABS, TOOL_TABS, type Tab } from "@/components/shell/modules";
+import { activeStripTab, loadAnime, loadMotion, motionLevel, nameFor, viewTransition } from "@/lib/motion";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
-type Tab = "vbn" | "create" | "photos" | "history" | "admin" | "delivery" | "analysis" | "boxweight" | "supplier" | "knowledge";
 
-// Which modules each system offers. A module listed here shows up only on the
-// systems that list it; anything not listed anywhere (history, admin,
-// knowledge) reads from our own database and shows everywhere.
-//
-// The test tenant offers New Products alone: its endpoints follow the selected
-// system, while VBN Check/Fix and Photo Uploader always run against
-// Stamgegevens and would quietly work on live data under a "Test" heading.
-const SYSTEM_TABS: Record<string, Tab[]> = {
-  stamgegevens: ["vbn", "create", "photos"],
-  ecuador:      ["delivery", "analysis"],
-  kenya:        ["boxweight", "supplier"],
-  test:         ["create"],
+// Where the screen on show came from. The hub's tiles do not rise in when a
+// module card is morphing back into one of them, nor does the system tile the
+// hub header is morphing back into.
+type Came = "start" | "module" | "hub" | "elsewhere";
+
+// The elements a morph runs between (globals.css ::view-transition-*).
+const tileOf = (id: string) => document.querySelector(`[data-sys-tile="${id}"]`);
+const moduleTileOf = (id: Tab) => document.querySelector(`[data-mod-tile="${id}"]`);
+const nameSystemTile = (id: string) => {
+  const tile = tileOf(id);
+  nameFor(tile?.querySelector("[data-vt-art]"), "sys-art");
+  nameFor(tile?.querySelector("[data-vt-name]"), "sys-name");
 };
-
-const SYSTEM_SCOPED_TABS = new Set<Tab>(Object.values(SYSTEM_TABS).flat());
-
-function systemOffers(systemId: string, tab: Tab): boolean {
-  return !SYSTEM_SCOPED_TABS.has(tab) || (SYSTEM_TABS[systemId] ?? []).includes(tab);
-}
-
-// ModuleCard pads its content, so a new module gets sane margins without
-// having to remember. These screens opt out because their layout depends on
-// reaching the card edge - full-bleed row dividers, or their own inner card
-// - and an outer padding would leave those lines stopping short.
-const UNPADDED_TABS:          Tab[] = ["vbn", "create", "photos", "history", "admin"];
-
-const NAV_TABS_ALL: { id: Tab; gradient: string; perm: string }[] = [
-  { id: "vbn",       gradient: "from-emerald to-[#0D5430]",   perm: "vbn:check" },
-  { id: "create",    gradient: "from-ember to-[#B83220]",     perm: "products:create" },
-  { id: "photos",    gradient: "from-[#145E35] to-[#073D22]", perm: "photos:upload" },
-  { id: "history",   gradient: "from-[#C43320] to-[#8B1E14]", perm: "admin:manage" },
-  { id: "admin",     gradient: "from-[#374151] to-[#111827]", perm: "admin:manage" },
-  { id: "delivery",  gradient: "from-[#0F4C8A] to-[#0A2E54]", perm: "delivery:import" },
-  { id: "analysis",  gradient: "from-[#7C3AED] to-[#4C1D95]", perm: "analysis:view" },
-  { id: "boxweight", gradient: "from-[#0891B2] to-[#155E75]", perm: "boxweight:run" },
-  { id: "supplier",  gradient: "from-[#B45309] to-[#7C2D12]", perm: "supplier:add" },
-  { id: "knowledge", gradient: "from-[#BE185D] to-[#831843]", perm: "knowledge:review" },
-];
-
-/* ─── 3-D tilt hook ─── */
-/** A frame of the gesture writes the transform and nothing else. The tilt used
- *  to re-declare the transition on every mouse move, which dirties the
- *  element's style each frame, and it left the card unpromoted, so the browser
- *  redrew the whole tile — artwork included — instead of re-composing a layer
- *  it already had. That is invisible on a gradient tile and very visible on a
- *  system tile carrying a full-bleed flag. The promotion is taken on the way in
- *  and handed back once the card has settled, so a hover that is over does not
- *  keep a layer per tile. */
-function useTilt(strength = 10) {
-  const ref = useRef<HTMLDivElement>(null);
-  const raf = useRef<number | null>(null);
-  const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const onMouseEnter = useCallback(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (settle.current) { clearTimeout(settle.current); settle.current = null; }
-    el.style.willChange = "transform";
-    el.style.transition = "transform 0.08s ease";
-  }, []);
-
-  const onMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const el = ref.current;
-    if (!el) return;
-    const { clientX, clientY } = e;
-    if (raf.current) cancelAnimationFrame(raf.current);
-    raf.current = requestAnimationFrame(() => {
-      raf.current = null;
-      const rect = el.getBoundingClientRect();
-      const x = ((clientX - rect.left) / rect.width  - 0.5) * strength;
-      const y = ((clientY - rect.top)  / rect.height - 0.5) * strength;
-      el.style.transform = `perspective(900px) rotateY(${x}deg) rotateX(${-y}deg) scale(1.035)`;
-    });
-  }, [strength]);
-
-  const onMouseLeave = useCallback(() => {
-    if (raf.current) { cancelAnimationFrame(raf.current); raf.current = null; }
-    const el = ref.current;
-    if (!el) return;
-    el.style.transition = "transform 0.5s cubic-bezier(0.34,1.3,0.64,1)";
-    el.style.transform = "";
-    settle.current = setTimeout(() => {
-      el.style.willChange = "";
-      settle.current = null;
-    }, 520);
-  }, []);
-
-  useEffect(() => {
-    const pending = raf, settling = settle;
-    return () => {
-      if (pending.current) cancelAnimationFrame(pending.current);
-      if (settling.current) clearTimeout(settling.current);
-    };
-  }, []);
-
-  return { ref, onMouseEnter, onMouseMove, onMouseLeave };
-}
-
-/* ─── Decorative SVG bg inside hub tiles ─── */
-function DecoBg({ type }: { type: Tab }) {
-  if (type === "vbn") return (
-    <svg className="absolute -right-8 -top-8 w-52 h-52 opacity-10 slow-spin" viewBox="0 0 200 200" fill="white">
-      <circle cx="100" cy="100" r="80" stroke="white" strokeWidth="2" fill="none"/>
-      {[0,45,90,135,180,225,270,315].map((a,i)=>(
-        <rect key={i} x="96" y="20" width="8" height="30" rx="4"
-          transform={`rotate(${a} 100 100)`} opacity={i%2===0?1:0.5}/>
-      ))}
-      <circle cx="100" cy="100" r="15" fill="white" opacity="0.6"/>
-    </svg>
-  );
-  if (type === "create") return (
-    <svg className="absolute -right-6 -top-6 w-48 h-48 opacity-10" viewBox="0 0 200 200" fill="white">
-      {[0,1,2,3,4,5,6,7,8].map(r=>[0,1,2,3,4,5,6,7,8].map(c=>(
-        <circle key={`${r}-${c}`} cx={22+c*20} cy={22+r*20} r="5" opacity={((r+c)%3===0)?0.8:0.3}/>
-      )))}
-    </svg>
-  );
-  if (type === "photos") return (
-    <svg className="absolute -right-4 -bottom-4 w-52 h-52 opacity-10" viewBox="0 0 200 200" fill="none" stroke="white" strokeWidth="2">
-      <rect x="20" y="40" width="160" height="120" rx="12"/>
-      <circle cx="100" cy="100" r="30"/>
-      <rect x="70" y="28" width="60" height="20" rx="6" fill="white"/>
-      <circle cx="160" cy="55" r="8" fill="white"/>
-    </svg>
-  );
-  return (
-    <svg className="absolute -right-6 -top-6 w-48 h-48 opacity-10" viewBox="0 0 200 200" fill="none" stroke="white" strokeWidth="2">
-      {[30,60,90,120,150].map((y,i)=>(
-        <line key={i} x1="20" y1={y} x2={80+i*10} y2={y} strokeLinecap="round" strokeWidth={i===4?3:2}/>
-      ))}
-      <circle cx="150" cy="100" r="40"/>
-      <path d="M135 100 l10 10 20-25" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3"/>
-    </svg>
-  );
-}
-
-/* ─── Hub tile ─── */
-function Tile({
-  id, label, desc, gradient, icon, stat, statColor = "text-white/60",
-  index, onClick,
-}: {
-  id: Tab; label: string; desc: string; gradient: string;
-  icon: React.ReactNode; stat?: string; statColor?: string;
-  index: number; onClick: () => void;
-}) {
-  const tilt = useTilt(10);
-  return (
-    <div
-      ref={tilt.ref}
-      onMouseEnter={tilt.onMouseEnter}
-      onMouseMove={tilt.onMouseMove}
-      onMouseLeave={tilt.onMouseLeave}
-      onClick={onClick}
-      style={{ animationDelay: `${index * 90}ms` }}
-      className={`tile-enter tile-shine relative overflow-hidden rounded-3xl cursor-pointer ${gradient} group`}
-    >
-      <DecoBg type={id} />
-      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/8 transition-colors duration-300 rounded-3xl" />
-      <div className="relative z-10 flex flex-col h-full p-5 sm:p-7 min-h-[180px] sm:min-h-[220px]">
-        <div className="mb-auto">
-          <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-white/15 flex items-center justify-center group-hover:bg-white/25 transition-colors duration-300 mb-4 sm:mb-5 group-hover:scale-110 transition-transform">
-            {icon}
-          </div>
-          <h2 className="text-base sm:text-xl font-bold text-white tracking-tight leading-tight">{label}</h2>
-          <p className="text-sm text-white/65 mt-1.5 leading-relaxed">{desc}</p>
-        </div>
-        <div className="flex items-end justify-between mt-6">
-          {stat && <span className={`text-xs font-medium ${statColor}`}>{stat}</span>}
-          <div className="ml-auto w-8 h-8 rounded-full bg-white/20 flex items-center justify-center
-                          group-hover:bg-white/35 group-hover:translate-x-1 transition-all duration-300">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M3 7h8M8 4l3 3-3 3" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Persistent top bar ─── */
-function TopBar({ lang, setLang, tab, t, syncStatus, railwayOnline, username }: {
-  lang: Lang; setLang: (l: Lang) => void;
-  tab: Tab | null; t: (typeof translations)[Lang];
-  syncStatus: SyncStatus | null; railwayOnline: boolean | null;
-  username?: string;
-}) {
-  const tabLabel = tab === "vbn" ? t.nav.vbnChecker
-    : tab === "create" ? t.nav.newProducts
-    : tab === "photos" ? t.nav.photoUploader
-    : tab === "history" ? t.nav.history
-    : tab === "admin" ? "Admin"
-    : tab === "delivery" ? t.nav.deliveryImporter
-    : tab === "analysis" ? t.nav.analysisTool
-    : tab === "boxweight" ? t.nav.kenyaBoxWeight
-    : tab === "supplier" ? t.nav.kenyaSupplier
-    : tab === "knowledge" ? t.nav.knowledgeBase
-    : null;
-
-  return (
-    <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-border bg-surface flex-shrink-0">
-      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-        <img src="/logo.svg" alt="Fresh From Source" className="h-7 w-auto" />
-        {tab && tabLabel && (
-          <>
-            <span className="text-border text-sm select-none">/</span>
-            <span className="text-sm font-medium text-ink-3 truncate">{tabLabel}</span>
-          </>
-        )}
-      </div>
-      <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-        {/* Sync running spinner */}
-        {syncStatus?.running && (
-          <span className="hidden sm:flex items-center gap-1.5 text-[11px] text-ink-3">
-            <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/>
-              <path fill="currentColor" className="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-            {t.hub.syncRunning}
-          </span>
-        )}
-        {/* DB count pill */}
-        {syncStatus != null && syncStatus.product_count > 0 && (
-          <span className="hidden sm:inline-flex items-center text-[11px] text-ink-3 bg-muted border border-border px-2 py-0.5 rounded-full font-medium tabular-nums">
-            {t.hub.topbarDb(syncStatus.product_count)}
-          </span>
-        )}
-        {/* VBN online / offline dot */}
-        {railwayOnline !== null && (
-          <span className="hidden sm:flex items-center gap-1.5 text-[11px]">
-            {railwayOnline ? (
-              <>
-                <span className="relative w-1.5 h-1.5 flex-shrink-0">
-                  <span className="absolute inset-0 rounded-full bg-emerald pulse-ring"/>
-                  <span className="relative w-1.5 h-1.5 rounded-full bg-emerald block"/>
-                </span>
-                <span className="text-emerald font-semibold">VBN</span>
-              </>
-            ) : (
-              <>
-                <span className="w-1.5 h-1.5 rounded-full bg-ink-3/40 block"/>
-                <span className="text-ink-3/50 font-medium">VBN</span>
-              </>
-            )}
-          </span>
-        )}
-        {username && (
-          <span className="hidden sm:inline-flex text-[11px] text-ink-3 border border-border bg-muted px-2 py-0.5 rounded-full">
-            {username}
-          </span>
-        )}
-        <button
-          onClick={() => signOut({ callbackUrl: "/login" })}
-          className="h-7 px-2.5 rounded-lg text-[11px] font-medium text-ink-3 hover:text-ink border border-border bg-muted hover:bg-border/40 transition-colors"
-        >
-          {t.hub.signOut}
-        </button>
-        <LanguageSwitcher lang={lang} setLang={setLang}/>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Module card wrapper ─── */
-const MODULE_WIDTH: Record<Tab, string> = {
-  vbn:       "max-w-4xl",
-  history:   "max-w-4xl",
-  create:    "max-w-3xl",
-  photos:    "max-w-5xl",
-  admin:     "max-w-5xl",
-  delivery:  "max-w-7xl",
-  analysis:  "max-w-7xl",
-  boxweight: "max-w-6xl",
-  supplier:  "max-w-4xl",
-  knowledge: "max-w-6xl",
+const nameBanner = () => {
+  nameFor(document.querySelector("[data-banner] [data-vt-art]"), "sys-art");
+  nameFor(document.querySelector("[data-banner] [data-vt-name]"), "sys-name");
 };
-
-function ModuleCard({ tab, onBack, autoEnabled, autoNextRun, lang, t, navTabs, onSelectTab, children }: {
-  tab: Tab; onBack: () => void; autoEnabled: boolean | null; autoNextRun: string | null;
-  lang: Lang; t: (typeof translations)[Lang];
-  navTabs: { id: Tab; label: string; gradient: string }[];
-  onSelectTab: (id: Tab) => void;
-  children: React.ReactNode;
-}) {
-  const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
-  const w = MODULE_WIDTH[tab];
-  return (
-    <div className="module-enter w-full flex-1 flex flex-col items-center overflow-y-auto py-6 px-4 bg-ground">
-      <div className={`w-full ${w} mb-8`}>
-        {/* Back + optional auto VBN badge */}
-        <div className="flex items-center justify-between mb-4">
-          <button
-            onClick={onBack}
-            className="flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink transition-colors group"
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
-              className="group-hover:-translate-x-0.5 transition-transform">
-              <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-            {t.hub.back}
-          </button>
-
-          {tab === "vbn" && (
-            autoEnabled ? (
-              <span className="flex items-center gap-1.5 text-xs text-emerald bg-emerald-light border border-emerald/20 px-2.5 py-1 rounded-full">
-                <span className="relative w-1.5 h-1.5 flex-shrink-0">
-                  <span className="absolute inset-0 rounded-full bg-emerald pulse-ring"/>
-                  <span className="relative w-1.5 h-1.5 rounded-full bg-emerald block"/>
-                </span>
-                {t.hub.autoVbnActive}
-                {autoNextRun && (
-                  <span className="text-emerald/70 ml-1">
-                    · {new Date(autoNextRun).toLocaleString(localeStr, {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
-                  </span>
-                )}
-              </span>
-            ) : (
-              <span className="text-xs text-ink-3 bg-muted px-2.5 py-1 rounded-full border border-border">
-                {t.hub.moduleAutoOff}
-              </span>
-            )
-          )}
-        </div>
-
-        {/* Card wrapper — relative so nav tiles anchor to the card top */}
-        <div className="relative">
-          {navTabs.length > 1 && (
-            <>
-              {/* Small/medium screens: horizontal scrollable nav above card */}
-              <div className="flex 2xl:hidden overflow-x-auto pb-2 mb-3 gap-2">
-                {navTabs.map((nt) => (
-                  <button
-                    key={nt.id}
-                    onClick={() => onSelectTab(nt.id)}
-                    className={`flex-shrink-0 px-3 py-2 rounded-xl text-[11px] font-semibold text-white whitespace-nowrap
-                      bg-gradient-to-br ${nt.gradient} transition-all
-                      ${nt.id === tab ? "opacity-100 shadow-sm ring-1 ring-white/40" : "opacity-50 hover:opacity-80"}`}
-                  >
-                    {nt.label}
-                  </button>
-                ))}
-              </div>
-              {/* Large screens: side nav */}
-              <div className="hidden 2xl:flex absolute right-full top-0 mr-4 w-40 flex-col gap-2">
-                {navTabs.map((nt) => (
-                  <button
-                    key={nt.id}
-                    onClick={() => onSelectTab(nt.id)}
-                    className={`relative w-full px-3 py-2.5 rounded-xl text-left text-[11px] font-semibold text-white
-                      bg-gradient-to-br ${nt.gradient} transition-all
-                      ${nt.id === tab
-                        ? "opacity-100 shadow-sm"
-                        : "opacity-50 hover:opacity-80"}`}
-                  >
-                    {nt.id === tab && (
-                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-white/60 rounded-r-full" />
-                    )}
-                    <span className="pl-1">{nt.label}</span>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          <div className={`bg-surface rounded-3xl border border-border shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden
-                           ${UNPADDED_TABS.includes(tab) ? "" : "p-4 sm:p-6"}`}>
-            {children}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── System selector card ─── */
-function SystemCard({
-  system, isActive, index, onClick,
-}: {
-  system: FPSystem; isActive: boolean; index: number; onClick: () => void;
-}) {
-  const tilt = useTilt(6);
-  // A flag covers the tile, so the brand colour behind it never shows. A logo
-  // does not: painting the brand colour behind a brand logo swallowed it, so
-  // logo tiles keep a light surface and wear the colour as a top strip.
-  const isLogo = system.art === "logo";
-  return (
-    <div
-      ref={tilt.ref}
-      onMouseEnter={tilt.onMouseEnter}
-      onMouseMove={tilt.onMouseMove}
-      onMouseLeave={tilt.onMouseLeave}
-      onClick={onClick}
-      style={{ animationDelay: `${index * 70}ms` }}
-      className={`tile-enter-flat relative overflow-hidden rounded-3xl cursor-pointer group min-h-[200px]
-        ${isLogo ? "bg-surface border border-border" : system.fallbackGradient}
-        ${isActive ? `ring-4 ring-offset-4 ring-offset-ground ${isLogo ? "ring-emerald" : "ring-white/70"}` : ""}`}
-    >
-      {/* Brand colour, kept clear of the logo */}
-      {isLogo && <span className={`absolute inset-x-0 top-0 h-1.5 ${system.accent} z-10`} />}
-
-      {/* Flags fill the tile; a logo is shown whole, above the caption.
-          will-change keeps the artwork on a layer of its own: everything else
-          here — the hover darkening, the arrow bubble — animates a colour on
-          hover, and without the split every one of those frames redrew the
-          flag underneath it. Ecuador alone is over a thousand paths. */}
-      <img
-        src={system.svgPath}
-        alt=""
-        aria-hidden="true"
-        decoding="async"
-        className={`absolute inset-0 w-full h-full select-none pointer-events-none will-change-transform ${
-          isLogo ? "object-contain px-8 pt-10 pb-24" : "object-cover"
-        }`}
-        draggable={false}
-      />
-
-      {/* Bottom scrim for text readability — over a light tile it only needs
-          to cover the caption, so it fades out before reaching the logo */}
-      <div className={`absolute inset-0 bg-gradient-to-t ${
-        isLogo ? "from-black/75 via-transparent to-transparent" : "from-black/70 via-black/20 to-transparent"
-      }`} />
-
-      {/* Hover darkening */}
-      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/15 transition-colors duration-300" />
-
-      {/* Active checkmark badge */}
-      {isActive && (
-        <div className="absolute top-4 right-3 w-7 h-7 rounded-full bg-white border border-border flex items-center justify-center shadow z-10">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M2.5 7l3.5 3.5 5.5-6" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </div>
-      )}
-
-      {/* Content — pinned to bottom */}
-      <div className="relative z-10 flex flex-col justify-end h-full p-6 min-h-[200px]">
-        <div className="flex items-end justify-between">
-          <div>
-            <h2 className="text-lg font-bold text-white tracking-tight leading-tight drop-shadow">{system.name}</h2>
-            <p className="text-[11px] text-white/60 mt-0.5 font-mono">{system.url.replace("https://", "")}</p>
-          </div>
-          <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center transition-all duration-300 ml-3
-            ${isActive ? "bg-white/30" : "bg-black/30 group-hover:bg-black/50 group-hover:translate-x-0.5"}`}>
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M3 7h8M8 4l3 3-3 3" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── System selector step ─── */
-function SystemSelector({ t, systems, onSelect }: {
-  t: (typeof translations)[Lang]; systems: FPSystem[]; onSelect: (system: FPSystem) => void;
-}) {
-  const { system: currentSystem } = useSystem();
-  const cols = systems.length === 1 ? "grid-cols-1" : systems.length <= 4 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
-  return (
-    <div className="hub-enter flex-1 flex flex-col items-center justify-center px-4 sm:px-8 py-6 sm:py-10 bg-ground overflow-y-auto">
-      <div className="w-full max-w-5xl">
-        <h1 className="text-2xl sm:text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.selectSystemTitle}</h1>
-        <p className="text-sm text-ink-3 mb-6 sm:mb-10">{t.hub.selectSystemDesc}</p>
-        <div className={`grid ${cols} gap-4 sm:gap-5`}>
-          {systems.map((sys, i) => (
-            <SystemCard
-              key={sys.id}
-              system={sys}
-              isActive={sys.id === currentSystem.id}
-              index={i}
-              onClick={() => onSelect(sys)}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Hub home screen ─── */
-function Hub({ lang, setLang, t, autoEnabled, productCount, onSelect, permissions, onChangeSystem }: {
-  lang: Lang; setLang: (l: Lang) => void; t: (typeof translations)[Lang];
-  autoEnabled: boolean | null; productCount: number | null; onSelect: (tab: Tab) => void;
-  permissions: string[]; onChangeSystem?: () => void;
-}) {
-  const isAdmin = permissions.includes("admin:manage");
-  const { system } = useSystem();
-
-  // PDF invoices no layout reads, and temporary layouts nobody has checked:
-  // IT hears of them on its own tile (user, 2026-09-28).
-  const [pdfForIt, setPdfForIt] = useState(0);
-  useEffect(() => {
-    if (!isAdmin || !RAILWAY) return;
-    fetch(`${RAILWAY}/delivery/pdf-layouts/pending-count`)
-      .then(r => (r.ok ? r.json() : { count: 0 }))
-      .then(d => setPdfForIt(Number(d.count) || 0))
-      .catch(() => {});
-  }, [isAdmin]);
-
-  const allTiles: { id: Tab; perm: string; label: string; desc: string; gradient: string; stat?: string; statColor?: string; icon: React.ReactNode }[] = [
-    {
-      id: "vbn",
-      perm: "vbn:check",
-      label: t.nav.vbnChecker,
-      desc: t.hub.vbnDesc,
-      gradient: "bg-gradient-to-br from-emerald to-[#0D5430]",
-      stat: autoEnabled ? t.hub.vbnStatOn : t.hub.vbnStatOff,
-      statColor: autoEnabled ? "text-white/80" : "text-white/40",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <path d="M9 12l2 2 4-4" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          <path d="M7 4H4a2 2 0 00-2 2v14a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2h-3" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-          <rect x="7" y="2" width="10" height="4" rx="1" stroke="white" strokeWidth="1.8"/>
-        </svg>
-      ),
-    },
-    {
-      id: "create",
-      perm: "products:create",
-      label: t.nav.newProducts,
-      desc: t.hub.createDesc,
-      gradient: "bg-gradient-to-br from-ember to-[#B83220]",
-      // The product count comes from our copy of Stamgegevens, so on any other
-      // system it would be someone else's number — name the portal instead.
-      stat: system.id === "stamgegevens"
-        ? (productCount != null ? t.hub.catalogueStat(productCount) : t.hub.catalogueLoading)
-        : t.hub.onSystem(system.name),
-      statColor: "text-white/70",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <rect x="2" y="2" width="20" height="20" rx="4" stroke="white" strokeWidth="1.8"/>
-          <path d="M12 8v8M8 12h8" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-        </svg>
-      ),
-    },
-    {
-      id: "photos",
-      perm: "photos:upload",
-      label: t.nav.photoUploader,
-      desc: t.hub.photosDesc,
-      gradient: "bg-gradient-to-br from-[#145E35] to-[#073D22]",
-      stat: t.hub.photosStat,
-      statColor: "text-white/60",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <rect x="1" y="5" width="22" height="15" rx="3" stroke="white" strokeWidth="1.8"/>
-          <circle cx="12" cy="12" r="4" stroke="white" strokeWidth="1.8"/>
-          <circle cx="12" cy="12" r="1.5" fill="white"/>
-          <path d="M8 5l2-3h4l2 3" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      ),
-    },
-    {
-      id: "history",
-      perm: "admin:manage",
-      label: t.nav.history,
-      desc: t.hub.historyDesc,
-      gradient: "bg-gradient-to-br from-[#C43320] to-[#8B1E14]",
-      stat: t.hub.historyStat,
-      statColor: "text-white/60",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="9" stroke="white" strokeWidth="1.8"/>
-          <path d="M12 7v5.5l3.5 2" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      ),
-    },
-    {
-      id: "admin",
-      perm: "admin:manage",
-      label: t.hub.adminLabel,
-      desc: t.hub.adminDesc,
-      gradient: "bg-gradient-to-br from-[#374151] to-[#111827]",
-      stat: pdfForIt > 0 ? t.hub.adminPdfPending(pdfForIt) : t.hub.adminStat,
-      statColor: pdfForIt > 0 ? "text-white font-semibold" : "text-white/60",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="8" r="4" stroke="white" strokeWidth="1.8"/>
-          <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-          <circle cx="19" cy="7" r="2.5" fill="white" opacity="0.7"/>
-          <path d="M19 5.5v3M17.5 7h3" stroke="#374151" strokeWidth="1.2" strokeLinecap="round"/>
-        </svg>
-      ),
-    },
-    {
-      id: "delivery",
-      perm: "delivery:import",
-      label: t.nav.deliveryImporter,
-      desc: t.hub.deliveryDesc,
-      gradient: "bg-gradient-to-br from-[#0F4C8A] to-[#0A2E54]",
-      stat: t.hub.deliveryStat,
-      statColor: "text-white/60",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <rect x="2" y="7" width="20" height="14" rx="3" stroke="white" strokeWidth="1.8"/>
-          <path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-          <path d="M12 12v4M10 14h4" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
-      ),
-    },
-    {
-      id: "analysis",
-      perm: "analysis:view",
-      label: t.nav.analysisTool,
-      desc: t.hub.analysisDesc,
-      gradient: "bg-gradient-to-br from-[#7C3AED] to-[#4C1D95]",
-      stat: t.hub.analysisStat,
-      statColor: "text-white/60",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <path d="M4 20V10M12 20V4M20 20v-7" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
-      ),
-    },
-    {
-      id: "boxweight",
-      perm: "boxweight:run",
-      label: t.nav.kenyaBoxWeight,
-      desc: t.hub.boxWeightDesc,
-      gradient: "bg-gradient-to-br from-[#0891B2] to-[#155E75]",
-      stat: t.hub.boxWeightStat,
-      statColor: "text-white/60",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <path d="M4 8h16l-2 12H6L4 8z" stroke="white" strokeWidth="1.8" strokeLinejoin="round"/>
-          <path d="M9 8V6a3 3 0 016 0v2" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
-      ),
-    },
-    {
-      id: "supplier",
-      perm: "supplier:add",
-      label: t.nav.kenyaSupplier,
-      desc: t.hub.supplierDesc,
-      gradient: "bg-gradient-to-br from-[#B45309] to-[#7C2D12]",
-      stat: t.hub.supplierStat,
-      statColor: "text-white/60",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <path d="M6 3h9l3 3v15H6z" stroke="white" strokeWidth="1.8" strokeLinejoin="round"/>
-          <path d="M9 11h6M9 15h4" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
-      ),
-    },
-    {
-      id: "knowledge",
-      perm: "knowledge:review",
-      label: t.nav.knowledgeBase,
-      desc: t.hub.knowledgeDesc,
-      gradient: "bg-gradient-to-br from-[#BE185D] to-[#831843]",
-      stat: t.hub.knowledgeStat,
-      statColor: "text-white/60",
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <path d="M5 4h9a3 3 0 013 3v13H8a3 3 0 01-3-3V4z" stroke="white" strokeWidth="1.8" strokeLinejoin="round"/>
-          <path d="M5 17a3 3 0 013-3h9M9 8h5" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
-      ),
-    },
-  ];
-
-  const tiles = allTiles.filter(tile =>
-    (isAdmin || permissions.includes(tile.perm)) && systemOffers(system.id, tile.id)
-  );
-
-  const colsClass = tiles.length <= 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
-  const maxWClass = tiles.length <= 2 ? "max-w-3xl" : "max-w-5xl";
-
-  return (
-    <div className="hub-enter flex-1 flex flex-col items-center justify-center px-4 sm:px-8 py-6 sm:py-10 bg-ground overflow-y-auto">
-      <div className={`w-full ${maxWClass}`}>
-        <h1 className="text-2xl sm:text-3xl font-bold text-ink mb-2 tracking-tight">{t.hub.title}</h1>
-        <p className="text-sm text-ink-3 mb-6 sm:mb-10">{t.hub.subtitle}</p>
-        <div className={`grid ${colsClass} gap-4 sm:gap-5`}>
-          {tiles.map((tile, i) => (
-            <Tile
-              key={tile.id}
-              index={i}
-              id={tile.id}
-              label={tile.label}
-              desc={tile.desc}
-              gradient={tile.gradient}
-              icon={tile.icon}
-              stat={tile.stat}
-              statColor={tile.statColor}
-              onClick={() => onSelect(tile.id)}
-            />
-          ))}
-        </div>
-      </div>
-
-      <div className="mt-10 flex items-center gap-3 text-[10px] text-ink-3">
-        <span>{t.hub.footer} · {new Date().getFullYear()}</span>
-        <span className="w-px h-3 bg-border"/>
-        <span className="flex items-center gap-1">
-          <span className={`w-1.5 h-1.5 rounded-full ${autoEnabled ? "bg-emerald" : "bg-muted"}`}/>
-          {autoEnabled ? t.hub.autoVbnActive : t.hub.autoVbnDisabled}
-        </span>
-        {onChangeSystem && (
-          <>
-            <span className="w-px h-3 bg-border"/>
-            <span className="flex items-center gap-1.5">
-              <span>{system.name}</span>
-              <button
-                onClick={onChangeSystem}
-                className="ml-1 underline underline-offset-2 hover:text-ink transition-colors"
-              >
-                {t.hub.changeSystem}
-              </button>
-            </span>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+const nameModuleTile = (id: Tab) => {
+  const tile = moduleTileOf(id);
+  nameFor(tile, "mod-card");
+  nameFor(tile?.querySelector("[data-vt-badge]"), "mod-icon");
+};
+const nameModuleCard = () => {
+  nameFor(document.querySelector("[data-vt-card]"), "mod-card");
+  nameFor(activeStripTab(), "mod-icon");
+};
 
 /* ─── Root ─── */
 export default function Dashboard() {
@@ -746,6 +61,8 @@ export default function Dashboard() {
   const [lang, setLangState] = useState<Lang>("en");
   const [tab, setTab] = useState<Tab | null>(null);
   const [hubStep, setHubStep] = useState<"system" | "module">("system");
+  const [came, setCame] = useState<Came>("start");
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [autoEnabled, setAutoEnabled] = useState<boolean | null>(null);
   const [autoNextRun, setAutoNextRun] = useState<string | null>(null);
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -764,9 +81,34 @@ export default function Dashboard() {
       : (isAdmin ? FP_SYSTEMS : []);
   })();
 
+  // A system's own modules the user may open, and the tools every system shows.
+  const allowed = (id: Tab) => isAdmin || permissions.includes(MODULES[id].perm);
+  const systemTabsOf = (systemId: string) => (SYSTEM_TABS[systemId] ?? []).filter(allowed);
+  const toolTabs = TOOL_TABS.filter(allowed);
+
   useEffect(() => {
     const saved = localStorage.getItem("fp_lang") as Lang | null;
     if (saved && ["en","nl","pl","es"].includes(saved)) setLangState(saved);
+  }, []);
+
+  // The motion level for this visit, and the two animation libraries fetched
+  // once the screen is up, so nothing on it waits for them.
+  useEffect(() => {
+    motionLevel();
+    const idle = (cb: () => void) => ("requestIdleCallback" in window ? window.requestIdleCallback(cb) : setTimeout(cb, 1200));
+    idle(() => { void loadMotion(); void loadAnime(); });
+  }, []);
+
+  // Ctrl K (⌘K) opens the search from anywhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(open => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   // Auto-select system when there's only one accessible, or skip selector for no-system users
@@ -778,6 +120,8 @@ export default function Dashboard() {
     } else if (accessibleSystems.length === 0) {
       setHubStep("module");
     }
+    // The login page's view transition waits for this before it shows the shell.
+    window.dispatchEvent(new Event("fp:shell-ready"));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionStatus]);
 
@@ -797,35 +141,82 @@ export default function Dashboard() {
 
   const t = translations[lang];
 
-  function goBack() { setTab(null); }
-
   const handleAutoVbnChange = useCallback((enabled: boolean, nextRun: string | null) => {
     setAutoEnabled(enabled);
     setAutoNextRun(nextRun);
   }, []);
 
-  function handleSystemSelect(sys: FPSystem) {
-    setSystem(sys);
-    setHubStep("module");
+  const screen: "systems" | "hub" | "module" = tab
+    ? "module"
+    : hubStep === "system" && accessibleSystems.length > 1 ? "systems" : "hub";
+
+  /* ─── Moving between screens ─── */
+
+  // A system tile opens its hub: the flag becomes the header's flag.
+  function pickSystem(sys: FPSystem) {
+    viewTransition(() => { setCame("elsewhere"); setSystem(sys); setHubStep("module"); setTab(null); },
+      { before: () => nameSystemTile(sys.id), after: nameBanner });
   }
 
-  const navTabs = NAV_TABS_ALL
-    .filter(nt => isAdmin || permissions.includes(nt.perm))
-    .filter(nt => systemOffers(system.id, nt.id))
-    .map(nt => ({
-      id:       nt.id,
-      gradient: nt.gradient,
-      label:    nt.id === "admin"     ? t.hub.adminLabel
-              : nt.id === "vbn"       ? t.nav.vbnChecker
-              : nt.id === "create"    ? t.nav.newProducts
-              : nt.id === "photos"    ? t.nav.photoUploader
-              : nt.id === "history"   ? t.nav.history
-              : nt.id === "delivery"  ? t.nav.deliveryImporter
-              : nt.id === "boxweight" ? t.nav.kenyaBoxWeight
-              : nt.id === "supplier"  ? t.nav.kenyaSupplier
-              : nt.id === "knowledge" ? t.nav.knowledgeBase
-              : t.nav.analysisTool,
-    }));
+  // Another system from the top bar or the search: a plain cross-fade.
+  function switchSystem(sys: FPSystem) {
+    if (sys.id === system.id && !tab) return;
+    viewTransition(() => { setCame("elsewhere"); setSystem(sys); setHubStep("module"); setTab(null); });
+  }
+
+  // Back to the system choice; from the hub the header flies back into its tile.
+  function toSystems() {
+    const fromHub = !tab;
+    viewTransition(() => { setCame("hub"); setTab(null); setHubStep("system"); },
+      fromHub ? { before: nameBanner, after: () => nameSystemTile(system.id) } : undefined);
+  }
+
+  // A module tile grows into the module's card and its icon flies into the
+  // strip; between modules the card reshapes and the strip's ring moves.
+  function openModule(id: Tab, sys?: FPSystem) {
+    if (sys && sys.id !== system.id) {
+      viewTransition(() => { setCame("elsewhere"); setSystem(sys); setHubStep("module"); setTab(id); });
+      return;
+    }
+    if (tab === id) return;
+    if (screen === "hub") viewTransition(() => setTab(id), { before: () => nameModuleTile(id), after: nameModuleCard });
+    else if (tab) viewTransition(() => setTab(id), { before: nameModuleCard, after: nameModuleCard });
+    else viewTransition(() => { setHubStep("module"); setTab(id); });
+  }
+
+  // From a module back to the hub: the card shrinks into its tile.
+  function goHub() {
+    if (tab) {
+      const from = tab;
+      viewTransition(() => { setCame("module"); setTab(null); }, { before: nameModuleCard, after: () => nameModuleTile(from) });
+    } else if (screen === "systems") {
+      viewTransition(() => { setCame("elsewhere"); setHubStep("module"); });
+    }
+  }
+
+  function pickFromSearch(item: PaletteItem) {
+    setPaletteOpen(false);
+    if (item.kind === "module") openModule(item.id, item.system);
+    else if (screen === "systems") pickSystem(item.system);
+    else if (item.system.id !== system.id) switchSystem(item.system);
+    else if (tab) goHub();
+  }
+
+  // Search: the system's modules first, the tools, then the modules of the
+  // user's other systems, then the systems themselves.
+  function searchItems(): PaletteItem[] {
+    const module = (id: Tab, sys: FPSystem, named: boolean): PaletteItem => ({
+      kind: "module", id, system: sys, label: MODULES[id].label(t),
+      sub: named ? `${sys.name} · ${MODULES[id].desc(t)}` : MODULES[id].desc(t),
+    });
+    const here = screen === "systems" ? [] : systemTabsOf(system.id).map(id => module(id, system, false));
+    const tools = toolTabs.map(id => module(id, system, false));
+    const elsewhere = accessibleSystems
+      .filter(s => screen === "systems" || s.id !== system.id)
+      .flatMap(s => systemTabsOf(s.id).map(id => module(id, s, true)));
+    const systems: PaletteItem[] = accessibleSystems.map(s => ({ kind: "system", system: s, label: s.name, sub: s.url.replace("https://", "") }));
+    return [...here, ...tools, ...elsewhere, ...systems];
+  }
 
   // Show spinner while session loads
   if (sessionStatus === "loading") {
@@ -836,39 +227,66 @@ export default function Dashboard() {
     );
   }
 
-  return (
-    <div className="h-screen bg-surface flex flex-col overflow-hidden font-sans antialiased">
-      {/* Persistent top bar — always visible */}
-      <TopBar lang={lang} setLang={setLang} tab={tab} t={t} syncStatus={syncStatus} railwayOnline={railwayOnline} username={username}/>
+  const strip = screen === "systems" ? null : (
+    <ModuleStrip
+      t={t}
+      current={tab ?? "hub"}
+      systemTabs={systemTabsOf(system.id)}
+      toolTabs={toolTabs}
+      onSelect={id => (id === "hub" ? goHub() : openModule(id))}
+    />
+  );
 
-      {/* Main content */}
+  return (
+    <div className="h-dvh bg-surface flex flex-col overflow-hidden font-sans antialiased">
+      <TopBar
+        t={t}
+        lang={lang}
+        setLang={setLang}
+        systems={accessibleSystems}
+        system={system}
+        showSystem={screen !== "systems" && accessibleSystems.length > 0}
+        strip={strip}
+        onHome={goHub}
+        onPickSystem={switchSystem}
+        onAllSystems={toSystems}
+        onSearch={() => setPaletteOpen(true)}
+        syncStatus={syncStatus}
+        railwayOnline={railwayOnline}
+        autoEnabled={autoEnabled}
+        autoNextRun={autoNextRun}
+        username={username}
+        isAdmin={isAdmin}
+      />
+
       <div className="flex-1 overflow-hidden flex flex-col">
-        {!tab ? (
-          hubStep === "system" && accessibleSystems.length > 1 ? (
-            <SystemSelector t={t} systems={accessibleSystems} onSelect={handleSystemSelect} />
-          ) : (
-            <Hub
-              lang={lang}
-              setLang={setLang}
-              t={t}
-              autoEnabled={autoEnabled}
-              productCount={productCount}
-              onSelect={(t) => setTab(t)}
-              permissions={permissions}
-              onChangeSystem={accessibleSystems.length > 1 ? () => setHubStep("system") : undefined}
-            />
-          )
-        ) : (
-          <ModuleCard
-            tab={tab}
-            onBack={goBack}
+        {screen === "systems" ? (
+          <SystemSelector
+            t={t}
+            systems={accessibleSystems}
+            currentId={system.id}
+            stillId={came === "hub" ? system.id : null}
+            modulesOf={systemTabsOf}
+            onSelect={pickSystem}
+          />
+        ) : screen === "hub" ? (
+          <Hub
+            t={t}
+            lang={lang}
+            system={system}
+            systemTabs={systemTabsOf(system.id)}
+            toolTabs={toolTabs}
             autoEnabled={autoEnabled}
             autoNextRun={autoNextRun}
-            lang={lang}
-            t={t}
-            navTabs={navTabs}
-            onSelectTab={setTab}
-          >
+            productCount={productCount}
+            isAdmin={isAdmin}
+            animate={came !== "module"}
+            canChangeSystem={accessibleSystems.length > 1}
+            onChangeSystem={toSystems}
+            onOpen={id => openModule(id)}
+          />
+        ) : tab && (
+          <ModuleFrame tab={tab} t={t} lang={lang} autoEnabled={autoEnabled} autoNextRun={autoNextRun}>
             {tab === "vbn"      && <VbnChecker       lang={lang} onAutoVbnChange={handleAutoVbnChange} initialAutoEnabled={autoEnabled} initialAutoNextRun={autoNextRun}/>}
             {tab === "create"   && <ProductCreator  lang={lang}/>}
             {tab === "photos"   && <PhotoUploader   lang={lang}/>}
@@ -879,9 +297,14 @@ export default function Dashboard() {
             {tab === "boxweight" && <KenyaBoxWeight   lang={lang}/>}
             {tab === "supplier"  && <KenyaSupplier    lang={lang}/>}
             {tab === "knowledge" && <KnowledgeBase    lang={lang}/>}
-          </ModuleCard>
+          </ModuleFrame>
         )}
       </div>
+
+      {/* The module strip moves to a bottom dock on a phone. */}
+      {strip && <nav className="flex flex-none justify-center border-t border-border bg-surface px-3 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] md:hidden">{strip}</nav>}
+
+      {paletteOpen && <CommandPalette t={t} items={searchItems()} onPick={pickFromSearch} onClose={() => setPaletteOpen(false)} />}
     </div>
   );
 }

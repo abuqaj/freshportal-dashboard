@@ -364,3 +364,250 @@ html, body { height: 100%; margin: 0; }
     animation: none !important;
   }
 }
+
+/* ══ The shell: login, top bar, system and module tiles (2026-10-07) ═══════
+ * Built from the demo the user approved on 2026-10-07. lib/motion.ts writes
+ * the visit's motion level to <html data-motion="full|lite|off"> and, where
+ * the browser has view transitions, data-vt="on". Only transform and opacity
+ * move, so the compositor runs it on a weak machine too. */
+
+/* Tiles rise in one after another; --i is the tile's place. "backwards",
+ * never "both", for the reason given at tile-enter. */
+@keyframes shell-enter {
+  from { opacity: 0; transform: translateY(18px) scale(0.97); }
+}
+[data-enter] {
+  animation: shell-enter 0.6s cubic-bezier(0.34, 1.36, 0.64, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 50ms);
+}
+[data-motion="lite"] [data-enter] {
+  animation-duration: 0.25s;
+  animation-timing-function: ease-out;
+  animation-delay: calc(var(--i, 0) * 25ms);
+}
+[data-motion="off"] [data-enter] { animation: none; }
+/* Without view transitions the module card slides in as it used to. */
+html:not([data-vt]) .shell-fallback-enter {
+  animation: module-enter 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94) backwards;
+}
+
+/* ─── View transitions between screens (lib/motion.ts viewTransition) ─── */
+::view-transition-group(*) {
+  animation-duration: var(--vt-dur, 440ms);
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+::view-transition-old(root) { animation: vt-out calc(var(--vt-dur, 440ms) * 0.45) ease-out both; }
+::view-transition-new(root) { animation: vt-in var(--vt-dur, 440ms) cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes vt-out { to { opacity: 0; } }
+@keyframes vt-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes vt-in-plain { from { opacity: 0; } }
+/* A system tile's flag into the hub header and back */
+::view-transition-group(sys-art) { border-radius: 16px; overflow: hidden; }
+::view-transition-old(sys-art), ::view-transition-new(sys-art) { width: 100%; height: 100%; object-fit: cover; }
+/* A module tile into the module card and back */
+::view-transition-group(mod-card) { border-radius: 24px; overflow: hidden; z-index: 3; }
+::view-transition-old(mod-card), ::view-transition-new(mod-card) { width: 100%; height: 100%; object-fit: cover; object-position: 50% 0; }
+::view-transition-old(mod-card) { animation: vt-out calc(var(--vt-dur, 440ms) * 0.35) ease-out both; }
+::view-transition-new(mod-card) { animation: vt-in-plain calc(var(--vt-dur, 440ms) * 0.7) calc(var(--vt-dur, 440ms) * 0.18) ease-out both; }
+::view-transition-group(navbar) { z-index: 4; }
+::view-transition-group(mod-icon), ::view-transition-group(brand) { z-index: 10; }
+
+/* ─── Login ─── */
+/* kokonutui's background-paths: two fans of thin curves, drawn in once by
+ * anime.js, then drifting slowly as whole layers (Full only). */
+.lg-paths { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: var(--color-emerald); opacity: 0; transition: opacity 0.6s ease; }
+.lg-paths.is-on { opacity: 1; }
+.lg-paths svg { position: absolute; inset: -4%; width: 108%; height: 108%; }
+.lg-paths .lg-paths-b { color: var(--color-brick); opacity: 0.55; }
+[data-motion="full"] .lg-paths .lg-paths-a { will-change: transform; animation: lg-drift-a 28s ease-in-out infinite alternate; }
+[data-motion="full"] .lg-paths .lg-paths-b { will-change: transform; animation: lg-drift-b 34s ease-in-out infinite alternate; }
+@keyframes lg-drift-a { to { transform: translate(-2.4%, 1.2%); } }
+@keyframes lg-drift-b { to { transform: translate(2%, -1.4%); } }
+@keyframes lg-rise { from { opacity: 0; transform: translateY(16px); } }
+.lg-rise { animation: lg-rise 0.7s cubic-bezier(0.34, 1.36, 0.64, 1) backwards; animation-delay: calc(var(--i, 0) * 80ms); }
+[data-motion="off"] .lg-rise { animation: none; }
+/* The company runner from delivery import: idle he bobs, while the sign-in
+ * runs he runs on the spot (the mascot-* keyframes above), a refusal trips
+ * him and a success sends him off to the right. */
+.lg-mascot { position: relative; width: 156px; aspect-ratio: 435 / 348; transition: translate 0.62s cubic-bezier(0.55, 0, 0.85, 0.25); }
+.lg-mascot.is-exit { translate: 120vw 0; }
+.lg-mascot-body { position: absolute; inset: 0; }
+.lg-mascot-hat { position: absolute; left: 24.8%; top: 12.6%; width: 18.4%; aspect-ratio: 1; }
+.lg-mascot-shadow { position: absolute; left: 50%; bottom: -4px; width: 58%; height: 10px; translate: -50% 0; border-radius: 50%; background: radial-gradient(closest-side, rgba(17, 26, 20, 0.26), transparent); }
+.lg-mascot-ground { position: absolute; left: -25%; right: -25%; bottom: -7px; height: 3px; border-radius: 2px; opacity: 0; transition: opacity 0.2s; background: repeating-linear-gradient(90deg, #C4DED0 0 18px, transparent 18px 36px); }
+[data-motion="full"] .lg-mascot:not(.is-run) .lg-mascot-body { animation: lg-idle 3.6s ease-in-out infinite; }
+@keyframes lg-idle { 0%, 100% { transform: translateY(0) rotate(-1deg); } 50% { transform: translateY(-5px) rotate(1deg); } }
+.lg-mascot.is-run .lg-mascot-body { transform-origin: 50% 100%; animation: mascot-stride 0.42s ease-in-out infinite; }
+.lg-mascot.is-run .lg-mascot-hat { transform-origin: 50% 60%; animation: mascot-hat 1.68s ease-in-out infinite; }
+.lg-mascot.is-run .lg-mascot-ground { opacity: 1; animation: mascot-ground 0.42s linear infinite; }
+.lg-mascot.is-run .lg-mascot-shadow { animation: mascot-shadow 0.42s ease-in-out infinite; }
+.lg-mascot.is-trip .lg-mascot-body { animation: lg-trip 0.5s ease-out; }
+@keyframes lg-trip { 30% { transform: rotate(-9deg) translateY(2px); } 60% { transform: rotate(4deg); } }
+[data-motion="off"] .lg-mascot, [data-motion="off"] .lg-mascot * { animation: none !important; transition: none !important; }
+/* A pen traces the logo once, over the logo itself, which is always there. */
+.lg-trace { opacity: 0; transition: opacity 0.7s ease; }
+/* Fields: the label sits in the field and moves up once there is text. */
+.lg-field { position: relative; display: block; height: 50px; border-radius: 14px; border: 1px solid var(--color-border); background: var(--color-ground); transition: border-color 0.15s, background-color 0.15s, box-shadow 0.2s; }
+.lg-field:focus-within { border-color: rgb(26 125 69 / 0.55); background: var(--color-surface); box-shadow: 0 0 0 4px rgb(26 125 69 / 0.12); }
+.lg-field.is-bad { border-color: var(--color-brick); background: var(--color-ember-light); }
+.lg-field > svg { position: absolute; left: 14px; top: 16px; width: 17px; height: 17px; color: var(--color-ink-3); transition: color 0.15s; }
+.lg-field:focus-within > svg { color: var(--color-emerald); }
+.lg-field input { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; outline: 0; padding: 20px 44px 5px 42px; font-size: 14px; color: var(--color-ink); border-radius: 14px; }
+.lg-label { position: absolute; left: 42px; top: 15px; font-size: 14px; color: var(--color-ink-3); pointer-events: none; transform-origin: 0 0; transition: translate 0.2s cubic-bezier(0.22, 1, 0.36, 1), scale 0.2s cubic-bezier(0.22, 1, 0.36, 1), color 0.2s; }
+.lg-field input:focus ~ .lg-label, .lg-field input:not(:placeholder-shown) ~ .lg-label { translate: 0 -9px; scale: 0.76; color: var(--color-ink-2); }
+/* The round sign-in button: arrow, then a ring while it works, then a tick. */
+.lg-go-st { position: absolute; inset: 0; display: grid; place-items: center; opacity: 0; scale: 0.5; transition: opacity 0.16s, scale 0.3s cubic-bezier(0.34, 1.36, 0.64, 1); }
+.lg-go[data-phase="idle"] .lg-go-idle, .lg-go[data-phase="busy"] .lg-go-busy, .lg-go[data-phase="ok"] .lg-go-ok { opacity: 1; scale: 1; }
+/* A refused form shakes (lib/motion.ts shake, when Motion has not arrived). */
+@keyframes shell-shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-8px); }
+  40%, 60% { transform: translateX(8px); }
+}
+.shell-shake { animation: shell-shake 0.42s cubic-bezier(0.36, 0.07, 0.19, 0.97); }
+/* Text that is waiting (kokonutui and bklit's shimmering text), in the palette */
+.shimmer-ink {
+  background: linear-gradient(90deg, var(--color-ink-3) 0%, var(--color-ink-3) 38%, var(--color-emerald) 50%, var(--color-ink-3) 62%, var(--color-ink-3) 100%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-ink 1.6s linear infinite;
+}
+@keyframes shimmer-ink { from { background-position: 100% 0; } to { background-position: -160% 0; } }
+[data-motion="off"] .shimmer-ink { animation: none; background: none; color: var(--color-ink-3); }
+
+/* ─── Module strip in the top bar (bottom dock on a phone) ─── */
+/* Each module in its own colour; the open one at full strength, ringed and
+ * named (user, 2026-10-07: "bardziej oczywiste, np. w kolorach modułów"). */
+.strip { position: relative; display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 15px; background: var(--color-ground); border: 1px solid var(--color-border); max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.strip-tab { position: relative; display: inline-flex; align-items: center; flex: none; height: 32px; min-width: 32px; padding: 0 7px; border-radius: 10px; color: #fff; background: linear-gradient(135deg, var(--g1), var(--g2)); opacity: 0.72; --ic-bg: var(--g1); cursor: pointer; transition: opacity 0.2s, scale 0.18s cubic-bezier(0.34, 1.36, 0.64, 1), box-shadow 0.25s; }
+.strip-tab:hover { opacity: 1; }
+.strip-tab:active { scale: 0.92; }
+.strip-tab[aria-current="page"] { opacity: 1; box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px color-mix(in srgb, var(--g1) 40%, transparent); }
+.strip-tab > svg { width: 18px; height: 18px; flex: none; }
+.strip-label { display: grid; grid-template-columns: 0fr; transition: grid-template-columns 0.4s cubic-bezier(0.34, 1.36, 0.64, 1), margin-left 0.4s cubic-bezier(0.34, 1.36, 0.64, 1); }
+.strip-label > span { min-width: 0; overflow: hidden; white-space: nowrap; font-size: 12.5px; font-weight: 700; }
+.strip-tab[aria-current="page"] .strip-label { grid-template-columns: 1fr; margin-left: 7px; }
+.strip-home { background: var(--color-surface); color: var(--color-ink-2); opacity: 1; box-shadow: inset 0 0 0 1px var(--color-border); }
+.strip-home:hover { color: var(--color-ink); }
+.strip-home[aria-current="page"] { background: var(--color-ink); color: #fff; box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px rgb(17 26 20 / 0.22); }
+.strip-sep { width: 1px; height: 18px; margin: 0 2px; background: var(--color-border); flex: none; }
+
+/* ─── System tiles ─── */
+/* The flag fills the tile and darkens towards the caption, as before; a logo
+ * stays on white with neither the brand strip nor the darkening (user,
+ * 2026-10-07). The light under the pointer is kokonutui's spotlight card. */
+.sys-tile { position: relative; display: block; min-height: 204px; border-radius: 24px; overflow: hidden; text-align: left; isolation: isolate; cursor: pointer; transition: translate 0.3s cubic-bezier(0.22, 1, 0.36, 1), scale 0.18s cubic-bezier(0.34, 1.36, 0.64, 1), box-shadow 0.2s; }
+.sys-tile.is-logo { background: var(--color-surface); box-shadow: inset 0 0 0 1px var(--color-border); }
+.sys-tile:hover { translate: 0 -3px; }
+.sys-tile:active { scale: 0.98; }
+.sys-tile.is-on { box-shadow: 0 0 0 3px var(--color-ground), 0 0 0 6px var(--color-emerald); }
+.sys-art { position: absolute; inset: 0; display: block; overflow: hidden; }
+.sys-art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; will-change: transform; transition: scale 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+.sys-tile:hover .sys-art img { scale: 1.05; }
+.is-logo .sys-art img { object-fit: contain; padding: 28px 28px 92px; }
+.sys-scrim { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(to top, rgb(0 0 0 / 0.72), rgb(0 0 0 / 0.22) 52%, rgb(0 0 0 / 0)); }
+.sys-art::after { content: ""; position: absolute; inset: 0; background: #000; opacity: 0; transition: opacity 0.3s; }
+.sys-tile:hover .sys-art::after { opacity: 0.14; }
+.is-logo .sys-scrim, .is-logo .sys-art::after { display: none; }
+.sys-spot { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%), rgb(255 255 255 / 0.22), transparent 62%); opacity: 0; transition: opacity 0.25s; }
+[data-motion="full"] .sys-tile:hover .sys-spot { opacity: 1; }
+.sys-cap { position: absolute; inset: auto 0 0; display: flex; align-items: flex-end; gap: 12px; padding: 16px 16px 16px 18px; z-index: 2; }
+.sys-name { display: block; width: fit-content; max-width: 100%; color: #fff; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; text-shadow: 0 1px 3px rgb(0 0 0 / 0.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.is-logo .sys-name { color: var(--color-ink); text-shadow: none; }
+.sys-go { width: 34px; height: 34px; border-radius: 50%; background: rgb(0 0 0 / 0.32); color: #fff; display: grid; place-items: center; flex: none; transition: background-color 0.3s, color 0.3s, translate 0.3s cubic-bezier(0.34, 1.36, 0.64, 1); }
+.sys-tile:hover .sys-go { background: rgb(0 0 0 / 0.52); translate: 3px 0; }
+.is-logo .sys-go { background: var(--color-ground); color: var(--color-ink-2); }
+.sys-tile.is-logo:hover .sys-go { background: var(--color-ink); color: #fff; }
+.sys-check { position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; border-radius: 50%; background: #fff; color: var(--color-emerald); display: grid; place-items: center; box-shadow: 0 2px 6px rgb(0 0 0 / 0.25); z-index: 2; }
+/* A module in its own colours, on a system tile */
+.mod-chip { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, var(--g1), var(--g2)); --ic-bg: var(--g1); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.3); }
+.is-logo .mod-chip, .mod-chip.is-plain { box-shadow: none; }
+.mod-chip > svg { width: 15px; height: 15px; }
+@media (max-width: 520px) {
+  .sys-tile { min-height: 150px; }
+  .sys-cap { padding: 12px; }
+  .sys-name { font-size: 15px; }
+  .is-logo .sys-art img { padding: 16px 18px 72px; }
+}
+
+/* ─── Hub ─── */
+.hub-art { position: relative; display: block; width: 112px; aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden; flex: none; background: #fff; box-shadow: 0 0 0 1px var(--color-muted); }
+.hub-art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.hub-art.is-logo img { object-fit: contain; padding: 11% 22%; }
+.hub-art-scrim { position: absolute; inset: 0; background: linear-gradient(to top, rgb(0 0 0 / 0.34), rgb(0 0 0 / 0) 62%); }
+.hub-art.is-logo .hub-art-scrim { display: none; }
+@media (max-width: 560px) { .hub-art { width: 76px; border-radius: 11px; } }
+/* A module tile wears its gradient (the tiles' look the user kept, 2026-10-07) */
+.mod-tile { position: relative; display: flex; flex-direction: column; min-height: 178px; padding: 18px; border-radius: 24px; text-align: left; color: #fff; background: linear-gradient(135deg, var(--g1), var(--g2)); isolation: isolate; --ic-bg: var(--g1); cursor: pointer; transition: translate 0.3s cubic-bezier(0.22, 1, 0.36, 1), scale 0.18s cubic-bezier(0.34, 1.36, 0.64, 1); }
+/* The hover shadow is a layer of its own whose opacity changes, not an animated box-shadow. */
+.mod-tile::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: 0 24px 44px -20px color-mix(in srgb, var(--g1) 75%, transparent); opacity: 0; transition: opacity 0.3s; z-index: -1; pointer-events: none; }
+.mod-tile:hover { translate: 0 -3px; }
+.mod-tile:hover::after { opacity: 1; }
+.mod-tile:active { scale: 0.98; }
+.mod-tile-wm { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; pointer-events: none; z-index: -1; }
+.mod-tile-wm > svg { position: absolute; right: -26px; bottom: -34px; width: 168px; height: 168px; opacity: 0.11; transition: rotate 0.7s cubic-bezier(0.22, 1, 0.36, 1), scale 0.7s cubic-bezier(0.22, 1, 0.36, 1); }
+.mod-tile:hover .mod-tile-wm > svg { rotate: -8deg; scale: 1.07; }
+.mod-badge { position: relative; width: 54px; height: 54px; border-radius: 17px; background: rgb(255 255 255 / 0.16); display: grid; place-items: center; flex: none; }
+.mod-badge > svg { width: 26px; height: 26px; }
+.mod-go { margin-left: auto; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: rgb(255 255 255 / 0.18); color: #fff; flex: none; transition: background-color 0.2s, color 0.2s, translate 0.3s cubic-bezier(0.34, 1.36, 0.64, 1); }
+.mod-tile:hover .mod-go { background: #fff; color: var(--g1); translate: 3px 0; }
+.mod-tile-top { display: flex; align-items: flex-start; }
+.mod-tile-text { display: flex; flex-direction: column; gap: 5px; margin-top: auto; padding-top: 20px; min-width: 0; }
+@media (max-width: 767px) {
+  .mod-tile { min-height: 0; flex-direction: row; align-items: center; gap: 14px; padding: 14px; }
+  .mod-tile-top { display: contents; }
+  .mod-tile-text { order: 1; flex: 1; margin: 0; padding: 0; }
+  .mod-go { order: 2; }
+  .mod-badge { width: 48px; height: 48px; border-radius: 15px; }
+}
+/* Tools: History, Admin, Knowledge base, smaller, below the system's modules */
+.tool-tile { position: relative; display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 10px; border-radius: 18px; background: var(--color-surface); border: 1px solid var(--color-border); text-align: left; --ic-bg: var(--g1); cursor: pointer; transition: translate 0.3s cubic-bezier(0.22, 1, 0.36, 1), scale 0.18s cubic-bezier(0.34, 1.36, 0.64, 1), border-color 0.2s; }
+.tool-tile:hover { translate: 0 -2px; border-color: color-mix(in srgb, var(--g1) 35%, var(--color-border)); }
+.tool-tile:active { scale: 0.98; }
+.tool-badge { position: relative; width: 42px; height: 42px; border-radius: 13px; color: #fff; background: linear-gradient(135deg, var(--g1), var(--g2)); display: grid; place-items: center; flex: none; }
+.tool-badge > svg { width: 21px; height: 21px; }
+.tool-chev { margin-left: auto; width: 16px; height: 16px; color: var(--color-ink-3); flex: none; transition: translate 0.3s cubic-bezier(0.34, 1.36, 0.64, 1), color 0.2s; }
+.tool-tile:hover .tool-chev { translate: 3px 0; color: var(--g1); }
+/* Something waiting, counted on an icon (PDF invoices for IT on Admin) */
+.shell-count { position: absolute; top: -6px; right: -7px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; background: var(--color-brick); color: #fff; font-size: 11px; font-weight: 700; line-height: 19px; text-align: center; box-shadow: 0 0 0 2px var(--color-surface); }
+
+/* ─── Module icons: their parts move on hover (lib/motion.ts playIcon) ─── */
+.module-icon .ic-spin { transform-box: view-box; transform-origin: 12px 12px; }
+.module-icon .ic-bar { transform-box: fill-box; transform-origin: 50% 100%; }
+.module-icon .ic-pop { transform-box: fill-box; transform-origin: 50% 50%; }
+.module-icon .ic-lift { transform-box: fill-box; transform-origin: 50% 100%; }
+.module-icon .ic-swing { transform-box: view-box; transform-origin: 12px 5px; }
+/* The same moves in CSS, until anime.js has arrived */
+.ic-css .ic-spin { animation: ic-spin 0.7s ease-in-out; }
+.ic-css .ic-bar { animation: ic-bar 0.5s cubic-bezier(0.34, 1.36, 0.64, 1) backwards; }
+.ic-css .ic-bar:nth-child(2) { animation-delay: 0.07s; }
+.ic-css .ic-bar:nth-child(3) { animation-delay: 0.14s; }
+.ic-css .ic-pop { animation: ic-pop 0.42s ease; }
+.ic-css .ic-lift { animation: ic-lift 0.5s ease; }
+.ic-css .ic-swing { animation: ic-swing 0.6s ease-in-out; }
+@keyframes ic-spin { to { transform: rotate(360deg); } }
+@keyframes ic-bar { from { transform: scaleY(0.15); } }
+@keyframes ic-pop { 50% { transform: scale(1.3); } }
+@keyframes ic-lift { 40% { transform: translateY(-2.5px); } }
+@keyframes ic-swing { 25% { transform: rotate(-12deg); } 50% { transform: rotate(9deg); } 75% { transform: rotate(-5deg); } }
+
+/* ─── Search (Ctrl K), kokonutui's action search bar ─── */
+.palette-backdrop { position: fixed; inset: 0; z-index: 400; display: flex; justify-content: center; align-items: flex-start; padding: 11vh 16px 16px; background: rgb(17 26 20 / 0.3); animation: popup-backdrop-in 0.16s ease-out backwards; }
+.palette-panel { width: 100%; max-width: 540px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 18px; box-shadow: 0 30px 80px -20px rgb(17 26 20 / 0.45); overflow: hidden; }
+.palette-panel.css-in { animation: popup-in 0.22s cubic-bezier(0.34, 1.3, 0.64, 1) backwards; }
+[data-motion="off"] .palette-backdrop, [data-motion="off"] .palette-panel { animation: none; }
+
+/* ─── A number whose digits roll into place (bklit's NumberFlow) ─── */
+.roll { display: inline-flex; font-variant-numeric: tabular-nums; }
+.roll-digit { display: inline-block; height: 1.25em; line-height: 1.25em; overflow: hidden; vertical-align: bottom; }
+.roll-col { display: flex; flex-direction: column; transition: transform 0.8s cubic-bezier(0.34, 1.36, 0.64, 1); }
+.roll-col > span { height: 1.25em; }
+[data-motion="off"] .roll-col { transition: none; }
+
+/* Before lib/motion.ts has run on the first paint, the system's own setting rules. */
+@media (prefers-reduced-motion: reduce) {
+  [data-enter], .lg-rise, .lg-paths svg, .lg-mascot-body { animation: none !important; }
+}

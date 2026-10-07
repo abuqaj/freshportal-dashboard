@@ -3,10 +3,14 @@ export interface FPSystem {
   name: string;
   url: string;
   svgPath: string;
-  /** What svgPath holds. A flag fills the tile and hides whatever sits
-   *  behind it; a logo has to stay readable, so its tile keeps a light
-   *  surface and the brand colour moves to a strip. */
+  /** What svgPath holds. A flag fills the tile, darkened towards the
+   *  caption; a logo has to stay readable, so its tile keeps a plain light
+   *  surface, with neither the brand colour nor the darkening (user,
+   *  2026-10-07). */
   art: "flag" | "logo";
+  /** A test environment rather than a brand: shown as a row of its own
+   *  under the system tiles. */
+  environment?: boolean;
   /** Brand colour as a Tailwind class, written out so the JIT can see it.
    *  The one place a system's colour is decided — Admin > Groups reads it
    *  from here rather than keeping a second copy of the palette. */
@@ -38,7 +42,9 @@ export const FP_SYSTEMS: FPSystem[] = [
     id: "ecuador",
     name: "Ecuador",
     url: "https://850255.freshportal.nl",
-    svgPath: "/icons/systems/ecuador.svg",
+    // The flag rendered from ecuador.svg at twice the tile's size: 14 KB
+    // where the SVG, a thousand paths of coat of arms, was 94 KB over the wire.
+    svgPath: "/icons/systems/ecuador.webp",
     art: "flag",
     accent: "bg-[#ffcc00]",
     fallbackGradient: "bg-gradient-to-br from-[#ffcc00] to-[#C79E00]",
@@ -80,6 +86,7 @@ export const FP_SYSTEMS: FPSystem[] = [
     url: "https://850255test.freshportal.com",
     svgPath: "/icons/systems/test.svg",
     art: "logo",
+    environment: true,
     accent: "bg-[#475569]",
     fallbackGradient: "bg-gradient-to-br from-[#64748b] to-[#334155]",
   },

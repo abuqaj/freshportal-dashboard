@@ -28,7 +28,7 @@ function contentSecurityPolicy(nonce: string): string {
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' https://www.clarity.ms https://scripts.clarity.ms${dev ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
-    `img-src 'self' data: blob: https://flagcdn.com ${clarity}`,
+    `img-src 'self' data: blob: ${clarity}`,
     "font-src 'self'",
     `connect-src 'self' ${origin(RAILWAY)} ${clarity}`,
     "object-src 'self' blob:",
@@ -60,6 +60,9 @@ export default auth((req) => {
     pathname.startsWith("/favicon") ||
     pathname === "/logo.svg" ||
     pathname === "/iconffs.png" ||
+    // The runner and his hat stand over the login card.
+    pathname === "/mascot-runner.svg" ||
+    pathname === "/fast-delivery-hat.svg" ||
     pathname.startsWith("/icons/")
   ) {
     return next(req)

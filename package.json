@@ -10,11 +10,13 @@
   },
   "dependencies": {
     "@vercel/postgres": "^0.10.0",
+    "animejs": "^4.5.0",
     "bcryptjs": "^2.4.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "jose": "^5.0.0",
     "lucide-react": "^1.49.0",
+    "motion": "^12.23.28",
     "next": "15.3.8",
     "next-auth": "beta",
     "radix-ui": "^1.6.7",

@@ -45,15 +45,18 @@ function TooltipContent({ className, sideOffset = 6, children, ...props }: React
 
 // The shorthand screens use: wraps one element (which must take a ref and
 // pointer handlers, as buttons, spans and links do) and shows `content` on
-// hover or keyboard focus. Nothing to say, no tooltip.
-function Tip({ content, children, side }: {
+// hover or keyboard focus. Nothing to say, no tooltip. `delay` holds back a
+// tooltip over something big, such as a module tile, that the pointer often
+// only crosses.
+function Tip({ content, children, side, delay }: {
   content?: React.ReactNode;
   children: React.ReactElement;
   side?: "top" | "right" | "bottom" | "left";
+  delay?: number;
 }) {
   if (content == null || content === false || content === "") return children;
   return (
-    <Tooltip>
+    <Tooltip delayDuration={delay}>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent side={side}>{content}</TooltipContent>
     </Tooltip>

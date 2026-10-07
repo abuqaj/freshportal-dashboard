@@ -138,18 +138,23 @@ def check_translations(i18n: Path) -> None:
 
 
 def check_tab_maps(page: Path) -> None:
-    text = page.read_text(encoding="utf-8")
-    union = re.search(r"^type Tab\s*=\s*([^;]+);", text, re.M)
+    # Since 2026-10-07 the Tab type and most maps over it live in the shell's
+    # own files (src/components/shell: modules.tsx, ModuleFrame.tsx); page.tsx
+    # still renders the tabs. All of them are read as one text.
+    shell = page.parent.parent / "components" / "shell"
+    sources = [page] + (sorted(shell.glob("*.tsx")) if shell.is_dir() else [])
+    text = "\n".join(path.read_text(encoding="utf-8") for path in sources)
+    union = re.search(r"^(?:export )?type Tab\s*=\s*([^;]+);", text, re.M)
     if not union:
-        report("FAIL", "Tab maps", "`type Tab` not found in page.tsx")
+        report("FAIL", "Tab maps", "`type Tab` not found in page.tsx or src/components/shell")
         return
     tabs = set(re.findall(r'"([\w-]+)"', union.group(1)))
     problems, warnings = [], []
-    for block in re.finditer(r"^const (\w+)\s*:\s*Record<Tab,[^=]*=\s*\{(.*?)^\};", text, re.M | re.S):
+    for block in re.finditer(r"^(?:export )?const (\w+)\s*:\s*Record<Tab,.*?>\s*=\s*\{(.*?)^\};", text, re.M | re.S):
         keys = set(re.findall(r"^\s*([\w-]+)\s*:", block.group(2), re.M))
         problems += [f"{block.group(1)} is missing '{tab}'" for tab in sorted(tabs - keys)]
         problems += [f"{block.group(1)} has '{key}', which is not a Tab" for key in sorted(keys - tabs)]
-    for block in re.finditer(r"^const (\w+)\s*:\s*Tab\[\]\s*=\s*\[([^\]]*)\]", text, re.M):
+    for block in re.finditer(r"^(?:export )?const (\w+)\s*:\s*Tab\[\]\s*=\s*\[([^\]]*)\]", text, re.M):
         problems += [f"{block.group(1)} lists '{tab}', which is not a Tab"
                      for tab in re.findall(r'"([\w-]+)"', block.group(2)) if tab not in tabs]
     nav = re.search(r"^const NAV_TABS_ALL[^=]*=\s*\[(.*?)^\];", text, re.M | re.S)
