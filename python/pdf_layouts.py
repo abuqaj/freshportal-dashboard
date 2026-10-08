@@ -232,13 +232,18 @@ MYSTICFLOWERS = LayoutSpec(
     detect=r"MYSTICFLOWERS",
     grid_header=("box n", "tb", "variety", "cantid", "bunche"),
     # BOX N° counts the boxes of the row: "5 H" is five half boxes.
-    columns={"count": 0, "box": 1, "label": 2, "variety": 3, "bunches": 5,
+    columns={"count": 0, "box": 1, "label": 2, "variety": 3, "bunch_grams": 4, "bunches": 5,
              "stems_bunch": 6, "length": 7, "stems": 8, "rate": 9, "subtotal": 10},
     # Eryngium comes as "FR Eryngium Natural BL"; roses by variety alone.
-    product_re=r"^(?:(?:FR\s+)?(?P<species>ERYNGIUM)\s+)?(?P<variety>.+)$",
+    # Gypsophila as "FR Gyp Natural Xlence", PESO "1000 G" (0000318211,
+    # 2026-10-07): read as Florsani's is, "Xlence 1000 gr".
+    product_re=(r"^(?:(?:FR\s+)?(?P<species>ERYNGIUM|GYP)\s+(?:(?<=GYP\s)NATURAL\s+)?)?"
+                r"(?P<variety>.+)$"),
+    bunch_grams_species=r"^Gypsophila$",
     row_model="boxes",
     header={"tx_company": const("MYSTIC FLOWERS S.A."), **FARM_INFO_HEADER},
     box_map=LETTER_BOXES,
+    species_map={"GYP": "Gypsophila"},
     species="Roses",
     # "MIX COLOR" is boxed as "BICO HOT", "RED", "CERISE": which mix it is.
     label_joins_variety=r"^MIX\b",
@@ -1110,9 +1115,18 @@ ATTAR_ROSES = LayoutSpec(
     columns={},
     # "4 QB GR CANDLELIGHT 60 25 20 0.40 500 200.00": boxes, box, garden rose
     # mark, variety, length, stems a bunch, bunches, price, stems, amount.
+    # Since 0068802 (2026-10-07) a box label can follow ("… 125 50.00 OZHD").
     lines=(r"^(?P<count>\d+)\s+(?P<box>[A-Z]{2})\s+(?:(?P<species>GR)\s+)?(?P<variety>.+?)\s+"
            r"(?P<length>\d{2,3})\s+(?P<stems_bunch>\d+)\s+(?P<bunches>\d+)\s+"
-           r"(?P<rate>\d+\.\d+)\s+(?P<stems>\d+)\s+(?P<subtotal>[\d,]+\.\d{2})\s*$",),
+           r"(?P<rate>\d+\.\d+)\s+(?P<stems>\d+)\s+(?P<subtotal>[\d,]+\.\d{2})"
+           r"(?:\s+(?P<label>\S+))?\s*$",
+           # A mix box: the rows under its first variety print no boxes and
+           # no box type, "3 QB CABARET 50 25 3 …" then "GR GLITZ 50 25 3 …";
+           # bunches are the block's, 1 a box each (0068815).
+           r"^(?:(?P<species>GR)\s+)?(?P<variety>[A-Z].+?)\s+"
+           r"(?P<length>\d{2,3})\s+(?P<stems_bunch>\d+)\s+(?P<bunches>\d+)\s+"
+           r"(?P<rate>\d+\.\d+)\s+(?P<stems>\d+)\s+(?P<subtotal>[\d,]+\.\d{2})"
+           r"(?:\s+(?P<label>\S+))?\s*$"),
     product_re="",
     row_model="boxes",
     header={
