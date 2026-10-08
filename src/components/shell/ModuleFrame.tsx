@@ -25,7 +25,7 @@ const MODULE_WIDTH: Record<Tab, string> = {
 // having to remember. These screens opt out because their layout depends on
 // reaching the card edge - full-bleed row dividers, or their own inner card
 // - and an outer padding would leave those lines stopping short.
-const UNPADDED_TABS: Tab[] = ["vbn", "create", "photos", "history", "admin"];
+const UNPADDED_TABS: Tab[] = ["vbn", "create", "photos", "history", "admin", "knowledge"];
 
 /**
  * The card a module sits in. The way back and the other modules live in the

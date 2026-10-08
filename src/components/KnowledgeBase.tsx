@@ -1,7 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ComponentType, type ReactNode } from "react";
+import {
+  Activity, ArrowLeft, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, Clock, FileText, GitCommitHorizontal, History,
+  Inbox, Library, Loader2, MessageCircleQuestion, PackagePlus, RefreshCw, Search, Send, ShieldCheck, Trash2, TriangleAlert, Undo2,
+  Wand2, X,
+} from "lucide-react";
 import { Lang, translations } from "@/lib/i18n";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
+import { Chip, Code, EmptyState, GoButton, IconButton, InfoTip, ModuleHeader, ModuleTabs, Panel, SubTabs, type ChipTone } from "@/components/ui/kit";
+import { cn } from "@/lib/utils";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 const PAGE_SIZE = 20;
@@ -121,8 +130,6 @@ interface Overview {
   last_runs: { skill: string; status: string | null; started_at: string | null; finished_at: string | null }[];
 }
 
-const BTN = "h-8 px-3 rounded-lg text-xs font-semibold transition-all active:scale-[0.97] disabled:opacity-40 disabled:active:scale-100";
-
 async function api<R>(path: string, init?: RequestInit): Promise<R> {
   const res = await fetch(`${RAILWAY}${path}`, init);
   const text = await res.text();
@@ -192,44 +199,85 @@ function kindLabel(kind: string, t: Strings): string {
     : t.kindOther;
 }
 
-function Spinner({ label }: { label: string }) {
+/* ─── Small pieces ───────────────────────────────────────────────────────── */
+
+function Loading({ label }: { label: string }) {
   return (
     <div className="flex items-center justify-center gap-2 py-10 text-sm text-ink-3">
-      <svg className="animate-spin h-4 w-4 text-emerald" viewBox="0 0 24 24" fill="none">
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-      </svg>
-      <span>{label}</span>
+      <Loader2 className="size-4 animate-spin text-emerald" />{label}
     </div>
   );
 }
 
-function ErrorBox({ message }: { message: string }) {
-  return <p className="rounded-lg border border-ember/30 bg-ember/5 px-3 py-2 text-xs text-ember">{message}</p>;
-}
-
-function Empty({ label }: { label: string }) {
-  return <p className="py-10 text-center text-sm text-ink-3">{label}</p>;
-}
-
-function BucketBadge({ bucket, t }: { bucket: ReviewItem["bucket"]; t: Strings }) {
-  const style = bucket === "signoff" ? "bg-amber-50 text-amber-700 border-amber-200"
-    : bucket === "context" ? "bg-sky-50 text-sky-700 border-sky-200"
-    : "bg-emerald/10 text-emerald border-emerald/20";
-  const label = bucket === "signoff" ? t.bucketSignoff : bucket === "context" ? t.bucketContext : t.bucketAuto;
-  return <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border ${style}`}>{label}</span>;
-}
-
-function EvidenceList({ evidence, t }: { evidence: string[] | null; t: Strings }) {
-  if (!evidence || evidence.length === 0) return null;
+function ErrorLine({ message }: { message: string }) {
   return (
-    <div className="text-xs text-ink-3">
-      <span className="font-semibold">{t.evidence}:</span>
-      <ul className="mt-1 flex flex-col gap-0.5">
-        {evidence.map(path => <li key={path}><code className="text-ink break-all">{path}</code></li>)}
-      </ul>
+    <p role="alert" className="flex items-start gap-1.5 text-[12.5px] font-semibold text-brick">
+      <CircleAlert className="mt-px size-[15px] flex-none" /><span className="break-words">{message}</span>
+    </p>
+  );
+}
+
+/** A status sentence as a chip: the words before " · " on it, all of it in the tooltip. */
+function SentenceChip({ tone, icon, text }: { tone: ChipTone; icon?: ComponentType<{ className?: string }>; text: string }) {
+  const short = text.split(" · ")[0];
+  return <Chip tone={tone} icon={icon} tip={short !== text ? text : undefined}>{short}</Chip>;
+}
+
+const BUCKET: Record<ReviewItem["bucket"], { tone: ChipTone; icon: ComponentType<{ className?: string }> }> = {
+  signoff: { tone: "warn", icon: TriangleAlert },
+  context: { tone: "info", icon: MessageCircleQuestion },
+  auto: { tone: "ok", icon: Wand2 },
+};
+
+function BucketChip({ bucket, t }: { bucket: ReviewItem["bucket"]; t: Strings }) {
+  const label = bucket === "signoff" ? t.bucketSignoff : bucket === "context" ? t.bucketContext : t.bucketAuto;
+  return <Chip tone={BUCKET[bucket].tone} icon={BUCKET[bucket].icon}>{label}</Chip>;
+}
+
+/** Why it was proposed and what it rests on, behind an ⓘ. */
+function WhyTip({ why, evidence, t }: { why: string | null; evidence: string[] | null; t: Strings }) {
+  if (!why && !evidence?.length) return null;
+  return (
+    <InfoTip content={
+      <div className="max-w-sm space-y-1.5 text-left">
+        {why && <p><b>{t.why}:</b> {why}</p>}
+        {!!evidence?.length && (
+          <div>
+            <b>{t.evidence}:</b>
+            <ul className="mt-0.5 space-y-0.5">{evidence.map(path => <li key={path} className="break-all font-mono text-[11px]">{path}</li>)}</ul>
+          </div>
+        )}
+      </div>
+    } />
+  );
+}
+
+/** The file a change goes to. */
+function TargetLine({ target, children }: { target: string; children?: ReactNode }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 text-xs">
+      <FileText className="size-4 flex-none text-ink-3" />
+      <span className="min-w-0 truncate font-mono text-ink-2">{target}</span>
+      {children}
     </div>
   );
+}
+
+function Pre({ children }: { children: ReactNode }) {
+  return <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-border bg-ground px-3 py-2 font-mono text-xs text-ink">{children}</pre>;
+}
+
+function MoreButton({ t, busy, onClick }: { t: Strings; busy?: boolean; onClick: () => void }) {
+  return (
+    <Button variant="ghost" size="sm" className="self-center" disabled={busy} onClick={onClick}>
+      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ChevronDown className="size-3.5" />}{t.loadMore}
+    </Button>
+  );
+}
+
+/** A tab's own line: its name, the explanation behind ⓘ. */
+function TabNote({ label, hint }: { label: string; hint: string }) {
+  return <p className="flex items-center gap-1 text-[13px] font-bold text-ink">{label}<InfoTip content={hint} /></p>;
 }
 
 /* ─── Review ─────────────────────────────────────────────────────────────── */
@@ -260,7 +308,7 @@ function isInstallLocked(item: ReviewItem): boolean {
  *  the laptop collects it within half an hour and makes the commit. */
 function InstallPanel({ item, agents, t, onChanged, children }: {
   item: ReviewItem; agents: AgentState[] | null; t: Strings; onChanged: (item: ReviewItem) => void;
-  children?: React.ReactNode;
+  children?: ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -293,37 +341,43 @@ function InstallPanel({ item, agents, t, onChanged, children }: {
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap gap-2">
-        <button className={`${BTN} bg-sky-700 text-white hover:bg-sky-700/90`}
-          disabled={!pressable || busy} onClick={install}>
-          {words.press(repo)}
-        </button>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Tip content={reason ? blockText(reason, state, t) : undefined}>
+          <span tabIndex={reason ? 0 : undefined} className="outline-none">
+            <Button variant="emphasis" disabled={!pressable || busy} onClick={install}>
+              {busy ? <Loader2 className="size-4 animate-spin" /> : <PackagePlus className="size-4" />}{words.press(repo)}
+            </Button>
+          </span>
+        </Tip>
         {children}
       </div>
       {item.install_state === "blocked" && (
-        <p className="text-xs text-amber-700">{words.blocked}{item.install_message ? `: ${item.install_message}` : ""}</p>
+        <p className="text-xs font-semibold text-brick">{words.blocked}{item.install_message ? `: ${item.install_message}` : ""}</p>
       )}
-      {staleUpdate && <p className="text-xs text-ink">{t.updateStale}</p>}
+      {staleUpdate && <p className="text-xs text-ink-2">{t.updateStale}</p>}
       {item.install_state === "failed" && (
-        <p className="text-xs text-ember">{words.failed}{item.install_message ? `: ${item.install_message}` : ""}</p>
+        <p className="text-xs font-semibold text-brick">{words.failed}{item.install_message ? `: ${item.install_message}` : ""}</p>
       )}
-      {reason && <p className="text-xs text-ink-3">{blockText(reason, state, t)}</p>}
-      {error && <ErrorBox message={error} />}
+      {reason && <p className="flex items-center gap-1.5 text-xs text-ink-3"><Clock className="size-3.5" />{blockText(reason, state, t)}</p>}
+      {error && <ErrorLine message={error} />}
     </div>
   );
 }
 
 /** The item's status, or for an install what the laptop is doing with it. */
-function StatusText({ item, t }: { item: ReviewItem; t: Strings }) {
+function StatusChip({ item, t }: { item: ReviewItem; t: Strings }) {
   if (item.install_state === "installed") {
     return (
-      <span className="text-xs font-medium text-emerald">
-        {installWords(item.kind, t).done}{item.install_commit && <> · <code>{item.install_commit}</code></>}
-      </span>
+      <Chip tone="ok" icon={GitCommitHorizontal} tip={item.install_commit ?? undefined}>
+        {installWords(item.kind, t).done}{item.install_commit && <span className="font-mono"> {item.install_commit.slice(0, 7)}</span>}
+      </Chip>
     );
   }
-  if (item.install_state === "requested") return <span className="text-xs font-medium text-sky-700">{t.installWaiting}</span>;
-  return <span className={`text-xs font-medium ${item.status === "pending" ? "text-amber-700" : "text-ink-3"}`}>{statusLabel(item.status, t)}</span>;
+  if (item.install_state === "requested") return <SentenceChip tone="info" icon={Clock} text={t.installWaiting} />;
+  const tone: ChipTone = item.status === "pending" ? "warn" : item.status === "rejected" ? "bad"
+    : item.status === "applied" ? "ok" : item.status === "closed" ? "mute" : "info";
+  const icon = item.status === "pending" ? Clock : item.status === "rejected" ? X : Check;
+  return <SentenceChip tone={tone} icon={icon} text={statusLabel(item.status, t)} />;
 }
 
 function ReviewCard({ item, agents, t, lang, onDecided }: {
@@ -351,71 +405,69 @@ function ReviewCard({ item, agents, t, lang, onDecided }: {
   const installable = isInstallable(item);
   const locked = installable && isInstallLocked(item);
   const changeable = !locked && ["approved", "approved_always", "rejected", "answered"].includes(item.status);
-  const rejectButton = (
-    <button className={`${BTN} border border-border text-ink-3 hover:text-ember hover:border-ember/40`} disabled={busy !== null} onClick={() => decide("reject")}>{t.reject}</button>
-  );
+  const rejectButton = <IconButton icon={X} tip={t.reject} danger disabled={busy !== null} onClick={() => decide("reject")} />;
 
   return (
-    <div className="step-enter rounded-xl border border-border bg-surface p-4 flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <BucketBadge bucket={item.bucket} t={t} />
-        <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-ground text-ink-3 border border-border">{item.kind}</span>
-        <span className="text-[10px] text-ink-3 ml-auto">{formatWhen(item.created_at, lang)}</span>
+    <div className="step-enter flex flex-col gap-2.5 rounded-[18px] border border-border bg-surface px-4 py-3.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <BucketChip bucket={item.bucket} t={t} />
+        <Chip tone="mute">{item.kind}</Chip>
+        <span className="ml-auto text-[11.5px] text-ink-3">{formatWhen(item.created_at, lang)}</span>
       </div>
-      <h3 className="text-sm font-semibold text-ink">{item.title}</h3>
+      <h3 className="text-[14.5px] font-bold leading-snug text-ink">{item.title}</h3>
 
-      {item.target && (
-        <p className="text-xs text-ink-3">
-          <span className="font-semibold">{t.target}:</span> <code className="text-ink">{item.target}</code>
-        </p>
-      )}
+      {item.target
+        ? <TargetLine target={item.target}><WhyTip why={item.why} evidence={item.evidence} t={t} /></TargetLine>
+        : (!!item.why || !!item.evidence?.length) && <div className="flex"><WhyTip why={item.why} evidence={item.evidence} t={t} /></div>}
       {item.body && (
         <div>
-          <p className="text-[11px] font-semibold text-ink-3 mb-1">{item.bucket === "context" ? t.question : t.proposedChange}</p>
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-ground px-3 py-2 text-xs text-ink font-mono">{item.body}</pre>
+          <p className="mb-1 text-[11px] font-semibold text-ink-3">{item.bucket === "context" ? t.question : t.proposedChange}</p>
+          <Pre>{item.body}</Pre>
         </div>
       )}
-      {item.why && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.why}:</span> {item.why}</p>}
-      <EvidenceList evidence={item.evidence} t={t} />
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-        <StatusText item={item} t={t} />
-        {item.decided_by && <span className="text-[11px] text-ink-3">· {t.decidedBy(item.decided_by, formatWhen(item.decided_at, lang))}</span>}
-      </div>
       {item.status === "answered" && item.answer && (
-        <p className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-xs text-sky-900 whitespace-pre-wrap">{item.answer}</p>
+        <p className="whitespace-pre-wrap rounded-xl border border-taupe/40 bg-sand/50 px-3 py-2 text-xs text-ink">{item.answer}</p>
       )}
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-muted pt-2.5">
+        <StatusChip item={item} t={t} />
+        {item.decided_by && <span className="text-[11.5px] text-ink-3">{t.decidedBy(item.decided_by, formatWhen(item.decided_at, lang))}</span>}
+
+        {/* The decisions, at the end of the line */}
+        <span className="ml-auto flex items-center gap-1">
+          {!installable && pending && item.bucket === "signoff" && (
+            <>
+              {rejectButton}
+              {item.target && !NO_RULE_KINDS.includes(item.kind) && (
+                <IconButton icon={CheckCheck} tip={t.approveAlways} disabled={busy !== null} onClick={() => decide("approve_always")} />
+              )}
+              <GoButton size="go-sm" icon={Check} tip={t.approve} disabled={busy !== null} onClick={() => decide("approve")} />
+            </>
+          )}
+          {changeable && <IconButton icon={Undo2} tip={t.undo} disabled={busy !== null} onClick={() => decide("undo")} />}
+        </span>
+      </div>
 
       {installable && (
         <InstallPanel item={item} agents={agents} t={t} onChanged={onDecided}>
           {pending && rejectButton}
         </InstallPanel>
       )}
-      {!installable && pending && item.bucket === "signoff" && (
-        <div className="flex flex-wrap gap-2">
-          <button className={`${BTN} bg-emerald text-white hover:bg-emerald/90`} disabled={busy !== null} onClick={() => decide("approve")}>{t.approve}</button>
-          {item.target && !NO_RULE_KINDS.includes(item.kind) && (
-            <button className={`${BTN} border border-emerald/40 text-emerald hover:bg-emerald/5`} disabled={busy !== null} onClick={() => decide("approve_always")}>{t.approveAlways}</button>
-          )}
-          {rejectButton}
-        </div>
-      )}
       {pending && item.bucket === "context" && (
-        <div className="flex flex-col gap-2">
+        <div className="flex items-end gap-2">
           <textarea
             value={answer}
             onChange={e => setAnswer(e.target.value)}
             placeholder={t.answerPlaceholder}
+            aria-label={t.answerPlaceholder}
             rows={3}
-            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-emerald/50"
+            className="min-w-0 flex-1 rounded-xl border border-border bg-ground px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-emerald/55 focus:bg-surface focus:ring-4 focus:ring-emerald/12"
           />
-          <button className={`${BTN} self-start bg-emerald text-white hover:bg-emerald/90`} disabled={busy !== null || !answer.trim()} onClick={() => decide("answer")}>{t.sendAnswer}</button>
+          <GoButton size="go-sm" icon={Send} tip={t.sendAnswer} disabled={busy !== null || !answer.trim()} onClick={() => decide("answer")} />
         </div>
       )}
-      {changeable && (
-        <button className={`${BTN} self-start border border-border text-ink-3 hover:text-ink`} disabled={busy !== null} onClick={() => decide("undo")}>{t.undo}</button>
-      )}
-      {error && <ErrorBox message={error} />}
+      {error && <ErrorLine message={error} />}
     </div>
   );
 }
@@ -475,11 +527,6 @@ function ReviewList({ t, lang, kind, excludeKind, hint, onChanged }: {
     onChanged();
   }
 
-  const views: { id: ReviewView; label: string }[] = [
-    { id: "pending", label: t.viewPending },
-    { id: "decided", label: t.viewDecided },
-    { id: "done", label: t.viewDone },
-  ];
   const groups: { bucket: ReviewItem["bucket"] | null; items: ReviewItem[] }[] = !items ? []
     : view === "pending"
       ? [{ bucket: "signoff" as const, items: items.filter(i => i.bucket === "signoff") },
@@ -488,27 +535,34 @@ function ReviewList({ t, lang, kind, excludeKind, hint, onChanged }: {
 
   return (
     <div className="flex flex-col gap-4">
-      {hint && <p className="text-xs text-ink-3">{hint}</p>}
-      <div className="flex gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
-        {views.map(v => (
-          <button key={v.id} onClick={() => setView(v.id)}
-            className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${view === v.id ? "bg-surface text-ink shadow-sm border border-border" : "text-ink-3 hover:text-ink"}`}>
-            {v.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-2">
+        <SubTabs<ReviewView>
+          value={view}
+          onChange={setView}
+          items={[
+            { id: "pending", label: t.viewPending, icon: Clock },
+            { id: "decided", label: t.viewDecided, icon: CheckCheck },
+            { id: "done", label: t.viewDone, icon: Check },
+          ]}
+        />
+        {hint && <InfoTip content={hint} />}
       </div>
-      {error && <ErrorBox message={`${t.loadError} ${error}`} />}
-      {items === null ? <Spinner label={t.loading} />
-        : items.length === 0 ? <Empty label={t.empty} />
+      {error && <ErrorLine message={`${t.loadError} ${error}`} />}
+      {items === null ? <Loading label={t.loading} />
+        : items.length === 0 ? <EmptyState icon={Inbox} text={t.empty} />
         : groups.map(group => (
-          <div key={group.bucket ?? "all"} className="flex flex-col gap-3">
-            {group.bucket && <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-3">{group.bucket === "signoff" ? t.bucketSignoff : t.bucketContext}</h3>}
+          <div key={group.bucket ?? "all"} className="flex flex-col gap-2.5">
+            {group.bucket && (
+              <p className="flex items-center gap-1.5 text-xs font-bold text-ink-3">
+                {(() => { const Ico = BUCKET[group.bucket].icon; return <Ico className="size-3.5" />; })()}
+                {group.bucket === "signoff" ? t.bucketSignoff : t.bucketContext}
+                <span className="font-semibold tabular-nums text-ink-3/70">· {group.items.length}</span>
+              </p>
+            )}
             {group.items.map(item => <ReviewCard key={`${item.id}-${item.status}`} item={item} agents={agents} t={t} lang={lang} onDecided={handleDecided} />)}
           </div>
         ))}
-      {hasMore && (
-        <button className={`${BTN} self-center border border-border text-ink-3 hover:text-ink`} disabled={loading} onClick={() => load(nextOffset())}>{t.loadMore}</button>
-      )}
+      {hasMore && <MoreButton t={t} busy={loading} onClick={() => load(nextOffset())} />}
     </div>
   );
 }
@@ -538,25 +592,23 @@ function RulesPanel({ t, lang }: { t: Strings; lang: Lang }) {
   }
 
   return (
-    <div className="rounded-xl border border-border bg-ground/40 p-4 flex flex-col gap-2">
-      <h3 className="text-sm font-semibold text-ink">{t.rulesTitle}</h3>
-      <p className="text-xs text-ink-3">{t.rulesHint}</p>
-      {error && <ErrorBox message={error} />}
-      {rules === null ? <Spinner label={t.loading} />
+    <Panel title={<>{t.rulesTitle}<InfoTip content={t.rulesHint} /></>} icon={ShieldCheck} className="bg-ground/50">
+      {error && <ErrorLine message={error} />}
+      {rules === null ? <Loading label={t.loading} />
         : rules.length === 0 ? <p className="text-xs text-ink-3">{t.rulesEmpty}</p>
         : (
           <ul className="flex flex-col gap-1.5">
             {rules.map(rule => (
-              <li key={rule.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-xs">
-                <span className="font-medium text-ink">{rule.kind}</span>
-                <code className="text-ink-3 break-all">{rule.target}</code>
-                <span className="text-ink-3 ml-auto">{rule.created_by ?? "—"} · {formatWhen(rule.created_at, lang)}</span>
-                <button className={`${BTN} h-7 border border-border text-ink-3 hover:text-ember`} onClick={() => remove(rule.id)}>{t.removeRule}</button>
+              <li key={rule.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-xs">
+                <Chip tone="mute">{rule.kind}</Chip>
+                <span className="min-w-0 flex-1 break-all font-mono text-ink-2">{rule.target}</span>
+                <span className="text-ink-3">{rule.created_by ?? "—"} · {formatWhen(rule.created_at, lang)}</span>
+                <IconButton size="sm" icon={Trash2} tip={t.removeRule} danger onClick={() => remove(rule.id)} />
               </li>
             ))}
           </ul>
         )}
-    </div>
+    </Panel>
   );
 }
 
@@ -586,52 +638,59 @@ function ChangeLogTab({ t, lang }: { t: Strings; lang: Lang }) {
   useEffect(() => { load(0); }, [load]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <p className="text-xs text-ink-3">{t.changeLogHint}</p>
-      {error && <ErrorBox message={`${t.loadError} ${error}`} />}
-      {entries === null ? <Spinner label={t.loading} />
-        : entries.length === 0 ? <Empty label={t.empty} />
+    <div className="flex flex-col gap-3">
+      <TabNote label={t.tabChangeLog} hint={t.changeLogHint} />
+      {error && <ErrorLine message={`${t.loadError} ${error}`} />}
+      {entries === null ? <Loading label={t.loading} />
+        : entries.length === 0 ? <EmptyState icon={History} text={t.empty} />
         : (
           <ul className="flex flex-col gap-2">
-            {entries.map(entry => (
-              <li key={entry.id} className="rounded-xl border border-border bg-surface">
-                <button className="w-full flex flex-col gap-1 px-4 py-3 text-left" aria-expanded={expanded === entry.id}
-                  onClick={() => setExpanded(expanded === entry.id ? "" : entry.id)}>
-                  <span className="flex flex-wrap items-center gap-2">
-                    {entry.bucket === "auto"
-                      ? <BucketBadge bucket="auto" t={t} />
-                      : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md border bg-ground text-ink-3 border-border">{t.approvedBy(entry.decided_by ?? "—")}</span>}
-                    <span className="text-[10px] text-ink-3 ml-auto">{formatWhen(entry.applied_at, lang)}</span>
-                  </span>
-                  <span className="text-sm font-semibold text-ink">{entry.title}</span>
-                  <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-ink-3">
-                    {entry.target && <span><span className="font-semibold">{t.target}:</span> <code className="text-ink break-all">{entry.target}</code></span>}
-                    {entry.install_commit
-                      ? <span className="text-emerald">{installWords(entry.kind, t).done} · <code>{entry.install_commit}</code></span>
-                      : <span><span className="font-semibold">{t.run}:</span> <code className="text-ink">{entry.applied_by_run ?? "—"}</code></span>}
-                  </span>
-                </button>
-                {expanded === entry.id && (
-                  <div className="step-enter flex flex-col gap-3 border-t border-border mx-4 py-3">
-                    {entry.body && (
-                      <div>
-                        <p className="text-[11px] font-semibold text-ink-3 mb-1">{t.changeMade}</p>
-                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-ground px-3 py-2 text-xs text-ink font-mono">{entry.body}</pre>
-                      </div>
-                    )}
-                    {entry.action && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.actionDone}:</span> {entry.action}</p>}
-                    {entry.verify && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.howToVerify}:</span> {entry.verify}</p>}
-                    {entry.why && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.why}:</span> {entry.why}</p>}
-                    <EvidenceList evidence={entry.evidence} t={t} />
-                  </div>
-                )}
-              </li>
-            ))}
+            {entries.map(entry => {
+              const open = expanded === entry.id;
+              return (
+                <li key={entry.id} className="rounded-[18px] border border-border bg-surface">
+                  <button className="flex w-full items-start gap-2.5 rounded-[18px] px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-emerald/40" aria-expanded={open}
+                    onClick={() => setExpanded(open ? "" : entry.id)}>
+                    <ChevronRight className={cn("mt-0.5 size-4 flex-none text-ink-3/60 transition-transform duration-200", open && "rotate-90")} />
+                    <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        {entry.bucket === "auto"
+                          ? <BucketChip bucket="auto" t={t} />
+                          : <Chip tone="info" icon={Check}>{t.approvedBy(entry.decided_by ?? "—")}</Chip>}
+                        {entry.install_commit
+                          ? <Chip tone="ok" icon={GitCommitHorizontal} tip={entry.install_commit}>{installWords(entry.kind, t).done}</Chip>
+                          : entry.applied_by_run && <Chip tone="mute" icon={Activity} tip={t.run}>{entry.applied_by_run}</Chip>}
+                        <span className="ml-auto text-[11.5px] text-ink-3">{formatWhen(entry.applied_at, lang)}</span>
+                      </span>
+                      <span className="text-[14px] font-bold text-ink">{entry.title}</span>
+                      {entry.target && <TargetLine target={entry.target} />}
+                    </span>
+                  </button>
+                  {open && (
+                    <div className="step-enter mx-4 flex flex-col gap-2.5 border-t border-muted py-3 pl-6">
+                      {entry.body && (
+                        <div>
+                          <p className="mb-1 text-[11px] font-semibold text-ink-3">{t.changeMade}</p>
+                          <Pre>{entry.body}</Pre>
+                        </div>
+                      )}
+                      {entry.action && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.actionDone}:</span> {entry.action}</p>}
+                      {entry.verify && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.howToVerify}:</span> {entry.verify}</p>}
+                      {entry.why && <p className="text-xs text-ink"><span className="font-semibold text-ink-3">{t.why}:</span> {entry.why}</p>}
+                      {!!entry.evidence?.length && (
+                        <div className="text-xs text-ink-3">
+                          <span className="font-semibold">{t.evidence}:</span>
+                          <ul className="mt-1 flex flex-col gap-0.5">{entry.evidence.map(path => <li key={path} className="break-all font-mono text-ink-2">{path}</li>)}</ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
-      {hasMore && (
-        <button className={`${BTN} self-center border border-border text-ink-3 hover:text-ink`} disabled={loading} onClick={() => load(entries?.length ?? 0)}>{t.loadMore}</button>
-      )}
+      {hasMore && <MoreButton t={t} busy={loading} onClick={() => load(entries?.length ?? 0)} />}
     </div>
   );
 }
@@ -684,64 +743,69 @@ function LibraryTab({ t, lang }: { t: Strings; lang: Lang }) {
   if (open) {
     return (
       <div className="step-enter flex flex-col gap-3">
-        <button className={`${BTN} self-start border border-border text-ink-3 hover:text-ink`} onClick={() => setOpen(null)}>← {t.backToList}</button>
-        <h3 className="text-base font-semibold text-ink">{open.title ?? open.path}</h3>
-        <p className="text-xs text-ink-3">
-          {kindLabel(open.kind, t)}{open.topic ? ` · ${open.topic}` : ""}{open.source_date ? ` · ${open.source_date}` : ""} · <code>{open.path}</code>
-        </p>
+        <div className="flex items-start gap-2">
+          <IconButton icon={ArrowLeft} tip={t.backToList} onClick={() => setOpen(null)} />
+          <div className="min-w-0">
+            <h3 className="text-base font-bold text-ink">{open.title ?? open.path}</h3>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
+              <Chip tone="mute">{kindLabel(open.kind, t)}</Chip>
+              {open.topic && <span>{open.topic}</span>}
+              {open.source_date && <span>· {open.source_date}</span>}
+              <span className="break-all font-mono">· {open.path}</span>
+            </div>
+          </div>
+        </div>
         {open.content
-          ? <pre className="whitespace-pre-wrap rounded-lg border border-border bg-ground px-4 py-3 text-xs text-ink font-mono">{open.content}</pre>
-          : <Empty label={t.noContent} />}
+          ? <pre className="whitespace-pre-wrap rounded-xl border border-border bg-ground px-4 py-3 font-mono text-xs text-ink">{open.content}</pre>
+          : <EmptyState icon={FileText} text={t.noContent} />}
       </div>
     );
   }
 
-  const kinds = [
-    { id: "", label: t.kindAll },
-    { id: "thread_summary", label: t.kindThread },
-    { id: "curated", label: t.kindCurated },
-    { id: "inbox", label: t.kindInbox },
-    { id: "wiki", label: t.kindWiki },
-  ];
-
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap gap-2">
-        <input
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder={t.searchPlaceholder}
-          className="h-9 flex-1 min-w-[200px] px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50"
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex h-9 min-w-[200px] flex-1 items-center gap-2 rounded-xl border border-border bg-ground px-3 transition-colors focus-within:border-emerald/55 focus-within:bg-surface focus-within:ring-4 focus-within:ring-emerald/12">
+          <Search className="size-4 flex-none text-ink-3" />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder={t.searchPlaceholder} aria-label={t.searchPlaceholder}
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3/50" />
+        </div>
+        <SubTabs<string>
+          value={kind}
+          onChange={setKind}
+          items={[
+            { id: "", label: t.kindAll },
+            { id: "thread_summary", label: t.kindThread },
+            { id: "curated", label: t.kindCurated },
+            { id: "inbox", label: t.kindInbox },
+            { id: "wiki", label: t.kindWiki },
+          ]}
         />
-        <select value={kind} onChange={e => setKind(e.target.value)}
-          className="h-9 px-3 rounded-lg text-sm border border-border bg-surface outline-none focus:border-emerald/50">
-          {kinds.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
-        </select>
       </div>
-      {error && <ErrorBox message={`${t.loadError} ${error}`} />}
-      {docs === null ? <Spinner label={t.loading} />
-        : docs.length === 0 ? <Empty label={t.empty} />
+      {error && <ErrorLine message={`${t.loadError} ${error}`} />}
+      {docs === null ? <Loading label={t.loading} />
+        : docs.length === 0 ? <EmptyState icon={Library} text={t.empty} />
         : (
-          <ul className="flex flex-col gap-2">
+          <ul className="overflow-hidden rounded-[18px] border border-border">
             {docs.map(doc => (
-              <li key={doc.path}>
+              <li key={doc.path} className="border-b border-muted last:border-0">
                 <button onClick={() => openDoc(doc.path)} disabled={opening !== ""}
-                  className="w-full text-left rounded-xl border border-border bg-surface px-4 py-3 transition-all hover:border-emerald/40 active:scale-[0.995] disabled:opacity-60">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-ground border border-border text-ink-3">{kindLabel(doc.kind, t)}</span>
-                    {doc.topic && <span className="text-[10px] text-ink-3">{doc.topic}</span>}
-                    <span className="text-[10px] text-ink-3 ml-auto">{doc.source_date ?? formatWhen(doc.synced_at, lang)}</span>
-                  </div>
-                  <p className="mt-1 text-sm font-semibold text-ink">{opening === doc.path ? t.loading : (doc.title ?? doc.path)}</p>
-                  {doc.snippet && <p className="mt-0.5 text-xs text-ink-3 line-clamp-2">{doc.snippet}</p>}
+                  className="flex w-full items-start gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-ground/60 focus-visible:bg-ground disabled:opacity-60">
+                  {opening === doc.path ? <Loader2 className="mt-0.5 size-4 flex-none animate-spin text-emerald" /> : <FileText className="mt-0.5 size-4 flex-none text-ink-3" />}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13.5px] font-semibold text-ink">{doc.title ?? doc.path}</span>
+                    {doc.snippet && <span className="mt-0.5 line-clamp-2 block text-xs text-ink-3">{doc.snippet}</span>}
+                  </span>
+                  <span className="flex flex-none flex-col items-end gap-1">
+                    <Chip tone="mute">{kindLabel(doc.kind, t)}</Chip>
+                    <span className="text-[11px] text-ink-3">{doc.source_date ?? formatWhen(doc.synced_at, lang)}</span>
+                  </span>
                 </button>
               </li>
             ))}
           </ul>
         )}
-      {hasMore && (
-        <button className={`${BTN} self-center border border-border text-ink-3 hover:text-ink`} disabled={loading} onClick={() => load(docs?.length ?? 0)}>{t.loadMore}</button>
-      )}
+      {hasMore && <MoreButton t={t} busy={loading} onClick={() => load(docs?.length ?? 0)} />}
     </div>
   );
 }
@@ -768,33 +832,33 @@ function RunsTab({ t, lang }: { t: Strings; lang: Lang }) {
   useEffect(() => { loadRuns(0); }, [loadRuns]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <p className="text-xs text-ink-3">{t.runsHint}</p>
-      {error && <ErrorBox message={`${t.loadError} ${error}`} />}
-
-      <section className="flex flex-col gap-2">
-        {runs === null ? <Spinner label={t.loading} />
-          : runs.length === 0 ? <p className="text-xs text-ink-3">{t.empty}</p>
-          : (
-            <ul className="flex flex-col gap-2">
-              {runs.map(run => (
-                <li key={run.id} className="rounded-xl border border-border bg-surface">
-                  <button className="w-full flex flex-wrap items-center gap-2 px-4 py-3 text-left" onClick={() => setExpanded(expanded === run.id ? "" : run.id)}>
-                    <span className="text-sm font-semibold text-ink">{run.skill}</span>
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${run.status === "ok" ? "bg-emerald/10 text-emerald" : "bg-amber-50 text-amber-700"}`}>{run.status ?? "—"}</span>
-                    <span className="text-xs text-ink-3 ml-auto">{formatWhen(run.started_at, lang)}</span>
+    <div className="flex flex-col gap-3">
+      <TabNote label={t.tabRuns} hint={t.runsHint} />
+      {error && <ErrorLine message={`${t.loadError} ${error}`} />}
+      {runs === null ? <Loading label={t.loading} />
+        : runs.length === 0 ? <EmptyState icon={Activity} text={t.empty} />
+        : (
+          <ul className="overflow-hidden rounded-[18px] border border-border">
+            {runs.map(run => {
+              const open = expanded === run.id;
+              return (
+                <li key={run.id} className="border-b border-muted last:border-0">
+                  <button className="flex w-full flex-wrap items-center gap-2.5 px-4 py-3 text-left outline-none transition-colors hover:bg-ground/60 focus-visible:bg-ground"
+                    aria-expanded={open} onClick={() => setExpanded(open ? "" : run.id)}>
+                    <ChevronRight className={cn("size-4 flex-none text-ink-3/60 transition-transform duration-200", open && "rotate-90", !run.summary && "invisible")} />
+                    <Code>{run.skill}</Code>
+                    <Chip tone={run.status === "ok" ? "ok" : run.status ? "warn" : "mute"} icon={run.status === "ok" ? Check : TriangleAlert}>{run.status ?? "—"}</Chip>
+                    <span className="ml-auto text-[11.5px] text-ink-3">{formatWhen(run.started_at, lang)}</span>
                   </button>
-                  {expanded === run.id && run.summary && (
-                    <pre className="step-enter mx-4 mb-3 whitespace-pre-wrap rounded-lg border border-border bg-ground px-3 py-2 text-xs text-ink font-mono">{run.summary}</pre>
+                  {open && run.summary && (
+                    <div className="step-enter px-4 pb-3 pl-10"><Pre>{run.summary}</Pre></div>
                   )}
                 </li>
-              ))}
-            </ul>
-          )}
-        {hasMore && (
-          <button className={`${BTN} self-center border border-border text-ink-3 hover:text-ink`} onClick={() => loadRuns(runs?.length ?? 0)}>{t.loadMore}</button>
+              );
+            })}
+          </ul>
         )}
-      </section>
+      {hasMore && <MoreButton t={t} onClick={() => loadRuns(runs?.length ?? 0)} />}
     </div>
   );
 }
@@ -802,7 +866,8 @@ function RunsTab({ t, lang }: { t: Strings; lang: Lang }) {
 /* ─── Module ─────────────────────────────────────────────────────────────── */
 
 export default function KnowledgeBase({ lang }: { lang: Lang }) {
-  const t = translations[lang].knowledgeBase;
+  const all = translations[lang];
+  const t = all.knowledgeBase;
   const [tab, setTab] = useState<SubTab>("review");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -817,46 +882,30 @@ export default function KnowledgeBase({ lang }: { lang: Lang }) {
 
   useEffect(() => { loadOverview(); }, [loadOverview, refreshKey]);
 
-  const tabs: { id: SubTab; label: string; count: number }[] = [
-    { id: "review", label: t.tabReview, count: (overview?.pending_review ?? 0) + (overview?.pending_questions ?? 0) },
-    { id: "proposals", label: t.tabProposals, count: overview?.pending_proposals ?? 0 },
-    { id: "changelog", label: t.tabChangeLog, count: 0 },
-    { id: "library", label: t.tabLibrary, count: 0 },
-    { id: "runs", label: t.tabRuns, count: 0 },
-  ];
+  const reviewCount = (overview?.pending_review ?? 0) + (overview?.pending_questions ?? 0);
+  const proposalCount = overview?.pending_proposals ?? 0;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="max-w-2xl">
-          <h2 className="text-base font-semibold text-ink">{t.title}</h2>
-          <p className="text-xs text-ink-3 mt-0.5">{t.intro}</p>
-        </div>
-        <button onClick={() => setRefreshKey(k => k + 1)}
-          className="flex items-center gap-1.5 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-3 py-1.5 bg-surface hover:bg-muted transition-all active:scale-[0.97]">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M10.5 6A4.5 4.5 0 1 1 6 1.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-            <path d="M6 1.5h3v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          {t.refresh}
-        </button>
+    <div>
+      <ModuleHeader tab="knowledge" t={all} info={t.intro}
+        chips={overview ? <Chip tone="info" icon={Library} tip={t.tabLibrary}>{overview.documents.toLocaleString(lang)}</Chip> : null}
+        actions={<IconButton icon={RefreshCw} tip={t.refresh} onClick={() => setRefreshKey(k => k + 1)} />}
+      />
+      <div className="px-5 pb-3">
+        <ModuleTabs<SubTab>
+          value={tab}
+          onChange={setTab}
+          items={[
+            { id: "review", icon: Inbox, label: t.tabReview, count: reviewCount, countTip: t.pendingCount(String(reviewCount)) },
+            { id: "proposals", icon: FileText, label: t.tabProposals, count: proposalCount, countTip: t.pendingCount(String(proposalCount)) },
+            { id: "changelog", icon: History, label: t.tabChangeLog },
+            { id: "library", icon: Library, label: t.tabLibrary },
+            { id: "runs", icon: Activity, label: t.tabRuns },
+          ]}
+        />
       </div>
 
-      <div className="overflow-x-auto">
-        <div className="flex gap-1 bg-ground border border-border rounded-xl p-1 w-fit min-w-max">
-          {tabs.map(item => (
-            <button key={item.id} onClick={() => setTab(item.id)}
-              className={`flex items-center gap-1.5 text-xs px-3 sm:px-4 py-1.5 rounded-lg font-medium transition-colors ${tab === item.id ? "bg-surface text-ink shadow-sm border border-border" : "text-ink-3 hover:text-ink"}`}>
-              {item.label}
-              {item.count > 0 && (
-                <span title={t.pendingCount(String(item.count))} className="min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">{item.count}</span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div key={`${tab}-${refreshKey}`} className="step-enter overflow-y-auto max-h-[calc(100vh-300px)] pr-1">
+      <div key={`${tab}-${refreshKey}`} className="step-enter max-h-[calc(100vh-300px)] overflow-y-auto border-t border-muted px-5 py-4">
         {tab === "review" && (
           <div className="flex flex-col gap-5">
             <ReviewList t={t} lang={lang} excludeKind={PROPOSAL_KIND} onChanged={loadOverview} />
