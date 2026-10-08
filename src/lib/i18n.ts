@@ -81,6 +81,9 @@ const en = {
     fixingTitle:             "Fixing VBN codes…",
     doneTitle:               "Fix complete",
     doneFailed:              (n: number) => `${n} failed`,
+    stepSearch:              "Search",
+    stepCheck:               "Check",
+    stepFix:                 "Fix",
   },
   create: {
     description:     "Enter a product name — the system will find similar products or copy the closest one",
@@ -1143,6 +1146,9 @@ const nl: typeof en = {
     fixingTitle:             "VBN-codes corrigeren…",
     doneTitle:               "Correctie voltooid",
     doneFailed:              (n: number) => `${n} mislukt`,
+    stepSearch:              "Zoeken",
+    stepCheck:               "Controleren",
+    stepFix:                 "Herstellen",
   },
   create: {
     description:     "Voer een productnaam in — het systeem zoekt vergelijkbare producten of kopieert het dichtstbijzijnde",
@@ -2189,6 +2195,9 @@ const pl: typeof en = {
     fixingTitle:             "Poprawianie kodów VBN…",
     doneTitle:               "Poprawianie zakończone",
     doneFailed:              (n: number) => `${n} nieudanych`,
+    stepSearch:              "Szukaj",
+    stepCheck:               "Sprawdź",
+    stepFix:                 "Popraw",
   },
   create: {
     description:     "Wpisz nazwę produktu — system znajdzie podobne lub stworzy kopię najbliższego",
@@ -3235,6 +3244,9 @@ const es: typeof en = {
     fixingTitle:             "Corrigiendo códigos VBN…",
     doneTitle:               "Corrección completada",
     doneFailed:              (n: number) => `${n} fallidos`,
+    stepSearch:              "Buscar",
+    stepCheck:               "Revisar",
+    stepFix:                 "Corregir",
   },
   create: {
     description:     "Introduce un nombre de producto — el sistema buscará similares o copiará el más cercano",

@@ -2,8 +2,18 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { flushSync, createPortal } from "react-dom";
+import {
+  CalendarClock, Check, ChevronRight, CircleAlert, Clock, EyeOff, List, Loader2, Play, RotateCcw, Search, TriangleAlert, Undo2, X, Zap,
+} from "lucide-react";
 import { translations, Lang } from "@/lib/i18n";
 import { VbnResult, Stats, AutoVbnRun } from "@/lib/types";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
+import {
+  Chip, Code, ConfirmDialog, DoneState, GoButton, IconButton, InfoTip, ModuleHeader, Panel, ProgressWait, RunnerWait, Section, Steps,
+} from "@/components/ui/kit";
+import { preloadMascot } from "@/components/MascotRunner";
+import { cn } from "@/lib/utils";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
@@ -14,24 +24,17 @@ interface Props {
   initialAutoNextRun?: string | null;
 }
 
-function Spinner({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={`animate-spin ${className}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-    </svg>
-  );
-}
+/** Which lines of the result the error table shows; the stat chips set it. */
+type Filter = "all" | "ERROR" | "WARNING";
 
 export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, initialAutoNextRun }: Props) {
   const t = translations[lang];
+  preloadMascot();
 
   const [vbnInput, setVbnInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [checkProgress, setCheckProgress] = useState<number | null>(null);
-  const scrollBodyRef = useRef<HTMLDivElement>(null);
-  const [showScrollHint, setShowScrollHint] = useState(false);
   const [results, setResults] = useState<VbnResult[] | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
@@ -44,6 +47,8 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   const [suggestions, setSuggestions] = useState<{ product_id: string; items: { id: string; name: string }[] } | null>(null);
   const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number } | null>(null);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [filter, setFilter] = useState<Filter>("all");
+  const [showOk, setShowOk] = useState(false);
 
   // Auto VBN — initialise from parent's already-fetched value to avoid the loading flash
   const [vbnAutoEnabled, setVbnAutoEnabled] = useState(initialAutoEnabled ?? false);
@@ -59,6 +64,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
   const [fixResult, setFixResult] = useState<{ fixed: number; failed: number; message: string } | null>(null);
 
   const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
+  const when = (iso: string) => new Date(iso).toLocaleString(localeStr, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 
   const loadVbnAutoStatus = useCallback(async () => {
     if (!RAILWAY) return;
@@ -73,6 +79,7 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
     finally { setAutoStatusLoaded(true); }
   }, [onAutoVbnChange]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadVbnAutoStatus(); }, []);
 
   const toggleVbnAuto = useCallback(async (enabled: boolean) => {
@@ -106,27 +113,21 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
     : loading ? "loading"
     : "search";
 
-  useEffect(() => {
-    if (step === "results") {
-      requestAnimationFrame(() => {
-        const el = scrollBodyRef.current;
-        if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 40);
-      });
-    }
-  }, [step]);
-
   function resetAll() {
     setResults(null); setStats(null); setVbnInput(""); setVbnNameCache({});
     setFixResult(null); setFixMessage(null); setCheckError(null);
-    setStatusMessage(null); setCheckProgress(null);
+    setStatusMessage(null); setCheckProgress(null); setFilter("all"); setShowOk(false);
   }
 
   function resetToSearch() {
     setResults(null); setStats(null); setFixResult(null);
-    setFixMessage(null); setCheckError(null); setCheckProgress(null);
+    setFixMessage(null); setCheckError(null); setCheckProgress(null); setFilter("all"); setShowOk(false);
   }
 
   const errorResults = results?.filter((r) => !r.excluded && r.status !== "OK") ?? [];
+  const toFixRows = results?.filter((r) => r.status !== "OK") ?? [];
+  const shownRows = toFixRows.filter((r) => filter === "all" || r.status === filter);
+  const willUpdate = errorResults.filter((r) => r.edited_vbn?.trim()).length;
 
   function cancelOp() {
     abortRef.current?.abort();
@@ -334,280 +335,204 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
     }
   }
 
-  const AutoVbnCard = () => {
-    if (!autoStatusLoaded) {
-      return (
-        <div className="bg-surface rounded-2xl border border-border overflow-hidden shadow-sm">
-          <div className="px-5 py-5 flex items-center gap-3">
-            <Spinner className="h-4 w-4 text-ink-3 flex-shrink-0" />
-            <div className="flex-1 space-y-2">
-              <div className="h-3 w-32 bg-border rounded animate-pulse" />
-              <div className="h-2.5 w-56 bg-border/60 rounded animate-pulse" />
-            </div>
-          </div>
-        </div>
-      );
-    }
-    return (
-    <div className="bg-surface rounded-2xl border border-border overflow-hidden shadow-sm">
-      <div className="px-5 py-4 flex items-start gap-4">
-        <div className="flex-shrink-0 mt-0.5">
-          <span className={`flex w-8 h-8 items-center justify-center rounded-xl ${vbnAutoEnabled ? "bg-emerald-light" : "bg-muted"}`}>
-            <span className={`w-2.5 h-2.5 rounded-full ${vbnAutoEnabled ? "bg-emerald" : "bg-border"}`} />
-          </span>
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-ink">{t.vbn.autoCheckTitle}</p>
-          <p className="text-xs text-ink-3 mt-0.5 leading-relaxed">{t.vbn.autoCheckDesc}</p>
-          <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-ink-3">
-            {vbnAutoLastRun ? (
-              <span>
-                {t.vbn.autoCheckLastRun}: <span className="text-ink">{new Date(vbnAutoLastRun.started_at).toLocaleString(localeStr)}</span>
-                {vbnAutoLastRun.checked_count != null && (
-                  <span className="ml-2 opacity-70">— {vbnAutoLastRun.checked_count} {t.vbn.autoCheckChecked}, {vbnAutoLastRun.fixed_count ?? 0} {t.vbn.autoCheckFixed}</span>
-                )}
-              </span>
-            ) : (
-              <span className="opacity-50">{t.vbn.autoCheckNeverRun}</span>
-            )}
-            {vbnAutoEnabled && vbnAutoNextRun && (
-              <span className="text-emerald">{t.vbn.autoCheckNextRun}: {new Date(vbnAutoNextRun).toLocaleString(localeStr)}</span>
-            )}
-          </div>
-        </div>
-        <div className="flex items-center gap-2.5 flex-shrink-0">
+  // The schedule as one row of facts: when it last ran and with what, when it
+  // runs next, and the two controls. The words live in the tooltips.
+  const autoRow = (
+    <Panel className="flex flex-wrap items-center gap-2.5">
+      <span className="grid size-[34px] flex-none place-items-center rounded-[11px] bg-sage text-emerald-dark"><Zap className="size-[18px]" /></span>
+      <div className="flex items-center gap-1.5">
+        <b className="text-[13.5px] text-ink">{t.vbn.autoCheckTitle}</b>
+        <InfoTip content={t.vbn.autoCheckDesc} />
+      </div>
+      {!autoStatusLoaded ? (
+        <Loader2 className="size-4 animate-spin text-ink-3" />
+      ) : vbnAutoLastRun ? (
+        <>
+          <Chip tone="info" icon={Clock} tip={t.vbn.autoCheckLastRun}>{when(vbnAutoLastRun.started_at)}</Chip>
+          {vbnAutoLastRun.checked_count != null && (
+            <>
+              <Chip tone="mute" icon={Search} tip={t.vbn.autoCheckChecked}>{vbnAutoLastRun.checked_count.toLocaleString(localeStr)}</Chip>
+              <Chip tone="ok" icon={Check} tip={t.vbn.autoCheckFixed}>{vbnAutoLastRun.fixed_count ?? 0}</Chip>
+            </>
+          )}
+        </>
+      ) : (
+        <Chip tone="mute" icon={Clock}>{t.vbn.autoCheckNeverRun}</Chip>
+      )}
+      {vbnAutoEnabled && vbnAutoNextRun && (
+        <Chip tone="ok" icon={CalendarClock} tip={t.vbn.autoCheckNextRun}>{when(vbnAutoNextRun)}</Chip>
+      )}
+      <div className="ml-auto flex items-center gap-1.5">
+        <IconButton icon={vbnAutoRunNowLoading ? Loader2 : Play} spin={vbnAutoRunNowLoading}
+          tip={vbnAutoRunNowLoading ? t.vbn.autoCheckRunning : t.vbn.autoCheckRunNow}
+          disabled={vbnAutoRunNowLoading} onClick={runVbnAutoNow} />
+        <Tip content={t.vbn.autoCheckTitle}>
           <button
-            onClick={runVbnAutoNow}
-            disabled={vbnAutoRunNowLoading}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg border border-ember/40 text-ember bg-ember-light hover:bg-ember/10 disabled:opacity-40 transition-colors"
-          >
-            {vbnAutoRunNowLoading ? <><Spinner className="h-3 w-3" />{t.vbn.autoCheckRunning}</> : t.vbn.autoCheckRunNow}
-          </button>
-          <button
+            type="button"
+            role="switch"
+            aria-checked={vbnAutoEnabled}
+            aria-label={t.vbn.autoCheckTitle}
             onClick={() => { if (vbnAutoEnabled) { setShowDisableConfirm(true); } else { toggleVbnAuto(true); } }}
             disabled={vbnAutoTogglingLoading || !autoStatusLoaded}
-            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-40 ${vbnAutoEnabled ? "bg-emerald" : "bg-border"}`}
-            aria-label={t.vbn.autoCheckTitle}
+            className={cn("relative inline-flex h-6 w-[42px] flex-shrink-0 items-center rounded-full transition-colors duration-200 outline-none focus-visible:ring-2 focus-visible:ring-emerald/40 disabled:opacity-40",
+              vbnAutoEnabled ? "bg-emerald" : "bg-border")}
           >
-            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${vbnAutoEnabled ? "translate-x-6" : "translate-x-1"}`} />
+            <span className={cn("inline-block size-[18px] rounded-full bg-white shadow transition-transform duration-300 ease-[cubic-bezier(.34,1.36,.64,1)]",
+              vbnAutoEnabled ? "translate-x-[21px]" : "translate-x-[3px]")} />
           </button>
-        </div>
+        </Tip>
       </div>
-    </div>
+    </Panel>
   );
+
+  // The proposed code's name under its field: found, unknown, or still looking.
+  const proposedName = (r: VbnResult) => {
+    const code = r.edited_vbn?.trim() ?? "";
+    if (!code || !/^\d+$/.test(code)) return null;
+    const name = vbnNameCache[code];
+    if (name === undefined) return null;
+    if (name === "…") return <span className="text-ink-3/60">…</span>;
+    if (name.startsWith("⚠")) return <span className="flex items-center gap-1 text-brick"><CircleAlert className="size-3" />{name.replace(/^⚠\s*/, "")}</span>;
+    return name ? <span className="flex items-center gap-1 text-ink-3"><Check className="size-3 text-emerald" strokeWidth={2.6} />{name}</span> : null;
   };
 
   return (
     <div>
-      {/* Disable auto VBN confirmation */}
       {showDisableConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center popup-backdrop">
-          <div className="bg-surface rounded-2xl shadow-2xl max-w-sm w-full mx-4 p-6">
-            <div className="flex items-start gap-4 mb-5">
-              <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 border border-ember/30">
-                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <path d="M9 3v6M9 13h.01" stroke="#EC4328" strokeWidth="2" strokeLinecap="round"/>
-                  <circle cx="9" cy="9" r="8" stroke="#EC4328" strokeWidth="1.5"/>
-                </svg>
-              </div>
-              <div>
-                <p className="text-base font-semibold text-ink">{t.vbn.autoCheckDisableTitle}</p>
-                <p className="text-sm text-ink-3 mt-1">{t.vbn.autoCheckDisableDesc}</p>
-              </div>
-            </div>
-            <div className="flex gap-3 justify-end">
-              <button onClick={() => setShowDisableConfirm(false)} className="px-4 py-2 text-sm border border-border rounded-xl text-ink-3 hover:bg-ground transition-colors">{t.common.cancel}</button>
-              <button onClick={() => { setShowDisableConfirm(false); toggleVbnAuto(false); }} className="px-4 py-2 text-sm bg-ember hover:bg-ember-dark text-white rounded-xl font-medium transition-colors">{t.vbn.autoCheckDisableConfirm}</button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          icon={Zap}
+          title={t.vbn.autoCheckDisableTitle}
+          text={t.vbn.autoCheckDisableDesc}
+          confirmLabel={t.vbn.autoCheckDisableConfirm}
+          cancelLabel={t.common.cancel}
+          onClose={() => setShowDisableConfirm(false)}
+          onConfirm={() => { setShowDisableConfirm(false); toggleVbnAuto(false); }}
+        />
       )}
 
       {/* VBN autocomplete dropdown portal */}
       {suggestions && dropdownAnchor && typeof document !== "undefined" && createPortal(
         <div style={{ position: "fixed", top: dropdownAnchor.top, left: dropdownAnchor.left, width: 320, zIndex: 9999 }}
-          className="bg-surface border border-border rounded-xl shadow-xl overflow-hidden max-h-64 overflow-y-auto">
+          className="max-h-64 overflow-hidden overflow-y-auto rounded-xl border border-border bg-surface shadow-xl">
           {suggestions.items.length === 0 ? (
-            <p className="px-4 py-3 text-xs text-ink-3 italic">{t.vbn.noFloricode}</p>
+            <p className="px-4 py-3 text-xs text-ink-3">{t.vbn.noFloricode}</p>
           ) : suggestions.items.map((s) => (
             <button key={s.id} onMouseDown={() => applySuggestion(suggestions.product_id, s.id, s.name)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 text-left text-xs hover:bg-emerald-light border-b border-border last:border-0 transition-colors">
-              <span className="font-mono text-emerald font-medium shrink-0 w-12">{s.id}</span>
-              <span className="text-ink leading-snug">{s.name}</span>
+              className="flex w-full items-center gap-3 border-b border-muted px-4 py-2.5 text-left text-xs transition-colors last:border-0 hover:bg-emerald-light">
+              <span className="w-12 shrink-0 font-mono font-semibold text-emerald">{s.id}</span>
+              <span className="leading-snug text-ink">{s.name}</span>
             </button>
           ))}
         </div>,
         document.body
       )}
 
-      {/* Step container — key triggers card-enter re-animation on step change */}
-      <div key={step} className="card-enter">
+      <ModuleHeader
+        tab="vbn"
+        t={t}
+        info={t.vbn.description}
+        chips={step !== "search" && step !== "done" && vbnInput.trim() ? <Chip tone="info" icon={Search} tip={t.vbn.resultsFor}>{vbnInput.trim()}</Chip> : null}
+        actions={step === "results" ? <IconButton icon={RotateCcw} tip={t.vbn.backToSearch.replace(/^←\s*/, "")} onClick={resetToSearch} /> : null}
+      />
+      <Section tight>
+        <Steps
+          labels={[t.vbn.stepSearch, t.vbn.stepCheck, t.vbn.stepFix]}
+          current={step === "search" ? 0 : step === "loading" || step === "results" ? 1 : step === "fixing" ? 2 : 3}
+        />
+      </Section>
 
-        {/* ── STEP 1: SEARCH ── */}
+      {/* "backwards", not "both": a kept transform would frame the module's fixed popups. */}
+      <div key={step} className="step-enter">
+
+        {/* ── Search ── */}
         {step === "search" && (
-          <div className="p-6 space-y-4">
+          <Section className="flex flex-col gap-4">
             <div>
-              <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.vbnChecker}</h2>
-              <p className="text-sm text-ink-3 mt-1">{t.vbn.description}</p>
-            </div>
-
-            <AutoVbnCard />
-
-            <div className="bg-surface rounded-2xl border border-border p-5 shadow-sm">
-              <label className="block text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-3">{t.vbn.codesLabel}</label>
-              <div className="flex gap-3">
-                <input
-                  type="text"
-                  value={vbnInput}
-                  onChange={(e) => setVbnInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleCheck()}
-                  placeholder={t.vbn.placeholder}
-                  className="border border-border rounded-xl px-4 py-2.5 text-sm flex-1 max-w-64 focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 bg-ground placeholder:text-neutral-300 transition-all"
-                  autoFocus
-                />
-                <button
-                  onClick={handleCheck}
-                  disabled={loading || !vbnInput.trim()}
-                  className="flex items-center gap-2 bg-emerald hover:bg-emerald-dark disabled:opacity-40 text-white text-sm font-medium px-6 py-2.5 rounded-xl transition-colors shadow-sm"
-                >
-                  {loading && <Spinner className="h-4 w-4" />}
-                  {loading ? t.vbn.checking : t.vbn.checkBtn}
-                </button>
-              </div>
-
-              {checkError && (
-                <div className="mt-3 flex items-center gap-2 text-sm text-ember-dark bg-ember-light border border-ember/30 rounded-lg px-4 py-2.5">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6.5" stroke="currentColor" strokeWidth="1.2"/><path d="M7 4v3.5M7 10h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
-                  {checkError}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── STEP 1.5: LOADING ── */}
-        {step === "loading" && (
-          <div className="p-10 flex flex-col items-center justify-center gap-4 min-h-[260px]">
-            <div className="w-full max-w-sm space-y-3">
-              <div className="flex items-center justify-between text-sm">
-                <div className="flex items-center gap-2 text-emerald min-w-0">
-                  <Spinner className="h-4 w-4 flex-shrink-0" />
-                  <span className="truncate">{statusMessage ?? t.common.connecting}</span>
-                </div>
-                {checkProgress !== null && (
-                  <span className="text-xs text-ink-3 tabular-nums ml-3 flex-shrink-0">{checkProgress}%</span>
-                )}
-              </div>
-              <div className="w-full h-2 bg-emerald/15 rounded-full overflow-hidden">
-                {checkProgress !== null ? (
-                  <div
-                    className="h-2 bg-emerald rounded-full transition-all duration-500 ease-out"
-                    style={{ width: `${checkProgress}%` }}
+              <label htmlFor="vbn-codes" className="mb-1.5 block text-xs font-semibold text-ink-3">{t.vbn.codesLabel}</label>
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-11 max-w-[420px] flex-1 items-center gap-2.5 rounded-[13px] border border-border bg-ground px-3 transition-colors focus-within:border-emerald/55 focus-within:bg-surface focus-within:ring-4 focus-within:ring-emerald/12">
+                  <Search className="size-[17px] flex-none text-ink-3" />
+                  <input
+                    id="vbn-codes"
+                    type="text"
+                    value={vbnInput}
+                    onChange={(e) => setVbnInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleCheck()}
+                    placeholder={t.vbn.placeholder}
+                    className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-3/50"
+                    autoFocus
                   />
-                ) : (
-                  <div className="h-2 w-2/5 bg-emerald rounded-full animate-[progress-slide_1.4s_ease-in-out_infinite]" />
-                )}
+                </div>
+                <GoButton icon="arrow" tip={t.vbn.checkBtn} disabled={loading || !vbnInput.trim()} onClick={handleCheck} />
               </div>
-              <div className="flex justify-center pt-2">
-                <button
-                  onClick={cancelOp}
-                  className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
-                >{t.common.cancel}</button>
-              </div>
+              {checkError && (
+                <p role="alert" className="mt-2.5 flex items-center gap-1.5 text-[12.5px] font-semibold text-brick">
+                  <CircleAlert className="size-[15px] flex-none" />{checkError}
+                </p>
+              )}
             </div>
-          </div>
+            {autoRow}
+          </Section>
         )}
 
-        {/* ── STEP 2: RESULTS ── */}
+        {/* ── Checking ── */}
+        {step === "loading" && (
+          <Section>
+            <ProgressWait status={statusMessage ?? t.common.connecting} percent={checkProgress}>
+              <Button variant="outline" size="sm" onClick={cancelOp}><X className="size-3.5" />{t.common.cancel}</Button>
+            </ProgressWait>
+          </Section>
+        )}
+
+        {/* ── Results ── */}
         {step === "results" && results !== null && (
-          <div className="flex flex-col relative">
-            {/* Header */}
-            <div className="px-6 py-4 border-b border-border flex items-center gap-3 flex-shrink-0">
-              <button onClick={resetToSearch} className="flex items-center gap-1.5 text-xs text-ink-3 hover:text-ink transition-colors group">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="group-hover:-translate-x-0.5 transition-transform">
-                  <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                {t.vbn.backToSearch}
-              </button>
-              <span className="text-border select-none">/</span>
-              <h2 className="font-semibold text-ink text-sm">{t.vbn.resultsFor} &ldquo;{vbnInput}&rdquo;</h2>
-            </div>
+          <Section className="flex flex-col gap-3.5">
+            {stats && (
+              <div className="flex flex-wrap gap-2">
+                <Chip tone="info" size="lg" icon={List} tip={t.vbn.statTotal}><b>{stats.total}</b></Chip>
+                <Chip tone="bad" size="lg" icon={CircleAlert} tip={t.vbn.statErrors} pressed={filter === "ERROR"}
+                  onClick={() => setFilter(f => (f === "ERROR" ? "all" : "ERROR"))}><b>{stats.errors}</b></Chip>
+                <Chip tone="warn" size="lg" icon={TriangleAlert} tip={t.vbn.statWarnings} pressed={filter === "WARNING"}
+                  onClick={() => setFilter(f => (f === "WARNING" ? "all" : "WARNING"))}><b>{stats.warnings}</b></Chip>
+                <Chip tone="ok" size="lg" icon={Check} tip={t.vbn.okExpand(stats.ok)} pressed={showOk}
+                  onClick={() => setShowOk(v => !v)}><b>{stats.ok}</b></Chip>
+              </div>
+            )}
 
-            <div
-              ref={scrollBodyRef}
-              className="p-5 space-y-4 overflow-y-auto max-h-[calc(100vh-260px)] relative"
-              onScroll={() => {
-                const el = scrollBodyRef.current;
-                if (!el) return;
-                setShowScrollHint(el.scrollHeight - el.scrollTop - el.clientHeight > 40);
-              }}
-              onLoad={() => {
-                const el = scrollBodyRef.current;
-                if (el) setShowScrollHint(el.scrollHeight > el.clientHeight + 40);
-              }}
-            >
-              {/* Stats */}
-              {stats && (
-                <div className="flex items-stretch divide-x divide-border bg-surface border border-border rounded-2xl overflow-hidden shadow-sm">
-                  <div className="flex flex-col items-center px-4 py-3 flex-1">
-                    <span className="text-2xl font-bold text-ink leading-none">{stats.total}</span>
-                    <span className="text-[9px] font-semibold uppercase tracking-widest text-ink-3 mt-1.5">{t.vbn.statTotal}</span>
-                  </div>
-                  <div className="flex flex-col items-center px-4 py-3 flex-1 bg-ember-light/50">
-                    <span className="text-2xl font-bold text-ember leading-none">{stats.errors}</span>
-                    <span className="text-[9px] font-semibold uppercase tracking-widest text-ember/60 mt-1.5">{t.vbn.statErrors}</span>
-                  </div>
-                  <div className="flex flex-col items-center px-4 py-3 flex-1 bg-amber-50/50">
-                    <span className="text-2xl font-bold text-amber-600 leading-none">{stats.warnings}</span>
-                    <span className="text-[9px] font-semibold uppercase tracking-widest text-amber-600/60 mt-1.5">{t.vbn.statWarnings}</span>
-                  </div>
-                  <div className="flex flex-col items-center px-4 py-3 flex-1 bg-emerald-light/50">
-                    <span className="text-2xl font-bold text-emerald leading-none">{stats.ok}</span>
-                    <span className="text-[9px] font-semibold uppercase tracking-widest text-emerald/60 mt-1.5">{t.vbn.statOk}</span>
-                  </div>
+            <div className="overflow-hidden rounded-2xl border border-border">
+              {toFixRows.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 px-5 py-10 text-center">
+                  <span className="done-icon grid size-12 place-items-center rounded-full bg-sage/60 text-emerald-dark"><Check className="size-6" strokeWidth={2.4} /></span>
+                  <p className="text-sm font-semibold text-emerald-dark">{t.vbn.allOk.replace(/^✓\s*/, "")}</p>
                 </div>
-              )}
-
-              {/* Errors table */}
-              <div className="bg-surface border border-border rounded-2xl overflow-hidden shadow-sm">
-                <div className="px-5 py-3.5 border-b border-border">
-                  <span className="text-sm font-semibold text-ink">{t.vbn.errorsTitle}</span>
-                  <span className="ml-2 text-xs text-ink-3">({errorResults.length} {t.vbn.toFix})</span>
-                </div>
-                {errorResults.length === 0 ? (
-                  <div className="px-5 py-10 text-center">
-                    <div className="w-10 h-10 bg-emerald-light rounded-full flex items-center justify-center mx-auto mb-3">
-                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 9l5 5 7-8" stroke="#1A7D45" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    </div>
-                    <p className="text-sm text-emerald font-medium">{t.vbn.allOk}</p>
-                  </div>
-                ) : (
-                  <>
-                    <table className="w-full text-sm">
+              ) : (
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[13px]">
                       <thead>
-                        <tr className="border-b border-border">
-                          <th className="text-left px-5 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableProduct}</th>
-                          <th className="text-left px-3 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableCurrent}</th>
-                          <th className="text-left px-3 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableReason}</th>
-                          <th className="text-left px-3 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableProposed}</th>
-                          <th className="px-3 py-2.5 text-[11px] font-medium text-ink-3">{t.vbn.tableAction}</th>
+                        <tr className="border-b border-border text-left text-[11px] font-semibold text-ink-3">
+                          <th className="px-3 py-2.5 pl-4">{t.vbn.tableProduct}</th>
+                          <th className="px-3 py-2.5">{t.vbn.tableCurrent}</th>
+                          <th className="px-3 py-2.5">{t.vbn.tableReason}</th>
+                          <th className="px-3 py-2.5">{t.vbn.tableProposed}</th>
+                          <th className="px-3 py-2.5"><span className="sr-only">{t.vbn.tableAction}</span></th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-border">
-                        {errorResults.map((r) => (
-                          <tr key={r.product_id} className={`hover:bg-ground/50 transition-colors border-l-2 ${r.status === "ERROR" ? "border-l-ember/50" : "border-l-amber-400/60"} ${r.excluded ? "opacity-35" : ""}`}>
-                            <td className="px-5 py-3">
-                              <p className="font-medium text-ink text-sm leading-snug">{r.name}</p>
-                              {r.short_name && <p className="text-xs text-ink-3 mt-0.5">{r.short_name}</p>}
+                      <tbody>
+                        {shownRows.map((r) => (
+                          <tr key={r.product_id}
+                            className={cn("border-b border-muted transition-colors last:border-0 hover:bg-ground/40",
+                              r.excluded && "opacity-40",
+                              r.status === "ERROR" ? "[&>td:first-child]:shadow-[inset_3px_0_0_var(--color-brick)]" : "[&>td:first-child]:shadow-[inset_3px_0_0_var(--color-blush)]")}>
+                            <td className="px-3 py-2.5 pl-4">
+                              <p className="font-semibold leading-snug text-ink">{r.name}</p>
+                              {r.short_name && <p className="mt-0.5 text-[11.5px] text-ink-3">{r.short_name}</p>}
                             </td>
-                            <td className="px-3 py-3">
-                              <span className={`inline-block px-2 py-0.5 rounded-md text-xs font-mono font-medium ${r.status === "ERROR" ? "bg-ember-light text-ember-dark" : "bg-amber-50 text-amber-700"}`}>{r.current_vbn}</span>
-                              {r.official_name && <p className="text-[11px] text-ink-3 mt-0.5 max-w-[120px] truncate">{r.official_name}</p>}
+                            <td className="px-3 py-2.5">
+                              <Code tone={r.status === "ERROR" ? "bad" : "warn"} tip={r.official_name || undefined}>{r.current_vbn}</Code>
                             </td>
-                            <td className="px-3 py-3 max-w-xs">
-                              <p className="text-xs text-neutral-500 leading-relaxed">{r.reason || "—"}</p>
-                            </td>
-                            <td className="px-3 py-3 min-w-[160px]">
+                            <td className="max-w-xs px-3 py-2.5 text-[12.5px] leading-relaxed text-ink-2">{r.reason || "—"}</td>
+                            <td className="min-w-[170px] px-3 py-2.5">
                               <input
                                 ref={(el) => { inputRefs.current[r.product_id] = el; }}
                                 type="text"
@@ -616,132 +541,85 @@ export default function VbnChecker({ lang, onAutoVbnChange, initialAutoEnabled, 
                                 onBlur={() => setTimeout(() => setSuggestions(null), 150)}
                                 disabled={r.excluded}
                                 placeholder={t.vbn.editPlaceholder}
-                                className="border border-border rounded-lg px-2.5 py-1.5 text-xs w-36 focus:outline-none focus:ring-1 focus:ring-emerald/40 focus:border-emerald/60 disabled:bg-muted bg-surface transition-all font-mono"
+                                aria-label={t.vbn.tableProposed}
+                                className="h-8 w-36 rounded-[9px] border border-border bg-surface px-2.5 font-mono text-xs outline-none transition-colors focus:border-emerald/60 focus:ring-2 focus:ring-emerald/15 disabled:bg-muted"
                               />
-                              {r.edited_vbn?.trim() && /^\d+$/.test(r.edited_vbn.trim()) && (
-                                <p className={`text-[10px] mt-0.5 leading-snug break-words ${
-                                  vbnNameCache[r.edited_vbn.trim()]?.startsWith("⚠") ? "text-ember" :
-                                  vbnNameCache[r.edited_vbn.trim()] === "…" ? "text-neutral-300 italic" : "text-ink-3"
-                                }`}>{vbnNameCache[r.edited_vbn.trim()] ?? ""}</p>
-                              )}
+                              <div className="mt-1 text-[11px] leading-snug">{proposedName(r)}</div>
                             </td>
-                            <td className="px-3 py-3 text-center">
-                              <button
-                                onClick={() => toggleExclude(r.product_id)}
-                                className={`text-xs px-2.5 py-1 rounded-lg border font-medium transition-colors ${
-                                  r.excluded ? "border-emerald/30 text-emerald bg-emerald-light hover:bg-emerald/20"
-                                  : "border-border text-ink-3 hover:border-ember/30 hover:text-ember hover:bg-ember-light"
-                                }`}
-                              >{r.excluded ? t.vbn.restore : t.vbn.skip}</button>
+                            <td className="px-3 py-2.5 text-right">
+                              <IconButton size="sm" icon={r.excluded ? Undo2 : EyeOff} tip={r.excluded ? t.vbn.restore : t.vbn.skip}
+                                onClick={() => toggleExclude(r.product_id)} />
                             </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
-                    <div className="px-5 py-3.5 bg-ground border-t border-border flex items-center justify-between">
-                      <p className="text-xs text-ink-3">
-                        <span className="font-semibold text-ink">{errorResults.filter((r) => !r.excluded && r.edited_vbn?.trim()).length}</span>
-                        {" "}{t.vbn.willBeUpdated}
-                      </p>
-                      <div className="flex gap-2.5 items-center">
-                        {fixMessage && (
-                          <span className="text-xs px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">{fixMessage}</span>
-                        )}
-                        <button
-                          onClick={handleFix}
-                          disabled={fixing}
-                          className="flex items-center gap-1.5 bg-emerald hover:bg-emerald-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors shadow-sm"
-                        >
-                          {t.vbn.fixBtn}
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* OK products (collapsed) */}
-              {stats && stats.ok > 0 && (
-                <details className="bg-surface border border-border rounded-2xl overflow-hidden shadow-sm group">
-                  <summary className="px-5 py-3 text-sm text-ink-3 cursor-pointer select-none hover:bg-ground transition-colors flex items-center gap-2">
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="transition-transform group-open:rotate-90 flex-shrink-0">
-                      <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                    <span className="inline-flex items-center gap-1 text-emerald text-xs font-medium">
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      {stats.ok}
-                    </span>
-                    {t.vbn.okExpand(stats.ok).replace(String(stats.ok), "").trim()}
-                  </summary>
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="bg-ground border-b border-border text-[10px] uppercase tracking-widest text-ink-3">
-                        <th className="text-left px-5 py-2.5 font-semibold">{t.vbn.okName}</th>
-                        <th className="text-left px-3 py-2.5 font-semibold">{t.vbn.okVbn}</th>
-                        <th className="text-left px-3 py-2.5 font-semibold">{t.vbn.okOfficial}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {results.filter((r) => r.status === "OK").map((r) => (
-                        <tr key={r.product_id} className="hover:bg-ground/60 transition-colors">
-                          <td className="px-5 py-2.5 text-ink">{r.name}</td>
-                          <td className="px-3 py-2.5"><span className="bg-emerald-light text-emerald px-2 py-0.5 rounded-md font-mono text-xs">{r.current_vbn}</span></td>
-                          <td className="px-3 py-2.5 text-ink-3">{r.official_name}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </details>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 border-t border-border bg-ground px-4 py-3">
+                    {fixMessage && <Chip tone="warn" icon={TriangleAlert}>{fixMessage}</Chip>}
+                    <span className="ml-auto" />
+                    <GoButton icon="play" tip={`${t.vbn.fixBtn} · ${willUpdate} ${t.vbn.willBeUpdated}`} count={willUpdate}
+                      disabled={fixing || willUpdate === 0} onClick={handleFix} />
+                  </div>
+                </>
               )}
             </div>
-            {/* Scroll-down gradient hint */}
-            {showScrollHint && (
-              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-white via-white/80 to-transparent flex items-end justify-center pb-3">
-                <span className="flex items-center gap-1.5 bg-ink/80 text-white text-[11px] font-semibold px-3 py-1 rounded-full shadow-sm">
-                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 4l3.5 3.5L9 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  scroll
-                </span>
+
+            {/* The products that are right, folded until their chip opens them */}
+            {stats && stats.ok > 0 && showOk && (
+              <div className="step-enter overflow-hidden rounded-2xl border border-border">
+                <button type="button" onClick={() => setShowOk(false)}
+                  className="flex w-full items-center gap-2 border-b border-border bg-ground/60 px-4 py-2.5 text-left text-[13px] text-ink-3 hover:text-ink">
+                  <ChevronRight className="size-4 rotate-90 transition-transform" />
+                  <Chip tone="ok" icon={Check}>{stats.ok}</Chip>
+                </button>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border text-left text-[11px] font-semibold text-ink-3">
+                      <th className="px-4 py-2">{t.vbn.okName}</th>
+                      <th className="px-3 py-2">{t.vbn.okVbn}</th>
+                      <th className="px-3 py-2">{t.vbn.okOfficial}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {results.filter((r) => r.status === "OK").map((r) => (
+                      <tr key={r.product_id} className="border-b border-muted last:border-0 hover:bg-ground/40">
+                        <td className="px-4 py-2 text-ink">{r.name}</td>
+                        <td className="px-3 py-2"><Code tone="ok">{r.current_vbn}</Code></td>
+                        <td className="px-3 py-2 text-ink-3">{r.official_name}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
-          </div>
+          </Section>
         )}
 
-        {/* ── STEP 3: FIXING ── */}
+        {/* ── Fixing ── */}
         {step === "fixing" && (
-          <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
-            <svg className="animate-spin w-14 h-14 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-15" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
-              <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-            <div>
-              <p className="text-xs text-ink-3 uppercase tracking-widest mb-2">{t.vbn.fixingTitle}</p>
-              {fixMessage && <p className="text-sm text-ink-3 animate-pulse mt-2">{fixMessage}</p>}
-            </div>
-            <button
-              onClick={cancelOp}
-              className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
-            >{t.common.cancel}</button>
-          </div>
+          <Section>
+            <RunnerWait title={t.vbn.fixingTitle} status={fixMessage}>
+              <Button variant="outline" size="sm" onClick={cancelOp}><X className="size-3.5" />{t.common.cancel}</Button>
+            </RunnerWait>
+          </Section>
         )}
 
-        {/* ── STEP 4: DONE ── */}
+        {/* ── Done ── */}
         {step === "done" && fixResult && (
-          <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl border-2 ${fixResult.failed === 0 ? "bg-emerald-light text-emerald border-emerald/30" : "bg-amber-50 text-amber-600 border-amber-200"}`}>
-              {fixResult.failed === 0 ? "✓" : "⚠"}
-            </div>
-            <div>
-              <p className="text-base font-bold text-ink">{t.vbn.doneTitle}</p>
-              <p className="text-sm text-ink-3 mt-1">{fixResult.message}</p>
-              {fixResult.failed > 0 && (
-                <p className="text-xs text-amber-600 mt-1">{t.vbn.doneFailed(fixResult.failed)}</p>
-              )}
-            </div>
-            <button
-              onClick={resetAll}
-              className="px-6 py-2.5 bg-ink hover:bg-ink/80 text-white text-sm font-medium rounded-xl transition-colors"
-            >{t.vbn.checkAgain}</button>
-          </div>
+          <Section>
+            <DoneState
+              tone={fixResult.failed === 0 ? "ok" : "warn"}
+              title={t.vbn.doneTitle}
+              sub={fixResult.message.replace(/^✓\s*/, "")}
+              chips={<>
+                <Chip tone="ok" size="lg" icon={Check}><b>{fixResult.fixed}</b></Chip>
+                {fixResult.failed > 0 && <Chip tone="bad" size="lg" icon={X} tip={t.vbn.doneFailed(fixResult.failed)}><b>{fixResult.failed}</b></Chip>}
+              </>}
+            >
+              <Button variant="outline" onClick={resetAll}><RotateCcw className="size-4" />{t.vbn.checkAgain}</Button>
+            </DoneState>
+          </Section>
         )}
 
       </div>
