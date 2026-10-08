@@ -1254,9 +1254,11 @@ class _Blank(dict):
 
 
 def _read_box_blocks(rows: list[dict[str, Any]], spec: LayoutSpec,
-                     num: Callable[[str], float]) -> tuple[list[_BoxBlock], int | None]:
+                     num: Callable[[str], float]
+                     ) -> tuple[list[_BoxBlock], int | None, bool]:
     """The blocks of boxes, and — when every block carries box numbers
-    starting at 1 — the last box number, which is then the box count."""
+    starting at 1 — the last box number, which is then the box count, and
+    whether the numbers skip one on the way to it."""
     blocks: list[_BoxBlock] = []
     last_number = None
     numbers: list[tuple[int, int]] = []
@@ -1308,7 +1310,10 @@ def _read_box_blocks(rows: list[dict[str, Any]], spec: LayoutSpec,
     last_box = (max(last for _, last in numbers)
                 if numbers and not unnumbered and min(first for first, _ in numbers) == 1
                 else None)
-    return [b for b in blocks if b.products], last_box
+    skips = bool(last_box) and (
+        {n for first, last in numbers for n in range(first, last + 1)}
+        != set(range(1, last_box + 1)))
+    return [b for b in blocks if b.products], last_box, skips
 
 
 def _box_code_boxes(raw: str, spec: LayoutSpec) -> tuple[str, str]:
@@ -1546,7 +1551,7 @@ def _parse_boxes(doc: PdfDoc, spec: LayoutSpec) -> DeliveryOrder:
                 if fields is not None:
                     rows.append(fields)
 
-    blocks, last_box = _read_box_blocks(rows, spec, num)
+    blocks, last_box, skips = _read_box_blocks(rows, spec, num)
     if not blocks:
         raise PdfParseError(
             f"{spec.name} layout: {len(rows)} row(s) were found but none parsed as a product. "
@@ -1560,8 +1565,12 @@ def _parse_boxes(doc: PdfDoc, spec: LayoutSpec) -> DeliveryOrder:
 
     printed = _printed_totals(doc, spec, num, from_grid)
     # Boxes numbered 1 to N are N boxes: a row missed on the way shows as one
-    # box short, where an invoice prints no box count of its own.
-    if last_box and not printed.get("boxes"):
+    # box short, where an invoice prints no box count of its own. Where the
+    # numbers skip one and the invoice prints its full boxes, the skip may be
+    # the invoice's own (Laila 00308355, 2026-10-07, has no box 16): the
+    # full-box total, which counts every box printed, is the check then.
+    if last_box and not printed.get("boxes") and not (
+            skips and printed.get("fulls") and fulls is not None):
         printed["boxes"] = last_box
     if not (printed.get("stems") or printed.get("amount")):
         raise PdfChecksumError(

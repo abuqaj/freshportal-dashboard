@@ -661,6 +661,21 @@ def test_boxes_boxes_numbered_from_one_are_counted():
     assert "boxes: invoice says 3, parsed 2" in str(exc.value)
 
 
+def test_a_box_number_the_invoice_skips_is_checked_by_its_full_boxes():
+    """Laila 00308355 numbers its boxes 1-15 and 17-20, and its TOT.BOX 4.75
+    is the 19 quarters it prints: the full boxes are the check then. A box
+    missed on the way still shows there."""
+    spec = dataclasses.replace(_NUMBERED, boxes_re="", fulls_re=r"FULL\s+BOXES\s+([\d,]+)")
+    rows = [["1", "Q", "MONDIAL", "4", "25", "60", "100", "0,400", "40,000"],
+            ["3", "Q", "MONDIAL", "4", "25", "60", "100", "0,400", "40,000"]]
+    doc = _numbered_doc(rows, 8, 200, "80,00")
+    order = parse_with_spec(PdfDoc(text=doc.text + "FULL BOXES 0,50\n", tables=doc.tables), spec)
+    assert order.nu_boxes == 2
+    with pytest.raises(PdfChecksumError) as exc:     # box 2 is printed, not read
+        parse_with_spec(PdfDoc(text=doc.text + "FULL BOXES 0,75\n", tables=doc.tables), spec)
+    assert "full boxes" in str(exc.value)
+
+
 # Text mode: a block line summing up an assorted box, then its contents per
 # box, as Rosaprima prints it.
 _ASSORTED = LayoutSpec(
