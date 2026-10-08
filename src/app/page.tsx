@@ -291,7 +291,7 @@ export default function Dashboard() {
             {tab === "create"   && <ProductCreator  lang={lang}/>}
             {tab === "photos"   && <PhotoUploader   lang={lang}/>}
             {tab === "history"  && <HistoryTab      lang={lang}/>}
-            {tab === "admin"    && <AdminTab        currentUsername={username}/>}
+            {tab === "admin"    && <AdminTab        currentUsername={username} lang={lang}/>}
             {tab === "delivery"  && <DeliveryImporter lang={lang}/>}
             {tab === "analysis"  && <AnalysisTool     lang={lang}/>}
             {tab === "boxweight" && <KenyaBoxWeight   lang={lang}/>}

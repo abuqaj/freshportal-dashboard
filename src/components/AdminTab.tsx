@@ -1,23 +1,35 @@
 "use client"
 
-import { Fragment, useState, useEffect, useCallback, useRef } from "react"
-import { createPortal } from "react-dom"
-import { Download } from "lucide-react"
-import { FP_SYSTEMS } from "@/lib/systems"
+import { Fragment, useState, useEffect, useCallback, useRef, type ComponentType, type ReactNode } from "react"
+import {
+  Archive, Ban, Building2, Check, ChevronRight, Download, ExternalLink, FileText, LockOpen, Pencil, Plus, RefreshCw, Search, Shield,
+  ShieldCheck, Sparkles, Trash2, TriangleAlert, UserPlus, Users, X,
+} from "lucide-react"
+import { translations, Lang } from "@/lib/i18n"
+import { FP_SYSTEMS, type FPSystem } from "@/lib/systems"
 import { saveBlob } from "@/lib/save-blob"
+import { Button } from "@/components/ui/button"
+import { Popup } from "@/components/ui/dialog"
+import { Tip } from "@/components/ui/tooltip"
+import { Chip, Code, ConfirmDialog, EmptyState, GoButton, IconButton, ModuleHeader, ModuleTabs, SubTabs } from "@/components/ui/kit"
+import { MODULES, ModuleIcon, moduleColors, type Tab } from "@/components/shell/modules"
+import { ArtDot } from "@/components/shell/TopBar"
+import { cn } from "@/lib/utils"
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? ""
 
-function formatRelative(iso: string): string {
+type T = (typeof translations)[Lang]
+
+function ago(iso: string, t: T): string {
   const diff = Date.now() - new Date(iso).getTime()
   const mins = Math.floor(diff / 60000)
-  if (mins < 1)   return "just now"
-  if (mins < 60)  return `${mins} min ago`
+  if (mins < 1)   return t.admin.justNow
+  if (mins < 60)  return t.admin.minAgo(mins)
   const hrs = Math.floor(mins / 60)
-  if (hrs < 24)   return `${hrs}h ago`
+  if (hrs < 24)   return t.admin.hoursAgo(hrs)
   const days = Math.floor(hrs / 24)
-  if (days < 7)   return `${days}d ago`
-  return new Date(iso).toLocaleDateString("pl-PL")
+  if (days < 7)   return t.admin.daysAgo(days)
+  return new Date(iso).toLocaleDateString()
 }
 
 interface User {
@@ -38,142 +50,128 @@ interface Group {
   permissions: string[]
 }
 
+/** Which module each permission opens, for its icon and its name. VBN
+ *  Checker has two permissions, checking and fixing. */
+const PERM_MODULE: Record<string, Tab> = {
+  "vbn:check": "vbn", "vbn:fix": "vbn", "products:create": "create", "photos:upload": "photos",
+  "delivery:import": "delivery", "analysis:view": "analysis", "boxweight:run": "boxweight", "supplier:add": "supplier",
+  "knowledge:review": "knowledge", "admin:manage": "admin",
+}
+
+function permLabel(perm: string, t: T): string {
+  if (perm === "vbn:check") return `${MODULES.vbn.label(t)} · ${t.vbn.stepCheck}`
+  if (perm === "vbn:fix") return `${MODULES.vbn.label(t)} · ${t.vbn.stepFix}`
+  const tab = PERM_MODULE[perm]
+  return tab ? MODULES[tab].label(t) : perm
+}
+
 /** Which modules live under which system. Systems missing here grant access
  *  to the FreshPortal system itself and nothing else. */
-const MODULES_BY_SYSTEM: Record<string, { perm: string; label: string }[]> = {
-  stamgegevens: [
-    { perm: "vbn:check",       label: "VBN Check" },
-    { perm: "vbn:fix",         label: "VBN Fix" },
-    { perm: "products:create", label: "New Products" },
-    { perm: "photos:upload",   label: "Photo Uploader" },
-  ],
-  ecuador: [
-    { perm: "delivery:import", label: "Delivery Import" },
-    { perm: "analysis:view",   label: "Analysis Tool" },
-  ],
-  kenya: [
-    { perm: "boxweight:run", label: "Box Weight" },
-    { perm: "supplier:add",  label: "Add Supplier" },
-  ],
+const MODULES_BY_SYSTEM: Record<string, string[]> = {
+  stamgegevens: ["vbn:check", "vbn:fix", "products:create", "photos:upload"],
+  ecuador: ["delivery:import", "analysis:view"],
+  kenya: ["boxweight:run", "supplier:add"],
   // Only modules whose endpoints follow the selected system can be offered on
   // the test tenant; VBN Check/Fix and Photo Uploader always run against
   // Stamgegevens, so they are not listed here.
-  test: [
-    { perm: "products:create", label: "New Products" },
-  ],
+  test: ["products:create"],
 }
 
-/** Built from FP_SYSTEMS so the name, the colour and the order here always
+/** Built from FP_SYSTEMS so the name, the flag and the order here always
  *  match the system selector — they used to be a second copy that drifted. */
-const SYSTEM_DEFS: { id: string; label: string; dot: string; modules: { perm: string; label: string }[] }[] =
-  FP_SYSTEMS.map(s => ({
-    id: s.id,
-    label: s.name,
-    dot: s.accent,
-    modules: MODULES_BY_SYSTEM[s.id] ?? [],
-  }))
+const SYSTEM_DEFS: { id: string; system: FPSystem; modules: string[] }[] =
+  FP_SYSTEMS.map(s => ({ id: s.id, system: s, modules: MODULES_BY_SYSTEM[s.id] ?? [] }))
 
 /** Modules not tied to a system: shown in every system to groups holding the permission. */
-const SHARED_MODULES: { perm: string; label: string; note: string }[] = [
-  { perm: "knowledge:review", label: "Knowledge Base", note: "every system · review, library, runs" },
-]
+const SHARED_PERMS = ["knowledge:review"]
 
-const PERM_LABELS: Record<string, string> = {
-  "vbn:check":       "VBN Check",
-  "vbn:fix":         "VBN Fix",
-  "products:create": "New Products",
-  "photos:upload":   "Photo Uploader",
-  "delivery:import": "Delivery Import",
-  "boxweight:run":   "Box Weight",
-  "supplier:add":    "Add Supplier",
-  "analysis:view":   "Analysis Tool",
-  "knowledge:review": "Knowledge Base",
-  "admin:manage":    "Admin",
+/* ─── Small pieces ─── */
+
+/** A module as its own coloured badge, its name in the tooltip. */
+function ModBadge({ tab, tip, dim, size = "sm" }: { tab: Tab; tip?: string; dim?: boolean; size?: "sm" | "xs" }) {
+  const badge = (
+    <span style={moduleColors(tab)} tabIndex={tip ? 0 : undefined}
+      className={cn("grid flex-none place-items-center bg-[linear-gradient(135deg,var(--g1),var(--g2))] text-white outline-none [--ic-bg:var(--g1)]",
+        size === "sm" ? "size-6 rounded-[7px]" : "size-5 rounded-[6px]", dim && "opacity-35 grayscale")}>
+      <ModuleIcon id={tab} className={size === "sm" ? "size-3.5" : "size-3"} />
+    </span>
+  )
+  return tip ? <Tip content={tip}>{badge}</Tip> : badge
 }
 
-/* ─── Badge ─── */
-function Badge({ children, variant = "neutral" }: {
-  children: React.ReactNode
-  variant?: "green" | "red" | "neutral" | "blue" | "amber"
-}) {
-  const cls = {
-    green:   "bg-emerald/10 text-emerald border-emerald/20",
-    red:     "bg-ember/10 text-ember border-ember/20",
-    neutral: "bg-muted text-ink-3 border-border",
-    blue:    "bg-[#1A6FD4]/10 text-[#1A6FD4] border-[#1A6FD4]/20",
-    amber:   "bg-amber-500/10 text-amber-600 border-amber-500/20",
-  }[variant]
+function Avatar({ name }: { name: string }) {
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${cls}`}>
-      {children}
+    <span className="grid size-7 flex-none place-items-center rounded-full bg-sage/60 text-[10.5px] font-bold uppercase text-emerald-dark">
+      {name.slice(0, 2)}
     </span>
   )
 }
 
-function Th({ children, right }: { children?: React.ReactNode; right?: boolean }) {
+function Th({ children, right, first }: { children?: ReactNode; right?: boolean; first?: boolean }) {
   return (
-    <th className={`px-4 py-2.5 text-[10px] font-semibold text-ink-3 uppercase tracking-widest ${right ? "text-right" : "text-left"}`}>
+    <th className={cn("px-3 py-2.5 text-[11px] font-semibold text-ink-3", right ? "text-right" : "text-left", first && "pl-5")}>
       {children}
     </th>
   )
 }
 
-/* ─── Modal wrapper ─── */
-/** Rendered into document.body. Inside the module the dialog sits under a
- *  scrolled container, and any transformed ancestor would turn its
- *  position:fixed into position:absolute — which put the dialog at the top of
- *  the page and left you scrolling up to find it. A portal cannot be caught
- *  that way again. */
-function Modal({ title, onClose, wide, children }: {
-  title: string; onClose: () => void; wide?: boolean; children: React.ReactNode
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [mounted, setMounted] = useState(false)
+const INPUT = "h-10 w-full rounded-xl border border-border bg-ground px-3 text-sm text-ink outline-none transition-colors placeholder:text-ink-3/50 focus:border-emerald/55 focus:bg-surface focus:ring-4 focus:ring-emerald/12"
 
-  useEffect(() => { setMounted(true) }, [])
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
-    document.addEventListener("keydown", onKey)
-    return () => document.removeEventListener("keydown", onKey)
-  }, [onClose])
-
-  if (!mounted) return null
-
-  return createPortal(
-    <div className="fixed inset-0 popup-backdrop flex items-center justify-center z-50 p-4"
-      onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div ref={ref} className={`bg-surface rounded-3xl border border-border shadow-2xl w-full ${wide ? "max-w-lg" : "max-w-md"}`}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-          <h2 className="text-sm font-semibold text-ink">{title}</h2>
-          <button onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-ink-3 hover:text-ink hover:bg-ground transition-colors">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-            </svg>
-          </button>
-        </div>
-        <div className="px-6 py-5 space-y-4 overflow-y-auto max-h-[75vh]">{children}</div>
-      </div>
-    </div>,
-    document.body,
-  )
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <div>
-      <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">{label}</p>
+    <label className="block">
+      <span className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-ink-3">
+        {label}
+        {hint && <span className="font-normal text-ink-3/70">· {hint}</span>}
+      </span>
       {children}
-    </div>
+    </label>
   )
 }
 
-const INPUT = "w-full h-9 px-3 rounded-xl border border-border bg-ground text-sm text-ink focus:outline-none focus:border-emerald/60 focus:ring-2 focus:ring-emerald/15 transition-all"
+function ErrorLine({ children }: { children: ReactNode }) {
+  return (
+    <p role="alert" className="flex items-start gap-1.5 text-[12.5px] font-semibold text-brick">
+      <TriangleAlert className="mt-px size-[15px] flex-none" /><span className="break-words">{children}</span>
+    </p>
+  )
+}
 
-/* ─── User edit modal ─── */
-function UserEditModal({ user, currentUsername, onSaved, onClose }: {
-  user: User; currentUsername: string | undefined
+/** A dialog that holds a form: title with an icon, the fields, the answers. */
+function FormDialog({ title, icon: Ico, t, onClose, footer, children }: {
+  title: string; icon: ComponentType<{ className?: string }>; t: T; onClose: () => void; footer: ReactNode; children: ReactNode
+}) {
+  return (
+    <Popup title={title} onClose={onClose}
+      className="left-1/2 top-1/2 flex max-h-[88vh] w-[min(540px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-[22px] bg-surface shadow-2xl">
+      <div className="flex items-center gap-3 border-b border-muted px-6 py-4">
+        <span className="grid size-9 flex-none place-items-center rounded-full bg-sage/60 text-emerald-dark"><Ico className="size-[18px]" /></span>
+        <h3 className="min-w-0 flex-1 truncate text-base font-semibold text-ink">{title}</h3>
+        <IconButton icon={X} tip={t.common.cancel} onClick={onClose} />
+      </div>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">{children}</div>
+      <div className="flex justify-end gap-2 border-t border-muted px-6 py-4">{footer}</div>
+    </Popup>
+  )
+}
+
+/** The answer buttons of a form dialog. */
+function FormFooter({ t, saving, onSave, onClose, saveLabel, savingLabel }: {
+  t: T; saving: boolean; onSave: () => void; onClose: () => void; saveLabel?: string; savingLabel?: string
+}) {
+  return (
+    <>
+      <Button variant="outline" onClick={onClose}><X className="size-4" />{t.common.cancel}</Button>
+      <Button variant="primary" disabled={saving} onClick={onSave}>
+        <Check className="size-4" />{saving ? (savingLabel ?? t.admin.saving) : (saveLabel ?? t.admin.save)}
+      </Button>
+    </>
+  )
+}
+
+/* ─── User edit dialog ─── */
+function UserEditDialog({ t, user, currentUsername, onSaved, onClose }: {
+  t: T; user: User; currentUsername: string | undefined
   onSaved: () => void; onClose: () => void
 }) {
   const [groups, setGroups] = useState<Group[]>([])
@@ -202,13 +200,13 @@ function UserEditModal({ user, currentUsername, onSaved, onClose }: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
-    if (!r.ok) throw new Error((await r.json()).error ?? "Failed")
+    if (!r.ok) throw new Error((await r.json()).error ?? t.admin.failed(r.status))
   }
 
   async function save() {
-    if (!username.trim()) { setError("Username is required"); return }
-    if (groupId == null) { setError("A group must be selected"); return }
-    if (password && password !== confirmPw) { setError("Passwords do not match"); return }
+    if (!username.trim()) { setError(t.admin.errUsername); return }
+    if (groupId == null) { setError(t.admin.errGroup); return }
+    if (password && password !== confirmPw) { setError(t.admin.errPasswords); return }
     setError("")
     setSaving(true)
     try {
@@ -219,88 +217,77 @@ function UserEditModal({ user, currentUsername, onSaved, onClose }: {
       onSaved()
       onClose()
     } catch (e) {
-      setError(String(e))
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <Modal title={`Edit user: ${user.username}`} onClose={onClose}>
-      <Field label="Username">
+    <FormDialog title={t.admin.editUser(user.username)} icon={Pencil} t={t} onClose={onClose}
+      footer={<FormFooter t={t} saving={saving} onSave={save} onClose={onClose} />}>
+      <Field label={t.admin.username}>
         <input className={INPUT} value={username} onChange={e => setUsername(e.target.value)} />
       </Field>
 
-      <Field label="Group">
+      <div>
+        <p className="mb-1.5 text-xs font-semibold text-ink-3">{t.admin.colGroup}</p>
         {groups.length === 0
-          ? <p className="text-xs text-ink-3">Loading…</p>
+          ? <p className="text-xs text-ink-3">{t.common.loading}</p>
           : (
-            <div className="flex flex-col gap-1.5">
-              {groups.map(g => (
-                <label key={g.id} className="flex items-center gap-2 cursor-pointer">
-                  <input type="radio" name="group" className="accent-emerald"
-                    checked={groupId === g.id}
-                    onChange={() => setGroupId(g.id)} />
-                  <span className="text-sm font-medium text-ink">{g.name}</span>
-                  {g.permissions.length > 0 && (
-                    <span className="text-xs text-ink-3">
-                      ({g.permissions.filter(p => !p.startsWith("system:")).map(p => PERM_LABELS[p] ?? p).join(", ")}
-                      {g.permissions.some(p => p.startsWith("system:")) &&
-                        ` · ${g.permissions.filter(p => p.startsWith("system:")).length} system(s)`})
+            <div role="radiogroup" className="flex flex-col gap-1.5">
+              {groups.map(g => {
+                const on = groupId === g.id
+                const tabs = [...new Set(g.permissions.map(p => PERM_MODULE[p]).filter(Boolean))] as Tab[]
+                return (
+                  <button key={g.id} type="button" role="radio" aria-checked={on} onClick={() => setGroupId(g.id)}
+                    className={cn("flex items-center gap-2.5 rounded-xl border px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-emerald/40",
+                      on ? "border-emerald/40 bg-sage/35" : "border-border hover:bg-ground")}>
+                    <span className={cn("grid size-4 flex-none place-items-center rounded-full border-2", on ? "border-emerald" : "border-border")}>
+                      {on && <span className="size-2 rounded-full bg-emerald" />}
                     </span>
-                  )}
-                </label>
-              ))}
+                    <span className="text-sm font-semibold text-ink">{g.name}</span>
+                    <span className="ml-auto flex flex-wrap justify-end gap-1">
+                      {tabs.map(tab => <ModBadge key={tab} tab={tab} size="xs" />)}
+                    </span>
+                  </button>
+                )
+              })}
             </div>
           )}
-      </Field>
+      </div>
 
       {!isSelf && (
-        <Field label="Status">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" className="accent-emerald w-4 h-4"
-              checked={isActive} onChange={e => setIsActive(e.target.checked)} />
-            <span className="text-sm text-ink">Active</span>
-          </label>
-        </Field>
+        <label className="flex cursor-pointer items-center gap-2.5">
+          <input type="checkbox" className="size-4 accent-emerald" checked={isActive} onChange={e => setIsActive(e.target.checked)} />
+          <span className="text-sm font-medium text-ink">{t.admin.activeLabel}</span>
+        </label>
       )}
 
-      <div className="border-t border-border pt-4 space-y-3">
-        <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest">Change password <span className="normal-case font-normal">(leave blank to keep)</span></p>
-        <Field label="New password">
+      <div className="space-y-3 border-t border-muted pt-4">
+        <Field label={t.admin.newPassword} hint={t.admin.passwordKeep}>
           <input type="password" className={INPUT} value={password}
             onChange={e => setPassword(e.target.value)} placeholder="••••••••" autoComplete="new-password" />
         </Field>
-        <Field label="Confirm password">
+        <Field label={t.admin.confirmPassword}>
           <input type="password" className={INPUT} value={confirmPw}
             onChange={e => setConfirmPw(e.target.value)} placeholder="••••••••" autoComplete="new-password" />
         </Field>
       </div>
 
-      {error && <p className="text-xs text-ember font-medium">{error}</p>}
-
-      <div className="flex gap-2 pt-1">
-        <button onClick={save} disabled={saving}
-          className="flex-1 h-9 rounded-xl bg-emerald text-white text-sm font-semibold hover:bg-emerald/90 disabled:opacity-50 transition-colors">
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-        <button onClick={onClose}
-          className="h-9 px-4 rounded-xl border border-border text-sm font-medium text-ink-3 hover:bg-ground transition-colors">
-          Cancel
-        </button>
-      </div>
-    </Modal>
+      {error && <ErrorLine>{error}</ErrorLine>}
+    </FormDialog>
   )
 }
 
-/* ─── Shared permission picker (used in both edit and create modals) ─── */
-function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string[]) => void }) {
+/* ─── Shared permission picker (used in both edit and create dialogs) ─── */
+function PermPicker({ t, perms, setPerms }: { t: T; perms: string[]; setPerms: (p: string[]) => void }) {
   function hasSystem(sysId: string) { return perms.includes(`system:${sysId}`) }
   function hasPerm(p: string)        { return perms.includes(p) }
 
   function toggleSystem(sysId: string, checked: boolean) {
     const sysPerm  = `system:${sysId}`
-    const modPerms = SYSTEM_DEFS.find(s => s.id === sysId)?.modules.map(m => m.perm) ?? []
+    const modPerms = SYSTEM_DEFS.find(s => s.id === sysId)?.modules ?? []
     if (checked) {
       setPerms([...perms.filter(p => p !== sysPerm), sysPerm])
     } else {
@@ -312,255 +299,133 @@ function PermPicker({ perms, setPerms }: { perms: string[]; setPerms: (p: string
     setPerms(checked ? [...perms, p] : perms.filter(x => x !== p))
   }
 
+  const tile = (on: boolean) => cn("rounded-xl border transition-colors", on ? "border-emerald/35 bg-sage/25" : "border-border bg-ground/40")
+
   return (
     <div className="space-y-4">
-      <Field label="Systems & Modules">
+      <div>
+        <p className="mb-1.5 text-xs font-semibold text-ink-3">{t.admin.systemsModules}</p>
         <div className="flex flex-col gap-1.5">
           {SYSTEM_DEFS.map(sys => {
             const sysChecked = hasSystem(sys.id)
-            const checkedModules = sys.modules.filter(m => hasPerm(m.perm))
+            const checkedModules = sys.modules.filter(m => hasPerm(m))
             const allModules = sys.modules.length > 0 && checkedModules.length === sys.modules.length
             return (
-              <div key={sys.id}
-                className={`rounded-xl border overflow-hidden transition-all ${sysChecked ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
-                {/* Colour bar — the same system accent the group cards use */}
-                <span className={`block h-[3px] ${sys.dot} ${sysChecked ? "" : "opacity-30"}`} />
-                {/* System row */}
-                <label className="flex items-center gap-2.5 cursor-pointer px-3 py-2.5">
-                  <input type="checkbox" className="accent-emerald w-4 h-4 flex-shrink-0"
-                    checked={sysChecked}
-                    onChange={e => toggleSystem(sys.id, e.target.checked)} />
-                  <span className="text-sm font-semibold text-ink flex-1">{sys.label}</span>
-                  {sys.modules.length > 0 ? (
-                    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
-                      sysChecked
-                        ? checkedModules.length > 0
-                          ? "bg-emerald/15 text-emerald"
-                          : "bg-amber-500/10 text-amber-600"
-                        : "bg-muted text-ink-3/50"
-                    }`}>
-                      {sysChecked
-                        ? `${checkedModules.length}/${sys.modules.length} modules`
-                        : `${sys.modules.length} modules`}
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-ink-3/30">access only</span>
-                  )}
+              <div key={sys.id} className={tile(sysChecked)}>
+                <label className="flex cursor-pointer items-center gap-2.5 px-3 py-2.5">
+                  <input type="checkbox" className="size-4 flex-none accent-emerald"
+                    checked={sysChecked} onChange={e => toggleSystem(sys.id, e.target.checked)} />
+                  <ArtDot system={sys.system} className={cn(!sysChecked && "opacity-50 grayscale")} />
+                  <span className="flex-1 text-sm font-semibold text-ink">{sys.system.name}</span>
+                  {sys.modules.length > 0
+                    ? <Chip tone={!sysChecked ? "mute" : checkedModules.length > 0 ? "ok" : "warn"} tip={t.admin.modules}>
+                        {sysChecked ? `${checkedModules.length}/${sys.modules.length}` : sys.modules.length}
+                      </Chip>
+                    : <span className="text-[11px] text-ink-3/60">{t.admin.accessOnly}</span>}
                 </label>
-                {/* Module checkboxes — shown when system is checked */}
                 {sysChecked && sys.modules.length > 0 && (
-                  <div className="px-3 pb-2.5 flex flex-col gap-1.5 border-t border-emerald/15 pt-2 ml-6">
+                  <div className="ml-6 flex flex-col gap-1.5 border-t border-emerald/15 px-3 pb-2.5 pt-2">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest">Modules</p>
+                      <p className="text-[11px] font-semibold text-ink-3">{t.admin.modules}</p>
                       <button type="button"
                         onClick={() => setPerms(allModules
-                          ? perms.filter(p => !sys.modules.some(m => m.perm === p))
-                          : [...perms.filter(p => !sys.modules.some(m => m.perm === p)), ...sys.modules.map(m => m.perm)])}
-                        className="text-[10px] font-semibold text-emerald hover:underline">
-                        {allModules ? "none" : "all"}
+                          ? perms.filter(p => !sys.modules.includes(p))
+                          : [...perms.filter(p => !sys.modules.includes(p)), ...sys.modules])}
+                        className="text-[11px] font-semibold text-emerald hover:underline">
+                        {allModules ? t.admin.none : t.admin.all}
                       </button>
                     </div>
-                    {sys.modules.map(mod => (
-                      <label key={mod.perm} className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" className="accent-emerald w-3.5 h-3.5"
-                          checked={hasPerm(mod.perm)}
-                          onChange={e => togglePerm(mod.perm, e.target.checked)} />
-                        <span className="text-sm text-ink">{mod.label}</span>
+                    {sys.modules.map(perm => (
+                      <label key={perm} className="flex cursor-pointer items-center gap-2">
+                        <input type="checkbox" className="size-3.5 accent-emerald"
+                          checked={hasPerm(perm)} onChange={e => togglePerm(perm, e.target.checked)} />
+                        <ModBadge tab={PERM_MODULE[perm]} size="xs" />
+                        <span className="text-sm text-ink">{permLabel(perm, t)}</span>
                       </label>
                     ))}
                   </div>
                 )}
                 {/* Module perms survive from older grants; without the system they open nothing. */}
                 {!sysChecked && checkedModules.length > 0 && (
-                  <p className="px-3 pb-2.5 text-[10px] font-medium text-amber-600">
-                    {checkedModules.map(m => m.label).join(", ")} granted, but hidden until this system is ticked
+                  <p className="px-3 pb-2.5 text-[11px] font-semibold text-brick">
+                    {t.admin.grantedHidden(checkedModules.map(m => permLabel(m, t)).join(", "))}
                   </p>
                 )}
               </div>
             )
           })}
         </div>
-      </Field>
+      </div>
 
-      <Field label="Shared">
+      <div>
+        <p className="mb-1.5 text-xs font-semibold text-ink-3">{t.admin.everySystem}</p>
         <div className="flex flex-col gap-1.5">
-          <div className={`rounded-xl border px-3 py-2.5 transition-all ${hasPerm("admin:manage") ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
-            <label className="flex items-center gap-2.5 cursor-pointer">
-              <input type="checkbox" className="accent-emerald w-4 h-4"
-                checked={hasPerm("admin:manage")}
-                onChange={e => togglePerm("admin:manage", e.target.checked)} />
-              <span className="text-sm font-semibold text-ink">Admin & Management</span>
-              <span className="text-xs text-ink-3 ml-1">all systems · users · history</span>
+          {["admin:manage", ...SHARED_PERMS].map(perm => (
+            <label key={perm} className={cn(tile(hasPerm(perm)), "flex cursor-pointer items-center gap-2.5 px-3 py-2.5")}>
+              <input type="checkbox" className="size-4 accent-emerald"
+                checked={hasPerm(perm)} onChange={e => togglePerm(perm, e.target.checked)} />
+              <ModBadge tab={PERM_MODULE[perm]} />
+              <span className="text-sm font-semibold text-ink">{perm === "admin:manage" ? t.admin.adminManage : permLabel(perm, t)}</span>
+              <span className="ml-1 text-xs text-ink-3">{perm === "admin:manage" ? t.admin.adminManageNote : t.admin.kbNote}</span>
             </label>
-          </div>
-          {SHARED_MODULES.map(mod => (
-            <div key={mod.perm} className={`rounded-xl border px-3 py-2.5 transition-all ${hasPerm(mod.perm) ? "border-emerald/30 bg-emerald/5" : "border-border bg-ground/30"}`}>
-              <label className="flex items-center gap-2.5 cursor-pointer">
-                <input type="checkbox" className="accent-emerald w-4 h-4"
-                  checked={hasPerm(mod.perm)}
-                  onChange={e => togglePerm(mod.perm, e.target.checked)} />
-                <span className="text-sm font-semibold text-ink">{mod.label}</span>
-                <span className="text-xs text-ink-3 ml-1">{mod.note}</span>
-              </label>
-            </div>
           ))}
         </div>
-      </Field>
+      </div>
     </div>
   )
 }
 
-/* ─── Group edit modal ─── */
-function GroupEditModal({ group, onSaved, onClose }: {
-  group: Group; onSaved: () => void; onClose: () => void
+/* ─── Group dialogs ─── */
+function GroupDialog({ t, group, onSaved, onClose }: {
+  t: T; group: Group | null; onSaved: () => void; onClose: () => void
 }) {
-  const [name, setName] = useState(group.name)
-  const [desc, setDesc] = useState(group.description)
-  const [perms, setPerms] = useState<string[]>(group.permissions)
+  const [name, setName] = useState(group?.name ?? "")
+  const [desc, setDesc] = useState(group?.description ?? "")
+  const [perms, setPerms] = useState<string[]>(group?.permissions ?? [])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
 
   async function save() {
-    if (!name.trim()) { setError("Name is required"); return }
+    if (!name.trim()) { setError(t.admin.errName); return }
     setError("")
     setSaving(true)
     try {
+      const body = group
+        ? { action: "update", groupId: group.id, name: name.trim(), description: desc, permissions: perms }
+        : { action: "create", name: name.trim(), description: desc, permissions: perms }
       const r = await fetch("/api/admin/groups", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "update", groupId: group.id, name: name.trim(), description: desc, permissions: perms }),
-      })
-      if (!r.ok) throw new Error((await r.json()).error ?? "Failed")
-      onSaved()
-      onClose()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Modal title={`Edit group: ${group.name}`} onClose={onClose} wide>
-      <Field label="Name">
-        <input className={INPUT} value={name} onChange={e => setName(e.target.value)} />
-      </Field>
-      <Field label="Description">
-        <input className={INPUT} value={desc} onChange={e => setDesc(e.target.value)} placeholder="Optional" />
-      </Field>
-
-      <PermPicker perms={perms} setPerms={setPerms} />
-
-      {error && <p className="text-xs text-ember font-medium">{error}</p>}
-
-      <div className="flex gap-2 pt-1">
-        <button onClick={save} disabled={saving}
-          className="flex-1 h-9 rounded-xl bg-emerald text-white text-sm font-semibold hover:bg-emerald/90 disabled:opacity-50 transition-colors">
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-        <button onClick={onClose}
-          className="h-9 px-4 rounded-xl border border-border text-sm font-medium text-ink-3 hover:bg-ground transition-colors">
-          Cancel
-        </button>
-      </div>
-    </Modal>
-  )
-}
-
-/* ─── User row ─── */
-function UserRow({ user, currentUsername, onRefresh }: {
-  user: User; currentUsername: string | undefined; onRefresh: () => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [saving, setSaving] = useState(false)
-
-  const isSelf = user.username === currentUsername
-  const isLocked = !!user.locked_until && new Date(user.locked_until) > new Date()
-
-  async function call(body: object) {
-    setSaving(true)
-    try {
-      await fetch("/api/admin/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       })
-      onRefresh()
+      if (!r.ok) throw new Error((await r.json()).error ?? t.admin.failed(r.status))
+      onSaved()
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <>
-      {editing && (
-        <UserEditModal
-          user={user}
-          currentUsername={currentUsername}
-          onSaved={onRefresh}
-          onClose={() => setEditing(false)}
-        />
-      )}
-      <tr className={`border-b border-border hover:bg-ground/40 transition-colors ${!user.is_active ? "opacity-50" : ""}`}>
-        <td className="px-4 py-3 w-8">
-          <div className={`w-2 h-2 rounded-full ${isLocked ? "bg-amber-500" : user.is_active ? "bg-emerald" : "bg-ink-3/30"}`} />
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-ink">{user.username}</span>
-            {isSelf && <Badge variant="blue">you</Badge>}
-          </div>
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex flex-wrap gap-1">
-            {user.groups.length ? user.groups.map(g => <Badge key={g} variant="neutral">{g}</Badge>) : <span className="text-xs text-ink-3/40">—</span>}
-          </div>
-        </td>
-        <td className="px-4 py-3">
-          {isLocked
-            ? <Badge variant="amber">locked</Badge>
-            : user.is_active
-              ? <Badge variant="green">active</Badge>
-              : <Badge variant="red">inactive</Badge>}
-        </td>
-        <td className="px-4 py-3 text-xs text-ink-3 tabular-nums whitespace-nowrap">
-          {new Date(user.created_at).toLocaleDateString("pl-PL")}
-        </td>
-        <td className="px-4 py-3 text-xs tabular-nums whitespace-nowrap">
-          {user.last_login_at
-            ? <span className="text-ink" title={new Date(user.last_login_at).toLocaleString("pl-PL")}>
-                {formatRelative(user.last_login_at)}
-              </span>
-            : <span className="text-ink-3/40">—</span>}
-        </td>
-        <td className="px-4 py-3 text-right">
-          <div className="flex items-center justify-end gap-1.5">
-            {isLocked && (
-              <button disabled={saving} onClick={() => call({ action: "unlock", userId: user.id })}
-                className="h-7 px-2.5 rounded-lg text-xs font-medium text-amber-600 bg-amber-500/10 hover:bg-amber-500/20 disabled:opacity-50 transition-colors">
-                Unlock
-              </button>
-            )}
-            <button onClick={() => setEditing(true)}
-              className="h-7 px-2.5 rounded-lg text-xs font-medium text-ink-3 bg-ground border border-border hover:bg-border/40 transition-colors">
-              Edit
-            </button>
-            <button disabled={saving || isSelf}
-              onClick={() => { if (confirm(`Delete "${user.username}"?`)) call({ action: "delete", userId: user.id }) }}
-              className="h-7 px-2.5 rounded-lg text-xs font-medium text-ember bg-ember/10 hover:bg-ember/20 disabled:opacity-40 transition-colors">
-              Delete
-            </button>
-          </div>
-        </td>
-      </tr>
-    </>
+    <FormDialog title={group ? t.admin.editGroup(group.name) : t.admin.newGroup} icon={group ? Pencil : Shield} t={t} onClose={onClose}
+      footer={<FormFooter t={t} saving={saving} onSave={save} onClose={onClose}
+        saveLabel={group ? undefined : t.admin.create} savingLabel={group ? undefined : t.admin.creating} />}>
+      <Field label={t.admin.groupName}>
+        <input autoFocus={!group} className={INPUT} value={name} onChange={e => setName(e.target.value)} placeholder="group-name" />
+      </Field>
+      <Field label={t.admin.groupDescription}>
+        <input className={INPUT} value={desc} onChange={e => setDesc(e.target.value)} placeholder={t.admin.optional} />
+      </Field>
+      <PermPicker t={t} perms={perms} setPerms={setPerms} />
+      {error && <ErrorLine>{error}</ErrorLine>}
+    </FormDialog>
   )
 }
 
-/* ─── New user row ─── */
-function NewUserRow({ onCreated, onCancel }: {
-  onCreated: () => void; onCancel: () => void
-}) {
+/* ─── Users ─── */
+function NewUserRow({ t, onCreated, onCancel }: { t: T; onCreated: () => void; onCancel: () => void }) {
   const [groups, setGroups] = useState<Group[]>([])
   useEffect(() => {
     fetch("/api/admin/groups").then(r => r.json()).then(d => setGroups(d.groups ?? []))
@@ -581,60 +446,116 @@ function NewUserRow({ onCreated, onCancel }: {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "create", username, password, groupIds: groupId != null ? [groupId] : [] }),
       })
-      if (!r.ok) setError((await r.json()).error ?? "Failed")
+      if (!r.ok) setError((await r.json()).error ?? t.admin.failed(r.status))
       else onCreated()
     } finally {
       setSaving(false)
     }
   }
 
+  const small = "h-9 rounded-xl border border-border bg-surface px-3 text-[13px] text-ink outline-none transition-colors focus:border-emerald/55 focus:ring-4 focus:ring-emerald/12"
   return (
-    <tr className="border-b border-border bg-emerald/5">
-      <td colSpan={7} className="px-4 py-3">
+    <tr className="step-enter border-b border-muted bg-sage/20">
+      <td colSpan={6} className="px-5 py-3">
         <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
-          <div>
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">Username</p>
-            <input required autoFocus value={username} onChange={e => setUsername(e.target.value)} placeholder="username"
-              className="h-8 px-3 rounded-xl border border-border bg-surface text-xs text-ink w-36
-                         focus:outline-none focus:border-emerald/60 focus:ring-2 focus:ring-emerald/15 transition-all" />
-          </div>
-          <div>
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">Password</p>
+          <label>
+            <span className="mb-1 block text-[11px] font-semibold text-ink-3">{t.admin.username}</span>
+            <input required autoFocus value={username} onChange={e => setUsername(e.target.value)} placeholder="username" className={cn(small, "w-40")} />
+          </label>
+          <label>
+            <span className="mb-1 block text-[11px] font-semibold text-ink-3">{t.admin.password}</span>
             <input required type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••"
-              className="h-8 px-3 rounded-xl border border-border bg-surface text-xs text-ink w-36
-                         focus:outline-none focus:border-emerald/60 focus:ring-2 focus:ring-emerald/15 transition-all" />
-          </div>
-          <div>
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">Group</p>
-            <select value={groupId ?? ""} onChange={e => setGroupId(e.target.value ? Number(e.target.value) : null)}
-              className="h-8 px-2 rounded-xl border border-border bg-surface text-xs text-ink
-                         focus:outline-none focus:border-emerald/60 transition-all">
-              <option value="">— none —</option>
+              autoComplete="new-password" className={cn(small, "w-40")} />
+          </label>
+          <label>
+            <span className="mb-1 block text-[11px] font-semibold text-ink-3">{t.admin.colGroup}</span>
+            <select value={groupId ?? ""} onChange={e => setGroupId(e.target.value ? Number(e.target.value) : null)} className={cn(small, "pr-2")}>
+              <option value="">{t.admin.noGroup}</option>
               {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
             </select>
+          </label>
+          <div className="flex items-center gap-1.5">
+            <GoButton size="go-sm" type="submit" icon={Check} tip={saving ? t.admin.creating : t.admin.create} disabled={saving} />
+            <IconButton icon={X} tip={t.common.cancel} onClick={onCancel} />
           </div>
-          <div className="flex gap-2 items-center">
-            {error && <p className="text-xs text-ember">{error}</p>}
-            <button type="submit" disabled={saving}
-              className="h-8 px-4 rounded-xl bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 disabled:opacity-50 transition-colors">
-              {saving ? "Creating…" : "Create"}
-            </button>
-            <button type="button" onClick={onCancel}
-              className="h-8 px-3 rounded-xl text-xs font-medium text-ink-3 bg-ground border border-border hover:bg-border/40 transition-colors">
-              Cancel
-            </button>
-          </div>
+          {error && <div className="w-full"><ErrorLine>{error}</ErrorLine></div>}
         </form>
       </td>
     </tr>
   )
 }
 
-/* ─── Users table ─── */
-function UsersTable({ currentUsername }: { currentUsername: string | undefined }) {
+function UserRow({ t, user, currentUsername, onRefresh, onEdit, onDelete }: {
+  t: T; user: User; currentUsername: string | undefined; onRefresh: () => void; onEdit: () => void; onDelete: () => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const isSelf = user.username === currentUsername
+  const isLocked = !!user.locked_until && new Date(user.locked_until) > new Date()
+
+  async function unlock() {
+    setSaving(true)
+    try {
+      await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "unlock", userId: user.id }),
+      })
+      onRefresh()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <tr className={cn("border-b border-muted transition-colors last:border-0 hover:bg-ground/40", !user.is_active && "opacity-50")}>
+      <td className="px-3 py-2.5 pl-5">
+        <div className="flex items-center gap-2.5">
+          <Avatar name={user.username} />
+          <span className="text-[13.5px] font-semibold text-ink">{user.username}</span>
+          {isSelf && <Chip tone="info">{t.admin.you}</Chip>}
+        </div>
+      </td>
+      <td className="px-3 py-2.5">
+        <div className="flex flex-wrap gap-1">
+          {user.groups.length ? user.groups.map(g => <Chip key={g} tone="mute" icon={Shield}>{g}</Chip>) : <span className="text-xs text-ink-3/40">—</span>}
+        </div>
+      </td>
+      <td className="px-3 py-2.5">
+        {isLocked
+          ? <Chip tone="warn" icon={LockOpen} tip={user.locked_until ? new Date(user.locked_until).toLocaleString() : undefined}>{t.admin.locked}</Chip>
+          : user.is_active
+            ? <Chip tone="ok" icon={Check}>{t.admin.active}</Chip>
+            : <Chip tone="mute" icon={X}>{t.admin.inactive}</Chip>}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2.5 text-xs tabular-nums text-ink-3">
+        {new Date(user.created_at).toLocaleDateString()}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2.5 text-xs tabular-nums">
+        {user.last_login_at
+          ? <Tip content={new Date(user.last_login_at).toLocaleString()}>
+              <span tabIndex={0} className="text-ink outline-none">{ago(user.last_login_at, t)}</span>
+            </Tip>
+          : <span className="text-ink-3/40">—</span>}
+      </td>
+      <td className="px-3 py-2.5 pr-4 text-right">
+        <div className="flex items-center justify-end gap-0.5">
+          {isLocked && <IconButton size="sm" icon={LockOpen} tip={t.admin.unlock} disabled={saving} onClick={unlock} />}
+          <IconButton size="sm" icon={Pencil} tip={t.admin.edit} onClick={onEdit} />
+          {!isSelf && <IconButton size="sm" icon={Trash2} tip={t.admin.delete} danger disabled={saving} onClick={onDelete} />}
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function UsersPanel({ t, currentUsername, reload, adding, setAdding }: {
+  t: T; currentUsername: string | undefined; reload: number; adding: boolean; setAdding: (v: boolean) => void
+}) {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
-  const [showNew, setShowNew] = useState(false)
+  const [editing, setEditing] = useState<User | null>(null)
+  const [deleting, setDeleting] = useState<User | null>(null)
+  const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -646,46 +567,53 @@ function UsersTable({ currentUsername }: { currentUsername: string | undefined }
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load, reload])
+
+  async function remove(user: User) {
+    setBusy(true)
+    try {
+      await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", userId: user.id }),
+      })
+      setDeleting(null)
+      load()
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="overflow-x-auto">
+      {editing && (
+        <UserEditDialog t={t} user={editing} currentUsername={currentUsername} onSaved={load} onClose={() => setEditing(null)} />
+      )}
+      {deleting && (
+        <ConfirmDialog icon={Trash2} title={t.admin.deleteUserTitle(deleting.username)} text={t.admin.deleteUserText}
+          confirmLabel={t.admin.delete} cancelLabel={t.common.cancel} busy={busy}
+          onClose={() => setDeleting(null)} onConfirm={() => remove(deleting)} />
+      )}
       <table className="w-full">
         <thead>
-          <tr className="border-b border-border bg-ground/60">
+          <tr className="border-b border-border">
+            <Th first>{t.admin.colUser}</Th>
+            <Th>{t.admin.colGroup}</Th>
+            <Th>{t.admin.colStatus}</Th>
+            <Th>{t.admin.colSince}</Th>
+            <Th>{t.admin.colLastLogin}</Th>
             <Th />
-            <Th>Username</Th>
-            <Th>Group</Th>
-            <Th>Status</Th>
-            <Th>Since</Th>
-            <Th>Last login</Th>
-            <th className="px-4 py-2.5 text-right">
-              <div className="flex items-center justify-end gap-2">
-                <button onClick={load} disabled={loading}
-                  className="w-7 h-7 rounded-lg bg-surface border border-border flex items-center justify-center text-ink-3 hover:bg-border/40 disabled:opacity-40 transition-colors">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" className={loading ? "animate-spin" : ""}>
-                    <path d="M21 12a9 9 0 11-3.2-6.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                    <path d="M21 3v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
-                <button onClick={() => setShowNew(v => !v)}
-                  className="h-7 px-3 rounded-lg bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 transition-colors whitespace-nowrap">
-                  + New user
-                </button>
-              </div>
-            </th>
           </tr>
         </thead>
         <tbody>
-          {showNew && (
-            <NewUserRow onCreated={() => { setShowNew(false); load() }} onCancel={() => setShowNew(false)} />
-          )}
-          {loading ? (
-            <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
+          {adding && <NewUserRow t={t} onCreated={() => { setAdding(false); load() }} onCancel={() => setAdding(false)} />}
+          {loading && users.length === 0 ? (
+            <tr><td colSpan={6} className="px-5 py-10 text-center text-sm text-ink-3">{t.common.loading}</td></tr>
           ) : users.length === 0 ? (
-            <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-ink-3">No users</td></tr>
+            <tr><td colSpan={6}><EmptyState icon={Users} text={t.admin.noUsers} /></td></tr>
           ) : users.map(u => (
-            <UserRow key={u.id} user={u} currentUsername={currentUsername} onRefresh={load} />
+            <UserRow key={u.id} t={t} user={u} currentUsername={currentUsername} onRefresh={load}
+              onEdit={() => setEditing(u)} onDelete={() => setDeleting(u)} />
           ))}
         </tbody>
       </table>
@@ -697,19 +625,18 @@ function UsersTable({ currentUsername }: { currentUsername: string | undefined }
  *  A group's permission list is flat, but the app reads it as a tree: a module
  *  only opens if its system is open too (the hub filters tiles by perm *and*
  *  by the system:* list), and admin:manage opens everything. The card below
- *  renders that tree, so the flat badge list stops hiding which module sits
- *  under which system — and which modules are granted but unreachable.
+ *  renders that tree, so the flat list stops hiding which module sits under
+ *  which system — and which modules are granted but unreachable.
  */
-interface ModuleState { perm: string; label: string; granted: boolean }
 interface SystemState {
-  id: string; label: string; dot: string
+  id: string; system: FPSystem
   open: boolean                 // the group can enter this system
-  modules: ModuleState[]
+  modules: { perm: string; granted: boolean }[]
 }
 
 const KNOWN_PERMS = new Set<string>([
-  ...SYSTEM_DEFS.flatMap(s => [`system:${s.id}`, ...s.modules.map(m => m.perm)]),
-  ...SHARED_MODULES.map(m => m.perm),
+  ...SYSTEM_DEFS.flatMap(s => [`system:${s.id}`, ...s.modules]),
+  ...SHARED_PERMS,
   "admin:manage",
 ])
 
@@ -719,254 +646,124 @@ function readPerms(perms: string[]) {
   // Same rule as the hub: an admin group with no system: perm reaches every system.
   const allSystems = isAdmin && sysIds.length === 0
   const systems: SystemState[] = SYSTEM_DEFS.map(s => ({
-    id: s.id, label: s.label, dot: s.dot,
+    id: s.id, system: s.system,
     open: allSystems || sysIds.includes(s.id),
-    modules: s.modules.map(m => ({ ...m, granted: perms.includes(m.perm) })),
+    modules: s.modules.map(perm => ({ perm, granted: perms.includes(perm) })),
   }))
   return {
     isAdmin,
     systems,
     other: perms.filter(p => !KNOWN_PERMS.has(p)),
-    moduleCount: systems.reduce((n, s) => n + s.modules.filter(m => m.granted).length, 0),
-    systemCount: systems.filter(s => s.open).length,
   }
 }
 
-/* ─── State glyphs ─── */
-function Tick() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" className="flex-shrink-0">
-      <path d="M2 6.3l2.6 2.7L10 3.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  )
-}
-
-function Hollow() {
-  return <span className="w-[11px] h-[11px] rounded-full border border-current opacity-40 flex-shrink-0" />
-}
-
-/** One module under a system. "admin" = not granted outright, but the group
- *  holds admin:manage, which the hub treats as holding every module perm. */
-function ModuleLine({ label, state }: { label: string; state: "on" | "off" | "admin" }) {
-  return (
-    <span className="flex items-center gap-1.5 text-[11px] leading-tight"
-      title={state === "admin" ? "Open because the group holds Admin & Management" : undefined}>
-      {state === "off"
-        ? <Hollow />
-        : <span className={state === "on" ? "text-emerald" : "text-emerald/50"}><Tick /></span>}
-      <span className={
-        state === "on"      ? "font-medium text-ink"
-        : state === "admin" ? "text-ink-3"
-        : "text-ink-3/45"
-      }>{label}</span>
-      {state === "admin" && (
-        <span className="text-[9px] font-semibold text-ink-3/40 uppercase tracking-wide">admin</span>
-      )}
-    </span>
-  )
-}
-
-/** One system with the modules activated for it listed underneath. */
-function SystemPanel({ sys, isAdmin }: { sys: SystemState; isAdmin: boolean }) {
+/** One system with its modules: granted, open through Admin, or not. */
+function SystemPanel({ t, sys, isAdmin }: { t: T; sys: SystemState; isAdmin: boolean }) {
   const granted = sys.modules.filter(m => m.granted).length
   // Module perms held without the system perm: granted, but the hub never
   // shows them, so the panel says so instead of looking like working access.
   const orphan = !sys.open
-
   return (
-    <div className={`rounded-xl border overflow-hidden ${
-      orphan ? "border-amber-500/40 bg-amber-500/5" : "border-border bg-ground/40"
-    }`}>
-      <span className={`block h-[3px] ${orphan ? "bg-amber-500/50" : sys.dot}`} />
-      <div className="flex items-center gap-2 px-2.5 py-2">
-        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${sys.dot} ${orphan ? "opacity-40" : ""}`} />
-        <span className={`text-xs font-semibold flex-1 truncate ${orphan ? "text-ink-3" : "text-ink"}`}>
-          {sys.label}
-        </span>
-        {sys.modules.length > 0 ? (
-          <span className={`text-[10px] font-semibold tabular-nums px-1.5 py-0.5 rounded-full ${
-            orphan                           ? "bg-amber-500/15 text-amber-600"
-            : granted === sys.modules.length ? "bg-emerald/15 text-emerald"
-            : granted > 0                    ? "bg-emerald/10 text-emerald/80"
-            : "bg-muted text-ink-3/60"
-          }`}>
-            {granted}/{sys.modules.length}
-          </span>
-        ) : (
-          <span className="text-[10px] text-ink-3/50">access only</span>
-        )}
+    <div className={cn("rounded-xl border px-3 py-2.5", orphan ? "border-blush bg-blush/15" : "border-border bg-surface")}>
+      <div className="flex items-center gap-2">
+        <ArtDot system={sys.system} className={cn("size-5", orphan && "opacity-50 grayscale")} />
+        <span className={cn("min-w-0 flex-1 truncate text-xs font-semibold", orphan ? "text-ink-3" : "text-ink")}>{sys.system.name}</span>
+        {sys.modules.length > 0
+          ? <Chip tone={orphan ? "bad" : granted > 0 ? "ok" : "mute"}>{granted}/{sys.modules.length}</Chip>
+          : <span className="text-[11px] text-ink-3/60">{t.admin.accessOnly}</span>}
       </div>
-
       {sys.modules.length > 0 && (
-        <div className="px-2.5 pb-2.5 flex flex-col gap-1.5">
-          {sys.modules.map(m => (
-            <ModuleLine key={m.perm} label={m.label}
-              state={m.granted ? "on" : isAdmin ? "admin" : "off"} />
-          ))}
+        <div className="mt-2 flex flex-col gap-1.5">
+          {sys.modules.map(m => {
+            const state = m.granted ? "on" : isAdmin ? "admin" : "off"
+            const line = (
+              <span className={cn("flex items-center gap-1.5 text-[11.5px] leading-tight", state === "off" && "opacity-45")}>
+                <ModBadge tab={PERM_MODULE[m.perm]} size="xs" dim={state === "off"} />
+                <span className={state === "on" ? "font-medium text-ink" : "text-ink-3"}>{permLabel(m.perm, t)}</span>
+                {state === "admin" && <ShieldCheck className="size-3.5 text-ink-3/60" />}
+              </span>
+            )
+            return state === "admin" ? <Tip key={m.perm} content={t.admin.viaAdmin}>{line}</Tip> : <Fragment key={m.perm}>{line}</Fragment>
+          })}
         </div>
       )}
-
-      {orphan && (
-        <p className="px-2.5 pb-2 text-[10px] font-medium text-amber-600 leading-snug">
-          No system access — these modules stay hidden
-        </p>
-      )}
+      {orphan && <p className="mt-2 text-[11px] font-semibold leading-snug text-brick">{t.admin.orphanText}</p>}
     </div>
   )
 }
 
-/** A permission that is not tied to one system. */
-function PermChip({ label, note, on }: { label: string; note?: string; on: boolean }) {
-  return (
-    <span className={`inline-flex items-center gap-1.5 pl-1.5 pr-2.5 py-1 rounded-full text-[11px] border ${
-      on ? "bg-emerald/10 border-emerald/25 text-emerald" : "bg-ground border-border text-ink-3/50"
-    }`}>
-      {on ? <Tick /> : <Hollow />}
-      <span className="font-medium">{label}</span>
-      {note && <span className={on ? "text-emerald/60" : "text-ink-3/40"}>· {note}</span>}
-    </span>
-  )
-}
-
 /* ─── Group card ─── */
-function GroupCard({ group, members, onRefresh }: {
-  group: Group; members: string[]; onRefresh: () => void
+function GroupCard({ t, group, members, onEdit, onDelete }: {
+  t: T; group: Group; members: string[]; onEdit: () => void; onDelete: () => void
 }) {
-  const [editing, setEditing] = useState(false)
-  const [saving, setSaving] = useState(false)
   const [expanded, setExpanded] = useState(false)
-  const [error, setError] = useState("")
-
   const v = readPerms(group.permissions)
   const open   = v.systems.filter(s => s.open)
-  const orphan = v.systems.filter(s => !s.open && s.modules.some(m => m.granted))
-  const shut   = v.systems.filter(s => !s.open && !s.modules.some(m => m.granted))
+  // A closed system only hides a module no open system offers: New products
+  // sits under Stamgegevens and the test tenant both.
+  const reachable = new Set(open.flatMap(s => s.modules.map(m => m.perm)))
+  const orphan = v.systems.filter(s => !s.open && s.modules.some(m => m.granted && !reachable.has(m.perm)))
+  const shut   = v.systems.filter(s => !s.open && !orphan.includes(s))
   const panels = [...open, ...orphan]
-
-  async function del() {
-    const warning = members.length > 0
-      ? `Delete group "${group.name}"? ${members.length} user(s) lose these permissions.`
-      : `Delete group "${group.name}"?`
-    if (!confirm(warning)) return
-    setSaving(true)
-    setError("")
-    try {
-      // The reply was ignored here, so a refused delete looked like a silent
-      // no-op: the row simply came back on the refresh with no reason given.
-      const r = await fetch("/api/admin/groups", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "delete", groupId: group.id }),
-      })
-      if (!r.ok) {
-        setError((await r.json().catch(() => ({}))).error ?? `Delete failed (${r.status})`)
-        return
-      }
-      onRefresh()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setSaving(false)
-    }
-  }
+  // The modules this group opens, each once, in the hub's order.
+  const tabs = [...new Set(group.permissions.map(p => PERM_MODULE[p]).filter(Boolean))] as Tab[]
+  if (v.isAdmin && !tabs.includes("history")) tabs.push("history")
 
   return (
-    <>
-      {editing && (
-        <GroupEditModal group={group} onSaved={onRefresh} onClose={() => setEditing(false)} />
-      )}
-      <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
-        {/* Header — click to open. Collapsed, it still shows a colour dot per
-            open system, so a glance says how much the group reaches. */}
-        <div className={`flex items-start gap-3 px-4 py-3 bg-ground/30 ${expanded ? "border-b border-border" : ""}`}>
-          <button type="button" onClick={() => setExpanded(e => !e)}
-            aria-expanded={expanded}
-            aria-controls={`group-perms-${group.id}`}
-            className="min-w-0 flex-1 flex items-start gap-2.5 text-left group/head">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
-              className={`mt-1 flex-shrink-0 text-ink-3/60 group-hover/head:text-ink transition-transform ${expanded ? "rotate-90" : ""}`}>
-              <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm font-semibold text-ink group-hover/head:text-emerald transition-colors">{group.name}</span>
-                {v.isAdmin && <Badge variant="blue">Admin</Badge>}
-                <span className="text-[11px] text-ink-3/70 tabular-nums">
-                  {members.length === 0
-                    ? "no members"
-                    : `${members.length} ${members.length === 1 ? "user" : "users"}`}
-                </span>
-              </div>
-              {group.description && (
-                <p className="text-xs text-ink-3 mt-0.5 truncate">{group.description}</p>
-              )}
-              <div className="flex items-center gap-2 mt-1">
-                <span className="flex items-center gap-1">
-                  {open.map(s => (
-                    <span key={s.id} title={s.label}
-                      className={`w-2 h-2 rounded-full ${s.dot} ring-1 ring-black/5`} />
-                  ))}
-                  {orphan.length > 0 && (
-                    <span title={`${orphan.length} system(s) with modules granted but no access`}
-                      className="w-2 h-2 rounded-full bg-amber-500" />
-                  )}
-                </span>
-                <span className="text-[10px] text-ink-3/60 tabular-nums">
-                  {v.systemCount}/{v.systems.length} systems · {v.moduleCount} modules
-                </span>
-              </div>
-            </div>
-          </button>
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <button onClick={() => setEditing(true)}
-              className="h-7 px-2.5 rounded-lg text-xs font-medium text-ink-3 bg-surface border border-border hover:bg-border/40 transition-colors">
-              Edit
-            </button>
-            <button disabled={saving} onClick={del}
-              className="h-7 px-2.5 rounded-lg text-xs font-medium text-ember bg-ember/10 hover:bg-ember/20 disabled:opacity-40 transition-colors">
-              Delete
-            </button>
-          </div>
+    <div className="flex flex-col gap-2.5 rounded-[18px] border border-border bg-surface px-4 py-3.5">
+      <div className="flex items-start gap-2">
+        <button type="button" onClick={() => setExpanded(e => !e)} aria-expanded={expanded} aria-controls={`group-perms-${group.id}`}
+          className="group/head flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-emerald/40">
+          <ChevronRight className={cn("size-4 flex-none text-ink-3/60 transition-transform duration-200 group-hover/head:text-ink", expanded && "rotate-90")} />
+          <span className="truncate text-[14.5px] font-bold text-ink group-hover/head:text-emerald-dark">{group.name}</span>
+        </button>
+        <div className="flex flex-none items-center gap-1.5">
+          {v.isAdmin && <Chip tone="info" icon={ShieldCheck}>Admin</Chip>}
+          <Chip tone="mute" icon={Users} tip={members.length ? `${t.admin.members}: ${members.join(", ")}` : t.admin.noMembers}>{members.length}</Chip>
+          <IconButton size="sm" icon={Pencil} tip={t.admin.edit} onClick={onEdit} />
+          <IconButton size="sm" icon={Trash2} tip={t.admin.delete} danger onClick={onDelete} />
         </div>
+      </div>
+      {group.description && <p className="-mt-1 truncate pl-6 text-xs text-ink-3">{group.description}</p>}
 
-        {error && (
-          <p className="px-4 py-2 text-[11px] font-medium text-ember bg-ember/5 border-t border-ember/20">
-            {error}
-          </p>
+      {/* At a glance: the systems it opens as their flags, the modules as their badges */}
+      <div className="flex flex-wrap items-center gap-2 pl-6">
+        <span className="flex items-center -space-x-1.5">
+          {open.length === 0
+            ? <Chip tone="bad" icon={TriangleAlert} tip={t.admin.noSystemText}>{t.admin.noSystemTitle}</Chip>
+            : open.map(s => (
+              <Tip key={s.id} content={s.system.name}>
+                <span tabIndex={0} className="inline-flex rounded-full outline-none ring-2 ring-surface"><ArtDot system={s.system} /></span>
+              </Tip>
+            ))}
+        </span>
+        {orphan.length > 0 && (
+          <Chip tone="bad" icon={TriangleAlert} tip={`${orphan.map(s => s.system.name).join(", ")} · ${t.admin.orphanText}`}>{t.admin.orphanShort}</Chip>
         )}
+        {tabs.length > 0 && <span className="h-[18px] w-px bg-border" />}
+        <span className="flex flex-wrap items-center gap-1">
+          {tabs.map(tab => <ModBadge key={tab} tab={tab} tip={MODULES[tab].label(t)} />)}
+        </span>
+      </div>
 
-        {/* Systems, each with its activated modules underneath */}
-        {expanded && (
-        <div id={`group-perms-${group.id}`} className="p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
-              Systems &amp; modules
-            </p>
-            <span className="h-px flex-1 bg-border" />
-          </div>
-
+      {expanded && (
+        <div id={`group-perms-${group.id}`} className="step-enter space-y-3 border-t border-muted pt-3">
           {panels.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border px-4 py-5 text-center">
-              <p className="text-xs font-medium text-ink-3">No system access</p>
-              <p className="text-[11px] text-ink-3/60 mt-0.5">
-                Members can sign in, but the hub stays empty. Use Edit to open a system.
-              </p>
-            </div>
+            <EmptyState icon={Building2} text={t.admin.noSystemTitle} hint={t.admin.noSystemText} />
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {panels.map(sys => <SystemPanel key={sys.id} sys={sys} isAdmin={v.isAdmin} />)}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {panels.map(sys => <SystemPanel key={sys.id} t={t} sys={sys} isAdmin={v.isAdmin} />)}
             </div>
           )}
 
-          <div className="pt-1">
-            <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest mb-1.5">
-              Every system
-            </p>
+          <div>
+            <p className="mb-1.5 text-[11px] font-semibold text-ink-3">{t.admin.everySystem}</p>
             <div className="flex flex-wrap gap-1.5">
-              <PermChip label="Admin & Management" note="users · groups · history" on={v.isAdmin} />
-              {SHARED_MODULES.map(m => (
-                <PermChip key={m.perm} label={m.label} note={m.note.replace("every system · ", "")}
-                  on={group.permissions.includes(m.perm)} />
+              <Chip tone={v.isAdmin ? "ok" : "mute"} icon={v.isAdmin ? Check : X} tip={t.admin.adminManageNote}>{t.admin.adminManage}</Chip>
+              {SHARED_PERMS.map(p => (
+                <Chip key={p} tone={group.permissions.includes(p) ? "ok" : "mute"} icon={group.permissions.includes(p) ? Check : X} tip={t.admin.kbNote}>
+                  {permLabel(p, t)}
+                </Chip>
               ))}
             </div>
           </div>
@@ -974,94 +771,31 @@ function GroupCard({ group, members, onRefresh }: {
           {/* Only worth naming when some systems are open — otherwise the
               empty state above already says the group reaches nothing. */}
           {shut.length > 0 && panels.length > 0 && (
-            <p className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[10px] text-ink-3/50 pt-0.5">
-              <span className="font-semibold uppercase tracking-widest">Closed</span>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-3/70">
+              <span className="font-semibold">{t.admin.closedSystems}</span>
               {shut.map(s => (
                 <span key={s.id} className="inline-flex items-center gap-1">
-                  <span className={`w-1.5 h-1.5 rounded-full ${s.dot} opacity-30`} />
-                  {s.label}
+                  <ArtDot system={s.system} className="size-4 opacity-40 grayscale" />{s.system.name}
                 </span>
               ))}
-            </p>
+            </div>
           )}
 
-          {v.other.length > 0 && (
-            <p className="text-[10px] text-ink-3/50 pt-0.5">Unrecognised: {v.other.join(", ")}</p>
-          )}
-
-          {members.length > 0 && (
-            <p className="text-[10px] text-ink-3/50 pt-0.5">
-              <span className="font-semibold uppercase tracking-widest">Members</span>{" "}
-              {members.join(", ")}
-            </p>
-          )}
+          {v.other.length > 0 && <p className="text-[11px] text-ink-3/60">{t.admin.unrecognised}: {v.other.join(", ")}</p>}
         </div>
-        )}
-      </div>
-    </>
+      )}
+    </div>
   )
 }
 
-/* ─── New group modal ─── */
-function NewGroupModal({ onCreated, onClose }: { onCreated: () => void; onClose: () => void }) {
-  const [name, setName] = useState("")
-  const [desc, setDesc] = useState("")
-  const [perms, setPerms] = useState<string[]>([])
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState("")
-
-  async function save() {
-    if (!name.trim()) { setError("Name is required"); return }
-    setError("")
-    setSaving(true)
-    try {
-      const r = await fetch("/api/admin/groups", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create", name: name.trim(), description: desc, permissions: perms }),
-      })
-      if (!r.ok) setError((await r.json()).error ?? "Failed")
-      else onCreated()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Modal title="New group" onClose={onClose} wide>
-      <Field label="Name">
-        <input autoFocus className={INPUT} value={name} onChange={e => setName(e.target.value)} placeholder="group-name" />
-      </Field>
-      <Field label="Description">
-        <input className={INPUT} value={desc} onChange={e => setDesc(e.target.value)} placeholder="Optional" />
-      </Field>
-
-      <PermPicker perms={perms} setPerms={setPerms} />
-
-      {error && <p className="text-xs text-ember font-medium">{error}</p>}
-
-      <div className="flex gap-2 pt-1">
-        <button onClick={save} disabled={saving}
-          className="flex-1 h-9 rounded-xl bg-emerald text-white text-sm font-semibold hover:bg-emerald/90 disabled:opacity-50 transition-colors">
-          {saving ? "Creating…" : "Create group"}
-        </button>
-        <button onClick={onClose}
-          className="h-9 px-4 rounded-xl border border-border text-sm font-medium text-ink-3 hover:bg-ground transition-colors">
-          Cancel
-        </button>
-      </div>
-    </Modal>
-  )
-}
-
-/* ─── Groups ─── */
-function GroupsPanel() {
+function GroupsPanel({ t, reload, adding, setAdding }: { t: T; reload: number; adding: boolean; setAdding: (v: boolean) => void }) {
   const [groups, setGroups] = useState<Group[]>([])
   const [members, setMembers] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
-  const [showNew, setShowNew] = useState(false)
+  const [editing, setEditing] = useState<Group | null>(null)
+  const [deleting, setDeleting] = useState<Group | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1087,56 +821,60 @@ function GroupsPanel() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load, reload])
+
+  async function remove(group: Group) {
+    setBusy(true)
+    setError("")
+    try {
+      // The reply was ignored once, so a refused delete looked like a silent
+      // no-op: the card simply came back on the refresh with no reason given.
+      const r = await fetch("/api/admin/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", groupId: group.id }),
+      })
+      if (!r.ok) {
+        setError(`${group.name}: ${(await r.json().catch(() => ({}))).error ?? t.admin.failed(r.status)}`)
+      }
+      setDeleting(null)
+      load()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
-    <div>
-      {showNew && (
-        <NewGroupModal onCreated={() => { setShowNew(false); load() }} onClose={() => setShowNew(false)} />
+    <div className="space-y-3 px-5 py-4">
+      {(adding || editing) && (
+        <GroupDialog t={t} group={editing} onSaved={load} onClose={() => { setAdding(false); setEditing(null) }} />
       )}
-
-      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border bg-ground/60">
-        <p className="text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
-          {loading ? "Loading…" : `${groups.length} ${groups.length === 1 ? "group" : "groups"}`}
-        </p>
-        <div className="flex items-center gap-2">
-          <button onClick={load} disabled={loading}
-            className="w-7 h-7 rounded-lg bg-surface border border-border flex items-center justify-center text-ink-3 hover:bg-border/40 disabled:opacity-40 transition-colors">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" className={loading ? "animate-spin" : ""}>
-              <path d="M21 12a9 9 0 11-3.2-6.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              <path d="M21 3v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-          <button onClick={() => setShowNew(true)}
-            className="h-7 px-3 rounded-lg bg-emerald text-white text-xs font-semibold hover:bg-emerald/90 transition-colors whitespace-nowrap">
-            + New group
-          </button>
+      {deleting && (
+        <ConfirmDialog icon={Trash2} title={t.admin.deleteGroupTitle(deleting.name)}
+          text={t.admin.deleteGroupText((members[deleting.name] ?? []).length)}
+          confirmLabel={t.admin.delete} cancelLabel={t.common.cancel} busy={busy}
+          onClose={() => setDeleting(null)} onConfirm={() => remove(deleting)} />
+      )}
+      {error && <ErrorLine>{error}</ErrorLine>}
+      {loading && groups.length === 0 ? (
+        <p className="py-10 text-center text-sm text-ink-3">{t.common.loading}</p>
+      ) : groups.length === 0 ? (
+        <EmptyState icon={Shield} text={t.admin.noGroups} />
+      ) : (
+        <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-2">
+          {groups.map(g => (
+            <GroupCard key={g.id} t={t} group={g} members={members[g.name] ?? []}
+              onEdit={() => setEditing(g)} onDelete={() => setDeleting(g)} />
+          ))}
         </div>
-      </div>
-
-      <div className="p-4 space-y-3 bg-ground/40">
-        {loading ? (
-          <p className="py-10 text-center text-sm text-ink-3">Loading…</p>
-        ) : groups.length === 0 ? (
-          <p className="py-10 text-center text-sm text-ink-3">No groups</p>
-        ) : (
-          <>
-            {groups.map(g => (
-              <GroupCard key={g.id} group={g} members={members[g.name] ?? []} onRefresh={load} />
-            ))}
-            <p className="flex items-center gap-1.5 flex-wrap pt-1 text-[10px] text-ink-3/60">
-              Click a group to see its systems and the modules under them · an
-              <span className="w-2 h-2 rounded-full bg-amber-500" />
-              dot means modules are granted while their system stays closed
-            </p>
-          </>
-        )}
-      </div>
+      )}
     </div>
   )
 }
 
-/* ─── Customers table ─── */
+/* ─── Customers ─── */
 interface DfgCustomer {
   customer_id: string
   nm_customer: string
@@ -1159,12 +897,9 @@ type CustomerSystem = "ecuador" | "kenya"
  *  collide without referring to the same company — 62 ids appear in both
  *  lists under different names — so they are separate tables with separate
  *  flags, not one list with two checkboxes. */
-const CUSTOMER_SYSTEMS: { id: CustomerSystem; label: string; flagLabel: string }[] = [
-  { id: "ecuador", label: "Ecuador", flagLabel: "Used in delivery import" },
-  { id: "kenya",   label: "Kenya",   flagLabel: "Used in box weight" },
-]
+const CUSTOMER_SYSTEMS: CustomerSystem[] = ["ecuador", "kenya"]
 
-function CustomersTable() {
+function CustomersPanel({ t, reload }: { t: T; reload: number }) {
   const [system, setSystem] = useState<CustomerSystem>("ecuador")
   const [rows, setRows] = useState<CustomerRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -1173,7 +908,7 @@ function CustomersTable() {
   const [query, setQuery] = useState("")
   const selectAllRef = useRef<HTMLInputElement>(null)
 
-  const active = CUSTOMER_SYSTEMS.find(s => s.id === system)!
+  const flagLabel = system === "ecuador" ? t.admin.flagDelivery : t.admin.flagBoxWeight
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1200,7 +935,7 @@ function CustomersTable() {
     }
   }, [system])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load, reload])
   useEffect(() => { setQuery("") }, [system])
 
   // Select-all is Ecuador-only on purpose: that list is short and every entry
@@ -1210,6 +945,7 @@ function CustomersTable() {
   const canSelectAll = system === "ecuador"
   const allChecked = rows.length > 0 && rows.every(r => r.checked)
   const someChecked = rows.some(r => r.checked)
+  const checkedCount = rows.filter(r => r.checked).length
 
   useEffect(() => {
     if (selectAllRef.current) selectAllRef.current.indeterminate = someChecked && !allChecked
@@ -1257,45 +993,36 @@ function CustomersTable() {
 
   return (
     <div>
-      <div className="px-5 py-3 border-b border-border flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
-          {CUSTOMER_SYSTEMS.map(s => (
-            <button key={s.id} onClick={() => setSystem(s.id)}
-              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                system === s.id ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink"
-              }`}>
-              {s.label}
-            </button>
-          ))}
-        </div>
-        <input
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder="Search name or id…"
-          className="h-8 px-3 rounded-lg text-xs border border-border bg-surface outline-none focus:border-emerald/50 transition-colors w-56"
+      <div className="flex flex-wrap items-center gap-2.5 px-5 py-3">
+        <SubTabs<CustomerSystem>
+          value={system}
+          onChange={setSystem}
+          items={CUSTOMER_SYSTEMS.map(id => ({ id, label: FP_SYSTEMS.find(s => s.id === id)?.name ?? id }))}
         />
-        <span className="text-xs text-ink-3">
-          {someChecked ? `${rows.filter(r => r.checked).length} selected` : "none selected"}
-          {query.trim() && ` · showing ${visible.length} of ${rows.length}`}
-        </span>
+        <div className="flex h-9 w-60 items-center gap-2 rounded-xl border border-border bg-ground px-3 transition-colors focus-within:border-emerald/55 focus-within:bg-surface focus-within:ring-4 focus-within:ring-emerald/12">
+          <Search className="size-4 flex-none text-ink-3" />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder={t.admin.searchCustomers} aria-label={t.admin.searchCustomers}
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3/50" />
+        </div>
+        <Chip tone={someChecked ? "ok" : "mute"} icon={Check} tip={flagLabel}>{t.admin.selectedCount(checkedCount)}</Chip>
+        {query.trim() && <Chip tone="mute" icon={Search}>{t.admin.shownOf(visible.length, rows.length)}</Chip>}
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto border-t border-muted">
         <table className="w-full">
           <thead>
-            <tr className="border-b border-border bg-ground/60">
-              <Th>Customer</Th>
-              <Th>ID</Th>
-              <th className="px-4 py-2.5 text-center text-[10px] font-semibold text-ink-3 uppercase tracking-widest">
+            <tr className="border-b border-border">
+              <Th first>{t.admin.colCustomer}</Th>
+              <Th>{t.admin.colId}</Th>
+              <th className="px-3 py-2.5 pr-5 text-center text-[11px] font-semibold text-ink-3">
                 <div className="flex flex-col items-center gap-1">
-                  <span>{active.flagLabel}</span>
+                  <span>{flagLabel}</span>
                   {canSelectAll && (
-                    <label className="flex items-center gap-1.5 normal-case font-medium text-ink-3 cursor-pointer">
-                      <input ref={selectAllRef} type="checkbox" className="accent-emerald w-3.5 h-3.5 cursor-pointer"
-                        checked={allChecked}
-                        disabled={savingAll || loading || rows.length === 0}
+                    <label className="flex cursor-pointer items-center gap-1.5 font-medium">
+                      <input ref={selectAllRef} type="checkbox" className="size-3.5 cursor-pointer accent-emerald"
+                        checked={allChecked} disabled={savingAll || loading || rows.length === 0}
                         onChange={e => toggleAll(e.target.checked)} />
-                      <span>Select all</span>
+                      <span>{t.admin.selectAll}</span>
                     </label>
                   )}
                 </div>
@@ -1304,20 +1031,16 @@ function CustomersTable() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
+              <tr><td colSpan={3} className="px-5 py-10 text-center text-sm text-ink-3">{t.common.loading}</td></tr>
             ) : visible.length === 0 ? (
-              <tr><td colSpan={3} className="px-4 py-10 text-center text-sm text-ink-3">
-                {rows.length === 0 ? "No customers" : "Nothing matches that search"}
-              </td></tr>
+              <tr><td colSpan={3}><EmptyState icon={Building2} text={rows.length === 0 ? t.admin.noCustomers : t.admin.noMatch} /></td></tr>
             ) : visible.map(r => (
-              <tr key={r.id} className="border-b border-border hover:bg-ground/40 transition-colors">
-                <td className="px-4 py-3 text-sm font-medium text-ink">{r.name}</td>
-                <td className="px-4 py-3 text-xs text-ink-3 tabular-nums">#{r.id}</td>
-                <td className="px-4 py-3 text-center">
-                  <input type="checkbox" className="accent-emerald w-4 h-4 cursor-pointer"
-                    checked={r.checked}
-                    disabled={savingId === r.id}
-                    onChange={e => toggle(r, e.target.checked)} />
+              <tr key={r.id} className="border-b border-muted transition-colors last:border-0 hover:bg-ground/40">
+                <td className="px-3 py-2.5 pl-5 text-[13.5px] font-medium text-ink">{r.name}</td>
+                <td className="px-3 py-2.5"><Code>#{r.id}</Code></td>
+                <td className="px-3 py-2.5 pr-5 text-center">
+                  <input type="checkbox" className="size-4 cursor-pointer accent-emerald" aria-label={`${flagLabel}: ${r.name}`}
+                    checked={r.checked} disabled={savingId === r.id} onChange={e => toggle(r, e.target.checked)} />
                 </td>
               </tr>
             ))}
@@ -1325,17 +1048,6 @@ function CustomersTable() {
         </table>
       </div>
     </div>
-  )
-}
-
-/* ─── Saving a file ─── */
-const downloadBtn = "p-1 rounded-md text-ink-3 hover:text-emerald hover:bg-emerald/8 transition-colors"
-
-function KindChip({ kind }: { kind: string }) {
-  return (
-    <span className="text-[9px] font-semibold uppercase tracking-wider text-ink-3 border border-border rounded px-1 py-px">
-      {kind}
-    </span>
   )
 }
 
@@ -1375,17 +1087,23 @@ interface PdfLayoutRow {
   review_note: string | null
 }
 
-const PDF_STATUS: Record<PdfLayoutRow["status"], { label: string; variant: "green" | "red" | "neutral" | "blue" | "amber" }> = {
-  waiting:     { label: "No format yet",       variant: "amber" },
-  drafting:    { label: "Creating format…",    variant: "blue" },
-  provisional: { label: "Temporary · check it", variant: "amber" },
-  verified:    { label: "Verified",            variant: "green" },
-  rejected:    { label: "Rejected",            variant: "red" },
-  failed:      { label: "Could not create",    variant: "red" },
-  closed:      { label: "Closed",              variant: "neutral" },
+function formatStatus(status: PdfLayoutRow["status"], t: T): { label: string; tone: "ok" | "bad" | "warn" | "info" | "mute" } {
+  return {
+    waiting:     { label: t.admin.fmtWaiting,     tone: "warn" as const },
+    drafting:    { label: t.admin.fmtDrafting,    tone: "info" as const },
+    provisional: { label: t.admin.fmtProvisional, tone: "warn" as const },
+    verified:    { label: t.admin.fmtVerified,    tone: "ok" as const },
+    rejected:    { label: t.admin.fmtRejected,    tone: "bad" as const },
+    failed:      { label: t.admin.fmtFailed,      tone: "bad" as const },
+    closed:      { label: t.admin.fmtClosed,      tone: "mute" as const },
+  }[status]
 }
 
-function PdfFormatsPanel() {
+/** A question about a format, with an optional note — in place of the
+ *  browser's prompt(). */
+type NoteAsk = { row: PdfLayoutRow; kind: "close" | "verify" | "reject" }
+
+function FormatsPanel({ t, reload }: { t: T; reload: number }) {
   const [view, setView] = useState<"open" | "all">("open")
   const [rows, setRows] = useState<PdfLayoutRow[]>([])
   const [left, setLeft] = useState(0)
@@ -1395,6 +1113,8 @@ function PdfFormatsPanel() {
   const [busy, setBusy] = useState<number | null>(null)
   const [open, setOpen] = useState<number | null>(null)
   const [message, setMessage] = useState("")
+  const [ask, setAsk] = useState<NoteAsk | null>(null)
+  const [note, setNote] = useState("")
 
   const load = useCallback(async () => {
     try {
@@ -1408,7 +1128,7 @@ function PdfFormatsPanel() {
     }
   }, [view])
 
-  useEffect(() => { setLoading(true); load() }, [load])
+  useEffect(() => { setLoading(true); load() }, [load, reload])
 
   // A draft runs on the server for a few minutes: follow it while one does.
   const drafting = rows.some(r => r.status === "drafting")
@@ -1429,7 +1149,7 @@ function PdfFormatsPanel() {
       })
       if (!res.ok) {
         const detail = await res.json().then(b => b.detail).catch(() => null)
-        setMessage(typeof detail === "string" ? detail : detail?.message ?? `Failed (${res.status})`)
+        setMessage(typeof detail === "string" ? detail : detail?.message ?? t.admin.failed(res.status))
       }
       await load()
     } finally {
@@ -1449,7 +1169,7 @@ function PdfFormatsPanel() {
 
   async function fetchFile(row: PdfLayoutRow): Promise<Blob | null> {
     const res = await fetch(`${RAILWAY}/delivery/pdf-layouts/${row.id}/file`)
-    if (!res.ok) { setMessage(`Could not open the file (${res.status})`); return null }
+    if (!res.ok) { setMessage(t.admin.fileOpenFailed(res.status)); return null }
     return res.blob()
   }
 
@@ -1466,163 +1186,157 @@ function PdfFormatsPanel() {
     if (blob) saveBlob(blob, row.file_name || `invoice-${row.id}.${row.kind ?? "pdf"}`)
   }
 
-  function close(row: PdfLayoutRow) {
-    const note = window.prompt(
-      "Close this file: its format has been added in code (pdf_layouts.py, parser_delivery.py), or it is set aside. Note (optional):", "")
-    if (note === null) return
-    act(row, "close", { note })
+  function answer() {
+    if (!ask) return
+    if (ask.kind === "close") act(ask.row, "close", { note })
+    else act(ask.row, "review", { decision: ask.kind, note })
+    setAsk(null)
   }
-
-  function review(row: PdfLayoutRow, decision: "verify" | "reject") {
-    const note = window.prompt(decision === "verify" ? "Verify this temporary format. Note (optional):"
-                                                     : "Reject this temporary format; it stops reading invoices. Note (optional):", "")
-    if (note === null) return
-    act(row, "review", { decision, note })
-  }
-
-  const btn = "h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors disabled:opacity-40"
 
   return (
     <div>
-      <div className="px-5 py-3 border-b border-border flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
-          {(["open", "all"] as const).map(v => (
-            <button key={v} onClick={() => setView(v)}
-              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                view === v ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink"
-              }`}>
-              {v === "open" ? "For IT" : "All"}
-            </button>
-          ))}
-        </div>
-        <span className="text-xs text-ink-3">
-          {available ? `Temporary formats left today: ${left} of ${perDay}` : "Temporary formats are not available on this server (ANTHROPIC_API_KEY)"}
-        </span>
-        {message && <span className="text-xs text-ember">{message}</span>}
+      {ask && (
+        <ConfirmDialog
+          icon={ask.kind === "close" ? Archive : ask.kind === "verify" ? Check : Ban}
+          danger={ask.kind === "reject"}
+          title={ask.kind === "close" ? t.admin.closeTitle : ask.kind === "verify" ? t.admin.verifyTitle : t.admin.rejectTitle}
+          text={<>
+            {ask.kind !== "verify" && <p>{ask.kind === "close" ? t.admin.closeText : t.admin.rejectText}</p>}
+            <textarea value={note} onChange={e => setNote(e.target.value)} placeholder={t.admin.note} aria-label={t.admin.note} rows={2}
+              className="mt-3 w-full resize-none rounded-xl border border-border bg-ground px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-emerald/55 focus:bg-surface focus:ring-4 focus:ring-emerald/12" />
+          </>}
+          confirmLabel={ask.kind === "close" ? t.admin.close : ask.kind === "verify" ? t.admin.verify : t.admin.reject}
+          cancelLabel={t.common.cancel}
+          onClose={() => setAsk(null)}
+          onConfirm={answer}
+        />
+      )}
+
+      <div className="flex flex-wrap items-center gap-2.5 px-5 py-3">
+        <SubTabs<"open" | "all">
+          value={view}
+          onChange={setView}
+          items={[{ id: "open", label: t.admin.fmtForIt }, { id: "all", label: t.admin.fmtAll }]}
+        />
+        {available
+          ? <Chip tone={left > 0 ? "info" : "warn"} icon={Sparkles} tip={t.admin.fmtLeft(left, perDay)}>{left}/{perDay}</Chip>
+          : <Chip tone="warn" icon={Sparkles} tip={`${t.admin.fmtUnavailable} (ANTHROPIC_API_KEY)`}>0</Chip>}
+        {message && <span className="text-[12.5px] font-semibold text-brick">{message}</span>}
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto border-t border-muted">
         <table className="w-full">
           <thead>
-            <tr className="border-b border-border bg-ground/60">
-              <Th>Invoice</Th>
-              <Th>Status</Th>
-              <Th>Saved</Th>
-              <Th>Format</Th>
-              <Th right>Actions</Th>
+            <tr className="border-b border-border">
+              <Th first>{t.admin.fmtInvoice}</Th>
+              <Th>{t.admin.colStatus}</Th>
+              <Th>{t.admin.fmtSaved}</Th>
+              <Th>{t.admin.fmtFormat}</Th>
+              <Th />
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-ink-3">Loading…</td></tr>
+              <tr><td colSpan={5} className="px-5 py-10 text-center text-sm text-ink-3">{t.common.loading}</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-ink-3">
-                {view === "open" ? "Nothing waiting for IT" : "No saved invoices"}
-              </td></tr>
+              <tr><td colSpan={5}><EmptyState icon={FileText} text={view === "open" ? t.admin.fmtNothing : t.admin.fmtNoFiles} /></td></tr>
             ) : rows.map(row => {
-              const status = PDF_STATUS[row.status]
+              const status = formatStatus(row.status, t)
               const canDraft = (row.status === "waiting" || row.status === "failed") && available && left > 0
+              const isBusy = busy === row.id
               return (
                 <Fragment key={row.id}>
-                  <tr className="border-b border-border hover:bg-ground/40 transition-colors align-top">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
-                        <button onClick={() => openFile(row)} className="text-sm font-medium text-ink hover:text-emerald underline decoration-dotted text-left">
-                          {row.file_name || `Invoice #${row.id}`}
-                        </button>
-                        <KindChip kind={row.kind ?? "pdf"} />
-                        <button onClick={() => downloadFile(row)} title="Download" aria-label="Download" className={downloadBtn}>
-                          <Download size={13} />
-                        </button>
+                  <tr className="border-b border-muted align-top transition-colors last:border-0 hover:bg-ground/40">
+                    <td className="px-3 py-3 pl-5">
+                      <div className="flex items-start gap-2.5">
+                        <FileText className="mt-0.5 size-[18px] flex-none text-ink-3" />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate text-[13.5px] font-semibold text-ink">{row.file_name || `${t.admin.fmtInvoice} #${row.id}`}</span>
+                            <Code>{(row.kind ?? "pdf").toUpperCase()}</Code>
+                          </div>
+                          {row.supplier && <p className="text-xs text-ink-3">{row.supplier}</p>}
+                          {row.read_error && <p className="mt-1 max-w-xs text-[11.5px] text-ink-3">{row.read_error}</p>}
+                        </div>
                       </div>
-                      {row.supplier && <div className="text-xs text-ink-3">{row.supplier}</div>}
-                      {row.read_error && <div className="text-[11px] text-ink-3 mt-1 max-w-xs">{row.read_error}</div>}
                     </td>
-                    <td className="px-4 py-3">
-                      <Badge variant={status.variant}>{status.label}</Badge>
-                      {row.error && <div className="text-[11px] text-ember mt-1 max-w-xs">{row.error}</div>}
-                      {row.review_note && <div className="text-[11px] text-ink-3 mt-1 max-w-xs">{row.review_note}</div>}
+                    <td className="px-3 py-3">
+                      <Chip tone={status.tone} icon={row.status === "drafting" ? Sparkles : undefined}>{status.label}</Chip>
+                      {row.error && <p className="mt-1 max-w-xs text-[11.5px] font-semibold text-brick">{row.error}</p>}
+                      {row.review_note && <p className="mt-1 max-w-xs text-[11.5px] text-ink-3">{row.review_note}</p>}
                     </td>
-                    <td className="px-4 py-3 text-xs text-ink-3 whitespace-nowrap">
-                      {formatRelative(row.created_at)}{row.created_by ? ` · ${row.created_by}` : ""}
+                    <td className="whitespace-nowrap px-3 py-3 text-xs text-ink-3">
+                      <Tip content={new Date(row.created_at).toLocaleString()}><span tabIndex={0} className="outline-none">{ago(row.created_at, t)}</span></Tip>
+                      {row.created_by && <span> · {row.created_by}</span>}
                     </td>
-                    <td className="px-4 py-3 text-xs text-ink-3">
+                    <td className="px-3 py-3">
                       {row.sample ? (
-                        <button onClick={() => setOpen(open === row.id ? null : row.id)} className="underline decoration-dotted hover:text-ink">
-                          {row.sample.line_count ?? 0} lines · {row.sample.boxes ?? 0} boxes · ${row.sample.amount?.toFixed(2)}
+                        <button type="button" onClick={() => setOpen(open === row.id ? null : row.id)} aria-expanded={open === row.id}
+                          className="flex flex-wrap items-center gap-1 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-emerald/40">
+                          <ChevronRight className={cn("size-4 text-ink-3 transition-transform", open === row.id && "rotate-90")} />
+                          <Chip tone="mute" tip={t.admin.lines}>{row.sample.line_count ?? 0}</Chip>
+                          <Chip tone="mute" tip={t.admin.boxes}>{row.sample.boxes ?? 0}</Chip>
+                          <Chip tone="mute" tip={t.admin.amount}>${row.sample.amount?.toFixed(2)}</Chip>
                         </button>
-                      ) : "—"}
-                      {row.cost_usd != null && <div>{row.turns} turns · ${row.cost_usd.toFixed(2)}</div>}
+                      ) : <span className="text-xs text-ink-3/50">—</span>}
+                      {row.cost_usd != null && <p className="mt-1 text-[11px] text-ink-3">{t.admin.turnsCost(row.turns ?? 0, row.cost_usd.toFixed(2))}</p>}
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex gap-1.5 justify-end flex-wrap">
+                    <td className="px-3 py-3 pr-4">
+                      <div className="flex flex-wrap justify-end gap-0.5">
+                        <IconButton size="sm" icon={ExternalLink} tip={t.admin.open} onClick={() => openFile(row)} />
+                        <IconButton size="sm" icon={Download} tip={t.admin.download} onClick={() => downloadFile(row)} />
                         {(row.status === "waiting" || row.status === "failed") && (
-                          <button disabled={!canDraft || busy === row.id} onClick={() => act(row, "draft")}
-                            title={!available ? "Not available on this server" : left > 0 ? "" : "Today's limit has been reached"}
-                            className={`${btn} border-emerald/40 text-emerald hover:bg-emerald/8`}>
-                            Create format
-                          </button>
+                          <IconButton size="sm" icon={Sparkles} disabled={!canDraft || isBusy} onClick={() => act(row, "draft")}
+                            tip={!available ? t.admin.fmtUnavailable : left > 0 ? t.admin.makeDraft : `${t.admin.makeDraft} · ${t.admin.draftLimit}`} />
                         )}
                         {row.status === "drafting" && (
-                          <button disabled={busy === row.id} onClick={() => act(row, "cancel")}
-                            className={`${btn} border-border text-ink-3 hover:text-ink`}>
-                            Cancel
-                          </button>
+                          <IconButton size="sm" icon={X} tip={t.common.cancel} disabled={isBusy} onClick={() => act(row, "cancel")} />
                         )}
                         {(row.status === "provisional" || row.status === "rejected") && (
-                          <button disabled={busy === row.id} onClick={() => review(row, "verify")}
-                            className={`${btn} border-emerald/40 text-emerald hover:bg-emerald/8`}>
-                            Verify
-                          </button>
+                          <IconButton size="sm" icon={Check} tip={t.admin.verify} disabled={isBusy} onClick={() => { setNote(""); setAsk({ row, kind: "verify" }) }} />
                         )}
                         {(row.status === "provisional" || row.status === "verified") && (
-                          <button disabled={busy === row.id} onClick={() => review(row, "reject")}
-                            className={`${btn} border-ember/40 text-ember hover:bg-ember/8`}>
-                            Reject
-                          </button>
+                          <IconButton size="sm" icon={Ban} tip={t.admin.reject} danger disabled={isBusy} onClick={() => { setNote(""); setAsk({ row, kind: "reject" }) }} />
                         )}
                         {row.status !== "drafting" && row.status !== "closed" && (
-                          <button disabled={busy === row.id} onClick={() => close(row)}
-                            className={`${btn} border-border text-ink-3 hover:text-ink`}>
-                            Close
-                          </button>
+                          <IconButton size="sm" icon={Archive} tip={t.admin.close} disabled={isBusy} onClick={() => { setNote(""); setAsk({ row, kind: "close" }) }} />
                         )}
                       </div>
                     </td>
                   </tr>
                   {open === row.id && row.sample && (
-                    <tr className="border-b border-border bg-ground/40">
-                      <td colSpan={5} className="px-4 py-3 text-xs text-ink-3">
+                    <tr className="border-b border-muted bg-ground/50">
+                      <td colSpan={5} className="px-5 py-3 text-xs text-ink-3">
                         <div className="grid gap-3 md:grid-cols-2">
                           <div>
-                            <p className="font-semibold text-ink mb-1">Read from the invoice</p>
+                            <p className="mb-1 font-semibold text-ink">{t.admin.readFromInvoice}</p>
                             {Object.entries(row.sample.header ?? {}).filter(([, v]) => v).map(([k, v]) => (
                               <div key={k}><span className="text-ink-3">{k}:</span> <span className="text-ink">{v}</span></div>
                             ))}
                             <div className="mt-1">
-                              Checked against the printed totals: {Object.entries(row.sample.printed_totals_checked ?? {})
+                              {t.admin.checkedTotals}: {Object.entries(row.sample.printed_totals_checked ?? {})
                                 .map(([k, v]) => `${k} ${v}`).join(", ") || "—"}
                             </div>
                             {row.assumptions.length > 0 && (
                               <>
-                                <p className="font-semibold text-ink mt-2 mb-1">Assumed where the invoice says nothing</p>
-                                <ul className="list-disc ml-5">{row.assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                                <p className="mb-1 mt-2 font-semibold text-ink">{t.admin.assumed}</p>
+                                <ul className="ml-5 list-disc">{row.assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul>
                               </>
                             )}
                           </div>
                           <div>
-                            <p className="font-semibold text-ink mb-1">Lines</p>
-                            <div className="font-mono text-[11px] max-h-48 overflow-y-auto">
+                            <p className="mb-1 font-semibold text-ink">{t.admin.lines}</p>
+                            <div className="max-h-48 overflow-y-auto font-mono text-[11px]">
                               {(row.sample.lines ?? []).map((l, i) => <div key={i}>{l}</div>)}
                             </div>
                           </div>
                         </div>
                         {row.spec && (
                           <details className="mt-3">
-                            <summary className="cursor-pointer hover:text-ink">
-                              Layout (JSON, for {row.kind === "json" ? "parser_delivery.py" : "pdf_layouts.py"})
+                            <summary className="cursor-pointer font-semibold hover:text-ink">
+                              {t.admin.layoutJson(row.kind === "json" ? "parser_delivery.py" : "pdf_layouts.py")}
                             </summary>
-                            <pre className="mt-1 font-mono text-[11px] bg-surface border border-border rounded-lg p-2 max-h-64 overflow-auto">
+                            <pre className="mt-1 max-h-64 overflow-auto rounded-lg border border-border bg-surface p-2 font-mono text-[11px]">
                               {JSON.stringify(row.spec, null, 2)}
                             </pre>
                           </details>
@@ -1641,31 +1355,57 @@ function PdfFormatsPanel() {
 }
 
 /* ─── Main ─── */
-export default function AdminTab({ currentUsername }: { currentUsername?: string }) {
-  const [activeTab, setActiveTab] = useState<"users" | "groups" | "customers" | "formats">("users")
+type AdminView = "users" | "groups" | "customers" | "formats"
+
+export default function AdminTab({ currentUsername, lang }: { currentUsername?: string; lang: Lang }) {
+  const t = translations[lang]
+  const [activeTab, setActiveTab] = useState<AdminView>("users")
+  // The header's refresh and add buttons act on the open view.
+  const [reload, setReload] = useState(0)
+  const [adding, setAdding] = useState(false)
+  const [waiting, setWaiting] = useState(0)
+
+  // Files waiting for IT, as the count on the formats tab.
+  useEffect(() => {
+    if (!RAILWAY) return
+    fetch(`${RAILWAY}/delivery/pdf-layouts/pending-count`).then(r => r.json()).then(d => setWaiting(d.count ?? 0)).catch(() => {})
+  }, [reload])
+
+  const canAdd = activeTab === "users" || activeTab === "groups"
 
   return (
     <div>
-      <div className="px-5 py-4 border-b border-border">
-        <div className="flex items-center gap-1 bg-ground border border-border rounded-xl p-1 w-fit">
-          {(["users", "groups", "customers", "formats"] as const).map(tab => (
-            <button key={tab} onClick={() => setActiveTab(tab)}
-              className={`px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${
-                activeTab === tab ? "bg-surface text-ink shadow-sm" : "text-ink-3 hover:text-ink"
-              }`}>
-              {tab}
-            </button>
-          ))}
-        </div>
+      <ModuleHeader tab="admin" t={t} info={MODULES.admin.desc(t)}
+        actions={<>
+          <IconButton icon={RefreshCw} tip={t.admin.refresh} onClick={() => setReload(n => n + 1)} />
+          {canAdd && (
+            <GoButton size="go-sm" icon={activeTab === "users" ? UserPlus : Plus}
+              tip={activeTab === "users" ? t.admin.newUser : t.admin.newGroup} onClick={() => setAdding(a => !a)} />
+          )}
+        </>}
+      />
+      <div className="px-5 pb-3">
+        <ModuleTabs<AdminView>
+          value={activeTab}
+          onChange={v => { setActiveTab(v); setAdding(false) }}
+          items={[
+            { id: "users", icon: Users, label: t.admin.tabUsers },
+            { id: "groups", icon: Shield, label: t.admin.tabGroups },
+            { id: "customers", icon: Building2, label: t.admin.tabCustomers },
+            { id: "formats", icon: FileText, label: t.admin.tabFormats, count: waiting, countTip: t.admin.fmtForIt },
+          ]}
+        />
       </div>
 
-      {activeTab === "users"
-        ? <UsersTable currentUsername={currentUsername} />
-        : activeTab === "groups"
-        ? <GroupsPanel />
-        : activeTab === "customers"
-        ? <CustomersTable />
-        : <PdfFormatsPanel />}
+      <div key={activeTab} className="step-enter border-t border-muted">
+        {activeTab === "users"
+          ? <UsersPanel t={t} currentUsername={currentUsername} reload={reload} adding={adding} setAdding={setAdding} />
+          : activeTab === "groups"
+          ? <GroupsPanel t={t} reload={reload} adding={adding} setAdding={setAdding} />
+          : activeTab === "customers"
+          ? <CustomersPanel t={t} reload={reload} />
+          : <FormatsPanel t={t} reload={reload} />}
+      </div>
     </div>
   )
 }
