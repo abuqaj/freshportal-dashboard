@@ -2,14 +2,34 @@
 
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
+import { Check, Flower2, ImageIcon, Images, Layers, Loader2, Palette, RotateCcw, Upload, X } from "lucide-react";
 import { translations, Lang } from "@/lib/i18n";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
+import {
+  Chip, Code, DoneState, DropZone, GoButton, IconButton, ModuleHeader, ProgressWait, RunnerWait, Section, Steps,
+} from "@/components/ui/kit";
+import { preloadMascot } from "@/components/MascotRunner";
+import { cn } from "@/lib/utils";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 
 interface Props { lang: Lang; }
 
 type PhotoPhase = "idle" | "analyzing" | "review" | "uploading" | "done";
-type ProductMatchItem = { product_id: string; name: string; vbn_number: string; product_group: string; similarity: number };
+// The facts past the name are optional: a backend from before 2026-10-08
+// sends only the VBN and the group.
+type ProductMatchItem = {
+  product_id: string;
+  name: string;
+  vbn_number: string;
+  product_group: string;
+  similarity: number;
+  product_number?: string;
+  application?: string;
+  product_gtin?: string;
+  color?: string;
+};
 type ReviewItem = {
   filename: string;
   thumbnailUrl: string;
@@ -20,14 +40,7 @@ type ReviewItem = {
 };
 type UploadResultItem = { filename: string; product_name: string; status: "pending" | "ok" | "error"; message?: string };
 
-function Spinner({ className = "" }: { className?: string }) {
-  return (
-    <svg className={`animate-spin ${className}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-    </svg>
-  );
-}
+const PHOTO_EXTS = [".jpg", ".png", ".webp", ".gif", ".bmp"];
 
 export default function PhotoUploader({ lang }: Props) {
   const t = translations[lang];
@@ -250,329 +263,263 @@ export default function PhotoUploader({ lang }: Props) {
     }
   }
 
+  /** A candidate ticked or unticked for one photo; unticking the last one
+   *  leaves the photo out of the upload. */
+  function toggleCandidate(idx: number, p: ProductMatchItem, on: boolean) {
+    setReviewItems(prev => prev.map((r, ri) => {
+      if (ri !== idx) return r;
+      if (on) {
+        return {
+          ...r,
+          selected: r.selected.filter(s => s.product_id !== p.product_id),
+          alternatives: [p, ...r.alternatives],
+          approved: r.selected.length > 1,
+        };
+      }
+      return {
+        ...r,
+        selected: [...r.selected, p],
+        alternatives: r.alternatives.filter(a => a.product_id !== p.product_id),
+        approved: true,
+      };
+    }));
+  }
+
   const approvedItems    = reviewItems.filter(i => i.approved && i.selected.length > 0);
   const totalAssignments = approvedItems.reduce((s, i) => s + i.selected.length, 0);
   const uploadLabel      = photoPhase === "review" ? t.photo.uploadBtn(approvedItems.length, totalAssignments) : "";
+  const okCount  = uploadResults.filter(r => r.status === "ok").length;
+  const errCount = uploadResults.filter(r => r.status === "error").length;
+  const stepIndex = photoPhase === "idle" ? 0 : photoPhase === "analyzing" || photoPhase === "review" ? 1 : photoPhase === "uploading" ? 2 : 3;
+
+  // The runner shows while photos go to FreshPortal; fetch him from the review on.
+  preloadMascot();
+
+  // One line per photo-to-product upload: waiting, done, or what went wrong.
+  const resultList = (
+    <ul className="mx-auto max-h-[calc(100vh-420px)] min-h-24 w-full max-w-[640px] overflow-y-auto rounded-2xl border border-border text-left">
+      {uploadResults.map(r => (
+        <li key={`${r.filename}-${r.product_name}`} className="flex items-center gap-3 border-b border-muted px-4 py-2.5 last:border-0">
+          {r.status === "ok" ? <Check className="size-4 flex-none text-emerald" strokeWidth={2.6} />
+            : r.status === "error" ? <X className="size-4 flex-none text-brick" strokeWidth={2.6} />
+            : <Loader2 className="size-4 flex-none animate-spin text-ink-3/50" />}
+          <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{r.product_name}</span>
+          <span className="max-w-40 truncate text-[11.5px] text-ink-3">{r.filename}</span>
+          {r.status === "error" && r.message && (
+            <Tip content={r.message}>
+              <span tabIndex={0} className="max-w-32 truncate text-[11.5px] font-semibold text-brick">{r.message}</span>
+            </Tip>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
 
   return (
-    <div className="bg-surface rounded-2xl border border-border overflow-hidden shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] card-enter">
+    <div>
+      <ModuleHeader
+        tab="photos"
+        t={t}
+        info={photoPhase === "review" ? t.photo.reviewInstruction : t.photo.description}
+        chips={photoPhase === "review" ? <>
+          <Chip tone="info" icon={Images} tip={t.photo.reviewTitle}>{t.photo.photosCount(reviewItems.length)}</Chip>
+          <Chip tone="ok" icon={Check} tip={t.photo.approved}>{approvedItems.length}</Chip>
+        </> : null}
+        actions={photoPhase !== "idle" && photoPhase !== "uploading"
+          ? <IconButton icon={RotateCcw} tip={t.photo.startOver} onClick={resetPhotoUploader} />
+          : null}
+      />
+      <Section tight>
+        <Steps labels={[t.photo.stepDrop, t.photo.stepReview, t.photo.stepSend]} current={stepIndex} />
+      </Section>
 
-      {/* ── Header ── */}
-      <div className="px-6 py-5 border-b border-border flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h2 className="text-base font-semibold text-ink">{t.nav.photoUploader}</h2>
-          <p className="text-xs text-ink-3 mt-0.5">
-            {photoPhase === "review" ? t.photo.reviewInstruction : t.photo.description}
-          </p>
-        </div>
-        {photoPhase !== "idle" && (
-          <button
-            onClick={resetPhotoUploader}
-            className="flex-shrink-0 text-xs text-ink-3 hover:text-ink border border-border rounded-lg px-3 py-1.5 bg-surface hover:bg-muted transition-colors whitespace-nowrap"
-          >
-            {t.photo.startOver}
-          </button>
-        )}
-      </div>
+      {/* "backwards", not "both": a kept transform would frame the hover preview. */}
+      <div key={photoPhase} className="step-enter">
 
-      {/* ── Body ── */}
-      <div className="p-5 space-y-4">
-
-        {photoError && (
-          <div className="text-xs text-ember bg-ember-light border border-ember/20 rounded-xl px-4 py-3">
-            {photoError}
-          </div>
-        )}
-
-        {/* ── IDLE ── */}
+        {/* ── Photos ── */}
         {photoPhase === "idle" && (
-          <div
-            className="border-2 border-dashed border-border rounded-2xl p-14 text-center hover:border-emerald hover:bg-emerald-light/20 transition-all cursor-pointer group"
-            onDragOver={e => e.preventDefault()}
-            onDrop={e => { e.preventDefault(); if (e.dataTransfer.files.length) analyzePhotos(e.dataTransfer.files); }}
-            onClick={() => document.getElementById("photo-file-input")?.click()}
-          >
-            <input id="photo-file-input" type="file" accept="image/*" multiple className="hidden"
-              onChange={e => { if (e.target.files?.length) analyzePhotos(e.target.files); }} />
-            <div className="w-12 h-12 bg-ground border border-border rounded-2xl flex items-center justify-center mx-auto mb-4 group-hover:border-emerald/40 group-hover:bg-emerald-light/40 transition-all">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" className="text-ink-3 group-hover:text-emerald transition-colors">
-                <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/>
-                <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/>
-                <path d="M3 15l5-5 4 4 3-3 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </div>
-            <p className="text-sm font-medium text-ink">{t.photo.dropTitle}</p>
-            <p className="text-xs text-ink-3 mt-1">{t.photo.dropHint}</p>
-            {photoAnalyzing && (
-              <div className="mt-5 flex items-center justify-center gap-2 text-xs text-emerald">
-                <Spinner className="h-3.5 w-3.5" />
-                <span>{photoStatusMsg ?? t.photo.analyzing}</span>
-              </div>
-            )}
-          </div>
+          <Section className="flex flex-col gap-3">
+            {photoError && <ErrorLine>{photoError}</ErrorLine>}
+            <DropZone title={t.photo.dropTitle} exts={PHOTO_EXTS} accept="image/*" multiple disabled={photoAnalyzing} onFiles={analyzePhotos} />
+          </Section>
         )}
 
-        {/* ── ANALYZING ── */}
+        {/* ── Matching ── */}
         {photoPhase === "analyzing" && (
-          <div className="flex flex-col items-center justify-center gap-4 py-14">
-            <Spinner className="h-7 w-7 text-emerald" />
-            <p className="text-sm text-ink-3">{photoStatusMsg ?? t.photo.analyzing}</p>
-            <button
-              onClick={resetPhotoUploader}
-              className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
-            >{t.common.cancel}</button>
-          </div>
+          <Section>
+            <ProgressWait status={photoStatusMsg ?? t.photo.analyzing}>
+              <Button variant="outline" size="sm" onClick={resetPhotoUploader}><X className="size-3.5" />{t.common.cancel}</Button>
+            </ProgressWait>
+          </Section>
         )}
 
-        {/* ── REVIEW ── */}
+        {/* ── Review ── the footer sticks inside the scroll box, so it stays in view. */}
         {photoPhase === "review" && reviewItems.length > 0 && (
-          <div className="border border-border rounded-2xl overflow-hidden card-enter">
-
-            {/* Review header */}
-            <div className="px-5 py-3.5 border-b border-border flex items-center justify-between bg-ground/60">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold text-ink">{t.photo.reviewTitle}</span>
-                <span className="text-xs text-ink-3 bg-muted px-2 py-0.5 rounded-full">{reviewItems.length}</span>
-              </div>
-              <span className="text-xs text-ink-3">{approvedItems.length} {t.photo.approved}</span>
-            </div>
-
-            {/*
-              Scrollable container with sticky footer.
-              The footer uses position:sticky bottom-0 INSIDE the overflow-y-auto div.
-              This is the only reliable way to keep it always visible:
-              - when content fits: footer sits naturally at the bottom
-              - when content overflows and user scrolls: footer sticks to bottom of visible area
-              No flex tricks, no max-h on parent, no layout knowledge needed.
-            */}
-            <div
-              ref={scrollBodyRef}
-              className="overflow-y-auto max-h-[calc(100vh-360px)]"
-            >
-              {/* Items */}
-              <div className="divide-y divide-border">
-                {reviewItems.map((item, idx) => (
-                  <div key={item.filename} className="card-enter" style={{ animationDelay: `${Math.min(idx * 25, 400)}ms` }}>
-                    <div className={`px-5 py-4 transition-opacity ${!item.approved ? "opacity-40" : ""}`}>
-                      <div className="flex items-stretch gap-3">
-
-                        {/* Thumbnail — fills the full height of the card */}
-                        <div
-                          className="w-24 self-stretch rounded-xl overflow-hidden bg-muted flex-shrink-0 ring-1 ring-border"
-                          onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
-                          onMouseLeave={handleThumbnailLeave}
-                        >
-                          {item.thumbnailUrl
-                            ? <img src={item.thumbnailUrl} alt="" className="w-full h-full object-cover" />
-                            : <div className="w-full h-full flex items-center justify-center text-ink-3">
-                                <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5"/><path d="M3 15l5-5 4 4 3-3 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                              </div>
-                          }
-                        </div>
-
-                        {/* Filename + approve toggle on top, match table below */}
-                        <div className={`flex-1 min-w-0 ${!item.approved ? "pointer-events-none" : ""}`}>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-semibold text-ink-3 tabular-nums flex-shrink-0">{idx + 1}</span>
-                            <p className="text-sm font-semibold text-ink flex-1 truncate">{item.normalized_name}</p>
-                            <button
-                              onClick={() => setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r))}
-                              disabled={item.selected.length === 0}
-                              title={t.photo.approved}
-                              className={`pointer-events-auto flex-shrink-0 w-8 h-8 rounded-lg border-2 flex items-center justify-center transition-all ${
-                                item.approved
-                                  ? "bg-emerald border-emerald text-white"
-                                  : "border-border text-transparent hover:border-emerald/50 disabled:opacity-30"
-                              }`}
-                            >
-                              <svg width="13" height="13" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                            </button>
-                          </div>
-                          <p className="text-[11px] text-ink-3 truncate mb-2">{item.filename}</p>
-
-                          {(item.selected.length > 0 || item.alternatives.length > 0) ? (
-                            <div className="rounded-lg border border-border overflow-hidden overflow-x-auto">
-                              <table className="w-full text-xs">
-                                <thead>
-                                  <tr className="bg-ground/60 text-[10px] font-semibold text-ink-3 uppercase tracking-wide">
-                                    <th className="w-8 px-2 py-1.5" />
-                                    <th className="text-left px-2 py-1.5">{t.photo.foundMatches}</th>
-                                    <th className="text-left px-2 py-1.5 whitespace-nowrap">{t.photo.colVbn}</th>
-                                    <th className="text-left px-2 py-1.5">{t.photo.colGroup}</th>
-                                    <th className="text-right px-2.5 py-1.5">{t.photo.colSimilarity}</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {[
-                                    ...item.selected.map(p => ({ ...p, isSelected: true })),
-                                    ...item.alternatives.map(p => ({ ...p, isSelected: false })),
-                                  ]
-                                    .sort((a, b) => b.similarity - a.similarity)
-                                    .map(c => (
-                                    <tr
-                                      key={c.product_id}
-                                      onClick={() => setReviewItems(prev => prev.map((r, ri) => {
-                                        if (ri !== idx) return r;
-                                        const plain: ProductMatchItem = {
-                                          product_id: c.product_id, name: c.name,
-                                          vbn_number: c.vbn_number, product_group: c.product_group,
-                                          similarity: c.similarity,
-                                        };
-                                        if (c.isSelected) {
-                                          return {
-                                            ...r,
-                                            selected: r.selected.filter(s => s.product_id !== c.product_id),
-                                            alternatives: [plain, ...r.alternatives],
-                                            approved: r.selected.length > 1,
-                                          };
-                                        }
-                                        return {
-                                          ...r,
-                                          selected: [...r.selected, plain],
-                                          alternatives: r.alternatives.filter(a => a.product_id !== c.product_id),
-                                          approved: true,
-                                        };
-                                      }))}
-                                      className={`cursor-pointer border-t border-border transition-colors ${
-                                        c.isSelected ? "bg-emerald-light/25 hover:bg-emerald-light/40" : "hover:bg-muted"
-                                      }`}
-                                    >
-                                      <td className="px-2 py-1.5">
-                                        <span className={`inline-flex w-4 h-4 rounded border-2 items-center justify-center ${
-                                          c.isSelected ? "bg-emerald border-emerald text-white" : "border-border text-transparent"
-                                        }`}>
-                                          <svg width="8" height="8" viewBox="0 0 11 11" fill="none"><path d="M1.5 5.5l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                                        </span>
-                                      </td>
-                                      <td className={`px-2 py-1.5 font-medium leading-snug ${c.isSelected ? "text-emerald-dark" : "text-ink"}`}>{c.name}</td>
-                                      <td className="px-2 py-1.5 text-ink-3 whitespace-nowrap">{c.vbn_number || "—"}</td>
-                                      <td className="px-2 py-1.5 text-ink-3 truncate max-w-[140px]">{c.product_group || "—"}</td>
-                                      <td className="px-2.5 py-1.5 text-right">
-                                        <span className={`text-base font-bold tabular-nums ${
-                                          c.similarity >= 0.9 ? "text-emerald" : c.similarity >= 0.6 ? "text-amber-500" : "text-ember"
-                                        }`}>{Math.round(c.similarity * 100)}%</span>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : (
-                            <p className="text-xs text-ink-3 italic">{t.photo.noMatch}</p>
-                          )}
-                        </div>
-
-                      </div>
+          <div ref={scrollBodyRef} className="max-h-[calc(100vh-300px)] overflow-y-auto border-t border-muted">
+            {photoError && <div className="px-5 pt-3"><ErrorLine>{photoError}</ErrorLine></div>}
+            <ul>
+              {reviewItems.map((item, idx) => {
+                const candidates = [
+                  ...item.selected.map(p => ({ p, on: true })),
+                  ...item.alternatives.map(p => ({ p, on: false })),
+                ].sort((a, b) => b.p.similarity - a.p.similarity);
+                return (
+                  // Photo, name and switch on top; the candidates beside the
+                  // photo, or under it on a phone, where they need the width.
+                  <li key={item.filename} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3.5 gap-y-2.5 border-b border-muted px-5 py-4 last:border-0">
+                    {/* Thumbnail; held still, it opens large */}
+                    <div
+                      className={cn("grid size-14 flex-none place-items-center overflow-hidden rounded-xl bg-muted ring-1 ring-border transition-opacity sm:row-span-2 sm:size-20", !item.approved && "opacity-45")}
+                      onMouseEnter={e => handleThumbnailEnter(item.thumbnailUrl, e)}
+                      onMouseLeave={handleThumbnailLeave}
+                    >
+                      {item.thumbnailUrl
+                        ? <img src={item.thumbnailUrl} alt="" className="size-full object-cover" />
+                        : <ImageIcon className="size-6 text-ink-3" />}
                     </div>
-                  </div>
-                ))}
-              </div>
 
-              {/* Footer — sticky inside the scroll container so it's always visible */}
-              <div className="sticky bottom-0 px-5 py-3.5 border-t border-border bg-surface flex justify-start gap-2 shadow-[0_-4px_12px_-4px_rgba(0,0,0,0.06)]">
-                <button
-                  onClick={resetPhotoUploader}
-                  className="text-xs text-ink-3 border border-border rounded-lg px-3 py-2 hover:bg-muted transition-colors"
-                >
-                  {t.photo.cancelUpload}
-                </button>
-                <button
-                  onClick={executePhotoUpload}
-                  disabled={totalAssignments === 0}
-                  className="bg-emerald hover:bg-emerald-dark disabled:opacity-40 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors shadow-sm"
-                >
-                  {uploadLabel} {t.photo.uploadToFP}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+                    <div className={cn("min-w-0 self-center transition-opacity sm:self-start", !item.approved && "opacity-45")}>
+                      <div className="flex min-w-0 items-baseline gap-2">
+                        <span className="text-[10.5px] font-semibold tabular-nums text-ink-3">{idx + 1}</span>
+                        <p className="truncate text-sm font-bold text-ink">{item.normalized_name}</p>
+                      </div>
+                      <p className="truncate text-[11.5px] text-ink-3">{item.filename}</p>
+                    </div>
 
-        {/* ── UPLOADING ── */}
-        {photoPhase === "uploading" && (
-          <div className="border border-border rounded-2xl overflow-hidden card-enter">
-            <div className="px-5 py-3.5 border-b border-border bg-ground/60 flex items-center gap-2.5">
-              <Spinner className="h-4 w-4 text-emerald flex-shrink-0" />
-              <p className="text-sm font-medium text-ink flex-1">{photoStatusMsg ?? t.photo.uploadingStatus}</p>
-              <button
-                onClick={resetPhotoUploader}
-                className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-3 py-1 bg-surface hover:bg-ember-light/50 transition-colors flex-shrink-0"
-              >{t.common.cancel}</button>
-            </div>
-            <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-320px)]">
-              {uploadResults.map(r => (
-                <div key={`${r.filename}-${r.product_name}`} className="flex items-center gap-3 px-5 py-3">
-                  <span className={`w-4 flex-shrink-0 ${r.status === "ok" ? "text-emerald" : r.status === "error" ? "text-ember" : "text-border"}`}>
-                    {r.status === "ok"
-                      ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l4 4 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      : r.status === "error"
-                      ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3L3 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
-                      : <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="2" fill="currentColor"/></svg>
-                    }
-                  </span>
-                  <span className="text-xs text-ink truncate flex-1">{r.product_name}</span>
-                  <span className="text-[11px] text-ink-3 truncate max-w-40">{r.filename}</span>
-                  {r.status === "error" && r.message && (
-                    <span className="text-[11px] text-ember truncate max-w-32">{r.message}</span>
-                  )}
-                </div>
-              ))}
-              <div className="h-3" />
-            </div>
-          </div>
-        )}
+                    {/* The photo in or out of this upload */}
+                    <Tip content={t.photo.approved}>
+                      <button
+                        type="button"
+                        aria-pressed={item.approved}
+                        aria-label={`${t.photo.approved}: ${item.normalized_name}`}
+                        aria-disabled={item.selected.length === 0}
+                        onClick={() => { if (item.selected.length > 0) setReviewItems(prev => prev.map((r, i) => i === idx ? { ...r, approved: !r.approved } : r)); }}
+                        className={cn("grid size-9 flex-none place-items-center rounded-xl border-2 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-emerald/40 active:scale-95 aria-disabled:cursor-not-allowed aria-disabled:opacity-30",
+                          item.approved ? "border-emerald bg-emerald text-white" : "border-border text-transparent hover:border-emerald/50 hover:text-emerald/40")}
+                      >
+                        <Check className="size-4" strokeWidth={3} />
+                      </button>
+                    </Tip>
 
-        {/* ── DONE ── */}
-        {photoPhase === "done" && (() => {
-          const ok  = uploadResults.filter(r => r.status === "ok").length;
-          const err = uploadResults.filter(r => r.status === "error").length;
-          return (
-            <div className="space-y-3 card-enter">
-              <div className={`rounded-xl px-5 py-4 border text-sm font-medium ${err === 0 ? "bg-emerald-light border-emerald/20 text-emerald-dark" : "bg-amber-50 border-amber-200 text-amber-800"}`}>
-                {err === 0 ? t.photo.allOk(ok) : t.photo.uploadDone(ok, err)}
-              </div>
-              <div className="border border-border rounded-2xl overflow-hidden">
-                <div className="divide-y divide-border overflow-y-auto max-h-[calc(100vh-360px)]">
-                  {uploadResults.map(r => (
-                    <div key={`${r.filename}-${r.product_name}`} className="flex items-center gap-3 px-5 py-3">
-                      <span className={`w-4 flex-shrink-0 ${r.status === "ok" ? "text-emerald" : "text-ember"}`}>
-                        {r.status === "ok"
-                          ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l4 4 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                          : <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3L3 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
-                        }
-                      </span>
-                      <span className="text-xs text-ink truncate flex-1">{r.product_name}</span>
-                      <span className="text-[11px] text-ink-3 truncate max-w-40">{r.filename}</span>
-                      {r.status === "error" && r.message && (
-                        <span className="text-[11px] text-ember truncate max-w-32">{r.message}</span>
+                    <div className={cn("col-span-3 transition-opacity sm:col-span-1 sm:col-start-2", !item.approved && "opacity-45")}>
+                      {candidates.length > 0 ? (
+                        <div className="flex flex-col gap-1.5">
+                          {candidates.map(({ p, on }) => (
+                            <Candidate key={p.product_id} p={p} on={on} t={t} onToggle={() => toggleCandidate(idx, p, on)} />
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-ink-3">{t.photo.noMatch}</p>
                       )}
                     </div>
-                  ))}
-                  <div className="h-3" />
-                </div>
-              </div>
-              <button
-                onClick={resetPhotoUploader}
-                className="text-xs text-emerald hover:text-emerald-dark border border-emerald/20 rounded-xl px-4 py-2 bg-emerald-light hover:bg-emerald/10 transition-colors"
-              >
-                {t.photo.uploadMore}
-              </button>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <div className="sticky bottom-0 flex items-center gap-2 border-t border-border bg-surface/95 px-5 py-3 shadow-[0_-4px_12px_-4px_rgba(0,0,0,0.06)] backdrop-blur-sm">
+              <Button variant="outline" size="sm" onClick={resetPhotoUploader}><X className="size-3.5" />{t.photo.cancelUpload}</Button>
+              <span className="ml-auto" />
+              <GoButton icon={Upload} tip={`${uploadLabel} ${t.photo.uploadToFP}`} count={totalAssignments}
+                disabled={totalAssignments === 0} onClick={executePhotoUpload} />
             </div>
-          );
-        })()}
+          </div>
+        )}
+
+        {/* ── Uploading ── */}
+        {photoPhase === "uploading" && (
+          <Section className="flex flex-col gap-3">
+            <RunnerWait title={t.photo.uploadingStatus} status={photoStatusMsg}>
+              <Button variant="outline" size="sm" onClick={resetPhotoUploader}><X className="size-3.5" />{t.common.cancel}</Button>
+            </RunnerWait>
+            {resultList}
+          </Section>
+        )}
+
+        {/* ── Done ── */}
+        {photoPhase === "done" && (
+          <Section className="flex flex-col gap-3">
+            <DoneState
+              tone={errCount === 0 ? "ok" : okCount === 0 ? "bad" : "warn"}
+              title={errCount === 0 ? t.photo.allOk(okCount).replace(/^✓\s*/, "") : t.photo.uploadDone(okCount, errCount)}
+              chips={<>
+                <Chip tone="ok" size="lg" icon={Check}><b>{okCount}</b></Chip>
+                {errCount > 0 && <Chip tone="bad" size="lg" icon={X}><b>{errCount}</b></Chip>}
+              </>}
+            >
+              <Button variant="primary" onClick={resetPhotoUploader}><Upload className="size-4" />{t.photo.uploadMore}</Button>
+            </DoneState>
+            {resultList}
+          </Section>
+        )}
 
       </div>
 
-      {/* ── Hover preview via portal — avoids CSS transform containment ── */}
+      {/* Hover preview through a portal: no ancestor's transform can frame it */}
       {mounted && previewUrl && createPortal(
         <div
-          className="fixed z-[9999] rounded-2xl overflow-hidden border border-border bg-surface shadow-2xl pointer-events-none"
+          className="pointer-events-none fixed z-[9999] overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl"
           style={{ left: previewPos.x, top: previewPos.y, width: 340, height: 340 }}
         >
-          <img src={previewUrl} alt="" className="w-full h-full object-contain" />
+          <img src={previewUrl} alt="" className="size-full object-contain" />
         </div>,
         document.body
       )}
     </div>
+  );
+}
+
+type T = (typeof translations)[Lang];
+
+/** One product a photo may go to: ticked or not, and what tells it apart
+ *  from its neighbours — number, VBN, GTIN, group, application, colour
+ *  (user, 2026-10-07). The whole row ticks; its box is the keyboard's way in. */
+function Candidate({ p, on, t, onToggle }: { p: ProductMatchItem; on: boolean; t: T; onToggle: () => void }) {
+  const pct = Math.round(p.similarity * 100);
+  const words = [
+    p.product_group && { icon: Layers, label: t.photo.colGroup, value: p.product_group },
+    p.application && { icon: Flower2, label: t.photo.colApplication, value: p.application },
+    p.color && { icon: Palette, label: t.photo.colColor, value: p.color },
+  ].filter(Boolean) as { icon: typeof Layers; label: string; value: string }[];
+  return (
+    <div
+      onClick={onToggle}
+      className={cn("flex cursor-pointer items-start gap-2.5 rounded-xl border px-3 py-2 transition-colors",
+        on ? "border-emerald/35 bg-sage/35 hover:bg-sage/50" : "border-border bg-surface hover:bg-ground")}
+    >
+      <button type="button" role="checkbox" aria-checked={on} aria-label={p.name}
+        className={cn("mt-px grid size-[18px] flex-none place-items-center rounded-md border-2 outline-none focus-visible:ring-2 focus-visible:ring-emerald/40",
+          on ? "border-emerald bg-emerald text-white" : "border-border bg-surface text-transparent")}>
+        <Check className="size-3" strokeWidth={3.2} />
+      </button>
+      <div className="min-w-0 flex-1">
+        <p className={cn("truncate text-[13px] font-semibold leading-snug", on ? "text-emerald-dark" : "text-ink")}>{p.name}</p>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+          {p.product_number && <Code tip={t.photo.colNumber}>{p.product_number}</Code>}
+          <Code tone={p.vbn_number ? "mute" : "warn"} tip={t.photo.colVbn}>
+            <span className="mr-1 font-sans font-medium text-ink-3">VBN</span>{p.vbn_number || "—"}
+          </Code>
+          {p.product_gtin && (
+            <Code tip={t.photo.colGtin}><span className="mr-1 font-sans font-medium text-ink-3">GTIN</span>{p.product_gtin}</Code>
+          )}
+          {words.map(({ icon: Ico, label, value }) => (
+            <Tip key={label} content={label}>
+              <span tabIndex={0} className="inline-flex max-w-[180px] items-center gap-1 text-[11.5px] text-ink-2 outline-none">
+                <Ico className="size-3 flex-none text-ink-3" /><span className="truncate">{value}</span>
+              </span>
+            </Tip>
+          ))}
+        </div>
+      </div>
+      <Chip tone={p.similarity >= 0.9 ? "ok" : p.similarity >= 0.6 ? "warn" : "bad"} tip={t.photo.colSimilarity}>{pct}%</Chip>
+    </div>
+  );
+}
+
+function ErrorLine({ children }: { children: React.ReactNode }) {
+  return (
+    <p role="alert" className="flex items-start gap-1.5 text-[12.5px] font-semibold text-brick">
+      <X className="mt-px size-[15px] flex-none" strokeWidth={2.6} /><span className="break-words">{children}</span>
+    </p>
   );
 }
