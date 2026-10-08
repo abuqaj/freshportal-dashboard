@@ -1,11 +1,22 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, type ComponentType, type ReactNode } from "react";
 import { flushSync } from "react-dom";
+import {
+  ArrowLeft, Check, ChevronDown, CircleAlert, CircleHelp, Copy, Database, ExternalLink, Hash, ListChecks, Loader2, PackagePlus,
+  Palette, Pencil, Plus, RefreshCw, RotateCcw, Search, SearchX, Sparkles, Store, Tag, TriangleAlert, Undo2, Wand2, X,
+} from "lucide-react";
 import { translations, Lang } from "@/lib/i18n";
 import { ProductSearchResult, AIAnalysis, SyncStatus, CreateResult, CreateWarning } from "@/lib/types";
 import { useSystem } from "@/contexts/SystemContext";
 import { DEFAULT_SYSTEM } from "@/lib/systems";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
+import {
+  Chip, Code, ConfirmDialog, DoneState, EmptyState, GoButton, IconButton, InfoTip, ModuleHeader, Panel, ProgressWait, RunnerWait, Section, Steps,
+} from "@/components/ui/kit";
+import { preloadMascot } from "@/components/MascotRunner";
+import { cn } from "@/lib/utils";
 
 const RAILWAY = process.env.NEXT_PUBLIC_RAILWAY_API_URL ?? "";
 // Product numbers are at most 7 characters (product_creator.NUMBER_MAX_LEN).
@@ -78,23 +89,65 @@ function NameCorrectionHint({ hint, onRevert, fromTemplateLabel, useOriginalLabe
   const diff = lcsWordDiff(origWords, corrWords);
   if (!diff.some(d => d.type !== "same")) return null;
   return (
-    <div className="mt-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 space-y-1.5">
-      <p className="text-[11px] font-semibold text-amber-700 uppercase tracking-wide">{fromTemplateLabel}</p>
+    <div className="mt-2 space-y-1.5 rounded-xl border border-taupe/40 bg-sand/45 px-3 py-2.5">
+      <p className="flex items-center gap-1.5 text-[11px] font-semibold text-ink-3">
+        <Wand2 className="size-3.5" />{fromTemplateLabel.replace(/^↑\s*/, "").replace(/\s*·\s*$/, "")}
+      </p>
       <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5 text-sm leading-snug">
         {diff.map((token, i) =>
           token.type === "same" ? (
             <span key={i} className="text-ink-3">{token.word}</span>
           ) : token.type === "deleted" ? (
-            <span key={i} className="text-amber-700 line-through opacity-80">{token.word}</span>
+            <span key={i} className="text-brick line-through opacity-80">{token.word}</span>
           ) : (
-            <span key={i} className="text-emerald font-semibold bg-emerald/10 px-0.5 rounded">{token.word}</span>
+            <span key={i} className="rounded bg-sage/60 px-0.5 font-semibold text-emerald-dark">{token.word}</span>
           )
         )}
       </div>
-      <button type="button" onClick={onRevert} className="text-xs text-amber-700 hover:text-amber-900 underline transition-colors">
-        {useOriginalLabel}
+      <button type="button" onClick={onRevert} className="inline-flex items-center gap-1 text-xs font-semibold text-ink-3 transition-colors hover:text-ink">
+        <Undo2 className="size-3.5" />{useOriginalLabel}
       </button>
     </div>
+  );
+}
+
+const LABEL = "mb-1.5 block text-xs font-semibold text-ink-3";
+const INPUT = "h-full min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-3/50 disabled:opacity-50";
+
+/** A field as the module kit draws one: an icon, the input, and a slot at the
+ *  end for its state (checking, free, found). */
+function FieldBox({ icon: Ico, tone, end, className, children }: {
+  icon: ComponentType<{ className?: string }>; tone?: "warn" | "bad"; end?: ReactNode; className?: string; children: ReactNode;
+}) {
+  return (
+    <div className={cn(
+      "flex h-11 items-center gap-2.5 rounded-[13px] border bg-ground px-3 transition-colors focus-within:bg-surface focus-within:ring-4",
+      tone === "bad" ? "border-brick/45 focus-within:ring-brick/12"
+        : tone === "warn" ? "border-taupe/60 bg-sand/40 focus-within:ring-taupe/20"
+        : "border-border focus-within:border-emerald/55 focus-within:ring-emerald/12",
+      className,
+    )}>
+      <Ico className="size-[17px] flex-none text-ink-3" />
+      {children}
+      {end && <span className="flex flex-none items-center">{end}</span>}
+    </div>
+  );
+}
+
+function SpinIcon({ className }: { className?: string }) {
+  return <Loader2 className={cn(className, "animate-spin")} />;
+}
+
+/** A line under a field: what blocks (brick) or what changed (a warning). */
+function Note({ tone = "bad", children }: { tone?: "bad" | "warn"; children: ReactNode }) {
+  return (
+    <p role={tone === "bad" ? "alert" : undefined}
+      className={cn("mt-2 flex items-start gap-1.5 text-[12.5px] font-semibold", tone === "bad" ? "text-brick" : "text-ink-2")}>
+      {tone === "bad"
+        ? <CircleAlert className="mt-px size-[15px] flex-none" />
+        : <TriangleAlert className="mt-px size-[15px] flex-none text-brick" />}
+      <span>{children}</span>
+    </p>
   );
 }
 
@@ -750,338 +803,268 @@ export default function ProductCreator({ lang }: Props) {
   const allDisplayResults = isFallback ? (searchResults ?? []).slice(0, 10) : highMatches;
   const displayResults = showAllResults ? allDisplayResults : allDisplayResults.slice(0, 6);
 
-  const SpinnerSm = () => (
-    <svg className="animate-spin h-3.5 w-3.5 text-emerald flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-    </svg>
-  );
+  const plain = (s: string) => s.replace(/^[✓⚠↑]\s*/, "");
+  const localeStr = lang === "en" ? "en-GB" : lang === "nl" ? "nl-NL" : lang === "es" ? "es-ES" : "pl-PL";
+  const colorMatches = colorList.filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase()));
+  const created = createResult?.status === "created" || createResult?.status === "created_with_warnings";
+  const stepIndex = step === "search" ? 0
+    : step === "loading" || step === "results" ? 1
+    : step === "confirm" ? 2
+    : step === "done" && created ? 4
+    : 3;
 
-  const AiPanel = () => (
-    <div className="w-64 flex-shrink-0 p-5 bg-ground space-y-3 overflow-y-auto min-h-0">
-      <p className="text-[11px] font-semibold text-ink-3 uppercase tracking-widest">{t.create.aiTitle}</p>
-      {aiLoading ? (
-        <div className="flex items-center gap-2 text-xs text-ink-3"><SpinnerSm /><span>{t.create.aiChecking}</span></div>
-      ) : aiAnalysis ? (
-        <>
-          {aiAnalysis.duplicate.found && aiAnalysis.duplicate.product_id ? (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1">
-              <p className="text-xs font-semibold text-amber-800">{t.create.aiDuplicate}</p>
-              <p className="text-xs text-amber-700">{t.create.aiDuplicateAs} <strong>{aiAnalysis.duplicate.product_name}</strong></p>
-              {aiAnalysis.duplicate.confidence && <p className="text-[11px] text-amber-600">{t.create.confidence} {aiAnalysis.duplicate.confidence}</p>}
-              {aiAnalysis.duplicate.reason && <p className="text-[11px] text-amber-600">{aiAnalysis.duplicate.reason}</p>}
-              <button
-                onClick={() => handleCreateFromTemplate(aiAnalysis!.duplicate.product_id!, aiAnalysis!.duplicate.product_name ?? "")}
-                className="mt-1 text-[11px] px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg transition-colors"
-              >{t.create.useAsTemplate}</button>
-            </div>
-          ) : (
-            <div className="bg-emerald-light border border-emerald/30 rounded-xl p-3">
-              <p className="text-xs text-emerald">{t.create.aiNoDuplicate}</p>
-            </div>
-          )}
-          {aiAnalysis.vbn.code && (
-            <div className="bg-surface border border-border rounded-xl p-3 space-y-0.5">
-              <p className="text-[11px] font-medium text-ink-3 uppercase tracking-wide">{t.create.aiVbnTitle}</p>
-              <p className="text-sm font-bold text-emerald font-mono">{aiAnalysis.vbn.code}</p>
-              {aiAnalysis.vbn.name && <p className="text-xs text-ink-3">{aiAnalysis.vbn.name}</p>}
-              {aiAnalysis.vbn.confidence && <p className="text-[11px] text-emerald">{t.create.confidence} {aiAnalysis.vbn.confidence}</p>}
-              {aiAnalysis.vbn.explanation && <p className="text-[11px] text-ink-3 mt-1">{aiAnalysis.vbn.explanation}</p>}
-            </div>
-          )}
-        </>
-      ) : null}
-    </div>
-  );
+  // The runner shows while FreshPortal is written; fetch him from the form on.
+  preloadMascot();
 
-  const BackChevron = () => (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
+  /** A result picked as the template; the same name asks first. */
+  function pickTemplate(r: ProductSearchResult) {
+    if (r.similarity >= 1.0) {
+      setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name, templateColor: r.color ?? "" });
+    } else {
+      handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "", r.product_group ?? "", r.application ?? "");
+    }
+  }
+
+  function backToResults() {
+    setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch("");
+    setColorDropdownOpen(false); setNameFromTemplate(null); setTemplateColorName("");
+  }
+
+  // The facts the header carries: which portal, then what this step is about.
+  const headerChips = (
+    <>
+      {otherSystem && (
+        <Chip tone="info" tip={`${t.create.onSystem(otherSystem.name)} · ${otherSystem.url}`}>
+          <span className={cn("size-2 rounded-full", otherSystem.accent)} />{otherSystem.name}
+        </Chip>
+      )}
+      {step === "search" && syncStatus && (syncStatus.running
+        ? <Chip tone="ok" icon={SpinIcon} tip={t.create.syncRunning}>{syncStatus.product_count.toLocaleString(localeStr)}</Chip>
+        : syncStatus.product_count > 0 && (
+          <Chip tone="mute" icon={Database} tip={t.create.syncProducts(syncStatus.product_count)}>{syncStatus.product_count.toLocaleString(localeStr)}</Chip>
+        ))}
+      {(step === "loading" || step === "results") && createInput.trim() && (
+        <Chip tone="info" icon={Search} tip={t.create.similarTitle}><span className="max-w-[240px] truncate">“{createInput.trim()}”</span></Chip>
+      )}
+      {step === "results" && highMatches.length > 0 && (
+        <Chip tone="warn" icon={TriangleAlert} tip={plain(t.create.warning)}>{highMatches.length} ≥80%</Chip>
+      )}
+      {step === "results" && isFallback && (
+        <Chip tone="mute" icon={Copy} tip={t.create.fallback}>{allDisplayResults.length}</Chip>
+      )}
+      {step === "confirm" && pendingCreate && (
+        <Chip tone="info" icon={Copy}
+          tip={[t.create.templateLabel.replace(/:$/, ""), `#${pendingCreate.templateId}`, pendingCreate.templateGroup, pendingCreate.templateApplication].filter(Boolean).join(" · ")}>
+          <span className="max-w-[260px] truncate">{pendingCreate.templateName}</span>
+        </Chip>
+      )}
+    </>
   );
+  const headerActions = step === "results" ? <IconButton icon={RotateCcw} tip={t.create.backToSearch} onClick={resetToSearch} />
+    : step === "confirm" ? <IconButton icon={ArrowLeft} tip={t.create.backToResults} onClick={backToResults} />
+    : null;
 
   return (
     <div>
-      {/* Which portal this module is pointed at, when it isn't the usual one */}
-      {otherSystem && (
-        <div className="flex items-center gap-2 px-6 py-2.5 bg-ink/5 border-b border-border text-xs text-ink-3">
-          <span className={`w-2 h-2 rounded-full ${otherSystem.accent}`} />
-          <span className="font-medium text-ink">{t.create.onSystem(otherSystem.name)}</span>
-          <span className="font-mono opacity-60 truncate">{otherSystem.url}</span>
-        </div>
-      )}
-
-      {/* Duplicate warning modal — step 1 */}
+      {/* A result with the very same name: ask before copying it */}
       {showDuplicateWarning && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center popup-backdrop">
-          <div className="bg-surface rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
-            <div className="flex items-start gap-4 mb-5">
-              <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 text-ember text-lg font-bold border border-ember/30">!</div>
-              <div>
-                <p className="text-base font-semibold text-ink">{t.create.dupWarn1Title}</p>
-                <p className="text-sm text-ink-3 mt-1">{t.create.dupWarn1Text(showDuplicateWarning.templateName)}</p>
-              </div>
-            </div>
-            <div className="flex gap-3 justify-end">
-              <button onClick={() => setShowDuplicateWarning(null)} className="px-4 py-2 text-sm border border-border rounded-xl text-ink-3 hover:bg-ground transition-colors">{t.common.cancel}</button>
-              <button
-                onClick={() => { handleCreateFromTemplate(showDuplicateWarning.templateId, showDuplicateWarning.templateName, "", showDuplicateWarning.templateColor ?? ""); setShowDuplicateWarning(null); }}
-                className="px-4 py-2 text-sm bg-ember hover:bg-ember-dark text-white rounded-xl font-medium transition-colors"
-              >{t.create.dupWarn1Confirm}</button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          icon={Copy}
+          title={t.create.dupWarn1Title}
+          text={t.create.dupWarn1Text(showDuplicateWarning.templateName)}
+          confirmLabel={t.create.dupWarn1Confirm}
+          cancelLabel={t.common.cancel}
+          onClose={() => setShowDuplicateWarning(null)}
+          onConfirm={() => {
+            handleCreateFromTemplate(showDuplicateWarning.templateId, showDuplicateWarning.templateName, "", showDuplicateWarning.templateColor ?? "");
+            setShowDuplicateWarning(null);
+          }}
+        />
       )}
 
-      {/* Duplicate warning modal — step 2: the name the backend found in FreshPortal */}
+      {/* The name the backend found in FreshPortal: the last question before a duplicate */}
       {nameExists && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center popup-backdrop">
-          <div className="bg-surface rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6">
-            <div className="flex items-start gap-4 mb-5">
-              <div className="w-10 h-10 rounded-full bg-ember-light flex items-center justify-center flex-shrink-0 text-ember text-lg font-bold border border-ember/30">!</div>
-              <div className="min-w-0">
-                <p className="text-base font-semibold text-ink">{t.create.nameExistsTitle}</p>
-                <p className="text-sm text-ink-3 mt-1">{t.create.dupWarn2Text(nameExists.name)}</p>
-                {nameExists.existing.length > 0 && (
-                  <div className="mt-3 space-y-1">
-                    <p className="text-[11px] font-semibold text-ink-3 uppercase tracking-wide">{t.create.nameExistsText}</p>
-                    {nameExists.existing.map(p => (
-                      <p key={p.product_id} className="text-xs text-ink truncate">
-                        {p.name}
-                        <span className="ml-1.5 text-ink-3 font-mono">{p.product_number}</span>
-                        <span className="ml-1.5 text-ink-3/50 font-mono">#{p.product_id}</span>
-                      </p>
-                    ))}
-                  </div>
-                )}
+        <ConfirmDialog
+          title={t.create.nameExistsTitle}
+          text={<>
+            <p>{t.create.dupWarn2Text(nameExists.name)}</p>
+            {nameExists.existing.length > 0 && (
+              <div className="mt-3 space-y-1">
+                <p className="text-[11px] font-semibold text-ink-3">{t.create.nameExistsText}</p>
+                {nameExists.existing.map(p => (
+                  <p key={p.product_id} className="flex min-w-0 items-center gap-1.5 text-xs text-ink">
+                    <span className="truncate">{p.name}</span>
+                    <Code>{p.product_number}</Code>
+                    <span className="font-mono text-ink-3/60">#{p.product_id}</span>
+                  </p>
+                ))}
               </div>
-            </div>
-            <div className="flex gap-3 justify-end">
-              <button onClick={() => setNameExists(null)} className="px-4 py-2 text-sm border border-border rounded-xl text-ink-3 hover:bg-ground transition-colors">{t.create.dupWarn2Cancel}</button>
-              <button onClick={() => handleConfirmCreate(true)} className="px-4 py-2 text-sm bg-ember hover:bg-ember-dark text-white rounded-xl font-medium transition-colors">{t.create.dupWarn2Confirm}</button>
-            </div>
-          </div>
-        </div>
+            )}
+          </>}
+          confirmLabel={t.create.dupWarn2Confirm}
+          cancelLabel={t.create.dupWarn2Cancel}
+          onClose={() => setNameExists(null)}
+          onConfirm={() => handleConfirmCreate(true)}
+        />
       )}
 
-      {/* Step container — key triggers card-enter re-animation on step change */}
-      <div key={step} className="card-enter">
+      <ModuleHeader tab="create" t={t} info={t.create.description} chips={headerChips} actions={headerActions} />
+      <Section tight>
+        <Steps labels={[t.create.stepSearch, t.create.stepTemplate, t.create.stepDetails, t.create.stepDone]} current={stepIndex} />
+      </Section>
 
-        {/* ── STEP 1: SEARCH ── */}
+      {/* "backwards", not "both": a kept transform would frame the module's fixed popups. */}
+      <div key={step} className="step-enter">
+
+        {/* ── Search ── */}
         {step === "search" && (
-          <div className="p-10 flex flex-col items-center gap-8 min-h-72">
-            <div className="text-center">
-              <h2 className="text-2xl font-bold text-ink tracking-tight">{t.nav.newProducts}</h2>
-              <p className="text-sm text-ink-3 mt-2 max-w-md">{t.create.description}</p>
-            </div>
-            <div className="w-full max-w-md">
-              <div className="flex gap-2.5">
-                <input
-                  type="text"
-                  value={createInput}
-                  onChange={(e) => setCreateInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && !nameValidationError && handleProductSearch()}
-                  placeholder={t.create.namePlaceholder}
-                  className={`flex-1 border rounded-xl px-4 py-3 text-sm bg-ground focus:outline-none focus:ring-2 transition-colors ${nameValidationError ? "border-ember/50 focus:ring-ember/30 focus:border-ember/60" : "border-border focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface"}`}
-                  autoFocus
-                />
-                <button
-                  onClick={handleProductSearch}
-                  disabled={!createInput.trim() || !!nameValidationError}
-                  className="bg-ember hover:bg-ember-dark disabled:opacity-40 text-white text-sm font-semibold px-5 py-3 rounded-xl transition-colors"
-                >{t.create.searchBtn}</button>
-              </div>
-              {nameValidationError && <p className="mt-3 text-sm text-ember bg-ember-light border border-ember/30 rounded-xl px-4 py-3">⚠ {nameValidationError}</p>}
-              {!nameValidationError && searchError && <p className="mt-3 text-sm text-ember bg-ember-light border border-ember/30 rounded-xl px-4 py-3">⚠ {searchError}</p>}
-            </div>
-            {syncStatus?.running && (
-              <div className="flex items-center gap-2 text-xs text-emerald">
-                <SpinnerSm /><span>{t.create.syncRunning}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── STEP 2: LOADING ── */}
-        {step === "loading" && (
-          <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
-            <svg className="animate-spin w-14 h-14 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-15" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
-              <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-            <div>
-              <p className="text-xs text-ink-3 uppercase tracking-widest mb-2">{t.create.searching}</p>
-              <p className="text-xl font-bold text-ink">&ldquo;{createInput}&rdquo;</p>
-            </div>
-            {searchStatus && (
-              <p className="text-xs text-ink-3 animate-pulse border-t border-border pt-4 w-full max-w-xs">{searchStatus}</p>
-            )}
-            <button
-              onClick={() => { abortRef.current?.abort(); abortRef.current = null; cancelAi(); }}
-              className="text-xs text-ink-3 hover:text-ember border border-border hover:border-ember/20 rounded-lg px-4 py-1.5 bg-ground hover:bg-ember-light/50 transition-colors"
-            >{t.common.cancel}</button>
-          </div>
-        )}
-
-        {/* ── STEP 3: RESULTS ── */}
-        {step === "results" && searchResults !== null && (
-          <div className="flex flex-col">
-            <div className="px-6 py-4 border-b border-border flex-shrink-0">
-              <h2 className="font-semibold text-ink">{t.create.similarTitle}</h2>
-              <p className="text-xs text-ink-3 mt-0.5">
-                &ldquo;{createInput}&rdquo;
-                {highMatches.length > 0 && <span className="ml-2 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded text-[11px] font-medium">{t.create.resultsCount(highMatches.length)}</span>}
-              </p>
-            </div>
-            <div className="p-4 space-y-2 overflow-y-auto">
-              {searchResults.length === 0 ? (
-                <div className="py-10 text-center text-sm text-ink-3">
-                  <p className="font-medium">{t.create.noResults}</p>
-                  <p className="text-xs mt-1 opacity-60">{t.create.noResultsHint}</p>
-                  <button onClick={resetToSearch} className="mt-4 text-xs text-ink-3 hover:text-ink underline">{t.create.backToSearch}</button>
-                </div>
-              ) : (
-                <>
-                  {highMatches.length > 0 && <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">{t.create.warning}</div>}
-                  {isFallback && <div className="px-3 py-2 bg-muted border border-border rounded-xl text-xs text-ink-3">{t.create.fallback}</div>}
-                  {displayResults.map((r) => (
-                    <button
-                      key={r.product_id}
-                      onClick={() => {
-                        if (r.similarity >= 1.0) {
-                          setShowDuplicateWarning({ templateId: r.product_id, templateName: r.name, templateColor: r.color ?? "" });
-                        } else {
-                          handleCreateFromTemplate(r.product_id, r.name, r.vbn_number, r.color ?? "", r.product_group ?? "", r.application ?? "");
-                        }
-                      }}
-                      className={`w-full text-left px-4 py-3 rounded-xl border transition-all hover:shadow-sm group ${r.similarity >= 1.0 ? "border-ember/40 bg-ember-light/30 hover:bg-ember-light/50" : r.similarity >= DUPLICATE_SCORE ? "border-amber-200 bg-amber-50/60 hover:bg-amber-50" : "border-border bg-surface hover:bg-ground"}`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="font-medium text-sm text-ink truncate">{r.name}</p>
-                          {r.short_name && <p className="text-xs text-ink-3 truncate mt-0.5">{r.short_name}</p>}
-                          {(r.product_group || r.application) && (
-                            <p className="text-[11px] text-ink-3/70 truncate mt-0.5">
-                              {[r.product_group, r.application].filter(Boolean).join(" · ")}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          {r.vbn_number && <span className="text-[11px] font-mono text-ink-3">{r.vbn_number}</span>}
-                          <span className={`text-[11px] px-2 py-0.5 rounded-md font-bold ${r.similarity >= 1.0 ? "bg-ember text-white" : r.similarity >= DUPLICATE_SCORE ? "bg-amber-500 text-white" : "bg-ink/10 text-ink-3"}`}>
-                            {Math.round(r.similarity * 100)}%
-                          </span>
-                          <span className={`text-xs font-semibold px-3 py-1 rounded-lg border transition-colors whitespace-nowrap ${r.similarity >= 1.0 ? "bg-ember-light text-ember border-ember/30 group-hover:bg-ember group-hover:text-white" : "bg-emerald-light text-emerald border-emerald/30 group-hover:bg-emerald group-hover:text-white"}`}>
-                            {t.create.useAsTemplate}
-                          </span>
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                  {!showAllResults && allDisplayResults.length > 6 && (
-                    <button onClick={() => setShowAllResults(true)} className="w-full text-xs text-emerald hover:text-emerald-dark font-medium py-2 text-center">
-                      {t.create.showMore(allDisplayResults.length - 6)}
-                    </button>
-                  )}
-                  <div className="pt-2 border-t border-border mt-2">
-                    <button onClick={resetToSearch} className="text-xs text-ink-3 hover:text-ink transition-colors">
-                      &#8592; {t.create.backToSearch}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── STEP 4: CONFIRM ── */}
-        {step === "confirm" && pendingCreate && (
-          <div className="flex flex-col">
-            <div className="px-6 py-4 border-b border-border flex-shrink-0">
-              <h2 className="font-semibold text-ink">{t.create.confirmTitle}</h2>
-              <p className="text-xs text-ink-3 mt-0.5">
-                {t.create.templateLabel} <span className="font-medium text-ink">{pendingCreate.templateName}</span>
-                <span className="ml-1.5 opacity-40">#{pendingCreate.templateId}</span>
-                {(pendingCreate.templateGroup || pendingCreate.templateApplication) && (
-                  <span className="ml-1.5 opacity-70">
-                    ({[pendingCreate.templateGroup, pendingCreate.templateApplication].filter(Boolean).join(" · ")})
-                  </span>
-                )}
-                <span className="mx-1.5 opacity-30">·</span>
-                <button
-                  onClick={() => { setPendingCreate(null); setVbnForCreate(""); setVbnForCreateInfo(null); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setNameFromTemplate(null); setTemplateColorName(""); }}
-                  className="text-emerald hover:text-emerald-dark hover:underline transition-colors"
-                >&#8592; {t.create.backToResults}</button>
-              </p>
-            </div>
-            <div className="flex divide-x divide-border max-h-[68vh] min-h-0">
-              {/* Form */}
-              <div className="flex-1 p-6 space-y-4 overflow-y-auto min-h-0">
-                {/* Why the last attempt saved nothing */}
-                {createBlock && (
-                  <div className="rounded-xl bg-ember-light border border-ember/30 px-4 py-3 text-sm text-ember">
-                    ⚠ {reasonText(createBlock) ?? createBlock.reason}
-                  </div>
-                )}
-                {/* Name */}
-                <div>
-                  <label className="block text-xs font-medium text-ink-3 mb-1.5">{t.create.nameLabel}</label>
+          <Section>
+            <div className="mx-auto my-3 w-full max-w-[520px]">
+              <label htmlFor="create-name" className={LABEL}>{t.create.nameLabel}</label>
+              <div className="flex items-center gap-2.5">
+                <FieldBox icon={PackagePlus} tone={nameValidationError ? "bad" : undefined} className="flex-1">
                   <input
+                    id="create-name"
                     type="text"
-                    value={finalName}
-                    onChange={(e) => {
-                      const newName = e.target.value;
-                      setFinalName(newName);
-                      setNumberCheckResult(null);
-                      if (nameChangeDebounce.current) clearTimeout(nameChangeDebounce.current);
-                      nameChangeDebounce.current = setTimeout(() => {
-                        const trimmed = newName.trim();
-                        const sim = wordJaccard(initialFormName.current, trimmed);
-                        if (sim < 0.60) {
-                          const newBase = genProductNumber(trimmed);
-                          setProductNumber(newBase);
-                          setNumberChecking(true);
-                          fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(newBase)}&name=${encodeURIComponent(trimmed)}`)
-                            .then((r) => r.json())
-                            .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
-                              if (data.available_number) { setProductNumber(data.available_number); setNumberCheckResult({ changed: data.changed, original: data.original_number }); }
-                            })
-                            .catch(() => {})
-                            .finally(() => setNumberChecking(false));
-                        }
-                        if (trimmed && RAILWAY && searchResults && searchResults.length > 0) {
-                          setVbnForCreateChecking(true);
-                          setVbnForCreateInfo(null);
-                          setAiLoading(true);
-                          callAiAnalyze({ name: trimmed, candidates: searchResults.slice(0, 6) })
-                            .then((data: AIAnalysis | null) => {
-                              if (!data) { setVbnForCreateChecking(false); return; }
-                              setAiAnalysis(data);
-                              const code = data?.vbn?.code ?? null;
-                              if (code) {
-                                setVbnForCreate(code);
-                                setVbnForCreateInfo(null);
-                                fetch(`${RAILWAY}/vbn-name/${code}`)
-                                  .then(r => r.json())
-                                  .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
-                                  .catch(() => {})
-                                  .finally(() => setVbnForCreateChecking(false));
-                              } else {
-                                setVbnForCreate(""); setVbnForCreateInfo(null); setVbnForCreateChecking(false);
-                              }
-                            })
-                            .catch(() => setVbnForCreateChecking(false))
-                            .finally(() => setAiLoading(false));
-                        }
-                      }, 500);
-                    }}
-                    placeholder={t.create.finalNamePlaceholder}
-                    className={`w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 transition-colors ${nameFromTemplate ? "border-amber-300 bg-amber-50/40 focus:ring-amber-300/50 focus:border-amber-400" : "border-border bg-ground focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface"}`}
+                    value={createInput}
+                    onChange={(e) => setCreateInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && !nameValidationError && handleProductSearch()}
+                    placeholder={t.create.namePlaceholder}
+                    className={INPUT}
                     autoFocus
                   />
-                  {finalNameError && (
-                    <p className="mt-1.5 text-xs text-ember bg-ember-light border border-ember/30 rounded-lg px-3 py-1.5">⚠ {finalNameError}</p>
-                  )}
+                </FieldBox>
+                <GoButton icon={Search} tip={t.create.searchBtn} disabled={!createInput.trim() || !!nameValidationError} onClick={handleProductSearch} />
+              </div>
+              {nameValidationError ? <Note>{nameValidationError}</Note> : searchError && <Note>{searchError}</Note>}
+            </div>
+          </Section>
+        )}
+
+        {/* ── Searching ── */}
+        {step === "loading" && (
+          <Section>
+            <ProgressWait status={searchStatus ?? t.create.searching}>
+              <Button variant="outline" size="sm" onClick={() => { abortRef.current?.abort(); abortRef.current = null; cancelAi(); }}>
+                <X className="size-3.5" />{t.common.cancel}
+              </Button>
+            </ProgressWait>
+          </Section>
+        )}
+
+        {/* ── Templates ── */}
+        {step === "results" && searchResults !== null && (
+          <Section className="flex flex-col gap-3">
+            {searchResults.length === 0 ? (
+              <div className="flex flex-col items-center">
+                <EmptyState icon={SearchX} text={t.create.noResults} hint={t.create.noResultsHint} />
+                <Button variant="outline" onClick={resetToSearch}><RotateCcw className="size-4" />{t.create.backToSearch}</Button>
+              </div>
+            ) : (
+              <>
+                {/* The whole row picks the template; its copy icon is the
+                    keyboard's way to the same click. */}
+                <ul className="overflow-hidden rounded-2xl border border-border">
+                  {displayResults.map((r) => {
+                    const same = r.similarity >= 1.0;
+                    const close = r.similarity >= DUPLICATE_SCORE;
+                    return (
+                      <li key={r.product_id} onClick={() => pickTemplate(r)}
+                        className={cn("flex cursor-pointer items-center gap-3 border-b border-muted px-4 py-3 transition-colors last:border-0 hover:bg-ground/50",
+                          same ? "shadow-[inset_3px_0_0_var(--color-brick)]" : close && "shadow-[inset_3px_0_0_var(--color-blush)]")}>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[13.5px] font-semibold text-ink">{r.name}</p>
+                          <p className="mt-0.5 truncate text-[11.5px] text-ink-3">
+                            {[r.short_name, r.product_group, r.application].filter(Boolean).join(" · ")}
+                          </p>
+                        </div>
+                        <div className="flex flex-none items-center gap-2">
+                          {r.vbn_number && <Code tip={t.create.tableVbn}>{r.vbn_number}</Code>}
+                          <Chip tone={same ? "bad" : close ? "warn" : "info"} tip={t.create.tableSim}>{Math.round(r.similarity * 100)}%</Chip>
+                          <IconButton icon={Copy} tip={t.create.useAsTemplate} danger={same} />
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {!showAllResults && allDisplayResults.length > 6 && (
+                  <Button variant="ghost" size="sm" className="self-center" onClick={() => setShowAllResults(true)}>
+                    <ChevronDown className="size-3.5" />{t.create.showMore(allDisplayResults.length - 6)}
+                  </Button>
+                )}
+              </>
+            )}
+          </Section>
+        )}
+
+        {/* ── Details ── */}
+        {step === "confirm" && pendingCreate && (
+          <Section>
+            <div className="grid gap-4 md:grid-cols-[1.4fr_1fr]">
+              <div className="flex min-w-0 flex-col gap-3.5">
+                {/* Why the last attempt saved nothing */}
+                {createBlock && <Note>{reasonText(createBlock) ?? createBlock.reason}</Note>}
+
+                {/* Name */}
+                <div>
+                  <label htmlFor="create-final-name" className={LABEL}>{t.create.nameLabel}</label>
+                  <FieldBox icon={Tag} tone={finalNameError ? "bad" : nameFromTemplate ? "warn" : undefined}>
+                    <input
+                      id="create-final-name"
+                      type="text"
+                      value={finalName}
+                      onChange={(e) => {
+                        const newName = e.target.value;
+                        setFinalName(newName);
+                        setNumberCheckResult(null);
+                        if (nameChangeDebounce.current) clearTimeout(nameChangeDebounce.current);
+                        nameChangeDebounce.current = setTimeout(() => {
+                          const trimmed = newName.trim();
+                          const sim = wordJaccard(initialFormName.current, trimmed);
+                          if (sim < 0.60) {
+                            const newBase = genProductNumber(trimmed);
+                            setProductNumber(newBase);
+                            setNumberChecking(true);
+                            fetch(`${RAILWAY}/product-number-suggest?number=${encodeURIComponent(newBase)}&name=${encodeURIComponent(trimmed)}`)
+                              .then((r) => r.json())
+                              .then((data: { available_number: string | null; original_number: string; changed: boolean }) => {
+                                if (data.available_number) { setProductNumber(data.available_number); setNumberCheckResult({ changed: data.changed, original: data.original_number }); }
+                              })
+                              .catch(() => {})
+                              .finally(() => setNumberChecking(false));
+                          }
+                          if (trimmed && RAILWAY && searchResults && searchResults.length > 0) {
+                            setVbnForCreateChecking(true);
+                            setVbnForCreateInfo(null);
+                            setAiLoading(true);
+                            callAiAnalyze({ name: trimmed, candidates: searchResults.slice(0, 6) })
+                              .then((data: AIAnalysis | null) => {
+                                if (!data) { setVbnForCreateChecking(false); return; }
+                                setAiAnalysis(data);
+                                const code = data?.vbn?.code ?? null;
+                                if (code) {
+                                  setVbnForCreate(code);
+                                  setVbnForCreateInfo(null);
+                                  fetch(`${RAILWAY}/vbn-name/${code}`)
+                                    .then(r => r.json())
+                                    .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+                                    .catch(() => {})
+                                    .finally(() => setVbnForCreateChecking(false));
+                                } else {
+                                  setVbnForCreate(""); setVbnForCreateInfo(null); setVbnForCreateChecking(false);
+                                }
+                              })
+                              .catch(() => setVbnForCreateChecking(false))
+                              .finally(() => setAiLoading(false));
+                          }
+                        }, 500);
+                      }}
+                      placeholder={t.create.finalNamePlaceholder}
+                      className={INPUT}
+                      autoFocus
+                    />
+                  </FieldBox>
+                  {finalNameError && <Note>{finalNameError}</Note>}
                   {nameFromTemplate && (
                     <NameCorrectionHint
                       hint={nameFromTemplate}
@@ -1094,230 +1077,240 @@ export default function ProductCreator({ lang }: Props) {
 
                 {/* Number */}
                 <div>
-                  <label className="flex items-center gap-1.5 text-xs font-medium text-ink-3 mb-1.5">
-                    {t.create.numberLabel}
-                    {numberChecking && <SpinnerSm />}
-                    {!numberChecking && numberCheckResult && !numberCheckResult.changed && <span className="text-emerald">{t.create.numberFree}</span>}
-                  </label>
-                  <input
-                    type="text"
-                    value={productNumber}
-                    onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, NUMBER_MAX_LEN)); setNumberCheckResult(null); }}
-                    placeholder={t.create.numberPlaceholder}
-                    className="w-full border border-border rounded-xl px-4 py-2.5 text-sm font-mono uppercase bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
-                  />
-                  {numberCheckResult?.changed && (
-                    <p className="mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">⚠ {t.create.numberTaken(numberCheckResult.original, productNumber)}</p>
-                  )}
-                  <p className="mt-1 text-[11px] text-ink-3/50">{t.create.numberHint}</p>
+                  <div className="mb-1.5 flex items-center gap-1">
+                    <label htmlFor="create-number" className="text-xs font-semibold text-ink-3">{t.create.numberLabel}</label>
+                    <InfoTip content={t.create.numberHint} />
+                  </div>
+                  <FieldBox icon={Hash} tone={numberCheckResult?.changed ? "warn" : undefined}
+                    end={numberChecking ? <SpinIcon className="size-4 text-ink-3" />
+                      : numberCheckResult && !numberCheckResult.changed ? <Chip tone="ok" icon={Check}>{plain(t.create.numberFree)}</Chip>
+                      : null}>
+                    <input
+                      id="create-number"
+                      type="text"
+                      value={productNumber}
+                      onChange={(e) => { setProductNumber(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, NUMBER_MAX_LEN)); setNumberCheckResult(null); }}
+                      placeholder={t.create.numberPlaceholder}
+                      className={cn(INPUT, "font-mono uppercase")}
+                    />
+                  </FieldBox>
+                  {numberCheckResult?.changed && <Note tone="warn">{t.create.numberTaken(numberCheckResult.original, productNumber)}</Note>}
                 </div>
 
-                {/* VBN + Color */}
-                <div className="flex gap-3">
-                  <div className="flex-1">
-                    <label className="flex items-center gap-1.5 text-xs font-medium text-ink-3 mb-1.5">
-                      {t.create.vbnLabel}
-                      {vbnForCreateChecking && <SpinnerSm />}
-                      {!vbnForCreateChecking && vbnForCreateInfo && (
-                        <span className={vbnForCreateInfo.found ? "text-emerald" : "text-ember"}>{vbnForCreateInfo.found ? "✓" : "✗"}</span>
-                      )}
-                    </label>
-                    <input
-                      type="text"
-                      value={vbnForCreate}
-                      onChange={(e) => {
-                        const code = e.target.value.replace(/\D/g, "").slice(0, 6);
-                        setVbnForCreate(code);
-                        setVbnForCreateInfo(null);
-                        if (vbnForCreateDebounce.current) clearTimeout(vbnForCreateDebounce.current);
-                        if (code.length >= 3 && RAILWAY) {
-                          vbnForCreateDebounce.current = setTimeout(() => {
-                            setVbnForCreateChecking(true);
-                            fetch(`${RAILWAY}/vbn-name/${code}`)
-                              .then(r => r.json())
-                              .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
-                              .catch(() => {})
-                              .finally(() => setVbnForCreateChecking(false));
-                          }, 500);
-                        }
-                      }}
-                      placeholder={t.create.vbnPlaceholder}
-                      className="w-full border border-border rounded-xl px-3 py-2.5 text-sm font-mono bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors"
-                    />
+                {/* VBN and colour */}
+                <div className="grid gap-3.5 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="create-vbn" className={LABEL}>{t.create.vbnLabel}</label>
+                    <FieldBox icon={ListChecks} tone={!vbnForCreateChecking && vbnForCreateInfo && !vbnForCreateInfo.found ? "bad" : undefined}
+                      end={vbnForCreateChecking ? <SpinIcon className="size-4 text-ink-3" />
+                        : vbnForCreateInfo ? (vbnForCreateInfo.found
+                          ? <Check className="size-4 text-emerald" strokeWidth={2.6} />
+                          : <CircleAlert className="size-4 text-brick" />)
+                        : null}>
+                      <input
+                        id="create-vbn"
+                        type="text"
+                        value={vbnForCreate}
+                        onChange={(e) => {
+                          const code = e.target.value.replace(/\D/g, "").slice(0, 6);
+                          setVbnForCreate(code);
+                          setVbnForCreateInfo(null);
+                          if (vbnForCreateDebounce.current) clearTimeout(vbnForCreateDebounce.current);
+                          if (code.length >= 3 && RAILWAY) {
+                            vbnForCreateDebounce.current = setTimeout(() => {
+                              setVbnForCreateChecking(true);
+                              fetch(`${RAILWAY}/vbn-name/${code}`)
+                                .then(r => r.json())
+                                .then((d: { found: boolean; name?: string }) => setVbnForCreateInfo({ found: d.found, name: d.name ?? "" }))
+                                .catch(() => {})
+                                .finally(() => setVbnForCreateChecking(false));
+                            }, 500);
+                          }
+                        }}
+                        placeholder={t.create.vbnPlaceholder}
+                        className={cn(INPUT, "font-mono")}
+                      />
+                    </FieldBox>
                     {!vbnForCreateChecking && vbnForCreateInfo && (
-                      <p className={`text-[11px] mt-1 truncate ${vbnForCreateInfo.found ? "text-emerald" : "text-ember"}`}>
+                      <p className={cn("mt-1 truncate text-[11.5px]", vbnForCreateInfo.found ? "text-ink-3" : "font-semibold text-brick")}>
                         {vbnForCreateInfo.found ? vbnForCreateInfo.name : t.create.vbnNotFound}
                       </p>
                     )}
                   </div>
-                  <div className="flex-1" ref={colorDropdownRef}>
-                    <label className="flex items-center gap-1.5 text-xs font-medium text-ink-3 mb-1.5">
-                      {t.create.colorLabel}
-                      {colorListLoading && <SpinnerSm />}
-                      {colorForCreate && (
-                        <button onClick={() => { setColorForCreate(""); setColorSearch(""); setTemplateColorName(""); }} className="text-ink-3/40 hover:text-ink-3 text-xs ml-auto">✕</button>
-                      )}
-                    </label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        value={colorSearch !== "" ? colorSearch : (colorList.find(c => c.id === colorForCreate)?.name ?? "")}
-                        onChange={(e) => { setColorSearch(e.target.value); setColorDropdownOpen(true); }}
-                        onFocus={() => { setColorSearch(""); setColorDropdownOpen(true); }}
-                        placeholder={colorListLoading ? t.create.colorLoading : colorForCreate ? "" : t.create.colorPlaceholder}
-                        disabled={colorListLoading}
-                        className="w-full border border-border rounded-xl px-3 py-2.5 text-sm bg-ground focus:outline-none focus:ring-2 focus:ring-emerald/30 focus:border-emerald/60 focus:bg-surface transition-colors disabled:opacity-50"
-                      />
-                      {colorLoadError && (
-                        <div className="mt-1 space-y-0.5">
-                          <p className="text-[11px] text-ember break-all">{colorLoadError}</p>
-                          <div className="flex gap-2">
-                            <button onClick={() => loadColors(false)} className="text-[11px] text-emerald hover:underline">{t.common.retry}</button>
-                            <button onClick={() => loadColors(true)} className="text-[11px] text-amber-600 hover:underline">{t.common.forceRefresh}</button>
-                          </div>
-                        </div>
-                      )}
+                  <div ref={colorDropdownRef}>
+                    <label htmlFor="create-color" className={LABEL}>{t.create.colorLabel}</label>
+                    <div>
+                      <FieldBox icon={Palette}
+                        end={colorListLoading ? <SpinIcon className="size-4 text-ink-3" />
+                          : colorForCreate ? <IconButton size="sm" icon={X} tip={t.create.colorNone}
+                              onClick={() => { setColorForCreate(""); setColorSearch(""); setTemplateColorName(""); }} />
+                          : <ChevronDown className="size-4 text-ink-3" />}>
+                        <input
+                          id="create-color"
+                          type="text"
+                          role="combobox"
+                          aria-expanded={colorDropdownOpen}
+                          aria-controls="create-color-list"
+                          value={colorSearch !== "" ? colorSearch : (colorList.find(c => c.id === colorForCreate)?.name ?? "")}
+                          onChange={(e) => { setColorSearch(e.target.value); setColorDropdownOpen(true); }}
+                          onFocus={() => { setColorSearch(""); setColorDropdownOpen(true); }}
+                          placeholder={colorListLoading ? t.create.colorLoading : colorForCreate ? "" : t.create.colorPlaceholder}
+                          disabled={colorListLoading}
+                          className={INPUT}
+                        />
+                      </FieldBox>
+                      {/* In the flow, not floating: the module card clips what sticks out of it. */}
                       {colorDropdownOpen && !colorListLoading && (
-                        <div className="absolute z-30 left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-surface border border-border rounded-xl shadow-xl">
-                          <button
+                        <div id="create-color-list" role="listbox"
+                          className="mt-1 max-h-56 overflow-y-auto rounded-xl border border-border bg-surface shadow-[0_6px_18px_rgba(17,26,20,0.08)]">
+                          <button type="button"
                             onMouseDown={(e) => { e.preventDefault(); setColorForCreate(""); setColorSearch(""); setColorDropdownOpen(false); setTemplateColorName(""); }}
-                            className="w-full text-left px-3 py-2 text-xs text-ink-3 hover:bg-ground border-b border-border"
-                          >— {t.create.colorNone}</button>
-                          {colorList
-                            .filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase()))
-                            .slice(0, 80)
-                            .map(c => (
-                              <button
-                                key={c.id}
-                                onMouseDown={(e) => { e.preventDefault(); setColorForCreate(c.id); setColorSearch(""); setColorDropdownOpen(false); }}
-                                className={`w-full text-left px-3 py-2 text-xs hover:bg-emerald-light flex justify-between items-center ${colorForCreate === c.id ? "bg-emerald-light text-emerald font-medium" : "text-ink"}`}
-                              >
-                                <span>{c.name}</span>
-                                <span className="text-ink-3 font-mono text-[10px] ml-2">{c.id}</span>
-                              </button>
-                            ))
-                          }
-                          {colorList.filter(c => !colorSearch || c.name.toLowerCase().includes(colorSearch.toLowerCase())).length === 0 && (
-                            <p className="px-3 py-2 text-xs text-ink-3 text-center">—</p>
-                          )}
+                            className="w-full border-b border-muted px-3 py-2 text-left text-xs text-ink-3 hover:bg-ground">— {t.create.colorNone}</button>
+                          {colorMatches.slice(0, 80).map(c => (
+                            <button key={c.id} type="button" role="option" aria-selected={colorForCreate === c.id}
+                              onMouseDown={(e) => { e.preventDefault(); setColorForCreate(c.id); setColorSearch(""); setColorDropdownOpen(false); }}
+                              className={cn("flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-emerald-light",
+                                colorForCreate === c.id ? "bg-emerald-light font-semibold text-emerald-dark" : "text-ink")}>
+                              <span>{c.name}</span>
+                              <span className="ml-2 font-mono text-[10px] text-ink-3">{c.id}</span>
+                            </button>
+                          ))}
+                          {colorMatches.length === 0 && <p className="px-3 py-2 text-center text-xs text-ink-3">—</p>}
                         </div>
                       )}
                     </div>
+                    {colorLoadError && (
+                      <div className="mt-1 flex items-center gap-1">
+                        <Tip content={colorLoadError}>
+                          <p tabIndex={0} className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-brick">{colorLoadError}</p>
+                        </Tip>
+                        <IconButton size="sm" icon={RotateCcw} tip={t.common.retry} onClick={() => loadColors(false)} />
+                        <IconButton size="sm" icon={RefreshCw} tip={t.common.forceRefresh} onClick={() => loadColors(true)} />
+                      </div>
+                    )}
                   </div>
                 </div>
+              </div>
 
-                {/* Create button */}
-                <div className="pt-1">
-                  <button
-                    onClick={() => handleConfirmCreate()}
-                    disabled={creating || numberChecking || !!finalNameError || !productNumber.trim()}
-                    className="w-full bg-emerald hover:bg-emerald-dark disabled:opacity-40 text-white text-sm font-semibold py-3 rounded-xl transition-colors"
-                  >{numberChecking ? t.create.checkingNumber : t.create.createBtn}</button>
+              {/* What the AI makes of the name: a duplicate, and the VBN it would give */}
+              <Panel title={t.create.aiTitle} icon={Sparkles} className="self-start bg-ground/60">
+                {aiLoading ? (
+                  <p className="flex items-center gap-2 text-xs"><SpinIcon className="size-3.5 flex-none text-ink-3" /><span className="shimmer-ink">{t.create.aiChecking}</span></p>
+                ) : aiAnalysis ? (
+                  <div className="space-y-3">
+                    {aiAnalysis.duplicate.found && aiAnalysis.duplicate.product_id ? (
+                      <div className="space-y-1.5 rounded-xl border border-blush bg-blush/20 p-3">
+                        <p className="flex items-center gap-1.5 text-xs font-bold text-brick"><TriangleAlert className="size-3.5" />{plain(t.create.aiDuplicate)}</p>
+                        <p className="text-xs text-ink-2">{t.create.aiDuplicateAs} <b>{aiAnalysis.duplicate.product_name}</b></p>
+                        {aiAnalysis.duplicate.confidence && <Chip tone="mute" tip={t.create.confidence.replace(/:$/, "")}>{aiAnalysis.duplicate.confidence}</Chip>}
+                        {aiAnalysis.duplicate.reason && <p className="text-[11px] text-ink-3">{aiAnalysis.duplicate.reason}</p>}
+                        <Button variant="outline" size="sm"
+                          onClick={() => handleCreateFromTemplate(aiAnalysis.duplicate.product_id!, aiAnalysis.duplicate.product_name ?? "")}>
+                          <Copy className="size-3.5" />{t.create.useAsTemplate}
+                        </Button>
+                      </div>
+                    ) : (
+                      <Chip tone="ok" icon={Check} tip={plain(t.create.aiNoDuplicate)}>{plain(t.create.aiNoDuplicate).split("—")[0].trim()}</Chip>
+                    )}
+                    {aiAnalysis.vbn.code && (
+                      <div>
+                        <p className="mb-1 text-[11px] font-semibold text-ink-3">{t.create.aiVbnTitle}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Code tone="ok">{aiAnalysis.vbn.code}</Code>
+                          {aiAnalysis.vbn.name && <span className="text-[12.5px] text-ink">{aiAnalysis.vbn.name}</span>}
+                          {aiAnalysis.vbn.confidence && <Chip tone="mute" tip={t.create.confidence.replace(/:$/, "")}>{aiAnalysis.vbn.confidence}</Chip>}
+                        </div>
+                        {aiAnalysis.vbn.explanation && <p className="mt-1.5 text-[11px] leading-relaxed text-ink-3">{aiAnalysis.vbn.explanation}</p>}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-ink-3/60">—</p>
+                )}
+              </Panel>
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <GoButton icon={Check} tip={numberChecking ? t.create.checkingNumber : t.create.createBtn}
+                disabled={creating || numberChecking || !!finalNameError || !productNumber.trim()}
+                onClick={() => handleConfirmCreate()} />
+            </div>
+          </Section>
+        )}
+
+        {/* ── Creating ── no cancel: the save cannot be called back once it starts. */}
+        {step === "creating" && (
+          <Section>
+            <RunnerWait title={t.create.creating} status={createStatus !== t.create.creating ? createStatus : null}>
+              <Chip tone="info" icon={Tag}>{finalName}</Chip>
+              <Chip tone="warn" icon={TriangleAlert} tip={t.create.keepOpen}>{t.create.keepOpenShort}</Chip>
+            </RunnerWait>
+          </Section>
+        )}
+
+        {/* ── Done ── */}
+        {step === "done" && createResult && (
+          <Section>
+            <DoneState
+              tone={createResult.status === "created" ? "ok" : createResult.status === "failed" ? "bad" : "warn"}
+              icon={createResult.status === "unconfirmed" ? CircleHelp : undefined}
+              title={createResult.status === "created" ? t.create.statusCreated
+                : createResult.status === "created_with_warnings" ? t.create.statusCreatedWarnings
+                : createResult.status === "unconfirmed" ? t.create.statusUnconfirmed
+                : t.create.statusFailed}
+              sub={<>
+                <span className="text-ink">“{createResult.name}”</span>
+                {createResult.product_number && <span className="ml-2 font-mono text-xs">{createResult.product_number}</span>}
+                {createResult.status !== "created" && reasonText(createResult) && <span className="mt-1 block">{reasonText(createResult)}</span>}
+                {createResult.status === "unconfirmed" && <span className="mt-1 block font-semibold text-brick">{t.create.unconfirmedHint}</span>}
+                {createResult.status === "failed" && <span className="mt-1 block">{t.create.failedHint}</span>}
+                {createResult.error_text && createResult.reason !== "invalid_input" && (
+                  <span className="mt-1 block break-all font-mono text-[11px] text-ink-3/60">{createResult.error_text}</span>
+                )}
+              </>}
+            >
+              <div className="flex w-full flex-col items-center gap-3">
+                {/* What FreshPortal actually holds — read back after saving */}
+                {createResult.product && (
+                  <Panel title={t.create.inPortal} icon={Store} className="w-full max-w-sm text-left">
+                    <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1.5 text-[13px]">
+                      <dt className="text-ink-3">{t.create.fieldName}</dt><dd className="min-w-0 truncate text-ink">{createResult.product.name}</dd>
+                      <dt className="text-ink-3">{t.create.fieldNumber}</dt><dd><Code>{createResult.product.product_number}</Code></dd>
+                      <dt className="text-ink-3">{t.create.vbnLabel}</dt><dd>{createResult.product.vbn_number ? <Code tone="ok">{createResult.product.vbn_number}</Code> : "—"}</dd>
+                      <dt className="text-ink-3">{t.create.colorLabel}</dt><dd className="text-ink">{createResult.product.color || "—"}</dd>
+                      <dt className="text-ink-3">{t.create.fieldId}</dt><dd className="font-mono text-xs text-ink-2">{createResult.product.product_id}</dd>
+                    </dl>
+                  </Panel>
+                )}
+
+                {createResult.warnings.length > 0 && (
+                  <div className="w-full max-w-sm rounded-[14px] border border-blush bg-blush/20 px-4 py-3 text-left">
+                    <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold text-brick"><TriangleAlert className="size-3.5" />{t.create.warnTitle.replace(/:$/, "")}</p>
+                    <ul className="space-y-1 text-xs text-ink-2">
+                      {createResult.warnings.map((w, i) => <li key={i}>{warningText(w)}</li>)}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="mt-1 flex flex-wrap justify-center gap-2">
+                  {createResult.product_url && (
+                    <Button asChild variant="outline">
+                      <a href={createResult.product_url} target="_blank" rel="noopener noreferrer"><ExternalLink className="size-4" />{t.create.openInPortal}</a>
+                    </Button>
+                  )}
+                  {!createResult.product_url && createResult.search_url && createResult.status === "unconfirmed" && (
+                    <Button asChild variant="emphasis">
+                      <a href={createResult.search_url} target="_blank" rel="noopener noreferrer"><Search className="size-4" />{t.create.checkInPortal}</a>
+                    </Button>
+                  )}
+                  {createResult.status === "failed" && lastTemplate.current && (
+                    <Button variant="outline" onClick={backToForm}><Pencil className="size-4" />{t.create.tryAgain}</Button>
+                  )}
+                  <Button variant="primary" onClick={resetAll}><Plus className="size-4" />{t.create.createAnother}</Button>
                 </div>
               </div>
-
-              {/* AI panel */}
-              <AiPanel />
-            </div>
-          </div>
-        )}
-
-        {/* ── STEP 5: CREATING ── */}
-        {step === "creating" && (
-          <div className="p-12 flex flex-col items-center justify-center gap-6 min-h-72 text-center">
-            <svg className="animate-spin w-14 h-14 text-emerald" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-15" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5"/>
-              <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-            <div>
-              <p className="text-xs text-ink-3 uppercase tracking-widest mb-2">{t.create.creating}</p>
-              <p className="text-xl font-bold text-ink">&ldquo;{finalName}&rdquo;</p>
-            </div>
-            {createStatus && (
-              <p className="text-xs text-ink-3 animate-pulse border-t border-border pt-4 w-full max-w-xs">{createStatus}</p>
-            )}
-            {/* No cancel button: the save cannot be called back once it starts. */}
-            <p className="text-[11px] text-ink-3/60 max-w-xs">{t.create.keepOpen}</p>
-          </div>
-        )}
-
-        {/* ── STEP 6: DONE ── */}
-        {step === "done" && createResult && (
-          <div className="p-10 flex flex-col items-center gap-5 min-h-72 text-center">
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold border-2 ${
-              createResult.status === "created" ? "bg-emerald-light text-emerald border-emerald/30"
-              : createResult.status === "failed" ? "bg-ember-light text-ember border-ember/30"
-              : "bg-amber-50 text-amber-700 border-amber-300"}`}>
-              {createResult.status === "created" ? "✓" : createResult.status === "failed" ? "✗" : "!"}
-            </div>
-
-            <div className="space-y-1.5">
-              <p className="text-lg font-bold text-ink">
-                {createResult.status === "created" ? t.create.statusCreated
-                  : createResult.status === "created_with_warnings" ? t.create.statusCreatedWarnings
-                  : createResult.status === "unconfirmed" ? t.create.statusUnconfirmed
-                  : t.create.statusFailed}
-              </p>
-              <p className="text-sm text-ink-3">
-                &ldquo;{createResult.name}&rdquo;
-                <span className="ml-2 font-mono text-xs">{createResult.product_number}</span>
-              </p>
-              {createResult.status !== "created" && reasonText(createResult) && (
-                <p className="text-sm text-ink-3">{reasonText(createResult)}</p>
-              )}
-              {createResult.status === "unconfirmed" && <p className="text-sm text-amber-700">{t.create.unconfirmedHint}</p>}
-              {createResult.status === "failed" && <p className="text-sm text-ink-3">{t.create.failedHint}</p>}
-              {createResult.error_text && createResult.reason !== "invalid_input" && (
-                <p className="text-[11px] text-ink-3/60 font-mono break-all max-w-md">{createResult.error_text}</p>
-              )}
-            </div>
-
-            {/* What FreshPortal actually holds — read back after saving */}
-            {createResult.product && (
-              <div className="w-full max-w-md rounded-xl border border-border bg-ground px-4 py-3 text-left space-y-1">
-                <p className="text-[11px] font-semibold text-ink-3 uppercase tracking-wide">{t.create.inPortal}</p>
-                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.fieldName}:</span> {createResult.product.name}</p>
-                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.fieldNumber}:</span> <span className="font-mono">{createResult.product.product_number}</span></p>
-                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.vbnLabel}:</span> <span className="font-mono">{createResult.product.vbn_number || "—"}</span></p>
-                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.colorLabel}:</span> {createResult.product.color || "—"}</p>
-                <p className="text-xs text-ink"><span className="text-ink-3">{t.create.fieldId}:</span> <span className="font-mono">{createResult.product.product_id}</span></p>
-              </div>
-            )}
-
-            {createResult.warnings.length > 0 && (
-              <div className="w-full max-w-md rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-left space-y-1">
-                <p className="text-[11px] font-semibold text-amber-700 uppercase tracking-wide">{t.create.warnTitle}</p>
-                {createResult.warnings.map((w, i) => (
-                  <p key={i} className="text-xs text-amber-800">{warningText(w)}</p>
-                ))}
-              </div>
-            )}
-
-            <div className="flex flex-wrap gap-3 justify-center">
-              {createResult.product_url && (
-                <a href={createResult.product_url} target="_blank" rel="noopener noreferrer"
-                   className="px-4 py-2.5 border border-border rounded-xl text-sm text-ink-3 hover:bg-ground transition-colors">
-                  {t.create.openInPortal}
-                </a>
-              )}
-              {!createResult.product_url && createResult.search_url && createResult.status === "unconfirmed" && (
-                <a href={createResult.search_url} target="_blank" rel="noopener noreferrer"
-                   className="px-4 py-2.5 border border-amber-300 bg-amber-50 rounded-xl text-sm text-amber-800 hover:bg-amber-100 transition-colors">
-                  {t.create.checkInPortal}
-                </a>
-              )}
-              {createResult.status === "failed" && lastTemplate.current && (
-                <button onClick={backToForm}
-                        className="px-4 py-2.5 border border-border rounded-xl text-sm text-ink-3 hover:bg-ground transition-colors">
-                  {t.create.tryAgain}
-                </button>
-              )}
-              <button
-                onClick={resetAll}
-                className="px-6 py-2.5 bg-ink hover:bg-ink/80 text-white text-sm font-medium rounded-xl transition-colors"
-              >{t.create.createAnother}</button>
-            </div>
-          </div>
+            </DoneState>
+          </Section>
         )}
 
       </div>
