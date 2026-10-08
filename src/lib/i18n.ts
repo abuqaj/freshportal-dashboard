@@ -1005,6 +1005,7 @@ const en = {
     missingNote: (n: string) => `${n} field(s) could not be read — check the highlighted ones.`,
     currencyUnmapped: (c: string) => `"${c}" does not match any currency in the portal — set it by hand.`,
     tokens: (i: string, o: string) => `Read using ${i} input / ${o} output tokens.`,
+    irreversible: "Irreversible",
   },
   knowledgeBase: {
     title: "Knowledge base",
@@ -2187,6 +2188,7 @@ const nl: typeof en = {
     missingNote: (n: string) => `${n} veld(en) konden niet worden gelezen — controleer de gemarkeerde.`,
     currencyUnmapped: (c: string) => `"${c}" komt niet overeen met een valuta in het portaal — stel het handmatig in.`,
     tokens: (i: string, o: string) => `Gelezen met ${i} invoer- / ${o} uitvoertokens.`,
+    irreversible: "Onomkeerbaar",
   },
   knowledgeBase: {
     title: "Kennisbank",
@@ -3369,6 +3371,7 @@ const pl: typeof en = {
     missingNote: (n: string) => `Nie udało się odczytać ${n} pól — sprawdź te podświetlone.`,
     currencyUnmapped: (c: string) => `„${c}" nie pasuje do żadnej waluty w portalu — ustaw ją ręcznie.`,
     tokens: (i: string, o: string) => `Odczyt kosztował ${i} tokenów wejścia / ${o} wyjścia.`,
+    irreversible: "Nieodwracalne",
   },
   knowledgeBase: {
     title: "Baza wiedzy",
@@ -4551,6 +4554,7 @@ const es: typeof en = {
     missingNote: (n: string) => `No se pudieron leer ${n} campo(s) — revisa los resaltados.`,
     currencyUnmapped: (c: string) => `"${c}" no coincide con ninguna moneda del portal — configúrala a mano.`,
     tokens: (i: string, o: string) => `Leído con ${i} tokens de entrada / ${o} de salida.`,
+    irreversible: "Irreversible",
   },
   knowledgeBase: {
     title: "Base de conocimiento",
